@@ -1,0 +1,10 @@
+package com.codecoachai.common.ai.enums;
+
+public enum AiSceneEnum {
+
+    INTERVIEW_QUESTION_GENERATE,
+    INTERVIEW_ANSWER_EVALUATE,
+    INTERVIEW_FOLLOW_UP_GENERATE,
+    INTERVIEW_REPORT_GENERATE,
+    PROJECT_DEEP_DIVE_QUESTION
+}

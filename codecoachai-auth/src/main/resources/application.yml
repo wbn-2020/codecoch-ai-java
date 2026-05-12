@@ -1,0 +1,22 @@
+server:
+  port: 9201
+
+spring:
+  application:
+    name: codecoachai-auth
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+
+sa-token:
+  token-name: Authorization
+  timeout: 86400
+  is-read-cookie: false
+
+feign:
+  client:
+    config:
+      default:
+        connectTimeout: 3000
+        readTimeout: 5000
