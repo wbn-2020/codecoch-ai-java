@@ -16,6 +16,7 @@ import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -40,6 +41,9 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         if (path.startsWith("/inner/")) {
             return writeError(exchange, ErrorCode.FORBIDDEN);
         }
+        if (HttpMethod.OPTIONS.equals(request.getMethod())) {
+            return chain.filter(exchange);
+        }
         if (isWhitePath(path)) {
             return chain.filter(exchange);
         }
@@ -52,6 +56,9 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
                 .flatMap(result -> {
                     if (result == null || !result.isSuccess() || result.getData() == null) {
                         return writeError(exchange, ErrorCode.TOKEN_INVALID);
+                    }
+                    if (path.startsWith("/admin/") && !hasAdminRole(result.getData())) {
+                        return writeError(exchange, ErrorCode.FORBIDDEN);
                     }
                     ServerHttpRequest mutated = request.mutate()
                             .headers(headers -> enrichUserHeaders(headers, authorization, result.getData()))
@@ -67,6 +74,11 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
     private boolean isWhitePath(String path) {
         return WHITE_PATHS.stream().anyMatch(path::equals);
+    }
+
+    private boolean hasAdminRole(TokenInfo tokenInfo) {
+        List<String> roles = tokenInfo.getRoles();
+        return roles != null && roles.stream().anyMatch(SecurityConstants.ROLE_ADMIN::equals);
     }
 
     private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo) {
