@@ -3,6 +3,7 @@ package com.codecoachai.auth.service;
 import com.codecoachai.auth.domain.dto.LoginDTO;
 import com.codecoachai.auth.domain.dto.RegisterDTO;
 import com.codecoachai.auth.domain.vo.CurrentUserVO;
+import com.codecoachai.auth.domain.vo.InnerTokenInfoVO;
 import com.codecoachai.auth.domain.vo.LoginVO;
 import com.codecoachai.auth.domain.vo.RegisterVO;
 
@@ -17,4 +18,6 @@ public interface AuthService {
     CurrentUserVO currentUser();
 
     LoginVO refreshToken();
+
+    InnerTokenInfoVO tokenInfo();
 }
