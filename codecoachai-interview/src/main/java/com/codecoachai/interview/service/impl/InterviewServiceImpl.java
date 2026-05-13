@@ -78,6 +78,12 @@ public class InterviewServiceImpl implements InterviewService {
         session.setResumeId(dto.getResumeId());
         session.setMode(normalizeMode(dto.getMode()));
         session.setTitle(StringUtils.hasText(dto.getTitle()) ? dto.getTitle() : "Mock Interview");
+        session.setTargetPosition(dto.getTargetPosition());
+        session.setExperienceLevel(dto.getExperienceLevel());
+        session.setIndustryDirection(dto.getIndustryDirection());
+        session.setDifficulty(dto.getDifficulty());
+        session.setInterviewerStyle(dto.getInterviewerStyle());
+        session.setBasedOnResume(Boolean.TRUE.equals(dto.getBasedOnResume()));
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
         session.setAnsweredQuestionCount(0);
@@ -89,6 +95,12 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setId(session.getId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
+        vo.setTargetPosition(session.getTargetPosition());
+        vo.setExperienceLevel(session.getExperienceLevel());
+        vo.setIndustryDirection(session.getIndustryDirection());
+        vo.setDifficulty(session.getDifficulty());
+        vo.setInterviewerStyle(session.getInterviewerStyle());
+        vo.setBasedOnResume(session.getBasedOnResume());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setStages(stages.stream().map(InterviewConvert::toStageVO).toList());
@@ -235,6 +247,12 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setId(session.getId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
+        vo.setTargetPosition(session.getTargetPosition());
+        vo.setExperienceLevel(session.getExperienceLevel());
+        vo.setIndustryDirection(session.getIndustryDirection());
+        vo.setDifficulty(session.getDifficulty());
+        vo.setInterviewerStyle(session.getInterviewerStyle());
+        vo.setBasedOnResume(session.getBasedOnResume());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setStages(stages(session.getId()).stream().map(InterviewConvert::toStageVO).toList());
