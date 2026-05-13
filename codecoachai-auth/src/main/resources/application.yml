@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: codecoachai-auth
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
   cloud:
     nacos:
       discovery:
@@ -13,6 +19,8 @@ sa-token:
   token-name: Authorization
   timeout: 86400
   is-read-cookie: false
+  token-prefix: Bearer
+  is-print: false
 
 feign:
   client:

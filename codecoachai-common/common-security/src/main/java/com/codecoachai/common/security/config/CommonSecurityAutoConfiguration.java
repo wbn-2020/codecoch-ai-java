@@ -1,5 +1,6 @@
 package com.codecoachai.common.security.config;
 
+import com.codecoachai.common.security.filter.InternalCallFilter;
 import com.codecoachai.common.security.filter.LoginUserContextFilter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -23,6 +24,15 @@ public class CommonSecurityAutoConfiguration {
         FilterRegistrationBean<LoginUserContextFilter> registrationBean = new FilterRegistrationBean<>();
         registrationBean.setFilter(new LoginUserContextFilter());
         registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
+        registrationBean.addUrlPatterns("/*");
+        return registrationBean;
+    }
+
+    @Bean
+    public FilterRegistrationBean<InternalCallFilter> internalCallFilter() {
+        FilterRegistrationBean<InternalCallFilter> registrationBean = new FilterRegistrationBean<>();
+        registrationBean.setFilter(new InternalCallFilter());
+        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
         registrationBean.addUrlPatterns("/*");
         return registrationBean;
     }

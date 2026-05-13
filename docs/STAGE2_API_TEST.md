@@ -186,7 +186,45 @@ Content-Type: application/json
 }
 ```
 
-Continue answering until `nextAction` is `FINISH`, then finish:
+Expected `nextAction` coverage before finishing:
+
+```text
+FOLLOW_UP
+Submit a short or weak answer. The mock AI may suggest a follow-up while the current main question has fewer than 2 follow-ups.
+
+NEXT_QUESTION
+Submit a more complete answer while the current stage has not reached the V1 stage question limit.
+
+NEXT_STAGE
+Use COMPREHENSIVE mode and keep answering main questions. In this V1 implementation, when the current stage has 2 AI main QUESTION messages and another stage exists, `/interviews/{id}/answer` returns NEXT_STAGE, marks the current stage COMPLETED, marks the next stage IN_PROGRESS, and returns the first question for the next stage.
+
+FINISH
+Continue answering until maxQuestionCount is reached or the last stage has no next stage. `/interviews/{id}/answer` only returns FINISH; report generation is still triggered by `/interviews/{id}/finish`.
+```
+
+Answer examples for flow checks:
+
+```http
+POST /interviews/{interviewId}/answer
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "answerContent": "I am not sure."
+}
+```
+
+```http
+POST /interviews/{interviewId}/answer
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "answerContent": "I would explain the core mechanism, compare tradeoffs, and give a production scenario with monitoring and rollback."
+}
+```
+
+When `nextAction` is `FINISH`, finish explicitly:
 
 ```http
 POST /interviews/{interviewId}/finish
@@ -197,6 +235,13 @@ Report:
 
 ```http
 GET /interviews/{interviewId}/report
+Authorization: Bearer {token}
+```
+
+Report retry:
+
+```http
+POST /interviews/{interviewId}/report/retry
 Authorization: Bearer {token}
 ```
 

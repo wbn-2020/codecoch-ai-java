@@ -6,6 +6,7 @@ import com.codecoachai.auth.domain.dto.LoginDTO;
 import com.codecoachai.auth.domain.dto.RegisterDTO;
 import com.codecoachai.auth.domain.vo.CurrentUserVO;
 import com.codecoachai.auth.domain.vo.InnerCreateUserVO;
+import com.codecoachai.auth.domain.vo.InnerTokenInfoVO;
 import com.codecoachai.auth.domain.vo.InnerUserAuthVO;
 import com.codecoachai.auth.domain.vo.InnerUserBasicVO;
 import com.codecoachai.auth.domain.vo.LoginVO;
@@ -64,8 +65,10 @@ public class AuthServiceImpl implements AuthService {
         }
         StpUtil.login(user.getId());
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
-        // Gateway can parse this temporary token format until shared Sa-Token state is wired through Redis.
-        String token = "codecoachai:" + user.getId() + ":" + user.getUsername() + ":" + String.join(",", roles);
+        StpUtil.getSession().set("username", user.getUsername());
+        StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
+        StpUtil.getSession().set("roles", roles);
+        String token = StpUtil.getTokenValue();
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
                 user.getAvatarUrl(), user.getEmail(), roles);
@@ -102,6 +105,24 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public LoginVO refreshToken() {
         throw new BusinessException(ErrorCode.PARAM_ERROR, "V1 暂未实现刷新 Token");
+    }
+
+    @Override
+    public InnerTokenInfoVO tokenInfo() {
+        if (!StpUtil.isLogin()) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        Long userId = Long.valueOf(StpUtil.getLoginIdAsString());
+        InnerUserBasicVO user = FeignResultUtils.unwrap(userFeignClient.getInnerUser(userId));
+        if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+            throw new BusinessException(ErrorCode.USER_DISABLED);
+        }
+        InnerTokenInfoVO vo = new InnerTokenInfoVO();
+        vo.setUserId(user.getId());
+        vo.setUsername(user.getUsername());
+        vo.setNickname(StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
+        vo.setRoles(user.getRoles() == null ? List.of() : user.getRoles());
+        return vo;
     }
 
     private CurrentUserVO toCurrentUser(Long id, String username, String nickname, String avatarUrl,

@@ -4,10 +4,13 @@ import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.gateway.domain.TokenInfo;
+import com.codecoachai.gateway.service.AuthTokenClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import lombok.RequiredArgsConstructor;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -22,11 +25,13 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 @Component
+@RequiredArgsConstructor
 public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
     private static final List<String> WHITE_PATHS = List.of("/auth/login", "/auth/register");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final AuthTokenClient authTokenClient;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
@@ -43,11 +48,16 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
             return writeError(exchange, ErrorCode.UNAUTHORIZED);
         }
 
-        // TODO: Replace this placeholder parsing with Sa-Token shared login-state verification.
-        ServerHttpRequest mutated = request.mutate()
-                .headers(headers -> enrichDemoUserHeaders(headers, authorization))
-                .build();
-        return chain.filter(exchange.mutate().request(mutated).build());
+        return authTokenClient.tokenInfo(authorization)
+                .flatMap(result -> {
+                    if (result == null || !result.isSuccess() || result.getData() == null) {
+                        return writeError(exchange, ErrorCode.TOKEN_INVALID);
+                    }
+                    ServerHttpRequest mutated = request.mutate()
+                            .headers(headers -> enrichUserHeaders(headers, authorization, result.getData()))
+                            .build();
+                    return chain.filter(exchange.mutate().request(mutated).build());
+                });
     }
 
     @Override
@@ -59,17 +69,13 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         return WHITE_PATHS.stream().anyMatch(path::equals);
     }
 
-    private void enrichDemoUserHeaders(HttpHeaders headers, String authorization) {
-        if (!headers.containsKey(HeaderConstants.USER_ID)) {
-            String token = authorization.substring(SecurityConstants.BEARER_PREFIX.length());
-            String[] parts = token.split(":");
-            if (parts.length >= 3 && "codecoachai".equals(parts[0])) {
-                headers.set(HeaderConstants.USER_ID, parts[1]);
-                headers.set(HeaderConstants.USERNAME, parts[2]);
-                if (parts.length >= 4) {
-                    headers.set(HeaderConstants.ROLES, parts[3]);
-                }
-            }
+    private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo) {
+        headers.set(HeaderConstants.AUTHORIZATION, authorization);
+        headers.set(HeaderConstants.USER_ID, String.valueOf(tokenInfo.getUserId()));
+        headers.set(HeaderConstants.USERNAME, tokenInfo.getUsername());
+        List<String> roles = tokenInfo.getRoles();
+        if (roles != null && !roles.isEmpty()) {
+            headers.set(HeaderConstants.ROLES, String.join(",", roles));
         }
     }
 

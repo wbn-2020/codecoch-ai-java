@@ -59,6 +59,7 @@ import org.springframework.util.StringUtils;
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
+    private static final int QUESTIONS_PER_STAGE = 2;
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -150,7 +151,7 @@ public class InterviewServiceImpl implements InterviewService {
         EvaluateAnswerVO evaluation = FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO));
         saveMessage(session, stage, question, "AI", "EVALUATION", evaluation.getComment(), evaluation.getScore(), evaluation.getComment());
 
-        NextActionEnum nextAction = decideNextAction(session, evaluation);
+        NextActionEnum nextAction = decideNextAction(session, stage, evaluation);
         CurrentQuestionVO nextQuestion = null;
         if (NextActionEnum.FOLLOW_UP.equals(nextAction)) {
             GenerateFollowUpDTO followUpDTO = new GenerateFollowUpDTO();
@@ -324,7 +325,7 @@ public class InterviewServiceImpl implements InterviewService {
         return vo;
     }
 
-    private NextActionEnum decideNextAction(InterviewSession session, EvaluateAnswerVO evaluation) {
+    private NextActionEnum decideNextAction(InterviewSession session, InterviewStage stage, EvaluateAnswerVO evaluation) {
         if (session.getAnsweredQuestionCount() + 1 >= session.getMaxQuestionCount()) {
             return NextActionEnum.FINISH;
         }
@@ -332,7 +333,18 @@ public class InterviewServiceImpl implements InterviewService {
                 && session.getCurrentFollowUpCount() < MAX_FOLLOW_UP_COUNT) {
             return NextActionEnum.FOLLOW_UP;
         }
+        if (currentStageMainQuestionCount(session.getId(), stage.getId()) >= QUESTIONS_PER_STAGE) {
+            return nextStage(stage) == null ? NextActionEnum.FINISH : NextActionEnum.NEXT_STAGE;
+        }
         return NextActionEnum.NEXT_QUESTION;
+    }
+
+    private Long currentStageMainQuestionCount(Long sessionId, Long stageId) {
+        return messageMapper.selectCount(new LambdaQueryWrapper<InterviewMessage>()
+                .eq(InterviewMessage::getSessionId, sessionId)
+                .eq(InterviewMessage::getStageId, stageId)
+                .eq(InterviewMessage::getRole, "AI")
+                .eq(InterviewMessage::getMessageType, "QUESTION"));
     }
 
     private List<InterviewStage> createStages(InterviewSession session) {
