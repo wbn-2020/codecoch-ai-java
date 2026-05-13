@@ -14,7 +14,9 @@ public class QuestionListVO {
     private Long groupId;
     private String difficulty;
     private Integer status;
-    private List<String> tags;
+    private List<QuestionTagVO> tags;
+    private List<Long> tagIds;
+    private List<String> tagNames;
     private Boolean favorite;
     private String masteryStatus;
     private LocalDateTime createdAt;
