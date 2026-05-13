@@ -8,6 +8,7 @@ public class QuestionQueryDTO {
     private Long categoryId;
     private Long tagId;
     private String difficulty;
+    private Integer status;
     private String keyword;
     private Long pageNo = 1L;
     private Long pageSize = 10L;

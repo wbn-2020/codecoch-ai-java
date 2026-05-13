@@ -8,7 +8,7 @@ import com.codecoachai.common.core.domain.PageResult;
 
 public interface PromptTemplateService {
 
-    PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize);
+    PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize, String keyword, String scene, Integer status);
 
     PromptTemplateVO createPrompt(PromptTemplateSaveDTO dto);
 

@@ -18,6 +18,7 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
@@ -27,9 +28,17 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private final AiCallLogMapper aiCallLogMapper;
 
     @Override
-    public PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize) {
+    public PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize, String keyword, String scene,
+                                                    Integer status) {
         Page<PromptTemplate> page = promptTemplateMapper.selectPage(Page.of(defaultPage(pageNo), defaultSize(pageSize)),
-                new LambdaQueryWrapper<PromptTemplate>().orderByDesc(PromptTemplate::getUpdatedAt));
+                new LambdaQueryWrapper<PromptTemplate>()
+                        .and(StringUtils.hasText(keyword), condition -> condition
+                                .like(PromptTemplate::getName, keyword)
+                                .or()
+                                .like(PromptTemplate::getContent, keyword))
+                        .eq(StringUtils.hasText(scene), PromptTemplate::getScene, scene)
+                        .eq(status != null, PromptTemplate::getStatus, status)
+                        .orderByDesc(PromptTemplate::getUpdatedAt));
         return PageResult.of(page.getRecords().stream().map(AiConvert::toPromptVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }

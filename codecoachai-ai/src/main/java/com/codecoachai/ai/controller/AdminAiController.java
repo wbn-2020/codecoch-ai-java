@@ -26,8 +26,11 @@ public class AdminAiController {
 
     @GetMapping("/admin/ai/prompts")
     public Result<PageResult<PromptTemplateVO>> pagePrompts(@RequestParam(required = false) Long pageNo,
-                                                            @RequestParam(required = false) Long pageSize) {
-        return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize));
+                                                            @RequestParam(required = false) Long pageSize,
+                                                            @RequestParam(required = false) String keyword,
+                                                            @RequestParam(required = false) String scene,
+                                                            @RequestParam(required = false) Integer status) {
+        return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize, keyword, scene, status));
     }
 
     @PostMapping("/admin/ai/prompts")

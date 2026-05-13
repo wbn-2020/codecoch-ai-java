@@ -1,6 +1,6 @@
 USE codecoachai_v1;
 
--- CodeCoachAI V1 E2E local integration test data.
+-- CodeCoachAI V1 local integration and demo data.
 -- This script is idempotent and safe to run repeatedly in a local dev database.
 -- It does not DROP, TRUNCATE, DELETE, or clear existing data.
 --
@@ -76,10 +76,10 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO question_group (id, group_name, description, category_id, status, deleted)
 VALUES
-  (100000, 'E2E_TEST_HashMap核心原理', '围绕 HashMap 数据结构、扩容、线程安全和高频面试追问。', 100000, 1, 0),
+  (100000, 'E2E_TEST_HashMap核心原理', '围绕 HashMap 数据结构、扩容、线程安全和高频追问。', 100000, 1, 0),
   (100001, 'E2E_TEST_MySQL索引优化', '围绕联合索引、最左前缀、覆盖索引和执行计划。', 100001, 1, 0),
-  (100002, 'E2E_TEST_Redis缓存一致性', '围绕缓存穿透、击穿、雪崩和数据库缓存一致性。', 100002, 1, 0),
-  (100003, 'E2E_TEST_SpringBoot事务', '围绕声明式事务、AOP 代理、回滚规则和失效场景。', 100003, 1, 0),
+  (100002, 'E2E_TEST_Redis缓存治理', '围绕缓存穿透、击穿、雪崩和数据库缓存一致性。', 100002, 1, 0),
+  (100003, 'E2E_TEST_Spring事务边界', '围绕声明式事务、AOP 代理、回滚规则和失效场景。', 100003, 1, 0),
   (100004, 'E2E_TEST_项目缓存设计', '围绕真实项目中的缓存设计、热点数据和性能优化。', 100004, 1, 0)
 ON DUPLICATE KEY UPDATE
   group_name = VALUES(group_name),
@@ -116,8 +116,8 @@ VALUES
    '高频 Redis 题，适合错题本和收藏题页面展示。',
    100002, 100002, 'MEDIUM', 1, 0),
   (100005, 'E2E_TEST_Redis 和 MySQL 双写一致性怎么保证？',
-   '请说明先写库还是先删缓存，以及延迟双删、消息补偿和最终一致性的取舍。',
-   '常见做法是先更新数据库再删除缓存，并通过重试、消息队列补偿或订阅 binlog 保证最终一致。对强一致要求高的场景需要降低缓存参与度或引入更严格的事务边界。',
+   '请说明先写库还是先删缓存，以及延迟双删、重试补偿和最终一致性的取舍。',
+   '常见做法是先更新数据库再删除缓存，并通过重试或订阅 binlog 保障最终一致。对强一致要求高的场景需要降低缓存参与度或引入更严格的事务边界。V1 演示侧重点是 cache-aside 与最终一致，不展开 MQ 方案。',
    '这道题用于项目场景追问，强调业务一致性和工程权衡。',
    100002, 100002, 'HARD', 1, 0),
   (100006, 'E2E_TEST_@Transactional 在哪些场景下会失效？',
@@ -132,14 +132,19 @@ VALUES
    100003, 100003, 'MEDIUM', 1, 0),
   (100008, 'E2E_TEST_项目中如何设计热点商品缓存？',
    '请结合电商订单系统，说明热点商品信息缓存的数据结构、过期策略、更新策略和降级方案。',
-   '可以用 Redis String/Hash 缓存商品核心信息，设置随机过期时间并对热点商品预热。更新时先写数据库再删除缓存，失败通过重试补偿。极端流量下可增加本地缓存、限流和兜底降级。',
+   '可以用 Redis String/Hash 缓存商品核心信息，设置随机过期时间并对热点商品预热。更新时先写数据库再删除缓存，失败走重试补偿。极端流量下可增加本地缓存、限流和兜底降级。',
    '项目深挖题，适合 AI 模拟面试从简历项目中抽取追问。',
    100004, 100004, 'HARD', 1, 0),
   (100009, 'E2E_TEST_Gateway 如何透传用户上下文？',
    '登录成功后，网关如何校验 token，并把用户信息传递给 auth、question、resume、interview 等服务？',
    'Gateway 校验真实 token 后，通过 X-User-Id、X-Username、X-Roles 和 Authorization 向下游服务透传用户上下文。服务端通过公共安全上下文读取，/inner/** 接口还需要 X-Internal-Call 和 X-Service-Name 保护。',
    '用于验证当前 V1 认证链路和微服务边界。',
-   100004, 100004, 'EASY', 1, 0)
+   100004, 100004, 'EASY', 1, 0),
+  (100010, 'E2E_TEST_禁用题_仅用于管理端状态筛选',
+   '这条题目 status=0，用于验证管理端禁用状态筛选，不应出现在用户端题库。',
+   '管理端按 status=0 查询时可以看到该题；用户端 /questions 始终叠加启用状态，只返回 status=1 的题目。',
+   '这是 V1 联调测试数据，不参与普通用户答题闭环。',
+   100000, 100000, 'EASY', 0, 0)
 ON DUPLICATE KEY UPDATE
   title = VALUES(title),
   content = VALUES(content),
@@ -164,7 +169,8 @@ VALUES
   (100008, 100008, 100004, 0),
   (100009, 100009, 100004, 0),
   (100010, 100008, 100002, 0),
-  (100011, 100009, 100003, 0)
+  (100011, 100009, 100003, 0),
+  (100012, 100010, 100000, 0)
 ON DUPLICATE KEY UPDATE
   question_id = VALUES(question_id),
   tag_id = VALUES(tag_id),
@@ -172,7 +178,7 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO user_question_record (id, user_id, question_id, answer_content, mastery_status, wrong, favorite, last_answer_at, deleted)
 VALUES
-  (100000, @E2E_USER_ID, 100000, 'HashMap 没有同步控制，并发 put 会导致数据覆盖和扩容异常，生产中应使用 ConcurrentHashMap。', 'MASTERED', 0, 1, NOW() - INTERVAL 3 DAY, 0),
+  (100000, @E2E_USER_ID, 100000, 'HashMap 没有同步控制，并发 put 可能导致数据覆盖和扩容期间结构异常，生产中应使用 ConcurrentHashMap。', 'MASTERED', 0, 1, NOW() - INTERVAL 3 DAY, 0),
   (100001, @E2E_USER_ID, 100002, '联合索引要从最左列开始匹配，范围条件后面的列可能无法继续充分利用。', 'NOT_MASTERED', 1, 0, NOW() - INTERVAL 2 DAY, 0),
   (100002, @E2E_USER_ID, 100004, '缓存穿透用空值或布隆过滤器，击穿用互斥锁，雪崩要随机过期时间。', 'NOT_MASTERED', 1, 1, NOW() - INTERVAL 1 DAY, 0),
   (100003, @E2E_USER_ID, 100006, '事务失效常见于自调用、异常被捕获、非 public 方法和 rollbackFor 未配置。', 'MASTERED', 0, 0, NOW() - INTERVAL 6 HOUR, 0)
@@ -189,7 +195,7 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO resume (id, user_id, title, real_name, email, phone, summary, is_default, status, deleted)
 VALUES
   (100000, @E2E_USER_ID, 'E2E_TEST_Java后端三年经验简历', 'E2E_TEST_张同学', 'e2e_user@codecoachai.local', '13910000001',
-   '目标岗位：Java 后端开发。技术栈：Java, Spring Boot, MyBatis, MySQL, Redis, Spring Cloud Alibaba。工作经历：三年 Java 后端开发经验，参与过后台管理、电商订单和缓存优化相关项目。教育经历：本科，计算机相关专业。',
+   '目标岗位：Java 后端开发。技术栈：Java、Spring Boot、MyBatis、MySQL、Redis、Spring Cloud Alibaba。工作经历：三年 Java 后端开发经验，参与过后台管理、电商订单和缓存优化相关项目。教育经历：本科，计算机相关专业。',
    1, 1, 0)
 ON DUPLICATE KEY UPDATE
   user_id = VALUES(user_id),
@@ -205,11 +211,11 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO resume_project (id, resume_id, project_name, role, tech_stack, description, highlights, sort, deleted)
 VALUES
   (100000, 100000, 'E2E_TEST_电商订单系统', 'Java 后端开发',
-   'Spring Boot, MyBatis, MySQL, Redis, RabbitMQ',
-   '项目时间：2023.03 - 2024.06。项目背景：面向电商业务的订单、库存、支付回调管理系统。本人负责订单创建、库存扣减、支付回调幂等和缓存设计。',
+   'Spring Boot, MyBatis, MySQL, Redis',
+   '项目时间：2023.03 - 2024.06。项目背景：面向电商业务的订单、库存和支付回调管理系统。本人负责订单创建、库存扣减、支付回调幂等和缓存设计。',
    '核心功能：订单状态流转、库存扣减、支付回调处理。难点：高并发下库存一致性和支付回调重复通知。优化：使用 Redis 缓存热点商品信息，优化订单查询性能。补充：用于 AI 项目深挖面试测试。',
    1, 0),
-  (100001, 100000, 'E2E_TEST_面试题库管理平台', '后端负责人',
+  (100001, 100000, 'E2E_TEST_面试题库训练平台', '后端负责人',
    'Spring Cloud Alibaba, Gateway, Nacos, MySQL, Redis',
    '项目时间：2024.07 - 2025.03。项目背景：面向 Java 求职者的题库和模拟面试系统。本人负责题库管理、问题组、面试状态机和 AI 调用日志。',
    '核心功能：题库 CRUD、问题组归并、AI 面试流程编排。难点：面试流程状态控制和动态追问次数限制。优化：通过问题组避免同一场面试重复问同类问题。补充：用于综合模拟面试测试。',
@@ -230,7 +236,8 @@ VALUES
   (100001, 'PROJECT_DEEP_DIVE_GENERATE', 'E2E_TEST_项目深挖提问模板', '请结合候选人简历项目，围绕项目背景、技术选型、难点和优化结果生成项目深挖问题。', 1, 0),
   (100002, 'INTERVIEW_ANSWER_EVALUATE', 'E2E_TEST_回答评分模板', '请根据题目、参考答案和候选人回答，输出 score、comment 和 nextAction。nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE、FINISH。', 1, 0),
   (100003, 'INTERVIEW_FOLLOW_UP_GENERATE', 'E2E_TEST_动态追问模板', '当候选人回答不够深入时，请生成一个更具体的追问，避免重复原问题。', 1, 0),
-  (100004, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_面试报告生成模板', '请根据整场面试消息生成结构化报告，包含总分、亮点、问题、薄弱知识点和复习建议。', 1, 0)
+  (100004, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_面试报告生成模板', '请根据整场面试消息生成结构化中文报告，包含总分来源、回答亮点、主要问题、薄弱知识点和复习建议。', 1, 0),
+  (100005, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_停用报告模板样例', '该模板仅用于管理端 status=0 筛选验证，不参与实际报告生成。', 0, 0)
 ON DUPLICATE KEY UPDATE
   scene = VALUES(scene),
   name = VALUES(name),
@@ -246,7 +253,7 @@ VALUES
    42, 1, NULL, 0),
   (100001, 'INTERVIEW_ANSWER_EVALUATE',
    CONCAT('{"userId":', @E2E_USER_ID, ',"sessionId":100000,"answer":"HashMap 并发 put 不安全"}'),
-   '{"status":"SUCCESS","score":82,"comment":"回答覆盖核心点，但可以补充扩容和可见性问题。","nextAction":"FOLLOW_UP"}',
+   '{"status":"SUCCESS","score":82,"comment":"回答覆盖核心点，建议补充扩容和可见性问题。","nextAction":"FOLLOW_UP"}',
    55, 1, NULL, 0)
 ON DUPLICATE KEY UPDATE
   scene = VALUES(scene),
@@ -310,7 +317,7 @@ VALUES
   (100009, 100000, 100002, 100004, 100002, 'AI', 'EVALUATION', 'E2E_TEST_AI点评：能区分三类问题，建议结合项目里的热点商品缓存说明。', 80, '方案清晰，项目结合可以更强。', 0),
   (100010, 100000, 100003, 100008, 100004, 'AI', 'QUESTION', 'E2E_TEST_AI问题：在电商订单系统中，你如何设计热点商品缓存？', NULL, NULL, 0),
   (100011, 100000, 100003, 100008, 100004, 'USER', 'ANSWER', 'E2E_TEST_用户回答：商品核心信息放 Redis，设置随机 TTL，更新时先写库再删缓存，失败走重试补偿。', NULL, NULL, 0),
-  (100012, 100000, 100003, 100008, 100004, 'AI', 'EVALUATION', 'E2E_TEST_AI点评：项目方案完整，能说明一致性和降级，但还可以补充热点预热策略。', 82, '项目表达清楚，建议补充量化指标。', 0)
+  (100012, 100000, 100003, 100008, 100004, 'AI', 'EVALUATION', 'E2E_TEST_AI点评：项目方案完整，能说明一致性和降级，但还可以补充热点预热策略。', 82, '项目表达清晰，建议补充量化指标。', 0)
 ON DUPLICATE KEY UPDATE
   session_id = VALUES(session_id),
   stage_id = VALUES(stage_id),
@@ -326,10 +333,10 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO interview_report (id, session_id, status, total_score, summary, strengths, weaknesses, suggestions, failure_reason, deleted)
 VALUES
   (100000, 100000, 'GENERATED', 82,
-   '## E2E_TEST_面试总结\n本场综合模拟面试总分 82。候选人具备三年 Java 后端开发所需的基础能力，能围绕集合、MySQL、Redis 和项目缓存设计进行表达。',
-   '阶段得分：Java 基础 82，MySQL 84，Redis 80，项目深挖 82。回答亮点：能够结合 ConcurrentHashMap、最左前缀、缓存治理和先写库再删缓存说明工程方案。',
-   '主要问题：HashMap 扩容细节、EXPLAIN 字段含义、热点缓存预热和降级指标仍需加强。薄弱知识点：JDK8 ConcurrentHashMap、MySQL 执行计划、Redis 双写一致性。',
-   '复习建议：1. 复盘 HashMap 与 ConcurrentHashMap 源码关键流程；2. 准备 3 条 MySQL 慢 SQL 优化案例；3. 把电商订单系统缓存优化补充为有指标的 STAR 案例。',
+   '## E2E_TEST_面试总结\n本场综合模拟面试总分 82。总分来源：Java 基础 82、MySQL 84、Redis 80、项目深挖 82，按四个已完成环节取平均后得到 82。候选人具备三年 Java 后端开发所需的基础能力，能够围绕集合、MySQL、Redis 和项目缓存设计进行表达。',
+   '回答亮点：1. 能准确说明 HashMap 并发写风险，并给出 ConcurrentHashMap 作为生产替代方案；2. 能解释联合索引最左前缀和范围查询影响；3. 能区分缓存穿透、击穿、雪崩，并给出工程治理方案；4. 项目深挖中能把 Redis 缓存和先写库再删缓存的策略串联起来。',
+   '主要问题：1. HashMap 扩容过程和 JDK8 ConcurrentHashMap 锁粒度说明不够细；2. MySQL 优化缺少 EXPLAIN type、key、rows、Extra 等字段解释；3. Redis 热点缓存缺少预热、降级指标和压测验证描述；4. 项目表达需要补充量化结果，例如接口耗时、缓存命中率和慢 SQL 优化前后对比。',
+   '复习建议：1. 复盘 HashMap 与 ConcurrentHashMap 的 put、扩容和并发控制流程；2. 准备 3 条 MySQL 慢 SQL 优化案例，并能读懂 EXPLAIN 常见字段；3. 将电商订单系统的热点缓存优化整理成 STAR 案例，补充指标、风险和兜底方案；4. 面试回答时先给结论，再补原理、项目实践和边界条件。',
    NULL, 0)
 ON DUPLICATE KEY UPDATE
   status = VALUES(status),
