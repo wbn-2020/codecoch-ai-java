@@ -1,0 +1,21 @@
+package com.codecoachai.resume.domain.entity;
+
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.codecoachai.common.core.domain.BaseEntity;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+
+@Data
+@EqualsAndHashCode(callSuper = true)
+@TableName("resume")
+public class Resume extends BaseEntity {
+
+    private Long userId;
+    private String title;
+    private String realName;
+    private String email;
+    private String phone;
+    private String summary;
+    private Integer isDefault;
+    private Integer status;
+}

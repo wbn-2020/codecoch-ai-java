@@ -1,0 +1,71 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: codecoachai-gateway
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+    gateway:
+      discovery:
+        locator:
+          enabled: false
+      routes:
+        - id: codecoachai-auth
+          uri: lb://codecoachai-auth
+          predicates:
+            - Path=/auth/**
+        - id: codecoachai-user-users
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/users/**
+        - id: codecoachai-user-admin-users
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/admin/users/**
+        - id: codecoachai-user-admin-roles
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/admin/roles
+        - id: codecoachai-question-users
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/questions/**
+        - id: codecoachai-question-admin-questions
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/questions/**
+        - id: codecoachai-question-admin-categories
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/question-categories/**
+        - id: codecoachai-question-admin-tags
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/question-tags/**
+        - id: codecoachai-question-admin-groups
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/question-groups/**
+        - id: codecoachai-resume
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/resumes/**
+        - id: codecoachai-interview
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/interviews/**
+        - id: codecoachai-ai-admin
+          uri: lb://codecoachai-ai
+          predicates:
+            - Path=/admin/ai/**
+        - id: codecoachai-system-admin
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/system/**
+        - id: codecoachai-system-configs
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/configs/**

@@ -1,0 +1,23 @@
+# Build outputs
+target/
+**/target/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment overrides
+.env
+.env.*
+application-local.yml
+application-*.local.yml

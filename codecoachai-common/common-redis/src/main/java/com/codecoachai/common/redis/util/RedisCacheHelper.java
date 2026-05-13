@@ -1,0 +1,27 @@
+package com.codecoachai.common.redis.util;
+
+import java.time.Duration;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Component;
+
+@Component
+public class RedisCacheHelper {
+
+    private final StringRedisTemplate stringRedisTemplate;
+
+    public RedisCacheHelper(StringRedisTemplate stringRedisTemplate) {
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
+
+    public void set(String key, String value, Duration ttl) {
+        stringRedisTemplate.opsForValue().set(key, value, ttl);
+    }
+
+    public String get(String key) {
+        return stringRedisTemplate.opsForValue().get(key);
+    }
+
+    public Boolean delete(String key) {
+        return stringRedisTemplate.delete(key);
+    }
+}
