@@ -46,6 +46,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class QuestionServiceImpl implements QuestionService {
 
+    private static final Long NO_MATCH_QUESTION_ID = -1L;
+
     private final QuestionMapper questionMapper;
     private final QuestionCategoryMapper categoryMapper;
     private final QuestionGroupMapper groupMapper;
@@ -56,7 +58,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
         Page<Question> page = questionMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
-                buildQuestionWrapper(query).eq(Question::getStatus, CommonConstants.YES));
+                buildQuestionWrapper(query, false).eq(Question::getStatus, CommonConstants.YES));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -150,7 +152,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     public PageResult<QuestionListVO> pageAdminQuestions(QuestionQueryDTO query) {
         Page<Question> page = questionMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
-                buildQuestionWrapper(query));
+                buildQuestionWrapper(query, true));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -227,15 +229,32 @@ public class QuestionServiceImpl implements QuestionService {
                 .toList();
     }
 
-    private LambdaQueryWrapper<Question> buildQuestionWrapper(QuestionQueryDTO query) {
+    private LambdaQueryWrapper<Question> buildQuestionWrapper(QuestionQueryDTO query, boolean includeStatusFilter) {
+        List<Long> questionIds = findQuestionIdsByTag(query.getTagId());
         return new LambdaQueryWrapper<Question>()
                 .eq(query.getCategoryId() != null, Question::getCategoryId, query.getCategoryId())
                 .eq(StringUtils.hasText(query.getDifficulty()), Question::getDifficulty, query.getDifficulty())
+                .eq(includeStatusFilter && query.getStatus() != null, Question::getStatus, query.getStatus())
+                .in(query.getTagId() != null && !questionIds.isEmpty(), Question::getId, questionIds)
+                .eq(query.getTagId() != null && questionIds.isEmpty(), Question::getId, NO_MATCH_QUESTION_ID)
                 .and(StringUtils.hasText(query.getKeyword()), condition -> condition
                         .like(Question::getTitle, query.getKeyword())
                         .or()
                         .like(Question::getContent, query.getKeyword()))
                 .orderByDesc(Question::getUpdatedAt);
+    }
+
+    private List<Long> findQuestionIdsByTag(Long tagId) {
+        if (tagId == null) {
+            return Collections.emptyList();
+        }
+        return tagRelationMapper.selectList(new LambdaQueryWrapper<QuestionTagRelation>()
+                        .eq(QuestionTagRelation::getTagId, tagId))
+                .stream()
+                .map(QuestionTagRelation::getQuestionId)
+                .filter(questionId -> questionId != null)
+                .distinct()
+                .toList();
     }
 
     private void applyQuestion(Question question, AdminQuestionSaveDTO dto) {
