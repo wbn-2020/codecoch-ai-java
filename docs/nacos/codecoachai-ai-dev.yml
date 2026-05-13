@@ -1,0 +1,17 @@
+server:
+  port: 9206
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: wbn123..
+
+codecoachai:
+  ai:
+    provider: mock
+    model: mock-v1
+    base-url: ""
+    api-key: ""
+    timeout-seconds: 30

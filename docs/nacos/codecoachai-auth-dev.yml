@@ -1,0 +1,13 @@
+server:
+  port: 9201
+
+sa-token:
+  token-name: Authorization
+  timeout: 86400
+  is-read-cookie: false
+  token-prefix: Bearer
+  is-print: false
+
+codecoachai:
+  auth:
+    token-expire-seconds: 86400
