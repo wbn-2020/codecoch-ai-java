@@ -209,7 +209,17 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateInterviewQuestionVO parseQuestion(String raw, String scene) {
-        JsonNode json = parseJson(raw);
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (BusinessException ex) {
+            GenerateInterviewQuestionVO fallback = new GenerateInterviewQuestionVO();
+            String content = firstText(raw, "请结合当前阶段说明核心原理、适用场景和生产实践注意点。");
+            fallback.setQuestionContent(content);
+            fallback.setQuestionText(content);
+            fallback.setScene(scene);
+            return fallback;
+        }
         GenerateInterviewQuestionVO vo = new GenerateInterviewQuestionVO();
         String content = firstText(json.path("questionContent").asText(null), json.path("questionText").asText(null), raw);
         vo.setQuestionContent(content);
@@ -219,7 +229,18 @@ public class AiServiceImpl implements AiService {
     }
 
     private EvaluateAnswerVO parseEvaluate(String raw, EvaluateAnswerDTO dto) {
-        JsonNode json = parseJson(raw);
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (BusinessException ex) {
+            EvaluateAnswerVO fallback = new EvaluateAnswerVO();
+            int score = scoreByLength(dto.getAnswerContent());
+            fallback.setScore(score);
+            fallback.setComment(firstText(raw, score >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。"));
+            fallback.setNextAction(score < 75 && (dto.getFollowUpCount() == null || dto.getFollowUpCount() < 2) ? "FOLLOW_UP" : "NEXT_QUESTION");
+            fallback.setKnowledgePoints(firstText(dto.getQuestionTitle(), "Java 后端基础"));
+            return fallback;
+        }
         EvaluateAnswerVO vo = new EvaluateAnswerVO();
         vo.setScore(json.path("score").isNumber() ? json.path("score").asInt() : scoreByLength(dto.getAnswerContent()));
         vo.setComment(firstText(json.path("comment").asText(null), json.path("aiComment").asText(null), raw));
@@ -229,7 +250,14 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateFollowUpVO parseFollowUp(String raw, GenerateFollowUpDTO dto) {
-        JsonNode json = parseJson(raw);
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (BusinessException ex) {
+            GenerateFollowUpVO fallback = new GenerateFollowUpVO();
+            fallback.setFollowUpQuestion(firstText(raw, "请进一步说明：" + firstText(dto.getQuestionTitle(), "当前问题")));
+            return fallback;
+        }
         GenerateFollowUpVO vo = new GenerateFollowUpVO();
         vo.setFollowUpQuestion(firstText(json.path("followUpQuestion").asText(null), json.path("questionContent").asText(null),
                 "请进一步说明：" + firstText(dto.getQuestionTitle(), "当前问题")));
@@ -237,7 +265,15 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateReportVO parseReport(String raw) {
-        JsonNode json = parseJson(raw);
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (BusinessException ex) {
+            GenerateReportVO fallback = mockReport();
+            fallback.setSummary(firstText(raw, fallback.getSummary()));
+            fallback.setReportContent(firstText(raw, fallback.getReportContent()));
+            return fallback;
+        }
         GenerateReportVO vo = mockReport();
         if (json.path("totalScore").isNumber()) {
             vo.setTotalScore(json.path("totalScore").asInt());
