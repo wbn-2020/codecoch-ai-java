@@ -28,6 +28,9 @@ public final class QuestionConvert {
         vo.setCategoryName(categoryName);
         vo.setGroupId(question.getGroupId());
         vo.setDifficulty(question.getDifficulty());
+        vo.setQuestionType(question.getQuestionType());
+        vo.setExperienceLevel(question.getExperienceLevel());
+        vo.setIsHighFrequency(question.getIsHighFrequency());
         vo.setStatus(question.getStatus());
         vo.setTags(tags);
         vo.setTagIds(tags.stream().map(QuestionTagVO::getId).toList());
@@ -51,6 +54,9 @@ public final class QuestionConvert {
         vo.setGroupId(question.getGroupId());
         vo.setGroupName(groupName);
         vo.setDifficulty(question.getDifficulty());
+        vo.setQuestionType(question.getQuestionType());
+        vo.setExperienceLevel(question.getExperienceLevel());
+        vo.setIsHighFrequency(question.getIsHighFrequency());
         vo.setStatus(question.getStatus());
         vo.setTags(tags);
         vo.setTagIds(tags.stream().map(QuestionTagVO::getId).toList());
@@ -69,14 +75,18 @@ public final class QuestionConvert {
         vo.setReferenceAnswer(question.getReferenceAnswer());
         vo.setAnalysis(question.getAnalysis());
         vo.setDifficulty(question.getDifficulty());
+        vo.setQuestionType(question.getQuestionType());
+        vo.setExperienceLevel(question.getExperienceLevel());
         return vo;
     }
 
     public static QuestionCategoryVO toCategoryVO(QuestionCategory category) {
         QuestionCategoryVO vo = new QuestionCategoryVO();
         vo.setId(category.getId());
+        vo.setParentId(category.getParentId());
         vo.setCategoryName(category.getCategoryName());
         vo.setSort(category.getSort());
+        vo.setSortOrder(category.getSortOrder());
         vo.setStatus(category.getStatus());
         return vo;
     }
@@ -94,6 +104,10 @@ public final class QuestionConvert {
         QuestionGroupVO vo = new QuestionGroupVO();
         vo.setId(group.getId());
         vo.setGroupName(group.getGroupName());
+        vo.setCanonicalTitle(group.getCanonicalTitle());
+        vo.setCanonicalAnswer(group.getCanonicalAnswer());
+        vo.setMainKnowledgePoint(group.getMainKnowledgePoint());
+        vo.setDifficulty(group.getDifficulty());
         vo.setDescription(group.getDescription());
         vo.setCategoryId(group.getCategoryId());
         vo.setStatus(group.getStatus());

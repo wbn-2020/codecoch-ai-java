@@ -8,6 +8,7 @@ import com.codecoachai.interview.domain.vo.CurrentInterviewVO;
 import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewDetailVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
+import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
@@ -20,6 +21,8 @@ public interface InterviewService {
 
     CurrentInterviewVO current(Long id);
 
+    com.codecoachai.interview.domain.vo.CurrentQuestionVO currentQuestion(Long id);
+
     SubmitInterviewAnswerVO answer(Long id, SubmitInterviewAnswerDTO dto);
 
     FinishInterviewVO finish(Long id);
@@ -29,6 +32,8 @@ public interface InterviewService {
     PageResult<InterviewListVO> list(Long pageNo, Long pageSize);
 
     InterviewDetailVO detail(Long id);
+
+    java.util.List<InterviewMessageVO> messages(Long id);
 
     InterviewReportVO report(Long id);
 }

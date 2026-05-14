@@ -10,9 +10,16 @@ import lombok.EqualsAndHashCode;
 @TableName("ai_call_log")
 public class AiCallLog extends BaseEntity {
 
+    private Long userId;
     private String scene;
+    private String modelName;
+    private Long promptTemplateId;
+    private String requestPrompt;
+    private String responseContent;
+    private String businessId;
     private String requestBody;
     private String responseBody;
+    private Long elapsedMs;
     private Long costMillis;
     private Integer status;
     private String errorMessage;

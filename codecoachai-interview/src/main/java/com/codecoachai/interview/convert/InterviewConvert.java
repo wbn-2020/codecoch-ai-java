@@ -23,7 +23,15 @@ public final class InterviewConvert {
         vo.setStageType(stage.getStageType());
         vo.setStageName(stage.getStageName());
         vo.setSort(stage.getSort());
+        vo.setStageOrder(stage.getStageOrder());
+        vo.setExpectedQuestionCount(stage.getExpectedQuestionCount());
+        vo.setAskedQuestionCount(stage.getAskedQuestionCount());
+        vo.setFocusPoints(stage.getFocusPoints());
+        vo.setBasedOnResume(stage.getBasedOnResume());
+        vo.setAllowFollowUp(stage.getAllowFollowUp());
+        vo.setMaxFollowUpCount(stage.getMaxFollowUpCount());
         vo.setStatus(stage.getStatus());
+        vo.setScore(stage.getScore());
         return vo;
     }
 
@@ -48,10 +56,21 @@ public final class InterviewConvert {
     public static InterviewMessageVO toMessageVO(InterviewMessage message) {
         InterviewMessageVO vo = new InterviewMessageVO();
         vo.setId(message.getId());
+        vo.setStageId(message.getStageId());
         vo.setQuestionId(message.getQuestionId());
+        vo.setQuestionGroupId(message.getQuestionGroupId());
+        vo.setParentMessageId(message.getParentMessageId());
         vo.setRole(message.getRole());
         vo.setMessageType(message.getMessageType());
         vo.setContent(message.getContent());
+        vo.setQuestionContent(message.getQuestionContent());
+        vo.setUserAnswer(message.getUserAnswer());
+        vo.setAiComment(message.getAiComment());
+        vo.setAiScore(message.getAiScore());
+        vo.setIsFollowUp(message.getIsFollowUp());
+        vo.setFollowUpCount(message.getFollowUpCount());
+        vo.setFollowUpReason(message.getFollowUpReason());
+        vo.setKnowledgePoints(message.getKnowledgePoints());
         vo.setScore(message.getScore());
         vo.setComment(message.getComment());
         vo.setCreatedAt(message.getCreatedAt());
@@ -65,11 +84,21 @@ public final class InterviewConvert {
         InterviewReportVO vo = new InterviewReportVO();
         vo.setId(report.getId());
         vo.setSessionId(report.getSessionId());
+        vo.setUserId(report.getUserId());
         vo.setStatus(report.getStatus());
         vo.setTotalScore(report.getTotalScore());
+        vo.setStageScores(report.getStageScores());
+        vo.setWeakPoints(report.getWeakPoints());
         vo.setSummary(report.getSummary());
         vo.setStrengths(report.getStrengths());
         vo.setWeaknesses(report.getWeaknesses());
+        vo.setMainProblems(report.getMainProblems());
+        vo.setProjectProblems(report.getProjectProblems());
+        vo.setReviewSuggestions(report.getReviewSuggestions());
+        vo.setRecommendedQuestions(report.getRecommendedQuestions());
+        vo.setQaReview(report.getQaReview());
+        vo.setReportContent(report.getReportContent());
+        vo.setGeneratedAt(report.getGeneratedAt());
         vo.setSuggestions(report.getSuggestions());
         vo.setFailureReason(report.getFailureReason());
         return vo;

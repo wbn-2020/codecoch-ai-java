@@ -18,6 +18,7 @@ public final class ResumeConvert {
         vo.setId(resume.getId());
         vo.setTitle(resume.getTitle());
         vo.setRealName(resume.getRealName());
+        vo.setTargetPosition(resume.getTargetPosition());
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setUpdatedAt(resume.getUpdatedAt());
@@ -32,6 +33,10 @@ public final class ResumeConvert {
         vo.setRealName(resume.getRealName());
         vo.setEmail(resume.getEmail());
         vo.setPhone(resume.getPhone());
+        vo.setTargetPosition(resume.getTargetPosition());
+        vo.setSkillStack(resume.getSkillStack());
+        vo.setWorkExperience(resume.getWorkExperience());
+        vo.setEducationExperience(resume.getEducationExperience());
         vo.setSummary(resume.getSummary());
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
@@ -45,6 +50,10 @@ public final class ResumeConvert {
         vo.setUserId(resume.getUserId());
         vo.setTitle(resume.getTitle());
         vo.setRealName(resume.getRealName());
+        vo.setTargetPosition(resume.getTargetPosition());
+        vo.setSkillStack(resume.getSkillStack());
+        vo.setWorkExperience(resume.getWorkExperience());
+        vo.setEducationExperience(resume.getEducationExperience());
         vo.setSummary(resume.getSummary());
         vo.setProjects(projects);
         return vo;
@@ -55,11 +64,18 @@ public final class ResumeConvert {
         vo.setId(project.getId());
         vo.setResumeId(project.getResumeId());
         vo.setProjectName(project.getProjectName());
+        vo.setProjectPeriod(project.getProjectPeriod());
+        vo.setProjectBackground(project.getProjectBackground());
         vo.setRole(project.getRole());
         vo.setTechStack(project.getTechStack());
+        vo.setResponsibility(project.getResponsibility());
+        vo.setCoreFeatures(project.getCoreFeatures());
+        vo.setTechnicalDifficulties(project.getTechnicalDifficulties());
+        vo.setOptimizationResults(project.getOptimizationResults());
         vo.setDescription(project.getDescription());
         vo.setHighlights(project.getHighlights());
         vo.setSort(project.getSort());
+        vo.setSortOrder(project.getSortOrder());
         return vo;
     }
 }

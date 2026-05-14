@@ -7,7 +7,14 @@ import lombok.Data;
 public class AiCallLogVO {
 
     private Long id;
+    private Long userId;
     private String scene;
+    private String modelName;
+    private Long promptTemplateId;
+    private String requestPrompt;
+    private String responseContent;
+    private String businessId;
+    private Long elapsedMs;
     private Long costMillis;
     private Integer status;
     private String errorMessage;

@@ -17,5 +17,8 @@ public class Question extends BaseEntity {
     private Long categoryId;
     private Long groupId;
     private String difficulty;
+    private String questionType;
+    private String experienceLevel;
+    private Integer isHighFrequency;
     private Integer status;
 }

@@ -12,4 +12,6 @@ public class InnerQuestionVO {
     private String referenceAnswer;
     private String analysis;
     private String difficulty;
+    private String questionType;
+    private String experienceLevel;
 }

@@ -11,6 +11,10 @@ import lombok.EqualsAndHashCode;
 public class QuestionGroup extends BaseEntity {
 
     private String groupName;
+    private String canonicalTitle;
+    private String canonicalAnswer;
+    private String mainKnowledgePoint;
+    private String difficulty;
     private String description;
     private Long categoryId;
     private Integer status;

@@ -9,6 +9,8 @@ public class SaveQuestionCategoryDTO {
     @NotBlank(message = "categoryName is required")
     private String categoryName;
 
+    private Long parentId;
     private Integer sort;
+    private Integer sortOrder;
     private Integer status;
 }

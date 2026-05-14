@@ -15,7 +15,11 @@ public final class AiConvert {
         vo.setId(template.getId());
         vo.setScene(template.getScene());
         vo.setName(template.getName());
+        vo.setTemplateName(template.getTemplateName());
         vo.setContent(template.getContent());
+        vo.setTemplateContent(template.getTemplateContent());
+        vo.setVariables(template.getVariables());
+        vo.setVersion(template.getVersion());
         vo.setStatus(template.getStatus());
         return vo;
     }
@@ -23,7 +27,14 @@ public final class AiConvert {
     public static AiCallLogVO toLogVO(AiCallLog log) {
         AiCallLogVO vo = new AiCallLogVO();
         vo.setId(log.getId());
+        vo.setUserId(log.getUserId());
         vo.setScene(log.getScene());
+        vo.setModelName(log.getModelName());
+        vo.setPromptTemplateId(log.getPromptTemplateId());
+        vo.setRequestPrompt(log.getRequestPrompt());
+        vo.setResponseContent(log.getResponseContent());
+        vo.setBusinessId(log.getBusinessId());
+        vo.setElapsedMs(log.getElapsedMs());
         vo.setCostMillis(log.getCostMillis());
         vo.setStatus(log.getStatus());
         vo.setErrorMessage(log.getErrorMessage());

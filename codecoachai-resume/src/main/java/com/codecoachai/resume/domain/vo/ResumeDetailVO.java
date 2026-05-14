@@ -12,6 +12,10 @@ public class ResumeDetailVO {
     private String realName;
     private String email;
     private String phone;
+    private String targetPosition;
+    private String skillStack;
+    private String workExperience;
+    private String educationExperience;
     private String summary;
     private Integer isDefault;
     private Integer status;

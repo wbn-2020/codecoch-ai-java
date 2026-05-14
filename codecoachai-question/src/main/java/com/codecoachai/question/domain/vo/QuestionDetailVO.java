@@ -16,6 +16,9 @@ public class QuestionDetailVO {
     private Long groupId;
     private String groupName;
     private String difficulty;
+    private String questionType;
+    private String experienceLevel;
+    private Integer isHighFrequency;
     private Integer status;
     private List<QuestionTagVO> tags;
     private List<Long> tagIds;

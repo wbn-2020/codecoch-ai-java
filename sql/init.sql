@@ -74,8 +74,10 @@ ON DUPLICATE KEY UPDATE
 
 CREATE TABLE IF NOT EXISTS question_category (
   id BIGINT NOT NULL AUTO_INCREMENT,
+  parent_id BIGINT DEFAULT NULL,
   category_name VARCHAR(64) NOT NULL,
   sort INT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -87,6 +89,10 @@ CREATE TABLE IF NOT EXISTS question_category (
 CREATE TABLE IF NOT EXISTS question_group (
   id BIGINT NOT NULL AUTO_INCREMENT,
   group_name VARCHAR(128) NOT NULL,
+  canonical_title VARCHAR(255) DEFAULT NULL,
+  canonical_answer TEXT,
+  main_knowledge_point VARCHAR(255) DEFAULT NULL,
+  difficulty VARCHAR(32) DEFAULT NULL,
   description VARCHAR(255) DEFAULT NULL,
   category_id BIGINT DEFAULT NULL,
   status TINYINT NOT NULL DEFAULT 1,
@@ -116,6 +122,9 @@ CREATE TABLE IF NOT EXISTS question (
   category_id BIGINT DEFAULT NULL,
   group_id BIGINT DEFAULT NULL,
   difficulty VARCHAR(32) NOT NULL DEFAULT 'MEDIUM',
+  question_type VARCHAR(32) NOT NULL DEFAULT 'SHORT_ANSWER',
+  experience_level VARCHAR(64) DEFAULT NULL,
+  is_high_frequency TINYINT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -159,7 +168,12 @@ CREATE TABLE IF NOT EXISTS resume (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
   title VARCHAR(128) NOT NULL,
+  resume_name VARCHAR(128) DEFAULT NULL,
   real_name VARCHAR(64) DEFAULT NULL,
+  target_position VARCHAR(128) DEFAULT NULL,
+  skill_stack TEXT,
+  work_experience TEXT,
+  education_experience TEXT,
   email VARCHAR(128) DEFAULT NULL,
   phone VARCHAR(32) DEFAULT NULL,
   summary TEXT,
@@ -176,11 +190,18 @@ CREATE TABLE IF NOT EXISTS resume_project (
   id BIGINT NOT NULL AUTO_INCREMENT,
   resume_id BIGINT NOT NULL,
   project_name VARCHAR(128) NOT NULL,
+  project_period VARCHAR(128) DEFAULT NULL,
+  project_background TEXT,
   role VARCHAR(64) DEFAULT NULL,
   tech_stack VARCHAR(255) DEFAULT NULL,
+  responsibility TEXT,
+  core_features TEXT,
+  technical_difficulties TEXT,
+  optimization_results TEXT,
   description TEXT,
   highlights TEXT,
   sort INT NOT NULL DEFAULT 0,
+  sort_order INT NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
@@ -192,7 +213,11 @@ CREATE TABLE IF NOT EXISTS prompt_template (
   id BIGINT NOT NULL AUTO_INCREMENT,
   scene VARCHAR(64) NOT NULL,
   name VARCHAR(128) NOT NULL,
+  template_name VARCHAR(128) DEFAULT NULL,
   content TEXT NOT NULL,
+  template_content TEXT,
+  variables TEXT,
+  version VARCHAR(32) DEFAULT 'v1',
   status TINYINT NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -203,9 +228,16 @@ CREATE TABLE IF NOT EXISTS prompt_template (
 
 CREATE TABLE IF NOT EXISTS ai_call_log (
   id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT DEFAULT NULL,
   scene VARCHAR(64) NOT NULL,
+  model_name VARCHAR(128) DEFAULT NULL,
+  prompt_template_id BIGINT DEFAULT NULL,
+  request_prompt TEXT,
+  response_content MEDIUMTEXT,
+  business_id VARCHAR(128) DEFAULT NULL,
   request_body TEXT,
   response_body TEXT,
+  elapsed_ms BIGINT DEFAULT 0,
   cost_millis BIGINT DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
   error_message VARCHAR(500) DEFAULT NULL,
@@ -220,6 +252,7 @@ CREATE TABLE IF NOT EXISTS interview_session (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
   resume_id BIGINT DEFAULT NULL,
+  interview_mode VARCHAR(64) DEFAULT NULL,
   mode VARCHAR(64) NOT NULL,
   title VARCHAR(128) NOT NULL,
   target_position VARCHAR(128) DEFAULT NULL,
@@ -236,6 +269,9 @@ CREATE TABLE IF NOT EXISTS interview_session (
   answered_question_count INT NOT NULL DEFAULT 0,
   max_question_count INT NOT NULL DEFAULT 5,
   current_follow_up_count INT NOT NULL DEFAULT 0,
+  total_score INT DEFAULT NULL,
+  start_time DATETIME DEFAULT NULL,
+  end_time DATETIME DEFAULT NULL,
   failure_reason VARCHAR(500) DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -250,7 +286,15 @@ CREATE TABLE IF NOT EXISTS interview_stage (
   stage_type VARCHAR(64) NOT NULL,
   stage_name VARCHAR(128) NOT NULL,
   sort INT NOT NULL DEFAULT 0,
+  stage_order INT NOT NULL DEFAULT 0,
+  expected_question_count INT NOT NULL DEFAULT 1,
+  asked_question_count INT NOT NULL DEFAULT 0,
+  focus_points TEXT,
+  based_on_resume TINYINT NOT NULL DEFAULT 0,
+  allow_follow_up TINYINT NOT NULL DEFAULT 1,
+  max_follow_up_count INT NOT NULL DEFAULT 2,
   status VARCHAR(32) NOT NULL,
+  score INT DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
@@ -264,9 +308,18 @@ CREATE TABLE IF NOT EXISTS interview_message (
   stage_id BIGINT DEFAULT NULL,
   question_id BIGINT DEFAULT NULL,
   question_group_id BIGINT DEFAULT NULL,
+  parent_message_id BIGINT DEFAULT NULL,
   role VARCHAR(32) NOT NULL,
   message_type VARCHAR(32) NOT NULL,
   content TEXT,
+  question_content TEXT,
+  user_answer TEXT,
+  ai_comment TEXT,
+  ai_score INT DEFAULT NULL,
+  is_follow_up TINYINT NOT NULL DEFAULT 0,
+  follow_up_count INT NOT NULL DEFAULT 0,
+  follow_up_reason VARCHAR(500) DEFAULT NULL,
+  knowledge_points TEXT,
   score INT DEFAULT NULL,
   comment TEXT,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -279,11 +332,21 @@ CREATE TABLE IF NOT EXISTS interview_message (
 CREATE TABLE IF NOT EXISTS interview_report (
   id BIGINT NOT NULL AUTO_INCREMENT,
   session_id BIGINT NOT NULL,
+  user_id BIGINT DEFAULT NULL,
   status VARCHAR(32) NOT NULL,
   total_score INT DEFAULT NULL,
+  stage_scores TEXT,
+  weak_points TEXT,
   summary TEXT,
   strengths TEXT,
   weaknesses TEXT,
+  main_problems TEXT,
+  project_problems TEXT,
+  review_suggestions TEXT,
+  recommended_questions TEXT,
+  qa_review TEXT,
+  report_content TEXT,
+  generated_at DATETIME DEFAULT NULL,
   suggestions TEXT,
   failure_reason VARCHAR(500) DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -307,47 +370,47 @@ CREATE TABLE IF NOT EXISTS system_config (
   UNIQUE KEY uk_system_config_key (config_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-INSERT INTO question_category (id, category_name, sort, status)
+INSERT INTO question_category (id, parent_id, category_name, sort, sort_order, status)
 VALUES
-  (1, 'Java Basics', 1, 1),
-  (2, 'Collections', 2, 1),
-  (3, 'Concurrency', 3, 1),
-  (4, 'JVM', 4, 1),
-  (5, 'Spring Boot', 5, 1),
-  (6, 'MySQL', 6, 1),
-  (7, 'Redis', 7, 1),
-  (8, 'Microservices', 8, 1),
-  (9, 'Design Patterns', 9, 1),
-  (10, 'Project Scenarios', 10, 1)
-ON DUPLICATE KEY UPDATE sort = VALUES(sort), status = VALUES(status);
+  (1, NULL, 'Java 基础', 1, 1, 1),
+  (2, 1, '集合框架', 2, 2, 1),
+  (3, 1, '并发编程', 3, 3, 1),
+  (4, 1, 'JVM', 4, 4, 1),
+  (5, NULL, 'Spring Boot', 5, 5, 1),
+  (6, NULL, 'MySQL', 6, 6, 1),
+  (7, NULL, 'Redis', 7, 7, 1),
+  (8, NULL, '微服务', 8, 8, 1),
+  (9, NULL, '设计模式', 9, 9, 1),
+  (10, NULL, '项目场景', 10, 10, 1)
+ON DUPLICATE KEY UPDATE parent_id = VALUES(parent_id), sort = VALUES(sort), sort_order = VALUES(sort_order), status = VALUES(status);
 
 INSERT INTO question_tag (id, tag_name, status)
 VALUES
-  (1, 'HashMap', 1),
+  (1, 'HashMap 原理', 1),
   (2, 'JVM', 1),
-  (3, 'ThreadPool', 1),
-  (4, 'MySQL Index', 1),
-  (5, 'Redis Cache', 1),
-  (6, 'Spring Transaction', 1)
+  (3, '线程池', 1),
+  (4, 'MySQL 索引', 1),
+  (5, 'Redis 缓存', 1),
+  (6, 'Spring 事务', 1)
 ON DUPLICATE KEY UPDATE status = VALUES(status);
 
-INSERT INTO question_group (id, group_name, description, category_id, status)
+INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)
 VALUES
-  (1, 'HashMap Principle', 'HashMap storage and resize questions', 2, 1),
-  (2, 'JVM GC', 'JVM memory and garbage collection', 4, 1),
-  (3, 'Thread Pool', 'Thread pool parameters and rejection policy', 3, 1),
-  (4, 'MySQL Index', 'Index structure and query optimization', 6, 1),
-  (5, 'Redis Cache Consistency', 'Cache penetration, breakdown, and consistency', 7, 1)
-ON DUPLICATE KEY UPDATE description = VALUES(description), status = VALUES(status);
+  (1, 'HashMap 原理', 'HashMap 的 put/get 和扩容流程是什么？', 'HashMap 通过数组加链表/红黑树存储元素，根据 key 的 hash 定位桶位，冲突时追加到链表或树节点，元素数量超过阈值后扩容并重新分布。', 'HashMap、哈希冲突、扩容', 'MEDIUM', 'HashMap 存储、扩容和冲突处理', 2, 1),
+  (2, 'JVM GC', 'Full GC 常见原因有哪些？如何排查？', '常见原因包括老年代空间不足、元空间压力、显式 System.gc、对象晋升失败等，排查时结合 GC 日志、堆转储、对象分配速率和监控曲线定位。', 'JVM、GC、排查', 'MEDIUM', 'JVM 内存和垃圾回收', 4, 1),
+  (3, '线程池参数', '线程池核心参数如何配置？', '线程池参数需要结合 CPU/IO 类型、队列长度、响应时间和降级策略配置，重点关注 corePoolSize、maximumPoolSize、queue、keepAliveTime 和拒绝策略。', '线程池、队列、拒绝策略', 'MEDIUM', '线程池参数和拒绝策略', 3, 1),
+  (4, 'MySQL 索引', 'MySQL 索引失效有哪些常见场景？', '常见场景包括左模糊匹配、索引列参与函数计算、隐式类型转换、联合索引不满足最左前缀、选择性过低等，需要结合 explain 验证。', '索引、Explain、最左前缀', 'MEDIUM', '索引结构和查询优化', 6, 1),
+  (5, 'Redis 缓存一致性', '如何处理 Redis 缓存和数据库一致性？', 'V1 推荐说明 cache-aside 模式，写数据库后删除缓存，配合 TTL、失败重试和业务幂等处理。复杂 MQ 补偿属于后续版本扩展。', 'Redis、缓存一致性', 'HARD', '缓存穿透、击穿和一致性', 7, 1)
+ON DUPLICATE KEY UPDATE canonical_title = VALUES(canonical_title), canonical_answer = VALUES(canonical_answer), main_knowledge_point = VALUES(main_knowledge_point), difficulty = VALUES(difficulty), description = VALUES(description), status = VALUES(status);
 
-INSERT INTO question (id, title, content, reference_answer, analysis, category_id, group_id, difficulty, status)
+INSERT INTO question (id, title, content, reference_answer, analysis, category_id, group_id, difficulty, question_type, experience_level, is_high_frequency, status)
 VALUES
-  (1, 'How does HashMap work?', 'Explain HashMap put/get and resize in Java.', 'HashMap uses array plus linked list or tree nodes. It hashes keys, locates buckets, handles collisions, and resizes when load factor is exceeded.', 'Mention hash, bucket, collision, treeify, resize.', 2, 1, 'MEDIUM', 1),
-  (2, 'What causes full GC?', 'Explain common reasons for full GC and how to analyze it.', 'Full GC may be caused by old generation pressure, metaspace pressure, explicit System.gc, or allocation failure.', 'Mention GC logs, heap dump, allocation rate.', 4, 2, 'MEDIUM', 1),
-  (3, 'How do you configure a thread pool?', 'Explain corePoolSize, maximumPoolSize, queue, keepAliveTime, and rejection policy.', 'Thread pool sizing depends on CPU or IO workload, queue choice, latency, and backpressure strategy.', 'Mention bounded queue and monitoring.', 3, 3, 'MEDIUM', 1),
-  (4, 'Why can MySQL index fail?', 'List common cases where MySQL indexes are not used effectively.', 'Leading wildcard, function on indexed column, implicit conversion, low selectivity, and wrong composite index order can hurt index usage.', 'Mention explain and composite index leftmost prefix.', 6, 4, 'MEDIUM', 1),
-  (5, 'How to handle Redis cache consistency?', 'Describe common cache consistency patterns.', 'Common patterns include cache-aside, delete cache after DB write, delayed double delete, TTL, and MQ retry in advanced cases.', 'V1 should discuss synchronous cache-aside without MQ.', 7, 5, 'HARD', 1)
-ON DUPLICATE KEY UPDATE title = VALUES(title), status = VALUES(status);
+  (1, 'HashMap 的 put/get 和扩容流程是什么？', '请说明 HashMap put、get、哈希冲突处理以及扩容迁移过程。', 'HashMap 通过 hash 定位数组下标，冲突时使用链表或红黑树组织节点，put 时判断是否需要 treeify 或 resize，resize 会扩容数组并迁移节点。', '回答应覆盖 hash、桶位、链表/红黑树、负载因子、扩容迁移。', 2, 1, 'MEDIUM', 'SHORT_ANSWER', 'JUNIOR', 1, 1),
+  (2, 'Full GC 常见原因有哪些？如何排查？', '请结合线上排查思路说明 Full GC 的常见原因。', 'Full GC 可能由老年代压力、元空间压力、显式 System.gc、晋升失败等触发。排查时看 GC 日志、堆 dump、对象分配速率、监控曲线和最近发布变更。', '回答应体现监控、日志、dump 和变更排查闭环。', 4, 2, 'MEDIUM', 'SHORT_ANSWER', 'MID', 1, 1),
+  (3, '线程池核心参数如何配置？', '请说明 corePoolSize、maximumPoolSize、队列、keepAliveTime 和拒绝策略的配置依据。', '配置线程池要先判断 CPU 密集还是 IO 密集，结合吞吐、延迟、队列容量和降级策略设计，生产环境应使用有界队列并监控活跃线程、队列长度和拒绝次数。', '回答应包含有界队列、拒绝策略和监控指标。', 3, 3, 'MEDIUM', 'SHORT_ANSWER', 'MID', 1, 1),
+  (4, 'MySQL 索引失效有哪些常见场景？', '请列举索引失效场景，并说明如何用 explain 验证。', '常见场景包括左模糊匹配、索引列函数计算、隐式类型转换、联合索引不满足最左前缀、范围查询后字段无法继续有效利用等，需要通过 explain 观察 type、key、rows、Extra。', '回答应覆盖最左前缀和 explain 关键字段。', 6, 4, 'MEDIUM', 'SHORT_ANSWER', 'MID', 1, 1),
+  (5, '如何处理 Redis 缓存和数据库一致性？', '请说明 cache-aside 模式下读写流程和边界风险。', '常见方案是先更新数据库再删除缓存，配合 TTL、失败重试、幂等和监控。高并发下要说明并发读写、删除失败、热点 key 等风险。V1 不要求引入 MQ。', '回答应体现一致性边界、失败重试和 V1 不引入 MQ 的取舍。', 7, 5, 'HARD', 'SHORT_ANSWER', 'MID', 1, 1)
+ON DUPLICATE KEY UPDATE title = VALUES(title), content = VALUES(content), reference_answer = VALUES(reference_answer), analysis = VALUES(analysis), question_type = VALUES(question_type), experience_level = VALUES(experience_level), is_high_frequency = VALUES(is_high_frequency), status = VALUES(status);
 
 INSERT INTO question_tag_relation (question_id, tag_id)
 VALUES
@@ -358,14 +421,14 @@ VALUES
   (5, 5)
 ON DUPLICATE KEY UPDATE tag_id = VALUES(tag_id);
 
-INSERT INTO prompt_template (id, scene, name, content, status)
+INSERT INTO prompt_template (id, scene, name, template_name, content, template_content, variables, version, status)
 VALUES
-  (1, 'INTERVIEW_QUESTION_GENERATE', 'Technical question mock', 'Generate an interview question for {{questionTitle}}.', 1),
-  (2, 'PROJECT_DEEP_DIVE_GENERATE', 'Project deep dive mock', 'Generate a project deep dive question from resume context.', 1),
-  (3, 'INTERVIEW_ANSWER_EVALUATE', 'Answer evaluation mock', 'Evaluate answer and return score/comment/nextAction.', 1),
-  (4, 'INTERVIEW_FOLLOW_UP_GENERATE', 'Follow-up mock', 'Generate one follow-up question.', 1),
-  (5, 'INTERVIEW_REPORT_GENERATE', 'Report mock', 'Generate structured interview report.', 1)
-ON DUPLICATE KEY UPDATE content = VALUES(content), status = VALUES(status);
+  (1, 'INTERVIEW_QUESTION_GENERATE', '技术面试问题生成', '技术面试问题生成', '你是 Java 面试官。请基于阶段 {{currentStage}}、目标岗位 {{targetPosition}}、难度 {{difficulty}} 和题库问题 {{questionContent}} 生成一道中文面试问题。只返回 JSON：{\"questionContent\":\"问题内容\"}', '你是 Java 面试官。请基于阶段 {{currentStage}}、目标岗位 {{targetPosition}}、难度 {{difficulty}} 和题库问题 {{questionContent}} 生成一道中文面试问题。只返回 JSON：{\"questionContent\":\"问题内容\"}', 'targetPosition,experienceLevel,industryDirection,difficulty,interviewerStyle,currentStage,questionContent,historySummary', 'v1', 1),
+  (2, 'PROJECT_DEEP_DIVE_QUESTION', '项目深挖问题生成', '项目深挖问题生成', '你是 Java 项目面试官。请结合简历 {{resumeContent}}、项目 {{projectContent}} 和当前阶段 {{currentStage}} 生成一个中文项目深挖问题。只返回 JSON：{\"questionContent\":\"问题内容\"}', '你是 Java 项目面试官。请结合简历 {{resumeContent}}、项目 {{projectContent}} 和当前阶段 {{currentStage}} 生成一个中文项目深挖问题。只返回 JSON：{\"questionContent\":\"问题内容\"}', 'resumeContent,projectContent,currentStage,historySummary', 'v1', 1),
+  (3, 'INTERVIEW_ANSWER_EVALUATE', '回答评分点评', '回答评分点评', '你是 Java 面试官。请根据问题 {{questionContent}}、参考答案 {{referenceAnswer}} 和候选人回答 {{userAnswer}} 给出中文评分。只返回 JSON：{\"score\":80,\"comment\":\"点评\",\"nextAction\":\"NEXT_QUESTION\",\"knowledgePoints\":\"知识点\"}，nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE 或 FINISH。', '你是 Java 面试官。请根据问题 {{questionContent}}、参考答案 {{referenceAnswer}} 和候选人回答 {{userAnswer}} 给出中文评分。只返回 JSON：{\"score\":80,\"comment\":\"点评\",\"nextAction\":\"NEXT_QUESTION\",\"knowledgePoints\":\"知识点\"}，nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE 或 FINISH。', 'questionContent,referenceAnswer,userAnswer,currentStage,historySummary', 'v1', 1),
+  (4, 'INTERVIEW_FOLLOW_UP_GENERATE', '动态追问生成', '动态追问生成', '你是 Java 面试官。请基于问题 {{questionContent}}、回答 {{userAnswer}} 和点评 {{aiComment}} 生成一个中文追问。只返回 JSON：{\"followUpQuestion\":\"追问内容\"}', '你是 Java 面试官。请基于问题 {{questionContent}}、回答 {{userAnswer}} 和点评 {{aiComment}} 生成一个中文追问。只返回 JSON：{\"followUpQuestion\":\"追问内容\"}', 'questionContent,userAnswer,currentStage,historySummary', 'v1', 1),
+  (5, 'INTERVIEW_REPORT_GENERATE', '面试报告生成', '面试报告生成', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只返回 JSON：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":\"亮点\",\"weaknesses\":\"问题\",\"stageScores\":\"{}\",\"weakPoints\":\"[]\",\"mainProblems\":\"问题\",\"projectProblems\":\"[]\",\"reviewSuggestions\":\"建议\",\"recommendedQuestions\":\"[]\",\"qaReview\":\"[]\",\"reportContent\":\"报告正文\"}', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只返回 JSON：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":\"亮点\",\"weaknesses\":\"问题\",\"stageScores\":\"{}\",\"weakPoints\":\"[]\",\"mainProblems\":\"问题\",\"projectProblems\":\"[]\",\"reviewSuggestions\":\"建议\",\"recommendedQuestions\":\"[]\",\"qaReview\":\"[]\",\"reportContent\":\"报告正文\"}', 'historySummary,targetPosition,experienceLevel,industryDirection,difficulty,resumeContent,projectContent', 'v1', 1)
+ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
 
 INSERT INTO system_config (id, config_key, config_value, value_type, description, status)
 VALUES
