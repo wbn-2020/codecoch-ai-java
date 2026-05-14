@@ -20,11 +20,9 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -48,23 +46,19 @@ public class AiServiceImpl implements AiService {
 
     @Override
     public GenerateInterviewQuestionVO generateQuestion(GenerateInterviewQuestionDTO dto) {
-        String stageType = dto.getStageType() == null ? "" : dto.getStageType();
-        String scene = stageType.toUpperCase().startsWith("PROJECT") || stageType.toUpperCase().contains("TECH_SELECTION")
-                || stageType.toUpperCase().contains("CORE_FLOW") || stageType.toUpperCase().contains("OPTIMIZATION")
-                || stageType.toUpperCase().contains("SCALABILITY")
-                ? SCENE_PROJECT_QUESTION
-                : SCENE_QUESTION;
+        String scene = isProjectStage(dto.getStageType()) ? SCENE_PROJECT_QUESTION : SCENE_QUESTION;
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(scene);
         String prompt = render(templateContent(template, defaultQuestionPrompt()), variables(dto, null));
+        String rawResponse = null;
         try {
             GenerateInterviewQuestionVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockQuestion(dto, scene)
-                    : parseQuestion(aiClient.chat(prompt), scene);
+                    : parseQuestion(rawResponse = aiClient.chat(prompt), scene);
             saveLog(scene, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(scene, template, prompt, null, businessId(dto.getQuestionId()), start, ex.getMessage());
+            saveLog(scene, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
             throw businessAiException(ex);
         }
     }
@@ -74,14 +68,15 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(SCENE_EVALUATE);
         String prompt = render(templateContent(template, defaultEvaluatePrompt()), variables(null, dto));
+        String rawResponse = null;
         try {
             EvaluateAnswerVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockEvaluate(dto)
-                    : parseEvaluate(aiClient.chat(prompt), dto);
+                    : parseEvaluate(rawResponse = aiClient.chat(prompt), dto);
             saveLog(SCENE_EVALUATE, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_EVALUATE, template, prompt, null, businessId(dto.getQuestionId()), start, ex.getMessage());
+            saveLog(SCENE_EVALUATE, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
             throw businessAiException(ex);
         }
     }
@@ -91,14 +86,15 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(SCENE_FOLLOW_UP);
         String prompt = render(templateContent(template, defaultFollowUpPrompt()), variables(dto));
+        String rawResponse = null;
         try {
             GenerateFollowUpVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockFollowUp(dto)
-                    : parseFollowUp(aiClient.chat(prompt), dto);
+                    : parseFollowUp(rawResponse = aiClient.chat(prompt), dto);
             saveLog(SCENE_FOLLOW_UP, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_FOLLOW_UP, template, prompt, null, businessId(dto.getQuestionId()), start, ex.getMessage());
+            saveLog(SCENE_FOLLOW_UP, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
             throw businessAiException(ex);
         }
     }
@@ -108,16 +104,26 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(SCENE_REPORT);
         String prompt = render(templateContent(template, defaultReportPrompt()), variables(dto));
+        String rawResponse = null;
         try {
             GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockReport()
-                    : parseReport(aiClient.chat(prompt));
+                    : parseReport(rawResponse = aiClient.chat(prompt));
             saveLog(SCENE_REPORT, template, prompt, toJson(vo), businessId(dto.getInterviewId()), start, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_REPORT, template, prompt, null, businessId(dto.getInterviewId()), start, ex.getMessage());
+            saveLog(SCENE_REPORT, template, prompt, rawResponse, businessId(dto.getInterviewId()), start, ex.getMessage());
             throw businessAiException(ex);
         }
+    }
+
+    private boolean isProjectStage(String stageType) {
+        String value = stageType == null ? "" : stageType.toUpperCase();
+        return value.startsWith("PROJECT")
+                || value.contains("TECH_SELECTION")
+                || value.contains("CORE_FLOW")
+                || value.contains("OPTIMIZATION")
+                || value.contains("SCALABILITY");
     }
 
     private PromptTemplate enabledTemplate(String scene) {
@@ -151,17 +157,21 @@ public class AiServiceImpl implements AiService {
         if (dto != null) {
             values.put("targetPosition", dto.getTargetPosition());
             values.put("experienceLevel", dto.getExperienceLevel());
+            values.put("industry", dto.getIndustryDirection());
             values.put("industryDirection", dto.getIndustryDirection());
             values.put("difficulty", dto.getDifficulty());
             values.put("interviewerStyle", dto.getInterviewerStyle());
+            values.put("stageName", firstText(dto.getCurrentStage(), dto.getStageType()));
             values.put("currentStage", firstText(dto.getCurrentStage(), dto.getStageType()));
             values.put("currentQuestion", dto.getQuestionTitle());
             values.put("questionContent", dto.getQuestionContent());
             values.put("resumeContent", firstText(dto.getResumeContent(), dto.getResumeSummary()));
+            values.put("projectExperience", dto.getProjectContent());
             values.put("projectContent", dto.getProjectContent());
             values.put("historySummary", dto.getHistorySummary());
         }
         if (answerDTO != null) {
+            values.put("stageName", answerDTO.getCurrentStage());
             values.put("currentStage", answerDTO.getCurrentStage());
             values.put("currentQuestion", answerDTO.getQuestionTitle());
             values.put("questionContent", answerDTO.getQuestionContent());
@@ -174,6 +184,7 @@ public class AiServiceImpl implements AiService {
 
     private Map<String, String> variables(GenerateFollowUpDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
+        values.put("stageName", dto.getCurrentStage());
         values.put("currentStage", dto.getCurrentStage());
         values.put("currentQuestion", dto.getQuestionTitle());
         values.put("questionContent", dto.getQuestionContent());
@@ -187,9 +198,11 @@ public class AiServiceImpl implements AiService {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("targetPosition", dto.getTargetPosition());
         values.put("experienceLevel", dto.getExperienceLevel());
+        values.put("industry", dto.getIndustryDirection());
         values.put("industryDirection", dto.getIndustryDirection());
         values.put("difficulty", dto.getDifficulty());
         values.put("resumeContent", dto.getResumeContent());
+        values.put("projectExperience", dto.getProjectContent());
         values.put("projectContent", dto.getProjectContent());
         values.put("historySummary", dto.getMessages() == null ? "" : String.join("\n", dto.getMessages()));
         return values;
@@ -230,16 +243,16 @@ public class AiServiceImpl implements AiService {
             vo.setTotalScore(json.path("totalScore").asInt());
         }
         vo.setSummary(firstText(json.path("summary").asText(null), vo.getSummary()));
-        vo.setStageScores(json.path("stageScores").toString());
-        vo.setWeakPoints(json.path("weakPoints").toString());
-        vo.setStrengths(firstText(json.path("strengths").asText(null), vo.getStrengths()));
+        vo.setStageScores(jsonOrDefault(json.path("stageScores"), vo.getStageScores()));
+        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), vo.getWeakPoints()));
+        vo.setStrengths(jsonOrDefault(json.path("strengths"), vo.getStrengths()));
         vo.setWeaknesses(firstText(json.path("weaknesses").asText(null), vo.getWeaknesses()));
-        vo.setMainProblems(firstText(json.path("mainProblems").asText(null), vo.getWeaknesses()));
-        vo.setProjectProblems(json.path("projectProblems").toString());
-        vo.setSuggestions(firstText(json.path("suggestions").asText(null), vo.getSuggestions()));
-        vo.setReviewSuggestions(firstText(json.path("reviewSuggestions").asText(null), vo.getSuggestions()));
-        vo.setRecommendedQuestions(json.path("recommendedQuestions").toString());
-        vo.setQaReview(json.path("qaReview").toString());
+        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), vo.getMainProblems()));
+        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), vo.getProjectProblems()));
+        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), vo.getSuggestions()));
+        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), vo.getReviewSuggestions()));
+        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), vo.getRecommendedQuestions()));
+        vo.setQaReview(jsonOrDefault(json.path("qaReview"), vo.getQaReview()));
         vo.setReportContent(firstText(json.path("reportContent").asText(null), vo.getSummary()));
         return vo;
     }
@@ -305,11 +318,11 @@ public class AiServiceImpl implements AiService {
         vo.setSummary("本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。");
         vo.setStageScores("{\"technical\":82,\"project\":82}");
         vo.setWeakPoints("[\"源码细节\",\"执行计划\",\"缓存一致性边界\"]");
-        vo.setStrengths("回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。");
-        vo.setWeaknesses("主要问题：部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。");
-        vo.setMainProblems(vo.getWeaknesses());
+        vo.setStrengths("[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]");
+        vo.setWeaknesses("部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。");
+        vo.setMainProblems("[\"源码细节展开不足\",\"线上排查步骤不够完整\"]");
         vo.setProjectProblems("[\"项目指标量化不足\",\"优化前后对比不足\"]");
-        vo.setSuggestions("复习建议：复盘集合、并发、事务、索引和缓存高频题，准备 2-3 个带指标的项目优化案例。");
+        vo.setSuggestions("[\"复盘集合、并发、事务、索引和缓存高频题\",\"准备 2-3 个带指标的项目优化案例\"]");
         vo.setReviewSuggestions(vo.getSuggestions());
         vo.setRecommendedQuestions("[]");
         vo.setQaReview("[]");
@@ -327,7 +340,9 @@ public class AiServiceImpl implements AiService {
         AiCallLog log = new AiCallLog();
         log.setUserId(LoginUserContext.getUserId());
         log.setScene(scene);
-        log.setModelName(aiProperties.getModel());
+        log.setModelName(Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                ? aiProperties.getModel() + "(mock)"
+                : aiProperties.getModel());
         log.setPromptTemplateId(template == null ? null : template.getId());
         log.setRequestPrompt(prompt);
         log.setResponseContent(response);
@@ -349,11 +364,21 @@ public class AiServiceImpl implements AiService {
         return new BusinessException(ErrorCode.SYSTEM_ERROR, "AI service failed: " + ex.getMessage());
     }
 
+    private String jsonOrDefault(JsonNode node, String fallback) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return fallback;
+        }
+        if (node.isTextual()) {
+            return firstText(node.asText(null), fallback);
+        }
+        return node.toString();
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException ex) {
-            return "{}";
+        } catch (Exception ex) {
+            return String.valueOf(value);
         }
     }
 
@@ -361,28 +386,31 @@ public class AiServiceImpl implements AiService {
         return id == null ? null : String.valueOf(id);
     }
 
+    private String defaultQuestionPrompt() {
+        return "你是 Java 面试官。请基于当前阶段 {{stageName}}、目标岗位 {{targetPosition}}、难度 {{difficulty}} 和题库问题 {{questionContent}} 生成一道中文面试问题。只返回 JSON：{\"questionContent\":\"问题内容\"}";
+    }
+
+    private String defaultEvaluatePrompt() {
+        return "你是 Java 面试官。请根据问题 {{questionContent}}、参考答案 {{referenceAnswer}} 和候选人回答 {{userAnswer}} 给出中文评分。只返回 JSON：{\"score\":80,\"comment\":\"点评\",\"nextAction\":\"NEXT_QUESTION\",\"knowledgePoints\":\"知识点\"}";
+    }
+
+    private String defaultFollowUpPrompt() {
+        return "你是 Java 面试官。请基于问题 {{questionContent}}、回答 {{userAnswer}} 和点评 {{aiComment}} 生成一个中文追问。只返回 JSON：{\"followUpQuestion\":\"追问内容\"}";
+    }
+
+    private String defaultReportPrompt() {
+        return "你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只返回 JSON：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":[],\"weakPoints\":[],\"mainProblems\":[],\"projectProblems\":[],\"reviewSuggestions\":[],\"recommendedQuestions\":[],\"qaReview\":[],\"stageScores\":{},\"reportContent\":\"报告正文\"}";
+    }
+
     private String firstText(String... values) {
+        if (values == null) {
+            return null;
+        }
         for (String value : values) {
             if (StringUtils.hasText(value)) {
                 return value;
             }
         }
-        return "";
-    }
-
-    private String defaultQuestionPrompt() {
-        return "你是 Java 面试官。请基于阶段 {{currentStage}}、岗位 {{targetPosition}}、难度 {{difficulty}} 和题目 {{questionContent}} 生成一个中文面试问题，返回 JSON：{\"questionContent\":\"...\"}";
-    }
-
-    private String defaultEvaluatePrompt() {
-        return "请根据题目 {{questionContent}}、参考答案 {{referenceAnswer}}、用户回答 {{userAnswer}} 评分，返回 JSON：{\"score\":80,\"comment\":\"...\",\"nextAction\":\"FOLLOW_UP|NEXT_QUESTION\",\"knowledgePoints\":\"...\"}";
-    }
-
-    private String defaultFollowUpPrompt() {
-        return "请根据题目 {{questionContent}}、用户回答 {{userAnswer}} 和点评 {{aiComment}} 生成一个中文追问，返回 JSON：{\"followUpQuestion\":\"...\"}";
-    }
-
-    private String defaultReportPrompt() {
-        return "请根据面试记录 {{historySummary}} 生成中文结构化报告，返回 JSON，字段包含 totalScore, summary, stageScores, weakPoints, strengths, weaknesses, mainProblems, projectProblems, reviewSuggestions, recommendedQuestions, qaReview, reportContent。";
+        return null;
     }
 }

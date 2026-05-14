@@ -49,6 +49,7 @@ public class AdminQuestionMetadataController {
     @PutMapping("/admin/question-categories/{id}")
     public Result<QuestionCategoryVO> updateCategory(@PathVariable Long id,
                                                      @Valid @RequestBody SaveQuestionCategoryDTO dto) {
+        SecurityAssert.requireAdmin();
         return Result.success(metadataService.updateCategory(id, dto));
     }
 

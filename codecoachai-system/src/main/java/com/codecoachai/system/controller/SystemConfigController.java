@@ -1,6 +1,7 @@
 package com.codecoachai.system.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
@@ -24,27 +25,32 @@ public class SystemConfigController {
 
     @GetMapping("/admin/configs")
     public Result<List<SystemConfigVO>> listConfigs() {
+        SecurityAssert.requireAdmin();
         return Result.success(systemConfigService.listConfigs());
     }
 
     @PostMapping("/admin/configs")
     public Result<SystemConfigVO> createConfig(@Valid @RequestBody SystemConfigSaveDTO dto) {
+        SecurityAssert.requireAdmin();
         return Result.success(systemConfigService.createConfig(dto));
     }
 
     @PutMapping("/admin/configs/{id}")
     public Result<SystemConfigVO> updateConfig(@PathVariable Long id, @Valid @RequestBody SystemConfigSaveDTO dto) {
+        SecurityAssert.requireAdmin();
         return Result.success(systemConfigService.updateConfig(id, dto));
     }
 
     @DeleteMapping("/admin/configs/{id}")
     public Result<Void> deleteConfig(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
         systemConfigService.deleteConfig(id);
         return Result.success();
     }
 
     @GetMapping("/admin/system/overview")
     public Result<AdminSystemOverviewVO> overview() {
+        SecurityAssert.requireAdmin();
         return Result.success(systemConfigService.overview());
     }
 }

@@ -1,5 +1,8 @@
 package com.codecoachai.interview.domain.vo;
 
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import lombok.Data;
 
 @Data
@@ -10,18 +13,18 @@ public class InterviewReportVO {
     private Long userId;
     private String status;
     private Integer totalScore;
-    private String stageScores;
-    private String weakPoints;
     private String summary;
-    private String strengths;
-    private String weaknesses;
-    private String mainProblems;
-    private String projectProblems;
-    private String reviewSuggestions;
-    private String recommendedQuestions;
-    private String qaReview;
+    private Map<String, Object> stageReports;
+    private Map<String, Object> stageScores;
+    private List<String> weakPoints;
+    private List<String> strengths;
+    private List<String> mainProblems;
+    private List<String> projectProblems;
+    private List<String> reviewSuggestions;
+    private List<String> recommendedQuestions;
+    private List<Map<String, Object>> questionReviews;
     private String reportContent;
-    private java.time.LocalDateTime generatedAt;
-    private String suggestions;
+    private LocalDateTime generatedAt;
+    private LocalDateTime createdAt;
     private String failureReason;
 }
