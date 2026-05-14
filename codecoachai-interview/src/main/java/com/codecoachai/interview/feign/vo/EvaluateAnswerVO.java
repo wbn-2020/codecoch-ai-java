@@ -9,4 +9,7 @@ public class EvaluateAnswerVO {
     private String comment;
     private String nextAction;
     private String knowledgePoints;
+    private String followUpQuestion;
+    private String followUpReason;
+    private Boolean followUpValid;
 }

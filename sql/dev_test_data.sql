@@ -232,11 +232,11 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO prompt_template (id, scene, name, content, status, deleted)
 VALUES
-  (100000, 'INTERVIEW_QUESTION_GENERATE', 'E2E_TEST_八股文提问模板', '请根据面试阶段、候选人经验和题库题目，生成一个清晰的 Java 八股文面试问题。输出包含 questionText 和 scene。', 1, 0),
-  (100001, 'PROJECT_DEEP_DIVE_GENERATE', 'E2E_TEST_项目深挖提问模板', '请结合候选人简历项目，围绕项目背景、技术选型、难点和优化结果生成项目深挖问题。', 1, 0),
-  (100002, 'INTERVIEW_ANSWER_EVALUATE', 'E2E_TEST_回答评分模板', '请根据题目、参考答案和候选人回答，输出 score、comment 和 nextAction。nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE、FINISH。', 1, 0),
-  (100003, 'INTERVIEW_FOLLOW_UP_GENERATE', 'E2E_TEST_动态追问模板', '当候选人回答不够深入时，请生成一个更具体的追问，避免重复原问题。', 1, 0),
-  (100004, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_面试报告生成模板', '请根据整场面试消息生成结构化中文报告，包含总分来源、回答亮点、主要问题、薄弱知识点和复习建议。', 1, 0),
+  (100000, 'INTERVIEW_QUESTION_GENERATE', 'E2E_TEST_八股文提问模板', '请根据 stageName、stageType、focusPoints、historySummary 和题库题目，生成一个清晰的 Java 技术面试问题。只输出 JSON：{"questionContent":"问题内容"}。', 1, 0),
+  (100001, 'PROJECT_DEEP_DIVE_QUESTION', 'E2E_TEST_项目深挖提问模板', '请结合候选人简历项目、当前阶段和 focusPoints 生成项目深挖问题。只输出 JSON：{"questionContent":"问题内容"}。', 1, 0),
+  (100002, 'INTERVIEW_ANSWER_EVALUATE', 'E2E_TEST_回答评分模板', '请根据 rootQuestionContent、currentQuestionContent、referenceAnswer 和 userAnswer，一次性输出 score、comment、nextAction、followUpQuestion、followUpReason、knowledgePoints。FOLLOW_UP 追问必须紧扣原始主问题。', 1, 0),
+  (100003, 'INTERVIEW_FOLLOW_UP_GENERATE', 'E2E_TEST_动态追问模板', '请围绕 rootQuestionContent、currentQuestionContent、referenceAnswer、userAnswer 和 aiComment 生成 1 个 Java 技术追问，禁止假设原问题或要求用户提供具体问题。只输出 JSON。', 1, 0),
+  (100004, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_面试报告生成模板', '请根据整场面试消息生成结构化中文报告，只输出 JSON，不要 Markdown、代码块或解释文字。', 1, 0),
   (100005, 'INTERVIEW_REPORT_GENERATE', 'E2E_TEST_停用报告模板样例', '该模板仅用于管理端 status=0 筛选验证，不参与实际报告生成。', 0, 0)
 ON DUPLICATE KEY UPDATE
   scene = VALUES(scene),

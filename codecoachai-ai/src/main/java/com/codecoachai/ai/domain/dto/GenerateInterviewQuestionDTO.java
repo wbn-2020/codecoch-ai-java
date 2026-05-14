@@ -8,6 +8,7 @@ public class GenerateInterviewQuestionDTO {
     private String mode;
     private String stageType;
     private String currentStage;
+    private String focusPoints;
     private String targetPosition;
     private String experienceLevel;
     private String industryDirection;
