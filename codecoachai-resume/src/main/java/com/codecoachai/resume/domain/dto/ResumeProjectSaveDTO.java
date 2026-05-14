@@ -9,9 +9,16 @@ public class ResumeProjectSaveDTO {
     @NotBlank(message = "projectName is required")
     private String projectName;
 
+    private String projectPeriod;
+    private String projectBackground;
     private String role;
     private String techStack;
+    private String responsibility;
+    private String coreFeatures;
+    private String technicalDifficulties;
+    private String optimizationResults;
     private String description;
     private String highlights;
     private Integer sort;
+    private Integer sortOrder;
 }

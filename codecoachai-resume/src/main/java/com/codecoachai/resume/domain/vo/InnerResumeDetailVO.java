@@ -10,6 +10,10 @@ public class InnerResumeDetailVO {
     private Long userId;
     private String title;
     private String realName;
+    private String targetPosition;
+    private String skillStack;
+    private String workExperience;
+    private String educationExperience;
     private String summary;
     private List<ResumeProjectVO> projects;
 }

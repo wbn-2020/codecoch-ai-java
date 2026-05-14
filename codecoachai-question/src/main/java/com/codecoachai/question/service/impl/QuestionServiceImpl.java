@@ -18,6 +18,7 @@ import com.codecoachai.question.domain.dto.UpdateStatusDTO;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionGroup;
+import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.MasteryStatusEnum;
@@ -195,6 +196,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .eq(Question::getStatus, CommonConstants.YES)
                 .eq(dto.getCategoryId() != null, Question::getCategoryId, dto.getCategoryId())
                 .eq(StringUtils.hasText(dto.getDifficulty()), Question::getDifficulty, dto.getDifficulty())
+                .eq(StringUtils.hasText(dto.getExperienceLevel()), Question::getExperienceLevel, dto.getExperienceLevel())
                 .notIn(dto.getExcludeGroupIds() != null && !dto.getExcludeGroupIds().isEmpty(),
                         Question::getGroupId, dto.getExcludeGroupIds())
                 .orderByAsc(Question::getId)
@@ -207,7 +209,13 @@ public class QuestionServiceImpl implements QuestionService {
                     .last("limit 1"));
         }
         if (question == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "No enabled question available");
+            InnerQuestionVO fallback = new InnerQuestionVO();
+            fallback.setTitle("AI_GENERATED_FALLBACK");
+            fallback.setContent("请结合当前面试阶段生成一道 V1 Java 后端面试问题。");
+            fallback.setDifficulty(StringUtils.hasText(dto.getDifficulty()) ? dto.getDifficulty() : "MEDIUM");
+            fallback.setExperienceLevel(dto.getExperienceLevel());
+            fallback.setQuestionType("AI_GENERATED");
+            return fallback;
         }
         return QuestionConvert.toInnerVO(question);
     }
@@ -234,6 +242,9 @@ public class QuestionServiceImpl implements QuestionService {
         return new LambdaQueryWrapper<Question>()
                 .eq(query.getCategoryId() != null, Question::getCategoryId, query.getCategoryId())
                 .eq(StringUtils.hasText(query.getDifficulty()), Question::getDifficulty, query.getDifficulty())
+                .eq(StringUtils.hasText(query.getQuestionType()), Question::getQuestionType, query.getQuestionType())
+                .eq(StringUtils.hasText(query.getExperienceLevel()), Question::getExperienceLevel, query.getExperienceLevel())
+                .eq(query.getIsHighFrequency() != null, Question::getIsHighFrequency, query.getIsHighFrequency())
                 .eq(includeStatusFilter && query.getStatus() != null, Question::getStatus, query.getStatus())
                 .in(query.getTagId() != null && !questionIds.isEmpty(), Question::getId, questionIds)
                 .eq(query.getTagId() != null && questionIds.isEmpty(), Question::getId, NO_MATCH_QUESTION_ID)
@@ -258,13 +269,17 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private void applyQuestion(Question question, AdminQuestionSaveDTO dto) {
+        validateQuestionRefs(dto);
         question.setTitle(dto.getTitle());
         question.setContent(dto.getContent());
-        question.setReferenceAnswer(dto.getReferenceAnswer());
+        question.setReferenceAnswer(StringUtils.hasText(dto.getReferenceAnswer()) ? dto.getReferenceAnswer() : dto.getAnswer());
         question.setAnalysis(dto.getAnalysis());
         question.setCategoryId(dto.getCategoryId());
         question.setGroupId(dto.getGroupId());
         question.setDifficulty(StringUtils.hasText(dto.getDifficulty()) ? dto.getDifficulty() : "MEDIUM");
+        question.setQuestionType(StringUtils.hasText(dto.getQuestionType()) ? dto.getQuestionType() : "SHORT_ANSWER");
+        question.setExperienceLevel(dto.getExperienceLevel());
+        question.setIsHighFrequency(dto.getIsHighFrequency() == null ? CommonConstants.NO : dto.getIsHighFrequency());
         question.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
     }
 
@@ -275,6 +290,10 @@ public class QuestionServiceImpl implements QuestionService {
             return;
         }
         for (Long tagId : tagIds) {
+            QuestionTag tag = tagMapper.selectById(tagId);
+            if (tag == null || !CommonConstants.YES.equals(tag.getStatus())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Question tag unavailable");
+            }
             QuestionTagRelation relation = new QuestionTagRelation();
             relation.setQuestionId(questionId);
             relation.setTagId(tagId);
@@ -320,6 +339,21 @@ public class QuestionServiceImpl implements QuestionService {
                 .filter(tag -> tag != null)
                 .map(QuestionConvert::toTagVO)
                 .toList();
+    }
+
+    private void validateQuestionRefs(AdminQuestionSaveDTO dto) {
+        if (dto.getCategoryId() != null) {
+            QuestionCategory category = categoryMapper.selectById(dto.getCategoryId());
+            if (category == null || !CommonConstants.YES.equals(category.getStatus())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Question category unavailable");
+            }
+        }
+        if (dto.getGroupId() != null) {
+            QuestionGroup group = groupMapper.selectById(dto.getGroupId());
+            if (group == null || !CommonConstants.YES.equals(group.getStatus())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Question group unavailable");
+            }
+        }
     }
 
     private Question getQuestionOrThrow(Long id) {

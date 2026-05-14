@@ -10,5 +10,6 @@ public class InnerSelectQuestionDTO {
     private String stageType;
     private Long categoryId;
     private String difficulty;
+    private String experienceLevel;
     private List<Long> excludeGroupIds;
 }

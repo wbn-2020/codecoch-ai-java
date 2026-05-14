@@ -1,5 +1,6 @@
 package com.codecoachai.ai.service;
 
+import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
 import com.codecoachai.ai.domain.dto.UpdatePromptStatusDTO;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
@@ -12,6 +13,8 @@ public interface PromptTemplateService {
 
     PromptTemplateVO createPrompt(PromptTemplateSaveDTO dto);
 
+    PromptTemplateVO getPrompt(Long id);
+
     PromptTemplateVO updatePrompt(Long id, PromptTemplateSaveDTO dto);
 
     void deletePrompt(Long id);
@@ -19,6 +22,8 @@ public interface PromptTemplateService {
     void updateStatus(Long id, UpdatePromptStatusDTO dto);
 
     PageResult<AiCallLogVO> pageLogs(Long pageNo, Long pageSize);
+
+    PageResult<AiCallLogVO> pageLogs(AiCallLogQueryDTO query);
 
     AiCallLogVO getLog(Long id);
 }

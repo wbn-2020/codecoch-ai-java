@@ -9,6 +9,7 @@ public class ResumeListVO {
     private Long id;
     private String title;
     private String realName;
+    private String targetPosition;
     private Integer isDefault;
     private Integer status;
     private LocalDateTime updatedAt;

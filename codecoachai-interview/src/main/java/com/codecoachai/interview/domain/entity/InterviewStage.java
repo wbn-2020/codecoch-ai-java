@@ -14,5 +14,13 @@ public class InterviewStage extends BaseEntity {
     private String stageType;
     private String stageName;
     private Integer sort;
+    private Integer stageOrder;
+    private Integer expectedQuestionCount;
+    private Integer askedQuestionCount;
+    private String focusPoints;
+    private Boolean basedOnResume;
+    private Boolean allowFollowUp;
+    private Integer maxFollowUpCount;
     private String status;
+    private Integer score;
 }

@@ -6,5 +6,6 @@ import lombok.Data;
 public class GenerateInterviewQuestionVO {
 
     private String questionText;
+    private String questionContent;
     private String scene;
 }

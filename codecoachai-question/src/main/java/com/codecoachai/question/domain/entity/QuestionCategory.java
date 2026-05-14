@@ -10,7 +10,9 @@ import lombok.EqualsAndHashCode;
 @TableName("question_category")
 public class QuestionCategory extends BaseEntity {
 
+    private Long parentId;
     private String categoryName;
     private Integer sort;
+    private Integer sortOrder;
     private Integer status;
 }

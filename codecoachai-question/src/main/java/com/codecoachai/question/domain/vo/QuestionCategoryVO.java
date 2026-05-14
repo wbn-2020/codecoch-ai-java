@@ -6,7 +6,9 @@ import lombok.Data;
 public class QuestionCategoryVO {
 
     private Long id;
+    private Long parentId;
     private String categoryName;
     private Integer sort;
+    private Integer sortOrder;
     private Integer status;
 }

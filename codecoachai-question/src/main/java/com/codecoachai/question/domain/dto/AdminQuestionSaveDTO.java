@@ -12,10 +12,14 @@ public class AdminQuestionSaveDTO {
 
     private String content;
     private String referenceAnswer;
+    private String answer;
     private String analysis;
     private Long categoryId;
     private Long groupId;
     private String difficulty;
+    private String questionType;
+    private String experienceLevel;
+    private Integer isHighFrequency;
     private Integer status;
     private List<Long> tagIds;
 }

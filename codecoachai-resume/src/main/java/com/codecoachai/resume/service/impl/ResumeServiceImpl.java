@@ -21,6 +21,7 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
@@ -144,6 +145,7 @@ public class ResumeServiceImpl implements ResumeService {
     private List<ResumeProjectVO> projects(Long resumeId) {
         return projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                         .eq(ResumeProject::getResumeId, resumeId)
+                        .orderByAsc(ResumeProject::getSortOrder)
                         .orderByAsc(ResumeProject::getSort)
                         .orderByDesc(ResumeProject::getUpdatedAt))
                 .stream()
@@ -152,20 +154,38 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private void applyResume(Resume resume, ResumeSaveDTO dto) {
-        resume.setTitle(dto.getTitle());
+        String title = StringUtils.hasText(dto.getResumeName()) ? dto.getResumeName() : dto.getTitle();
+        if (!StringUtils.hasText(title)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeName is required");
+        }
+        resume.setTitle(title);
         resume.setRealName(dto.getRealName());
         resume.setEmail(dto.getEmail());
         resume.setPhone(dto.getPhone());
+        resume.setTargetPosition(dto.getTargetPosition());
+        resume.setSkillStack(dto.getSkillStack());
+        resume.setWorkExperience(dto.getWorkExperience());
+        resume.setEducationExperience(dto.getEducationExperience());
         resume.setSummary(dto.getSummary());
+        if (dto.getStatus() != null) {
+            resume.setStatus(dto.getStatus());
+        }
     }
 
     private void applyProject(ResumeProject project, ResumeProjectSaveDTO dto) {
         project.setProjectName(dto.getProjectName());
+        project.setProjectPeriod(dto.getProjectPeriod());
+        project.setProjectBackground(dto.getProjectBackground());
         project.setRole(dto.getRole());
         project.setTechStack(dto.getTechStack());
+        project.setResponsibility(dto.getResponsibility());
+        project.setCoreFeatures(dto.getCoreFeatures());
+        project.setTechnicalDifficulties(dto.getTechnicalDifficulties());
+        project.setOptimizationResults(dto.getOptimizationResults());
         project.setDescription(dto.getDescription());
         project.setHighlights(dto.getHighlights());
         project.setSort(dto.getSort() == null ? 0 : dto.getSort());
+        project.setSortOrder(dto.getSortOrder() == null ? project.getSort() : dto.getSortOrder());
     }
 
     private Resume getOwnedResume(Long id) {

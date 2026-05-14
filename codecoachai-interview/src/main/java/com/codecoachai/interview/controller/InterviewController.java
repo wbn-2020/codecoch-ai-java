@@ -6,9 +6,11 @@ import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.CreateInterviewVO;
 import com.codecoachai.interview.domain.vo.CurrentInterviewVO;
+import com.codecoachai.interview.domain.vo.CurrentQuestionVO;
 import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewDetailVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
+import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import java.util.List;
 
 @RestController
 @RequiredArgsConstructor
@@ -43,6 +46,11 @@ public class InterviewController {
     @GetMapping("/{id}/current")
     public Result<CurrentInterviewVO> current(@PathVariable Long id) {
         return Result.success(interviewService.current(id));
+    }
+
+    @GetMapping("/{id}/current-question")
+    public Result<CurrentQuestionVO> currentQuestion(@PathVariable Long id) {
+        return Result.success(interviewService.currentQuestion(id));
     }
 
     @PostMapping("/{id}/answer")
@@ -70,6 +78,11 @@ public class InterviewController {
     @GetMapping("/{id}")
     public Result<InterviewDetailVO> detail(@PathVariable Long id) {
         return Result.success(interviewService.detail(id));
+    }
+
+    @GetMapping("/{id}/messages")
+    public Result<List<InterviewMessageVO>> messages(@PathVariable Long id) {
+        return Result.success(interviewService.messages(id));
     }
 
     @GetMapping("/{id}/report")

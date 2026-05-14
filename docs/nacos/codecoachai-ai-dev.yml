@@ -10,8 +10,12 @@ spring:
 
 codecoachai:
   ai:
-    provider: mock
-    model: mock-v1
-    base-url: ""
-    api-key: ""
+    enabled: true
+    mock-enabled: true
+    provider: openai-compatible
+    model: ${AI_MODEL:deepseek-chat}
+    base-url: ${AI_BASE_URL:}
+    api-key: ${AI_API_KEY:}
+    temperature: 0.3
+    max-tokens: 2048
     timeout-seconds: 30

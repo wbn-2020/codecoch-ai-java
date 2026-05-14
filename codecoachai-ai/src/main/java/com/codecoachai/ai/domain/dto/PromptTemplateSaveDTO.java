@@ -9,11 +9,13 @@ public class PromptTemplateSaveDTO {
     @NotBlank(message = "scene is required")
     private String scene;
 
-    @NotBlank(message = "name is required")
     private String name;
+    private String templateName;
 
-    @NotBlank(message = "content is required")
     private String content;
+    private String templateContent;
+    private String variables;
+    private String version;
 
     private Integer status;
 }
