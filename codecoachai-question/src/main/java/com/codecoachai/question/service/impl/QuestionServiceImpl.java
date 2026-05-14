@@ -205,6 +205,8 @@ public class QuestionServiceImpl implements QuestionService {
         if (question == null) {
             question = questionMapper.selectOne(new LambdaQueryWrapper<Question>()
                     .eq(Question::getStatus, CommonConstants.YES)
+                    .notIn(dto.getExcludeGroupIds() != null && !dto.getExcludeGroupIds().isEmpty(),
+                            Question::getGroupId, dto.getExcludeGroupIds())
                     .orderByAsc(Question::getId)
                     .last("limit 1"));
         }

@@ -8,8 +8,16 @@ import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.InterviewStageVO;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import org.springframework.util.StringUtils;
 
 public final class InterviewConvert {
+
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private InterviewConvert() {
     }
@@ -87,20 +95,71 @@ public final class InterviewConvert {
         vo.setUserId(report.getUserId());
         vo.setStatus(report.getStatus());
         vo.setTotalScore(report.getTotalScore());
-        vo.setStageScores(report.getStageScores());
-        vo.setWeakPoints(report.getWeakPoints());
         vo.setSummary(report.getSummary());
-        vo.setStrengths(report.getStrengths());
-        vo.setWeaknesses(report.getWeaknesses());
-        vo.setMainProblems(report.getMainProblems());
-        vo.setProjectProblems(report.getProjectProblems());
-        vo.setReviewSuggestions(report.getReviewSuggestions());
-        vo.setRecommendedQuestions(report.getRecommendedQuestions());
-        vo.setQaReview(report.getQaReview());
+        Map<String, Object> stageScores = parseMap(report.getStageScores());
+        vo.setStageScores(stageScores);
+        vo.setStageReports(stageScores);
+        vo.setWeakPoints(parseStringList(report.getWeakPoints()));
+        vo.setStrengths(parseStringListOrSingle(report.getStrengths()));
+        vo.setMainProblems(parseStringListOrSingle(firstText(report.getMainProblems(), report.getWeaknesses())));
+        vo.setProjectProblems(parseStringList(report.getProjectProblems()));
+        vo.setReviewSuggestions(parseStringListOrSingle(firstText(report.getReviewSuggestions(), report.getSuggestions())));
+        vo.setRecommendedQuestions(parseStringList(report.getRecommendedQuestions()));
+        vo.setQuestionReviews(parseObjectList(report.getQaReview()));
         vo.setReportContent(report.getReportContent());
         vo.setGeneratedAt(report.getGeneratedAt());
-        vo.setSuggestions(report.getSuggestions());
+        vo.setCreatedAt(report.getCreatedAt());
         vo.setFailureReason(report.getFailureReason());
         return vo;
+    }
+
+    private static Map<String, Object> parseMap(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Collections.emptyMap();
+        }
+        try {
+            return OBJECT_MAPPER.readValue(value, new TypeReference<>() {
+            });
+        } catch (Exception ex) {
+            return Collections.emptyMap();
+        }
+    }
+
+    private static List<String> parseStringList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Collections.emptyList();
+        }
+        try {
+            List<String> list = OBJECT_MAPPER.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? Collections.emptyList() : list;
+        } catch (Exception ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static List<String> parseStringListOrSingle(String value) {
+        List<String> parsed = parseStringList(value);
+        if (!parsed.isEmpty() || !StringUtils.hasText(value)) {
+            return parsed;
+        }
+        return List.of(value);
+    }
+
+    private static List<Map<String, Object>> parseObjectList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Collections.emptyList();
+        }
+        try {
+            List<Map<String, Object>> list = OBJECT_MAPPER.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? Collections.emptyList() : list;
+        } catch (Exception ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private static String firstText(String first, String second) {
+        return StringUtils.hasText(first) ? first : second;
     }
 }

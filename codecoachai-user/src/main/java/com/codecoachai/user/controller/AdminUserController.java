@@ -2,6 +2,7 @@ package com.codecoachai.user.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
 import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
 import com.codecoachai.user.domain.vo.AdminRoleVO;
@@ -29,17 +30,20 @@ public class AdminUserController {
 
     @GetMapping("/admin/users")
     public Result<PageResult<AdminUserPageVO>> pageUsers(@Valid AdminUserQueryDTO query) {
+        SecurityAssert.requireAdmin();
         return Result.success(userService.pageAdminUsers(query));
     }
 
     @PutMapping("/admin/users/{id}/status")
     public Result<Void> updateStatus(@PathVariable Long id, @Valid @RequestBody UpdateUserStatusDTO dto) {
+        SecurityAssert.requireAdmin();
         userService.updateUserStatus(id, dto);
         return Result.success();
     }
 
     @GetMapping("/admin/roles")
     public Result<List<AdminRoleVO>> listRoles() {
+        SecurityAssert.requireAdmin();
         return Result.success(roleService.listAdminRoles());
     }
 }

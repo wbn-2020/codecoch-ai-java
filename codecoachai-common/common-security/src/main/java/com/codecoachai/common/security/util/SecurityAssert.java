@@ -18,6 +18,7 @@ public final class SecurityAssert {
     }
 
     public static void requireAdmin() {
+        requireLoginUserId();
         if (!LoginUserContext.isAdmin()) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
