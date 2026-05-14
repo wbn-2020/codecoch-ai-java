@@ -24,6 +24,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -55,10 +57,10 @@ public class AiServiceImpl implements AiService {
             GenerateInterviewQuestionVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockQuestion(dto, scene)
                     : parseQuestion(rawResponse = aiClient.chat(prompt), scene);
-            saveLog(scene, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
+            saveLog(scene, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(scene, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
+            saveLog(scene, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage(), null);
             throw businessAiException(ex);
         }
     }
@@ -73,10 +75,16 @@ public class AiServiceImpl implements AiService {
             EvaluateAnswerVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockEvaluate(dto)
                     : parseEvaluate(rawResponse = aiClient.chat(prompt), dto);
-            saveLog(SCENE_EVALUATE, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
+            if (Boolean.TRUE.equals(vo.getFollowUpValid()) && isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
+                vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
+                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "AI 追问无效，使用本地兜底追问")));
+                vo.setFollowUpValid(true);
+            }
+            saveLog(SCENE_EVALUATE, template, prompt, mergeRawAndFinal(rawResponse, vo),
+                    businessId(dto.getQuestionId()), start, null, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_EVALUATE, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
+            saveLog(SCENE_EVALUATE, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage(), null);
             throw businessAiException(ex);
         }
     }
@@ -91,11 +99,24 @@ public class AiServiceImpl implements AiService {
             GenerateFollowUpVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockFollowUp(dto)
                     : parseFollowUp(rawResponse = aiClient.chat(prompt), dto);
-            saveLog(SCENE_FOLLOW_UP, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start, null);
+            if (isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
+                vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
+                vo.setReason(markFallback(firstText(vo.getReason(), "AI 追问无效，使用本地兜底追问")));
+                vo.setRelatedToOriginalQuestion(true);
+                vo.setFollowUpValid(true);
+            }
+            saveLog(SCENE_FOLLOW_UP, template, prompt, mergeRawAndFinal(rawResponse, vo),
+                    businessId(dto.getQuestionId()), start, null, null);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_FOLLOW_UP, template, prompt, rawResponse, businessId(dto.getQuestionId()), start, ex.getMessage());
-            throw businessAiException(ex);
+            GenerateFollowUpVO fallback = new GenerateFollowUpVO();
+            fallback.setFollowUpQuestion(buildFallbackFollowUp(dto));
+            fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
+            fallback.setRelatedToOriginalQuestion(true);
+            fallback.setFollowUpValid(true);
+            saveLog(SCENE_FOLLOW_UP, template, prompt, mergeRawAndFinal(rawResponse, fallback),
+                    businessId(dto.getQuestionId()), start, ex.getMessage(), null);
+            return fallback;
         }
     }
 
@@ -109,10 +130,11 @@ public class AiServiceImpl implements AiService {
             GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockReport()
                     : parseReport(rawResponse = aiClient.chat(prompt));
-            saveLog(SCENE_REPORT, template, prompt, toJson(vo), businessId(dto.getInterviewId()), start, null);
+            saveLog(SCENE_REPORT, template, prompt, mergeRawAndFinal(rawResponse, vo),
+                    businessId(dto.getInterviewId()), start, null, dto.getUserId());
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_REPORT, template, prompt, rawResponse, businessId(dto.getInterviewId()), start, ex.getMessage());
+            saveLog(SCENE_REPORT, template, prompt, rawResponse, businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId());
             throw businessAiException(ex);
         }
     }
@@ -163,6 +185,8 @@ public class AiServiceImpl implements AiService {
             values.put("interviewerStyle", dto.getInterviewerStyle());
             values.put("stageName", firstText(dto.getCurrentStage(), dto.getStageType()));
             values.put("currentStage", firstText(dto.getCurrentStage(), dto.getStageType()));
+            values.put("stageType", dto.getStageType());
+            values.put("focusPoints", dto.getFocusPoints());
             values.put("currentQuestion", dto.getQuestionTitle());
             values.put("questionContent", dto.getQuestionContent());
             values.put("resumeContent", firstText(dto.getResumeContent(), dto.getResumeSummary()));
@@ -174,10 +198,17 @@ public class AiServiceImpl implements AiService {
             values.put("stageName", answerDTO.getCurrentStage());
             values.put("currentStage", answerDTO.getCurrentStage());
             values.put("currentQuestion", answerDTO.getQuestionTitle());
-            values.put("questionContent", answerDTO.getQuestionContent());
+            values.put("rootQuestionContent", answerDTO.getRootQuestionContent());
+            values.put("currentQuestionContent", answerDTO.getCurrentQuestionContent());
+            values.put("questionContent", firstText(answerDTO.getQuestionContent(), answerDTO.getCurrentQuestionContent()));
             values.put("userAnswer", answerDTO.getAnswerContent());
+            values.put("answerContent", answerDTO.getAnswerContent());
             values.put("referenceAnswer", answerDTO.getReferenceAnswer());
             values.put("historySummary", answerDTO.getHistorySummary());
+            values.put("aiComment", "");
+            values.put("followUpCount", String.valueOf(safeInt(answerDTO.getFollowUpCount())));
+            values.put("maxFollowUpCount", String.valueOf(maxFollowUp(answerDTO)));
+            values.put("knowledgePoints", answerDTO.getKnowledgePoints());
         }
         return values;
     }
@@ -187,10 +218,17 @@ public class AiServiceImpl implements AiService {
         values.put("stageName", dto.getCurrentStage());
         values.put("currentStage", dto.getCurrentStage());
         values.put("currentQuestion", dto.getQuestionTitle());
-        values.put("questionContent", dto.getQuestionContent());
+        values.put("rootQuestionContent", dto.getRootQuestionContent());
+        values.put("currentQuestionContent", dto.getCurrentQuestionContent());
+        values.put("questionContent", firstText(dto.getQuestionContent(), dto.getCurrentQuestionContent()));
+        values.put("referenceAnswer", dto.getReferenceAnswer());
         values.put("userAnswer", dto.getAnswerContent());
+        values.put("answerContent", dto.getAnswerContent());
         values.put("historySummary", dto.getHistorySummary());
         values.put("aiComment", dto.getComment());
+        values.put("followUpCount", String.valueOf(safeInt(dto.getFollowUpCount())));
+        values.put("maxFollowUpCount", String.valueOf(maxFollowUp(dto)));
+        values.put("knowledgePoints", dto.getKnowledgePoints());
         return values;
     }
 
@@ -214,14 +252,21 @@ public class AiServiceImpl implements AiService {
             json = parseJson(raw);
         } catch (BusinessException ex) {
             GenerateInterviewQuestionVO fallback = new GenerateInterviewQuestionVO();
-            String content = firstText(raw, "请结合当前阶段说明核心原理、适用场景和生产实践注意点。");
+            String content = cleanQuestionText(firstText(extractLabelValue(raw, "questionText"),
+                    extractLabelValue(raw, "questionContent"),
+                    raw,
+                    "请结合当前阶段说明核心原理、适用场景和生产实践注意点。"));
             fallback.setQuestionContent(content);
             fallback.setQuestionText(content);
             fallback.setScene(scene);
             return fallback;
         }
         GenerateInterviewQuestionVO vo = new GenerateInterviewQuestionVO();
-        String content = firstText(json.path("questionContent").asText(null), json.path("questionText").asText(null), raw);
+        String content = cleanQuestionText(firstText(json.path("questionContent").asText(null),
+                json.path("questionText").asText(null),
+                json.path("question").asText(null),
+                json.path("content").asText(null),
+                raw));
         vo.setQuestionContent(content);
         vo.setQuestionText(content);
         vo.setScene(scene);
@@ -236,16 +281,21 @@ public class AiServiceImpl implements AiService {
             EvaluateAnswerVO fallback = new EvaluateAnswerVO();
             int score = scoreByLength(dto.getAnswerContent());
             fallback.setScore(score);
-            fallback.setComment(firstText(raw, score >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。"));
-            fallback.setNextAction(score < 75 && (dto.getFollowUpCount() == null || dto.getFollowUpCount() < 2) ? "FOLLOW_UP" : "NEXT_QUESTION");
+            fallback.setComment(firstText(extractLabelValue(raw, "comment"),
+                    raw,
+                    score >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。"));
+            fallback.setNextAction(decideNextAction(extractLabelValue(raw, "nextAction"), score, dto.getFollowUpCount(), maxFollowUp(dto)));
             fallback.setKnowledgePoints(firstText(dto.getQuestionTitle(), "Java 后端基础"));
+            fillFollowUpFromEvaluation(fallback, dto, firstText(extractLabelValue(raw, "followUpQuestion"), extractLabelValue(raw, "questionContent")));
             return fallback;
         }
         EvaluateAnswerVO vo = new EvaluateAnswerVO();
-        vo.setScore(json.path("score").isNumber() ? json.path("score").asInt() : scoreByLength(dto.getAnswerContent()));
-        vo.setComment(firstText(json.path("comment").asText(null), json.path("aiComment").asText(null), raw));
-        vo.setNextAction(firstText(json.path("nextAction").asText(null), vo.getScore() < 70 ? "FOLLOW_UP" : "NEXT_QUESTION"));
-        vo.setKnowledgePoints(json.path("knowledgePoints").asText(null));
+        vo.setScore(clampScore(json.path("score").isNumber() ? json.path("score").asInt() : scoreByLength(dto.getAnswerContent())));
+        vo.setComment(firstText(json.path("comment").asText(null), json.path("aiComment").asText(null),
+                vo.getScore() >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。"));
+        vo.setNextAction(decideNextAction(json.path("nextAction").asText(null), vo.getScore(), dto.getFollowUpCount(), maxFollowUp(dto)));
+        vo.setKnowledgePoints(firstText(json.path("knowledgePoints").asText(null), json.path("knowledgePoint").asText(null)));
+        fillFollowUpFromEvaluation(vo, dto, firstText(json.path("followUpQuestion").asText(null), json.path("questionContent").asText(null)));
         return vo;
     }
 
@@ -255,12 +305,23 @@ public class AiServiceImpl implements AiService {
             json = parseJson(raw);
         } catch (BusinessException ex) {
             GenerateFollowUpVO fallback = new GenerateFollowUpVO();
-            fallback.setFollowUpQuestion(firstText(raw, "请进一步说明：" + firstText(dto.getQuestionTitle(), "当前问题")));
+            fallback.setFollowUpQuestion(firstText(extractLabelValue(raw, "followUpQuestion"),
+                    extractLabelValue(raw, "questionContent"),
+                    raw,
+                    buildFallbackFollowUp(dto)));
+            fallback.setReason("非标准 JSON 响应解析兜底");
+            fallback.setRelatedToOriginalQuestion(!isInvalidFollowUp(fallback.getFollowUpQuestion(), dto));
+            fallback.setFollowUpValid(!isInvalidFollowUp(fallback.getFollowUpQuestion(), dto));
             return fallback;
         }
         GenerateFollowUpVO vo = new GenerateFollowUpVO();
         vo.setFollowUpQuestion(firstText(json.path("followUpQuestion").asText(null), json.path("questionContent").asText(null),
-                "请进一步说明：" + firstText(dto.getQuestionTitle(), "当前问题")));
+                json.path("questionText").asText(null), buildFallbackFollowUp(dto)));
+        vo.setReason(json.path("reason").asText(null));
+        vo.setRelatedToOriginalQuestion(json.path("relatedToOriginalQuestion").isBoolean()
+                ? json.path("relatedToOriginalQuestion").asBoolean()
+                : !isInvalidFollowUp(vo.getFollowUpQuestion(), dto));
+        vo.setFollowUpValid(!isInvalidFollowUp(vo.getFollowUpQuestion(), dto));
         return vo;
     }
 
@@ -337,14 +398,18 @@ public class AiServiceImpl implements AiService {
         EvaluateAnswerVO vo = new EvaluateAnswerVO();
         vo.setScore(score);
         vo.setComment(score >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。");
-        vo.setNextAction(score < 75 && (dto.getFollowUpCount() == null || dto.getFollowUpCount() < 2) ? "FOLLOW_UP" : "NEXT_QUESTION");
+        vo.setNextAction(score < 75 && safeInt(dto.getFollowUpCount()) < maxFollowUp(dto) ? "FOLLOW_UP" : "NEXT_QUESTION");
         vo.setKnowledgePoints(firstText(dto.getQuestionTitle(), "Java 后端基础"));
+        fillFollowUpFromEvaluation(vo, dto, null);
         return vo;
     }
 
     private GenerateFollowUpVO mockFollowUp(GenerateFollowUpDTO dto) {
         GenerateFollowUpVO vo = new GenerateFollowUpVO();
-        vo.setFollowUpQuestion("请进一步结合生产项目说明：" + firstText(dto.getQuestionTitle(), dto.getQuestionContent(), "当前问题"));
+        vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
+        vo.setReason("mock 模式本地相关性追问");
+        vo.setRelatedToOriginalQuestion(true);
+        vo.setFollowUpValid(true);
         return vo;
     }
 
@@ -372,9 +437,9 @@ public class AiServiceImpl implements AiService {
     }
 
     private void saveLog(String scene, PromptTemplate template, String prompt, String response, String businessId,
-                         long startMillis, String errorMessage) {
+                         long startMillis, String errorMessage, Long explicitUserId) {
         AiCallLog log = new AiCallLog();
-        log.setUserId(LoginUserContext.getUserId());
+        log.setUserId(explicitUserId == null ? LoginUserContext.getUserId() : explicitUserId);
         log.setScene(scene);
         log.setModelName(Boolean.TRUE.equals(aiProperties.getMockEnabled())
                 ? aiProperties.getModel() + "(mock)"
@@ -422,20 +487,257 @@ public class AiServiceImpl implements AiService {
         return id == null ? null : String.valueOf(id);
     }
 
+    private void fillFollowUpFromEvaluation(EvaluateAnswerVO vo, EvaluateAnswerDTO dto, String candidateQuestion) {
+        if (!"FOLLOW_UP".equals(vo.getNextAction())) {
+            vo.setFollowUpQuestion("");
+            vo.setFollowUpReason(firstText(vo.getFollowUpReason(), ""));
+            vo.setFollowUpValid(false);
+            return;
+        }
+        String question = firstText(candidateQuestion, vo.getFollowUpQuestion());
+        if (isInvalidFollowUp(question, dto)) {
+            question = buildFallbackFollowUp(dto);
+            vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "评分追问缺失或无效，使用本地兜底追问")));
+        }
+        vo.setFollowUpQuestion(question);
+        vo.setFollowUpValid(true);
+    }
+
+    private String decideNextAction(String candidate, int score, Integer followUpCount, int maxFollowUpCount) {
+        String action = candidate == null ? "" : candidate.trim().toUpperCase();
+        boolean legal = "FOLLOW_UP".equals(action)
+                || "NEXT_QUESTION".equals(action)
+                || "NEXT_STAGE".equals(action)
+                || "FINISH".equals(action);
+        if (!legal) {
+            action = score < 75 ? "FOLLOW_UP" : "NEXT_QUESTION";
+        }
+        if ("FOLLOW_UP".equals(action) && safeInt(followUpCount) >= maxFollowUpCount) {
+            return "NEXT_QUESTION";
+        }
+        return action;
+    }
+
+    private boolean isInvalidFollowUp(String question, EvaluateAnswerDTO dto) {
+        return isInvalidFollowUp(question,
+                dto == null ? null : dto.getRootQuestionContent(),
+                dto == null ? null : dto.getCurrentQuestionContent(),
+                dto == null ? null : dto.getAnswerContent());
+    }
+
+    private boolean isInvalidFollowUp(String question, GenerateFollowUpDTO dto) {
+        return isInvalidFollowUp(question,
+                dto == null ? null : dto.getRootQuestionContent(),
+                dto == null ? null : dto.getCurrentQuestionContent(),
+                dto == null ? null : dto.getAnswerContent());
+    }
+
+    private boolean isInvalidFollowUp(String question, String rootQuestion, String currentQuestion, String answer) {
+        if (!StringUtils.hasText(question) || question.trim().length() < 12) {
+            return true;
+        }
+        String value = question.trim();
+        String lower = value.toLowerCase();
+        String[] banned = {"假设原问题", "如果你有具体", "请提供具体", "由于没有", "无法生成", "用户增长", "团队协作", "市场运营"};
+        for (String item : banned) {
+            if (value.contains(item)) {
+                return true;
+            }
+        }
+        boolean looksLikeQuestion = value.endsWith("?") || value.endsWith("？")
+                || value.contains("请") || value.contains("如何") || value.contains("为什么")
+                || value.contains("能否") || value.contains("是否");
+        if (!looksLikeQuestion) {
+            return true;
+        }
+        boolean hasTechContext = containsAny(lower, "java", "jvm", "spring", "mysql", "redis", "线程", "并发", "集合", "事务", "索引", "缓存", "锁", "gc", "接口", "数据库");
+        boolean relatedToContext = sharesKeyword(value, rootQuestion) || sharesKeyword(value, currentQuestion) || sharesKeyword(value, answer);
+        return !hasTechContext && !relatedToContext;
+    }
+
+    private String buildFallbackFollowUp(EvaluateAnswerDTO dto) {
+        String root = firstText(dto == null ? null : dto.getRootQuestionContent(),
+                dto == null ? null : dto.getCurrentQuestionContent(),
+                dto == null ? null : dto.getQuestionContent(),
+                dto == null ? null : dto.getQuestionTitle(),
+                "当前 Java 技术问题");
+        String answer = summarize(firstText(dto == null ? null : dto.getAnswerContent(), "回答较简略"), 80);
+        String missing = summarize(firstText(dto == null ? null : dto.getKnowledgePoints(), dto == null ? null : dto.getReferenceAnswer(), "核心原理、边界条件和项目实践"), 90);
+        return "你刚才的回答是：" + answer + "。请继续围绕「" + summarize(root, 80) + "」补充说明：" + missing + "。";
+    }
+
+    private String buildFallbackFollowUp(GenerateFollowUpDTO dto) {
+        String root = firstText(dto == null ? null : dto.getRootQuestionContent(),
+                dto == null ? null : dto.getCurrentQuestionContent(),
+                dto == null ? null : dto.getQuestionContent(),
+                dto == null ? null : dto.getQuestionTitle(),
+                "当前 Java 技术问题");
+        String answer = summarize(firstText(dto == null ? null : dto.getAnswerContent(), "回答较简略"), 80);
+        String missing = summarize(firstText(dto == null ? null : dto.getKnowledgePoints(), dto == null ? null : dto.getReferenceAnswer(), "核心原理、边界条件和项目实践"), 90);
+        return "你刚才的回答是：" + answer + "。请继续围绕「" + summarize(root, 80) + "」补充说明：" + missing + "。";
+    }
+
+    private String markFallback(String reason) {
+        return "[fallback] " + firstText(reason, "使用本地兜底追问");
+    }
+
+    private String mergeRawAndFinal(String rawResponse, Object finalResponse) {
+        if (!StringUtils.hasText(rawResponse)) {
+            return toJson(finalResponse);
+        }
+        return "{\"rawResponse\":" + quoteJson(rawResponse) + ",\"finalResponse\":" + toJson(finalResponse) + "}";
+    }
+
+    private String quoteJson(String value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            return "\"" + value.replace("\"", "\\\"") + "\"";
+        }
+    }
+
+    private String cleanQuestionText(String raw) {
+        String value = firstText(raw, "请结合当前阶段说明核心原理、适用场景和生产实践注意点。").trim();
+        value = firstText(extractLabelValue(value, "questionContent"), extractLabelValue(value, "questionText"), value);
+        value = value.replaceAll("(?i)^scene\\s*[:：]\\s*[^\\n]+\\n?", "");
+        value = value.replaceAll("(?i)^question(Text|Content)?\\s*[:：]\\s*", "");
+        value = value.replace("```json", "").replace("```", "").trim();
+        return value;
+    }
+
+    private String extractLabelValue(String raw, String label) {
+        if (!StringUtils.hasText(raw) || !StringUtils.hasText(label)) {
+            return null;
+        }
+        Pattern pattern = Pattern.compile("(?i)" + Pattern.quote(label) + "\\s*[:：]\\s*\"?([^\"\\n\\r]+)");
+        Matcher matcher = pattern.matcher(raw);
+        return matcher.find() ? matcher.group(1).trim() : null;
+    }
+
+    private boolean containsAny(String value, String... keywords) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (String keyword : keywords) {
+            if (value.contains(keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean sharesKeyword(String question, String context) {
+        if (!StringUtils.hasText(question) || !StringUtils.hasText(context)) {
+            return false;
+        }
+        String q = question.toLowerCase();
+        String[] separators = context.toLowerCase().replaceAll("[，。！？、；：,.!?;:()（）\\[\\]{}\"']", " ").split("\\s+");
+        for (String token : separators) {
+            if (token.length() >= 2 && q.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String summarize(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        String trimmed = value.trim().replaceAll("\\s+", " ");
+        return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength) + "...";
+    }
+
+    private int clampScore(int score) {
+        return Math.min(100, Math.max(0, score));
+    }
+
+    private int safeInt(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private int maxFollowUp(EvaluateAnswerDTO dto) {
+        return dto == null || dto.getMaxFollowUpCount() == null || dto.getMaxFollowUpCount() <= 0 ? 2 : dto.getMaxFollowUpCount();
+    }
+
+    private int maxFollowUp(GenerateFollowUpDTO dto) {
+        return dto == null || dto.getMaxFollowUpCount() == null || dto.getMaxFollowUpCount() <= 0 ? 2 : dto.getMaxFollowUpCount();
+    }
+
     private String defaultQuestionPrompt() {
-        return "你是 Java 面试官。请基于当前阶段 {{stageName}}、目标岗位 {{targetPosition}}、难度 {{difficulty}} 和题库问题 {{questionContent}} 生成一道中文面试问题。只返回 JSON：{\"questionContent\":\"问题内容\"}";
+        return """
+                你是资深 Java 面试官。请基于当前阶段生成一个干净的中文技术面试问题。
+                当前阶段：{{stageName}}
+                阶段类型：{{stageType}}
+                阶段重点：{{focusPoints}}
+                目标岗位：{{targetPosition}}
+                难度：{{difficulty}}
+                题库候选题：{{questionContent}}
+                历史摘要：{{historySummary}}
+                要求：只能围绕当前阶段重点提问，不要跳到无关主题。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。
+                JSON 字段固定：{"questionContent":"问题内容"}
+                """;
     }
 
     private String defaultEvaluatePrompt() {
-        return "你是 Java 面试官。请根据问题 {{questionContent}}、参考答案 {{referenceAnswer}} 和候选人回答 {{userAnswer}} 给出中文评分。只返回 JSON：{\"score\":80,\"comment\":\"点评\",\"nextAction\":\"NEXT_QUESTION\",\"knowledgePoints\":\"知识点\"}";
+        return """
+                你是资深 Java 面试官。请一次性完成评分、点评、流程决策，并在需要时生成一个追问。
+                原始主问题：
+                {{rootQuestionContent}}
+                当前问题：
+                {{currentQuestionContent}}
+                参考答案：
+                {{referenceAnswer}}
+                候选人回答：
+                {{userAnswer}}
+                当前阶段：{{stageName}}
+                历史摘要：{{historySummary}}
+                当前追问次数：{{followUpCount}}
+                最大追问次数：{{maxFollowUpCount}}
+                要求：
+                1. score 必须是 0-100 整数。
+                2. nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE、FINISH。
+                3. 如果回答明显很短、错误或泛泛而谈，可以 FOLLOW_UP。
+                4. 如果 followUpCount >= maxFollowUpCount，禁止 FOLLOW_UP。
+                5. nextAction=FOLLOW_UP 时，followUpQuestion 必须紧扣原始主问题和候选人回答，必须是 Java 技术面试追问。
+                6. 不允许出现“假设原问题”“如果你有具体问题请提供”“由于没有上下文”等话术。
+                7. 不允许输出 Markdown、代码块或解释文字。
+                只输出 JSON：{"score":80,"comment":"中文点评","nextAction":"FOLLOW_UP","followUpQuestion":"追问内容","followUpReason":"追问原因","knowledgePoints":"相关知识点"}
+                """;
     }
 
     private String defaultFollowUpPrompt() {
-        return "你是 Java 面试官。请基于问题 {{questionContent}}、回答 {{userAnswer}} 和点评 {{aiComment}} 生成一个中文追问。只返回 JSON：{\"followUpQuestion\":\"追问内容\"}";
+        return """
+                你是资深 Java 面试官。请基于以下上下文生成一个追问。
+                原始主问题：
+                {{rootQuestionContent}}
+                当前问题：
+                {{currentQuestionContent}}
+                参考答案：
+                {{referenceAnswer}}
+                候选人回答：
+                {{userAnswer}}
+                AI 评分点评：
+                {{aiComment}}
+                当前阶段：
+                {{stageName}}
+                历史摘要：
+                {{historySummary}}
+                追问要求：
+                1. 追问必须紧扣原始主问题和候选人回答，不能换题。
+                2. 必须指出候选人回答中具体缺失或错误的点。
+                3. 只生成一个更深入的问题。
+                4. 不要重复原问题。
+                5. 不要编造“假设原问题”。
+                6. 不要说“请提供具体问题”。
+                7. 不要输出解释文字。
+                8. 不允许跳到团队协作、用户增长、市场运营等非 Java 技术面试主题。
+                只返回 JSON：{"followUpQuestion":"追问内容","reason":"追问原因","relatedToOriginalQuestion":true}
+                """;
     }
 
     private String defaultReportPrompt() {
-        return "你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只返回 JSON：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":[],\"weakPoints\":[],\"mainProblems\":[],\"projectProblems\":[],\"reviewSuggestions\":[],\"recommendedQuestions\":[],\"qaReview\":[],\"stageScores\":{},\"reportContent\":\"报告正文\"}";
+        return "你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":[],\"weakPoints\":[],\"mainProblems\":[],\"projectProblems\":[],\"reviewSuggestions\":[],\"recommendedQuestions\":[],\"qaReview\":[],\"stageScores\":{},\"reportContent\":\"报告正文\"}";
     }
 
     private String firstText(String... values) {

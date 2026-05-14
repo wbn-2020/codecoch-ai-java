@@ -7,6 +7,7 @@ import lombok.Data;
 public class GenerateReportDTO {
 
     private Long interviewId;
+    private Long userId;
     private String mode;
     private String targetPosition;
     private String experienceLevel;

@@ -52,6 +52,8 @@ import java.util.ArrayList;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
@@ -60,7 +62,6 @@ import org.springframework.util.StringUtils;
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
-    private static final int QUESTIONS_PER_STAGE = 1;
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
@@ -74,6 +75,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final QuestionFeignClient questionFeignClient;
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
+    private final InterviewReportAsyncService reportAsyncService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -197,6 +199,12 @@ public class InterviewServiceImpl implements InterviewService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "No current question");
         }
         InnerQuestionVO question = loadCurrentQuestion(session);
+        InterviewMessage rootAiQuestion = rootQuestionMessage(currentAiQuestion);
+        String rootQuestionContent = firstText(rootAiQuestion == null ? null : rootAiQuestion.getQuestionContent(),
+                rootAiQuestion == null ? null : rootAiQuestion.getContent(),
+                currentAiQuestion.getQuestionContent(),
+                question == null ? null : question.getContent());
+        int maxFollowUp = stage == null || stage.getMaxFollowUpCount() == null ? MAX_FOLLOW_UP_COUNT : stage.getMaxFollowUpCount();
 
         saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null, null);
@@ -206,10 +214,13 @@ public class InterviewServiceImpl implements InterviewService {
         EvaluateAnswerDTO evaluateDTO = new EvaluateAnswerDTO();
         evaluateDTO.setQuestionId(question == null ? null : question.getId());
         evaluateDTO.setQuestionTitle(question == null ? null : question.getTitle());
-        evaluateDTO.setQuestionContent(firstText(currentAiQuestion.getQuestionContent(), currentAiQuestion.getContent(), question == null ? null : question.getContent()));
+        evaluateDTO.setRootQuestionContent(rootQuestionContent);
+        evaluateDTO.setCurrentQuestionContent(firstText(currentAiQuestion.getQuestionContent(), currentAiQuestion.getContent(), question == null ? null : question.getContent()));
+        evaluateDTO.setQuestionContent(evaluateDTO.getCurrentQuestionContent());
         evaluateDTO.setReferenceAnswer(question == null ? null : question.getReferenceAnswer());
         evaluateDTO.setAnswerContent(dto.getAnswerContent());
         evaluateDTO.setFollowUpCount(session.getCurrentFollowUpCount());
+        evaluateDTO.setMaxFollowUpCount(maxFollowUp);
         evaluateDTO.setCurrentStage(stage == null ? null : stage.getStageName());
         evaluateDTO.setHistorySummary(historySummary(session.getId()));
         EvaluateAnswerVO evaluation = FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO));
@@ -222,22 +233,25 @@ public class InterviewServiceImpl implements InterviewService {
         NextActionEnum nextAction = decideNextAction(session, stage, evaluation);
         CurrentQuestionVO nextQuestion = null;
         if (NextActionEnum.FOLLOW_UP.equals(nextAction)) {
-            GenerateFollowUpDTO followUpDTO = new GenerateFollowUpDTO();
-            followUpDTO.setQuestionId(question == null ? null : question.getId());
-            followUpDTO.setQuestionTitle(question == null ? null : question.getTitle());
-            followUpDTO.setQuestionContent(evaluateDTO.getQuestionContent());
-            followUpDTO.setAnswerContent(dto.getAnswerContent());
-            followUpDTO.setComment(evaluation == null ? null : evaluation.getComment());
-            followUpDTO.setFollowUpCount(session.getCurrentFollowUpCount());
-            followUpDTO.setCurrentStage(stage == null ? null : stage.getStageName());
-            followUpDTO.setHistorySummary(historySummary(session.getId()));
-            GenerateFollowUpVO followUp = FeignResultUtils.unwrap(aiFeignClient.followUp(followUpDTO));
+            String followUpQuestion = evaluation == null ? null : evaluation.getFollowUpQuestion();
+            String followUpReason = evaluation == null ? null : evaluation.getFollowUpReason();
+            if (!isValidFollowUp(followUpQuestion)) {
+                GenerateFollowUpVO followUp = FeignResultUtils.unwrap(aiFeignClient.followUp(buildFollowUpDTO(
+                        question, stage, evaluateDTO, dto.getAnswerContent(), evaluation)));
+                followUpQuestion = followUp == null ? null : followUp.getFollowUpQuestion();
+                followUpReason = followUp == null ? followUpReason : firstText(followUp.getReason(), followUpReason);
+            }
+            if (evaluation != null) {
+                evaluation.setFollowUpQuestion(followUpQuestion);
+                evaluation.setFollowUpReason(followUpReason);
+                evaluation.setFollowUpValid(isValidFollowUp(followUpQuestion));
+            }
             int nextFollowUpCount = safeInt(session.getCurrentFollowUpCount()) + 1;
             session.setCurrentFollowUpCount(nextFollowUpCount);
             InterviewMessage followUpMessage = saveMessage(session, stage, question, "AI", "FOLLOW_UP",
-                    followUp == null ? null : followUp.getFollowUpQuestion(), null, null,
+                    followUpQuestion, null, null,
                     currentAiQuestion.getId(), true, nextFollowUpCount,
-                    evaluation == null ? null : evaluation.getComment(), null);
+                    followUpReason, evaluation == null ? null : evaluation.getKnowledgePoints());
             nextQuestion = toCurrentQuestionVO(session, stage, followUpMessage);
             session.setStatus(InterviewStatusEnum.WAITING_ANSWER.name());
         } else if (NextActionEnum.NEXT_QUESTION.equals(nextAction)) {
@@ -269,6 +283,10 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setScore(evaluation == null ? null : evaluation.getScore());
         vo.setComment(evaluation == null ? null : evaluation.getComment());
         vo.setNextAction(nextAction.name());
+        vo.setKnowledgePoints(evaluation == null ? null : evaluation.getKnowledgePoints());
+        vo.setFollowUpQuestion(evaluation == null ? null : evaluation.getFollowUpQuestion());
+        vo.setFollowUpReason(evaluation == null ? null : evaluation.getFollowUpReason());
+        vo.setFollowUpValid(evaluation == null ? null : evaluation.getFollowUpValid());
         vo.setNextQuestion(nextQuestion);
         return vo;
     }
@@ -277,7 +295,9 @@ public class InterviewServiceImpl implements InterviewService {
     @Transactional(rollbackFor = Exception.class)
     public FinishInterviewVO finish(Long id) {
         InterviewSession session = getOwnedSession(id);
-        return finishAndGenerateReport(session);
+        FinishInterviewVO vo = prepareReportGeneration(session);
+        submitReportGenerationAfterCommit(session.getId());
+        return vo;
     }
 
     @Override
@@ -293,7 +313,17 @@ public class InterviewServiceImpl implements InterviewService {
             vo.setReport(InterviewConvert.toReportVO(existing));
             return vo;
         }
-        return finishAndGenerateReport(session);
+        if (existing != null && ReportStatusEnum.GENERATING.name().equals(existing.getStatus())) {
+            FinishInterviewVO vo = new FinishInterviewVO();
+            vo.setId(session.getId());
+            vo.setStatus(session.getStatus());
+            vo.setReportStatus(session.getReportStatus());
+            vo.setReport(InterviewConvert.toReportVO(existing));
+            return vo;
+        }
+        FinishInterviewVO vo = prepareReportGeneration(session);
+        submitReportGenerationAfterCommit(session.getId());
+        return vo;
     }
 
     @Override
@@ -337,10 +367,55 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         InterviewReport report = currentReport(session.getId());
         if (report == null) {
+            if (ReportStatusEnum.GENERATING.name().equals(session.getReportStatus())) {
+                InterviewReport generating = new InterviewReport();
+                generating.setSessionId(session.getId());
+                generating.setUserId(session.getUserId());
+                generating.setStatus(ReportStatusEnum.GENERATING.name());
+                generating.setSummary("面试报告正在生成中，请稍后刷新。");
+                return InterviewConvert.toReportVO(generating);
+            }
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not generated");
         }
         normalizeReportContent(report);
         return InterviewConvert.toReportVO(report);
+    }
+
+    private FinishInterviewVO prepareReportGeneration(InterviewSession session) {
+        session.setReportStatus(ReportStatusEnum.GENERATING.name());
+        session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
+        session.setEndTime(LocalDateTime.now());
+        sessionMapper.updateById(session);
+
+        InterviewReport report = currentReport(session.getId());
+        if (report == null) {
+            report = new InterviewReport();
+            report.setSessionId(session.getId());
+            report.setUserId(session.getUserId());
+        }
+        report.setStatus(ReportStatusEnum.GENERATING.name());
+        report.setFailureReason(null);
+        saveReport(report);
+
+        FinishInterviewVO vo = new FinishInterviewVO();
+        vo.setId(session.getId());
+        vo.setStatus(session.getStatus());
+        vo.setReportStatus(session.getReportStatus());
+        vo.setReport(InterviewConvert.toReportVO(report));
+        return vo;
+    }
+
+    private void submitReportGenerationAfterCommit(Long sessionId) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            reportAsyncService.generateReportAsync(sessionId);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                reportAsyncService.generateReportAsync(sessionId);
+            }
+        });
     }
 
     private FinishInterviewVO finishAndGenerateReport(InterviewSession session) {
@@ -408,6 +483,7 @@ public class InterviewServiceImpl implements InterviewService {
         aiDTO.setMode(session.getMode());
         aiDTO.setStageType(stage.getStageType());
         aiDTO.setCurrentStage(stage.getStageName());
+        aiDTO.setFocusPoints(stage.getFocusPoints());
         aiDTO.setTargetPosition(session.getTargetPosition());
         aiDTO.setExperienceLevel(session.getExperienceLevel());
         aiDTO.setIndustryDirection(session.getIndustryDirection());
@@ -442,7 +518,10 @@ public class InterviewServiceImpl implements InterviewService {
                 && safeInt(session.getCurrentFollowUpCount()) < maxFollowUp) {
             return NextActionEnum.FOLLOW_UP;
         }
-        if (currentStageMainQuestionCount(session.getId(), stage.getId()) >= QUESTIONS_PER_STAGE) {
+        int expectedQuestionCount = stage == null || stage.getExpectedQuestionCount() == null
+                ? 1
+                : Math.max(0, stage.getExpectedQuestionCount());
+        if (expectedQuestionCount <= 0 || currentStageMainQuestionCount(session.getId(), stage.getId()) >= expectedQuestionCount) {
             return nextStage(stage) == null ? NextActionEnum.FINISH : NextActionEnum.NEXT_STAGE;
         }
         return NextActionEnum.NEXT_QUESTION;
@@ -500,7 +579,7 @@ public class InterviewServiceImpl implements InterviewService {
         stage.setStageName(name);
         stage.setSort(sort);
         stage.setStageOrder(sort);
-        stage.setExpectedQuestionCount(QUESTIONS_PER_STAGE);
+        stage.setExpectedQuestionCount(expectedQuestionCount(type));
         stage.setAskedQuestionCount(0);
         stage.setFocusPoints(focusPoints);
         stage.setBasedOnResume(Boolean.TRUE.equals(session.getBasedOnResume()) || type.startsWith("PROJECT") || "PROJECT".equals(type));
@@ -509,6 +588,16 @@ public class InterviewServiceImpl implements InterviewService {
         stage.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         stage.setScore(0);
         return stage;
+    }
+
+    private int expectedQuestionCount(String stageType) {
+        return switch (stageType) {
+            case "OPENING", "SUMMARY", "JVM", "SCENARIO",
+                    "PROJECT_BACKGROUND", "PROJECT_ROLE", "TECH_SELECTION", "CORE_FLOW", "DB_CACHE", "OPTIMIZATION", "SCALABILITY" -> 1;
+            case "JAVA_BASIC", "CONCURRENCY", "MYSQL", "DATABASE", "REDIS", "CACHE_MQ", "PROJECT" -> 2;
+            case "SPRING", "FRAMEWORK" -> 1;
+            default -> 1;
+        };
     }
 
     private InterviewMessage saveMessage(InterviewSession session, InterviewStage stage, InnerQuestionVO question,
@@ -542,6 +631,55 @@ public class InterviewServiceImpl implements InterviewService {
         message.setComment(comment);
         messageMapper.insert(message);
         return message;
+    }
+
+    private GenerateFollowUpDTO buildFollowUpDTO(InnerQuestionVO question, InterviewStage stage,
+                                                  EvaluateAnswerDTO evaluateDTO, String answerContent,
+                                                  EvaluateAnswerVO evaluation) {
+        GenerateFollowUpDTO followUpDTO = new GenerateFollowUpDTO();
+        followUpDTO.setQuestionId(question == null ? null : question.getId());
+        followUpDTO.setQuestionTitle(question == null ? null : question.getTitle());
+        followUpDTO.setRootQuestionContent(evaluateDTO.getRootQuestionContent());
+        followUpDTO.setCurrentQuestionContent(evaluateDTO.getCurrentQuestionContent());
+        followUpDTO.setQuestionContent(evaluateDTO.getCurrentQuestionContent());
+        followUpDTO.setReferenceAnswer(evaluateDTO.getReferenceAnswer());
+        followUpDTO.setAnswerContent(answerContent);
+        followUpDTO.setComment(evaluation == null ? null : evaluation.getComment());
+        followUpDTO.setFollowUpCount(evaluateDTO.getFollowUpCount());
+        followUpDTO.setMaxFollowUpCount(evaluateDTO.getMaxFollowUpCount());
+        followUpDTO.setCurrentStage(stage == null ? null : stage.getStageName());
+        followUpDTO.setHistorySummary(evaluateDTO.getHistorySummary());
+        followUpDTO.setKnowledgePoints(evaluation == null ? null : evaluation.getKnowledgePoints());
+        return followUpDTO;
+    }
+
+    private InterviewMessage rootQuestionMessage(InterviewMessage message) {
+        InterviewMessage current = message;
+        int depth = 0;
+        while (current != null && Boolean.TRUE.equals(current.getIsFollowUp()) && current.getParentMessageId() != null && depth < 8) {
+            InterviewMessage parent = messageMapper.selectById(current.getParentMessageId());
+            if (parent == null) {
+                break;
+            }
+            current = parent;
+            depth++;
+        }
+        return current;
+    }
+
+    private boolean isValidFollowUp(String followUpQuestion) {
+        if (!StringUtils.hasText(followUpQuestion) || followUpQuestion.trim().length() < 12) {
+            return false;
+        }
+        String value = followUpQuestion.trim();
+        String[] banned = {"假设原问题", "如果你有具体", "请提供具体", "由于没有", "无法生成", "用户增长", "团队协作", "市场运营"};
+        for (String item : banned) {
+            if (value.contains(item)) {
+                return false;
+            }
+        }
+        return value.endsWith("?") || value.endsWith("？") || value.contains("请") || value.contains("如何")
+                || value.contains("为什么") || value.contains("能否") || value.contains("是否");
     }
 
     private CurrentQuestionVO currentQuestion(InterviewSession session) {
