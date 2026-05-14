@@ -18,13 +18,13 @@ import com.codecoachai.question.domain.dto.UpdateStatusDTO;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionGroup;
-import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.MasteryStatusEnum;
 import com.codecoachai.question.domain.vo.InnerQuestionVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionListVO;
+import com.codecoachai.question.domain.vo.QuestionTagVO;
 import com.codecoachai.question.domain.vo.SubmitQuestionAnswerVO;
 import com.codecoachai.question.domain.vo.WrongQuestionVO;
 import com.codecoachai.question.mapper.QuestionCategoryMapper;
@@ -283,13 +283,13 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private QuestionListVO toListVO(Question question) {
-        return QuestionConvert.toListVO(question, categoryName(question.getCategoryId()), tagNames(question.getId()),
+        return QuestionConvert.toListVO(question, categoryName(question.getCategoryId()), questionTags(question.getId()),
                 currentRecord(question.getId()));
     }
 
     private QuestionDetailVO toDetailVO(Question question) {
         return QuestionConvert.toDetailVO(question, categoryName(question.getCategoryId()), groupName(question.getGroupId()),
-                tagNames(question.getId()), currentRecord(question.getId()));
+                questionTags(question.getId()), currentRecord(question.getId()));
     }
 
     private String categoryName(Long categoryId) {
@@ -308,7 +308,7 @@ public class QuestionServiceImpl implements QuestionService {
         return group == null ? null : group.getGroupName();
     }
 
-    private List<String> tagNames(Long questionId) {
+    private List<QuestionTagVO> questionTags(Long questionId) {
         List<QuestionTagRelation> relations = tagRelationMapper.selectList(new LambdaQueryWrapper<QuestionTagRelation>()
                 .eq(QuestionTagRelation::getQuestionId, questionId));
         if (relations.isEmpty()) {
@@ -318,7 +318,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .map(QuestionTagRelation::getTagId)
                 .map(tagMapper::selectById)
                 .filter(tag -> tag != null)
-                .map(QuestionTag::getTagName)
+                .map(QuestionConvert::toTagVO)
                 .toList();
     }
 

@@ -6,6 +6,7 @@ import lombok.Data;
 public class QuestionTagVO {
 
     private Long id;
+    private String name;
     private String tagName;
     private Integer status;
 }

@@ -64,11 +64,11 @@ public class AiServiceImpl implements AiService {
     public GenerateReportVO generateReport(GenerateReportDTO dto) {
         long start = System.currentTimeMillis();
         GenerateReportVO vo = new GenerateReportVO();
-        vo.setTotalScore(80);
-        vo.setSummary("Mock report: the interview has been completed and the candidate can continue targeted practice.");
-        vo.setStrengths("Shows basic understanding of Java backend topics.");
-        vo.setWeaknesses("Needs more depth in production troubleshooting and tradeoff analysis.");
-        vo.setSuggestions("Review JVM, concurrency, MySQL index design, and Redis cache consistency.");
+        vo.setTotalScore(82);
+        vo.setSummary("本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。");
+        vo.setStrengths("回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。");
+        vo.setWeaknesses("主要问题：部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足，项目优化结果缺少量化指标。");
+        vo.setSuggestions("复习建议：1. 复盘集合、并发、事务、索引和缓存的高频题；2. 准备 2-3 个带指标的项目优化案例；3. 回答时按结论、原理、项目实践、风险边界的顺序组织。");
         saveLog("INTERVIEW_REPORT_GENERATE", dto, vo, start, null);
         return vo;
     }

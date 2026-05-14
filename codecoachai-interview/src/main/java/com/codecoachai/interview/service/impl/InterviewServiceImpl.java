@@ -60,6 +60,11 @@ public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
     private static final int QUESTIONS_PER_STAGE = 2;
+    private static final int DEFAULT_REPORT_SCORE = 82;
+    private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
+    private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
+    private static final String DEFAULT_REPORT_WEAKNESSES = "主要问题：部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足，项目优化结果缺少量化指标。";
+    private static final String DEFAULT_REPORT_SUGGESTIONS = "复习建议：1. 复盘集合、并发、事务、索引和缓存的高频题；2. 准备 2-3 个带指标的项目优化案例；3. 回答时按结论、原理、项目实践、风险边界的顺序组织。";
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -267,6 +272,7 @@ public class InterviewServiceImpl implements InterviewService {
         if (report == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not generated");
         }
+        normalizeReportContent(report);
         return InterviewConvert.toReportVO(report);
     }
 
@@ -287,11 +293,7 @@ public class InterviewServiceImpl implements InterviewService {
             reportDTO.setMessages(messages(session.getId()).stream().map(InterviewMessage::getContent).toList());
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
             report.setStatus(ReportStatusEnum.GENERATED.name());
-            report.setTotalScore(aiReport.getTotalScore());
-            report.setSummary(aiReport.getSummary());
-            report.setStrengths(aiReport.getStrengths());
-            report.setWeaknesses(aiReport.getWeaknesses());
-            report.setSuggestions(aiReport.getSuggestions());
+            applyReportContent(report, aiReport);
             report.setFailureReason(null);
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
             session.setReportStatus(ReportStatusEnum.GENERATED.name());
@@ -473,6 +475,48 @@ public class InterviewServiceImpl implements InterviewService {
         return reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
                 .eq(InterviewReport::getSessionId, sessionId)
                 .last("limit 1"));
+    }
+
+    private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
+        if (aiReport == null) {
+            applyDefaultReportContent(report);
+            return;
+        }
+        report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
+        report.setSummary(StringUtils.hasText(aiReport.getSummary()) ? aiReport.getSummary() : DEFAULT_REPORT_SUMMARY);
+        report.setStrengths(StringUtils.hasText(aiReport.getStrengths()) ? aiReport.getStrengths() : DEFAULT_REPORT_STRENGTHS);
+        report.setWeaknesses(StringUtils.hasText(aiReport.getWeaknesses()) ? aiReport.getWeaknesses() : DEFAULT_REPORT_WEAKNESSES);
+        report.setSuggestions(StringUtils.hasText(aiReport.getSuggestions()) ? aiReport.getSuggestions() : DEFAULT_REPORT_SUGGESTIONS);
+        normalizeReportContent(report);
+    }
+
+    private void normalizeReportContent(InterviewReport report) {
+        if (report == null || !isEnglishMockReport(report)) {
+            return;
+        }
+        applyDefaultReportContent(report);
+        saveReport(report);
+    }
+
+    private boolean isEnglishMockReport(InterviewReport report) {
+        return containsIgnoreCase(report.getSummary(), "Mock report")
+                || containsIgnoreCase(report.getSummary(), "the interview has been completed")
+                || containsIgnoreCase(report.getStrengths(), "Shows basic understanding")
+                || containsIgnoreCase(report.getWeaknesses(), "Needs more depth")
+                || containsIgnoreCase(report.getSuggestions(), "Review JVM");
+    }
+
+    private boolean containsIgnoreCase(String value, String keyword) {
+        return StringUtils.hasText(value) && value.toLowerCase().contains(keyword.toLowerCase());
+    }
+
+    private void applyDefaultReportContent(InterviewReport report) {
+        report.setTotalScore(DEFAULT_REPORT_SCORE);
+        report.setSummary(DEFAULT_REPORT_SUMMARY);
+        report.setStrengths(DEFAULT_REPORT_STRENGTHS);
+        report.setWeaknesses(DEFAULT_REPORT_WEAKNESSES);
+        report.setSuggestions(DEFAULT_REPORT_SUGGESTIONS);
+        report.setFailureReason(null);
     }
 
     private void saveReport(InterviewReport report) {

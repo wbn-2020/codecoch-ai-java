@@ -19,7 +19,7 @@ public final class QuestionConvert {
     private QuestionConvert() {
     }
 
-    public static QuestionListVO toListVO(Question question, String categoryName, List<String> tags,
+    public static QuestionListVO toListVO(Question question, String categoryName, List<QuestionTagVO> tags,
                                           UserQuestionRecord record) {
         QuestionListVO vo = new QuestionListVO();
         vo.setId(question.getId());
@@ -30,6 +30,8 @@ public final class QuestionConvert {
         vo.setDifficulty(question.getDifficulty());
         vo.setStatus(question.getStatus());
         vo.setTags(tags);
+        vo.setTagIds(tags.stream().map(QuestionTagVO::getId).toList());
+        vo.setTagNames(tags.stream().map(QuestionTagVO::getName).toList());
         vo.setFavorite(record != null && Integer.valueOf(1).equals(record.getFavorite()));
         vo.setMasteryStatus(record == null ? null : record.getMasteryStatus());
         vo.setCreatedAt(question.getCreatedAt());
@@ -37,7 +39,7 @@ public final class QuestionConvert {
     }
 
     public static QuestionDetailVO toDetailVO(Question question, String categoryName, String groupName,
-                                              List<String> tags, UserQuestionRecord record) {
+                                              List<QuestionTagVO> tags, UserQuestionRecord record) {
         QuestionDetailVO vo = new QuestionDetailVO();
         vo.setId(question.getId());
         vo.setTitle(question.getTitle());
@@ -51,6 +53,8 @@ public final class QuestionConvert {
         vo.setDifficulty(question.getDifficulty());
         vo.setStatus(question.getStatus());
         vo.setTags(tags);
+        vo.setTagIds(tags.stream().map(QuestionTagVO::getId).toList());
+        vo.setTagNames(tags.stream().map(QuestionTagVO::getName).toList());
         vo.setFavorite(record != null && Integer.valueOf(1).equals(record.getFavorite()));
         vo.setMasteryStatus(record == null ? null : record.getMasteryStatus());
         return vo;
@@ -80,6 +84,7 @@ public final class QuestionConvert {
     public static QuestionTagVO toTagVO(QuestionTag tag) {
         QuestionTagVO vo = new QuestionTagVO();
         vo.setId(tag.getId());
+        vo.setName(tag.getTagName());
         vo.setTagName(tag.getTagName());
         vo.setStatus(tag.getStatus());
         return vo;
