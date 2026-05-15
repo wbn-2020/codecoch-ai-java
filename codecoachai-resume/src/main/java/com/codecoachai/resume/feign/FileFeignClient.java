@@ -4,6 +4,9 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -16,4 +19,9 @@ public interface FileFeignClient {
     Result<InnerFileUploadVO> upload(@RequestPart("file") MultipartFile file,
                                      @RequestParam("bizType") String bizType,
                                      @RequestParam("userId") Long userId);
+
+    @GetMapping("/inner/files/{id}/download")
+    ResponseEntity<byte[]> download(@PathVariable("id") Long id,
+                                    @RequestParam("userId") Long userId,
+                                    @RequestParam("bizType") String bizType);
 }

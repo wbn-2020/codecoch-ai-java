@@ -1,5 +1,6 @@
 package com.codecoachai.file.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.file.config.FileStorageProperties;
@@ -8,6 +9,8 @@ import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
@@ -15,6 +18,10 @@ import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -26,6 +33,11 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
 
     private static final String STATUS_AVAILABLE = "AVAILABLE";
     private static final String PROVIDER_LOCAL = "LOCAL";
+    private static final int NOT_DELETED = 0;
+    private static final String HEADER_ORIGINAL_FILENAME = "X-Original-Filename";
+    private static final String HEADER_FILE_EXT = "X-File-Ext";
+    private static final String HEADER_FILE_SIZE = "X-File-Size";
+    private static final String HEADER_MIME_TYPE = "X-Mime-Type";
     private static final DateTimeFormatter DATE_PATH_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd");
 
     private final FileInfoMapper fileInfoMapper;
@@ -62,6 +74,83 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
         }
+    }
+
+    @Override
+    public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        if (!StringUtils.hasText(fileInfo.getStoragePath())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "storage path is empty");
+        }
+
+        Path root = normalizeRoot();
+        Path target = root.resolve(fileInfo.getStoragePath()).normalize();
+        ensureInsideRoot(root, target);
+        if (!Files.isRegularFile(target)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+        }
+
+        try {
+            byte[] bytes = Files.readAllBytes(target);
+            MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
+            return ResponseEntity.ok()
+                    .contentType(mediaType)
+                    .contentLength(bytes.length)
+                    .header(HEADER_ORIGINAL_FILENAME, encodeHeaderValue(fileInfo.getOriginalFilename()))
+                    .header(HEADER_FILE_EXT, fileInfo.getFileExt())
+                    .header(HEADER_FILE_SIZE, String.valueOf(fileInfo.getFileSize()))
+                    .header(HEADER_MIME_TYPE, StringUtils.hasText(fileInfo.getMimeType())
+                            ? fileInfo.getMimeType()
+                            : MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
+                            .build()
+                            .toString())
+                    .body(bytes);
+        } catch (IOException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
+        }
+    }
+
+    private MediaType resolveMediaType(String mimeType) {
+        if (!StringUtils.hasText(mimeType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        try {
+            return MediaType.parseMediaType(mimeType);
+        } catch (IllegalArgumentException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+    }
+
+    private String encodeHeaderValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    private FileInfo getAvailableFile(Long fileId, Long userId, String bizType) {
+        if (fileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+        }
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (!StringUtils.hasText(bizType)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType is required");
+        }
+        FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
+                .eq(FileInfo::getId, fileId)
+                .eq(FileInfo::getUserId, userId)
+                .eq(FileInfo::getBizType, bizType)
+                .eq(FileInfo::getStatus, STATUS_AVAILABLE)
+                .eq(FileInfo::getDeleted, NOT_DELETED)
+                .last("limit 1"));
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+        }
+        return fileInfo;
     }
 
     private void validateBasic(MultipartFile file, String bizType, Long userId) {
