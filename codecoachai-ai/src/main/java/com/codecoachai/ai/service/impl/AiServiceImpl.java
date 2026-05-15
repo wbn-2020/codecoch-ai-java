@@ -7,6 +7,7 @@ import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
+import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
@@ -16,8 +17,10 @@ import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
+import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
+import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
@@ -48,6 +51,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_REPORT = "INTERVIEW_REPORT_GENERATE";
     private static final String SCENE_RESUME_PARSE = "RESUME_STRUCTURED_PARSE";
     private static final String SCENE_RESUME_OPTIMIZE = "RESUME_OPTIMIZE";
+    private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptTemplateMapper promptTemplateMapper;
@@ -75,6 +79,38 @@ public class AiServiceImpl implements AiService {
             saveLog(scene, template, prompt, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
             return fallback;
+        }
+    }
+
+    @Override
+    public GenerateQuestionDraftVO generateQuestionDrafts(GenerateQuestionDraftDTO dto) {
+        validateQuestionDraftDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptTemplate template = enabledTemplate(SCENE_AI_QUESTION_GENERATE);
+        String prompt = render(questionDraftPromptContent(template), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateQuestionDraftVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockQuestionDrafts(dto);
+                rawResponse = toJson(Map.of("questions", vo.getQuestions()));
+            } else {
+                rawResponse = aiClient.chat(prompt);
+                vo = parseQuestionDrafts(rawResponse, dto);
+            }
+            Long logId = saveLog(SCENE_AI_QUESTION_GENERATE, template, prompt, rawResponse,
+                    dto.getBatchId(), start, null, dto.getAdminUserId(), AiFailureType.NONE);
+            vo.setBatchId(dto.getBatchId());
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(rawResponse);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(SCENE_AI_QUESTION_GENERATE, template, prompt, firstText(rawResponse, ex.getMessage()),
+                    dto.getBatchId(), start, ex.getMessage(), dto.getAdminUserId(), failureType(ex));
+            if (ex instanceof BusinessException businessException) {
+                throw businessException;
+            }
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "AI question generation failed"));
         }
     }
 
@@ -237,6 +273,22 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateQuestionDraftDTO(GenerateQuestionDraftDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (!StringUtils.hasText(dto.getBatchId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+        }
+        if (dto.getAdminUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "adminUserId is required");
+        }
+        int count = dto.getCount() == null ? 5 : dto.getCount();
+        if (count < 1 || count > 20) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "count must be between 1 and 20");
+        }
+    }
+
     private BusinessException toBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
@@ -361,6 +413,10 @@ public class AiServiceImpl implements AiService {
         return templateContent(template, defaultResumeOptimizePrompt());
     }
 
+    private String questionDraftPromptContent(PromptTemplate template) {
+        return templateContent(template, defaultQuestionDraftPrompt());
+    }
+
     private String render(String template, Map<String, String> variables) {
         String prompt = template;
         for (Map.Entry<String, String> entry : variables.entrySet()) {
@@ -471,6 +527,23 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(GenerateQuestionDraftDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("batchId", dto.getBatchId());
+        values.put("technologyStack", dto.getTechnologyStack());
+        values.put("knowledgePoint", dto.getKnowledgePoint());
+        values.put("questionType", firstText(dto.getQuestionType(), "SHORT_ANSWER"));
+        values.put("difficulty", firstText(dto.getDifficulty(), "MEDIUM"));
+        values.put("experienceYears", dto.getExperienceYears() == null ? "" : String.valueOf(dto.getExperienceYears()));
+        values.put("count", String.valueOf(dto.getCount() == null ? 5 : dto.getCount()));
+        values.put("generateReferenceAnswer", String.valueOf(!Boolean.FALSE.equals(dto.getGenerateReferenceAnswer())));
+        values.put("generateFollowUps", String.valueOf(Boolean.TRUE.equals(dto.getGenerateFollowUps())));
+        values.put("generateTagSuggestions", String.valueOf(Boolean.TRUE.equals(dto.getGenerateTagSuggestions())));
+        values.put("generateCategorySuggestion", String.valueOf(Boolean.TRUE.equals(dto.getGenerateCategorySuggestion())));
+        values.put("extraRequirements", dto.getExtraRequirements());
+        return values;
+    }
+
     private GenerateInterviewQuestionVO parseQuestion(String raw, String scene) {
         JsonNode json;
         try {
@@ -496,6 +569,66 @@ public class AiServiceImpl implements AiService {
         vo.setQuestionText(content);
         vo.setScene(scene);
         return vo;
+    }
+
+    private GenerateQuestionDraftVO parseQuestionDrafts(String raw, GenerateQuestionDraftDTO dto) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation response must be a JSON object");
+        }
+        JsonNode questionsNode = json.path("questions");
+        if (!questionsNode.isArray()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation response missing questions array");
+        }
+        int requestedCount = dto.getCount() == null ? 5 : dto.getCount();
+        if (questionsNode.isEmpty() || questionsNode.size() > requestedCount) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation response question count invalid");
+        }
+        List<QuestionDraftItemVO> questions = new java.util.ArrayList<>();
+        for (JsonNode item : questionsNode) {
+            if (item == null || !item.isObject()) {
+                throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation item must be object");
+            }
+            QuestionDraftItemVO question = new QuestionDraftItemVO();
+            question.setTitle(requireText(item, "title"));
+            question.setContent(requireText(item, "content"));
+            question.setReferenceAnswer(requireText(item, "referenceAnswer"));
+            question.setAnalysis(requireText(item, "analysis"));
+            question.setDifficulty(firstText(item.path("difficulty").asText(null), dto.getDifficulty(), "MEDIUM"));
+            question.setQuestionType(firstText(item.path("questionType").asText(null), dto.getQuestionType(), "SHORT_ANSWER"));
+            question.setFollowUpQuestions(textArray(item.path("followUpQuestions")));
+            question.setTagSuggestions(textArray(item.path("tagSuggestions")));
+            question.setCategorySuggestion(item.path("categorySuggestion").asText(null));
+            question.setGroupSuggestion(item.path("groupSuggestion").asText(null));
+            questions.add(question);
+        }
+        GenerateQuestionDraftVO vo = new GenerateQuestionDraftVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
+        return vo;
+    }
+
+    private String requireText(JsonNode json, String fieldName) {
+        String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question generation item missing field: " + fieldName);
+        }
+        return value;
+    }
+
+    private List<String> textArray(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<String> values = new java.util.ArrayList<>();
+        for (JsonNode item : node) {
+            String value = item.asText(null);
+            if (StringUtils.hasText(value)) {
+                values.add(value);
+            }
+        }
+        return values;
     }
 
     private EvaluateAnswerVO parseEvaluate(String raw, EvaluateAnswerDTO dto) {
@@ -668,6 +801,36 @@ public class AiServiceImpl implements AiService {
         vo.setQuestionContent(content);
         vo.setQuestionText(content);
         vo.setScene(scene);
+        return vo;
+    }
+
+    private GenerateQuestionDraftVO mockQuestionDrafts(GenerateQuestionDraftDTO dto) {
+        int count = dto.getCount() == null ? 5 : dto.getCount();
+        String topic = firstText(dto.getKnowledgePoint(), dto.getTechnologyStack(), "Java 后端");
+        String difficulty = firstText(dto.getDifficulty(), "MEDIUM");
+        String questionType = firstText(dto.getQuestionType(), "SHORT_ANSWER");
+        List<QuestionDraftItemVO> questions = new java.util.ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            QuestionDraftItemVO item = new QuestionDraftItemVO();
+            item.setTitle(topic + " 核心面试题 " + i);
+            item.setContent("请说明 " + topic + " 的核心原理、典型生产场景、边界问题和工程取舍。");
+            item.setReferenceAnswer(topic + " 需要从基本原理、关键机制、常见异常场景、可观测性和生产取舍几个角度回答。");
+            item.setAnalysis("优秀回答应覆盖该机制为什么存在、如何工作、什么时候会失效，以及在真实 Java 后端系统中如何验证和排查。");
+            item.setDifficulty(difficulty);
+            item.setQuestionType(questionType);
+            item.setFollowUpQuestions(Boolean.TRUE.equals(dto.getGenerateFollowUps())
+                    ? List.of("你会如何在线上验证这个机制是否按预期工作？", "这个机制常见的失效场景有哪些？")
+                    : List.of());
+            item.setTagSuggestions(Boolean.TRUE.equals(dto.getGenerateTagSuggestions())
+                    ? List.of(topic, "Java", "后端")
+                    : List.of());
+            item.setCategorySuggestion(Boolean.TRUE.equals(dto.getGenerateCategorySuggestion()) ? "Java 后端" : null);
+            item.setGroupSuggestion(topic);
+            questions.add(item);
+        }
+        GenerateQuestionDraftVO vo = new GenerateQuestionDraftVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
         return vo;
     }
 
@@ -1280,6 +1443,43 @@ public class AiServiceImpl implements AiService {
                 只输出 JSON，不要 Markdown，不要代码块，不要解释文字。
                 字段固定：
                 {"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}
+                """;
+    }
+
+    private String defaultQuestionDraftPrompt() {
+        return """
+                你是 Java 后端面试题生成助手。
+                请根据输入的 technologyStack、knowledgePoint、questionType、difficulty、experienceYears、count 生成面试题草稿。
+
+                输入：
+                - technologyStack: {{technologyStack}}
+                - knowledgePoint: {{knowledgePoint}}
+                - questionType: {{questionType}}
+                - difficulty: {{difficulty}}
+                - experienceYears: {{experienceYears}}
+                - count: {{count}}
+                - generateReferenceAnswer: {{generateReferenceAnswer}}
+                - generateFollowUps: {{generateFollowUps}}
+                - generateTagSuggestions: {{generateTagSuggestions}}
+                - generateCategorySuggestion: {{generateCategorySuggestion}}
+                - extraRequirements: {{extraRequirements}}
+
+                输出要求：
+                1. 只能输出 JSON object。
+                2. 不要输出 Markdown。
+                3. 不要输出代码块。
+                4. 顶层固定为 {"questions":[...]}，不要直接输出 JSON array。
+                5. questions 数量必须大于 0 且不得超过 count。
+                6. 每题必须包含 title、content、referenceAnswer、analysis。
+                7. difficulty 和 questionType 优先使用输入值。
+                8. 不要生成虚假候选人经历。
+                9. 不要把题目判定为重复题。
+                10. 不要输出题库去重判断。
+                11. 不要输出 SAME_INTENT、FOLLOW_UP、RELATED、ADVANCED 题目关系。
+                12. 如果输入不足，生成通用 Java 后端面试题，但仍要围绕技术点。
+
+                JSON 格式：
+                {"questions":[{"title":"题目标题","content":"题目内容","referenceAnswer":"参考答案","analysis":"答案解析","difficulty":"MEDIUM","questionType":"SHORT_ANSWER","followUpQuestions":["追问题"],"tagSuggestions":["标签建议"],"categorySuggestion":"分类建议","groupSuggestion":"问题组建议"}]}
                 """;
     }
 
