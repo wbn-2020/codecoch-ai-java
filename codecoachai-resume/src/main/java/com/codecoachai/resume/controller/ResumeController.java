@@ -3,6 +3,8 @@ package com.codecoachai.resume.controller;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
+import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
+import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
@@ -60,6 +62,22 @@ public class ResumeController {
     @PostMapping("/{id}/reparse")
     public Result<ResumeParseStatusVO> reparse(@PathVariable Long id) {
         return Result.success(resumeService.reparse(id));
+    }
+
+    /**
+     * A4 stage: path variable id is resume_analysis_record.id, not the confirmed resume.id.
+     */
+    @GetMapping("/{id}/analysis-result")
+    public Result<ResumeAnalysisResultVO> getAnalysisResult(@PathVariable Long id) {
+        return Result.success(resumeService.getAnalysisResult(id));
+    }
+
+    /**
+     * A4 stage: path variable id is resume_analysis_record.id, not the confirmed resume.id.
+     */
+    @PostMapping("/{id}/confirm-analysis")
+    public Result<ResumeConfirmAnalysisVO> confirmAnalysis(@PathVariable Long id) {
+        return Result.success(resumeService.confirmAnalysis(id));
     }
 
     @GetMapping("/{id}")

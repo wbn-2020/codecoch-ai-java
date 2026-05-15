@@ -8,6 +8,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.convert.ResumeConvert;
+import com.codecoachai.resume.domain.dto.ParsedResumeStructuredDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.entity.Resume;
@@ -15,6 +16,8 @@ import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
+import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
@@ -26,6 +29,8 @@ import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.service.ResumeService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -41,12 +46,15 @@ public class ResumeServiceImpl implements ResumeService {
 
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
+    private static final String DEFAULT_AI_RESUME_TITLE = "AI Parsed Resume";
+    private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final FileFeignClient fileFeignClient;
+    private final ObjectMapper objectMapper;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -159,6 +167,66 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    public ResumeAnalysisResultVO getAnalysisResult(Long analysisRecordId) {
+        ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId());
+        ResumeAnalysisResultVO vo = new ResumeAnalysisResultVO();
+        vo.setAnalysisRecordId(record.getId());
+        vo.setFileId(record.getFileId());
+        vo.setResumeId(record.getResumeId());
+        vo.setParseStatus(record.getParseStatus());
+        vo.setErrorMessage(record.getErrorMessage());
+        vo.setUpdatedAt(record.getUpdatedAt());
+
+        ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
+        if (status == ResumeParseStatus.WAIT_CONFIRM || status == ResumeParseStatus.SUCCESS) {
+            vo.setStructuredJson(parseStructuredJsonObject(record.getStructuredJson()));
+            vo.setRawTextSummary(summarizeRawText(record.getRawText()));
+        }
+        return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeConfirmAnalysisVO confirmAnalysis(Long analysisRecordId) {
+        Long userId = requireCurrentUserId();
+        ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
+        ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
+        if (status == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported parse status");
+        }
+        if (status == ResumeParseStatus.SUCCESS) {
+            return confirmAnalysisSuccess(record);
+        }
+        if (status == ResumeParseStatus.PENDING || status == ResumeParseStatus.PARSING) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is not finished");
+        }
+        if (status == ResumeParseStatus.FAILED) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis failed, please reparse first");
+        }
+        if (status != ResumeParseStatus.WAIT_CONFIRM) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis cannot be confirmed");
+        }
+
+        ParsedResumeStructuredDTO structuredResume = parseStructuredResume(record.getStructuredJson());
+        Resume resume = buildResumeFromStructured(record, structuredResume);
+        resumeMapper.insert(resume);
+        insertProjects(resume.getId(), structuredResume.getProjectExperiences());
+
+        int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
+                .set(ResumeAnalysisRecord::getResumeId, resume.getId())
+                .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.SUCCESS.getCode())
+                .set(ResumeAnalysisRecord::getErrorMessage, null)
+                .eq(ResumeAnalysisRecord::getId, analysisRecordId)
+                .eq(ResumeAnalysisRecord::getUserId, userId)
+                .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.WAIT_CONFIRM.getCode()));
+        if (affectedRows != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume analysis confirmation failed");
+        }
+        return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
+    }
+
+    @Override
     public ResumeDetailVO getResume(Long id) {
         return toDetailVO(getOwnedResume(id));
     }
@@ -255,6 +323,187 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setMessage(status == null ? "Unsupported parse status" : status.getMessage());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
+    }
+
+    private ResumeConfirmAnalysisVO confirmAnalysisSuccess(ResumeAnalysisRecord record) {
+        if (record.getResumeId() == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Confirmed resume id is missing");
+        }
+        Resume resume = getOwnedResume(record.getResumeId());
+        return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
+    }
+
+    private ResumeConfirmAnalysisVO toConfirmAnalysisVO(Long analysisRecordId, Long resumeId, String parseStatus,
+                                                       ResumeDetailVO resume) {
+        ResumeConfirmAnalysisVO vo = new ResumeConfirmAnalysisVO();
+        vo.setAnalysisRecordId(analysisRecordId);
+        vo.setResumeId(resumeId);
+        vo.setParseStatus(parseStatus);
+        vo.setResume(resume);
+        return vo;
+    }
+
+    private ParsedResumeStructuredDTO parseStructuredResume(String structuredJson) {
+        JsonNode root = parseStructuredJsonObject(structuredJson);
+        requireObjectField(root, "basicInfo");
+        requireTextField(root, "targetPosition");
+        requireArrayField(root, "skills");
+        requireArrayField(root, "workExperiences");
+        requireArrayField(root, "projectExperiences");
+        requireArrayField(root, "educationExperiences");
+        for (JsonNode project : root.path("projectExperiences")) {
+            if (project == null || !project.isObject()) {
+                throw invalidStructuredJson();
+            }
+            requireArrayField(project, "techStack");
+            requireArrayField(project, "responsibilities");
+            requireArrayField(project, "technicalDifficulties");
+            requireArrayField(project, "achievements");
+        }
+        try {
+            return objectMapper.treeToValue(root, ParsedResumeStructuredDTO.class);
+        } catch (Exception ex) {
+            throw invalidStructuredJson();
+        }
+    }
+
+    private JsonNode parseStructuredJsonObject(String structuredJson) {
+        if (!StringUtils.hasText(structuredJson)) {
+            throw invalidStructuredJson();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(structuredJson);
+            if (root == null || !root.isObject()) {
+                throw invalidStructuredJson();
+            }
+            return root;
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw invalidStructuredJson();
+        }
+    }
+
+    private void requireObjectField(JsonNode root, String fieldName) {
+        if (!root.has(fieldName) || !root.path(fieldName).isObject()) {
+            throw invalidStructuredJson();
+        }
+    }
+
+    private void requireTextField(JsonNode root, String fieldName) {
+        if (!root.has(fieldName) || !root.path(fieldName).isTextual()) {
+            throw invalidStructuredJson();
+        }
+    }
+
+    private void requireArrayField(JsonNode root, String fieldName) {
+        if (!root.has(fieldName) || !root.path(fieldName).isArray()) {
+            throw invalidStructuredJson();
+        }
+    }
+
+    private BusinessException invalidStructuredJson() {
+        return new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis structuredJson is invalid");
+    }
+
+    private Resume buildResumeFromStructured(ResumeAnalysisRecord record, ParsedResumeStructuredDTO structuredResume) {
+        Long existingCount = resumeMapper.selectCount(new LambdaQueryWrapper<Resume>()
+                .eq(Resume::getUserId, record.getUserId()));
+        ParsedResumeStructuredDTO.BasicInfo basicInfo = structuredResume.getBasicInfo();
+        String realName = basicInfo == null ? null : basicInfo.getName();
+        String targetPosition = structuredResume.getTargetPosition();
+        Resume resume = new Resume();
+        resume.setUserId(record.getUserId());
+        resume.setTitle(buildResumeTitle(realName, targetPosition));
+        resume.setRealName(realName);
+        resume.setEmail(basicInfo == null ? null : basicInfo.getEmail());
+        resume.setPhone(basicInfo == null ? null : basicInfo.getPhone());
+        resume.setTargetPosition(targetPosition);
+        resume.setSkillStack(joinValues(structuredResume.getSkills(), "、"));
+        resume.setWorkExperience(toCompactJson(structuredResume.getWorkExperiences()));
+        resume.setEducationExperience(toCompactJson(structuredResume.getEducationExperiences()));
+        resume.setSummary(buildResumeSummary(realName, targetPosition, resume.getSkillStack()));
+        resume.setIsDefault(existingCount == null || existingCount == 0 ? CommonConstants.YES : CommonConstants.NO);
+        resume.setStatus(CommonConstants.YES);
+        return resume;
+    }
+
+    private void insertProjects(Long resumeId, List<ParsedResumeStructuredDTO.ProjectExperience> projectExperiences) {
+        if (projectExperiences == null || projectExperiences.isEmpty()) {
+            return;
+        }
+        int sort = 0;
+        for (ParsedResumeStructuredDTO.ProjectExperience item : projectExperiences) {
+            if (item == null || !StringUtils.hasText(item.getProjectName())) {
+                continue;
+            }
+            ResumeProject project = new ResumeProject();
+            project.setResumeId(resumeId);
+            project.setProjectName(item.getProjectName());
+            project.setProjectPeriod(item.getPeriod());
+            project.setDescription(item.getDescription());
+            project.setTechStack(joinValues(item.getTechStack(), "、"));
+            project.setResponsibility(joinValues(item.getResponsibilities(), "\n"));
+            project.setTechnicalDifficulties(joinValues(item.getTechnicalDifficulties(), "\n"));
+            project.setHighlights(joinValues(item.getAchievements(), "\n"));
+            project.setSort(sort);
+            project.setSortOrder(sort);
+            projectMapper.insert(project);
+            sort++;
+        }
+    }
+
+    private String buildResumeTitle(String realName, String targetPosition) {
+        if (StringUtils.hasText(realName) && StringUtils.hasText(targetPosition)) {
+            return realName + " - " + targetPosition;
+        }
+        if (StringUtils.hasText(realName)) {
+            return realName + " - " + DEFAULT_AI_RESUME_TITLE;
+        }
+        if (StringUtils.hasText(targetPosition)) {
+            return targetPosition;
+        }
+        return DEFAULT_AI_RESUME_TITLE;
+    }
+
+    private String buildResumeSummary(String realName, String targetPosition, String skillStack) {
+        StringBuilder summary = new StringBuilder(DEFAULT_AI_RESUME_TITLE);
+        if (StringUtils.hasText(realName)) {
+            summary.append(": ").append(realName);
+        }
+        if (StringUtils.hasText(targetPosition)) {
+            summary.append(", target ").append(targetPosition);
+        }
+        if (StringUtils.hasText(skillStack)) {
+            summary.append(", skills ").append(skillStack);
+        }
+        return summary.toString();
+    }
+
+    private String joinValues(List<String> values, String delimiter) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        String joined = values.stream()
+                .filter(StringUtils::hasText)
+                .reduce((left, right) -> left + delimiter + right)
+                .orElse(null);
+        return StringUtils.hasText(joined) ? joined : null;
+    }
+
+    private String toCompactJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value == null ? List.of() : value);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis structuredJson is invalid");
+        }
+    }
+
+    private String summarizeRawText(String rawText) {
+        if (!StringUtils.hasText(rawText)) {
+            return null;
+        }
+        return rawText.length() <= RAW_TEXT_SUMMARY_LENGTH ? rawText : rawText.substring(0, RAW_TEXT_SUMMARY_LENGTH);
     }
 
     private List<ResumeProjectVO> projects(Long resumeId) {

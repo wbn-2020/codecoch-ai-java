@@ -3,6 +3,8 @@ package com.codecoachai.resume.service;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
+import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
@@ -22,6 +24,10 @@ public interface ResumeService {
     ResumeParseStatusVO getParseStatus(Long analysisRecordId);
 
     ResumeParseStatusVO reparse(Long analysisRecordId);
+
+    ResumeAnalysisResultVO getAnalysisResult(Long analysisRecordId);
+
+    ResumeConfirmAnalysisVO confirmAnalysis(Long analysisRecordId);
 
     ResumeDetailVO getResume(Long id);
 
