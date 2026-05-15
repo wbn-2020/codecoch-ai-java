@@ -5,11 +5,13 @@ import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
+import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
+import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 
 public interface AiService {
 
@@ -22,4 +24,6 @@ public interface AiService {
     GenerateReportVO generateReport(GenerateReportDTO dto);
 
     ParseResumeVO parseResume(ParseResumeDTO dto);
+
+    ResumeOptimizeAiResponseVO optimizeResume(ResumeOptimizeAiRequestDTO dto);
 }

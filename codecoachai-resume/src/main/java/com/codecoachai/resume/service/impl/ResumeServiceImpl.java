@@ -9,34 +9,47 @@ import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.convert.ResumeConvert;
 import com.codecoachai.resume.domain.dto.ParsedResumeStructuredDTO;
+import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
+import com.codecoachai.resume.domain.entity.ResumeOptimizeRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
+import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
+import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.feign.FileFeignClient;
+import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
+import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
+import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -48,13 +61,17 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
     private static final String DEFAULT_AI_RESUME_TITLE = "AI Parsed Resume";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
+    private final ResumeOptimizeRecordMapper optimizeRecordMapper;
     private final FileFeignClient fileFeignClient;
+    private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -224,6 +241,44 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume analysis confirmation failed");
         }
         return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
+    }
+
+    @Override
+    public ResumeOptimizeSubmitVO optimizeResume(Long resumeId, ResumeOptimizeRequestDTO dto) {
+        ResumeOptimizeRequestDTO request = dto == null ? new ResumeOptimizeRequestDTO() : dto;
+        OptimizeContext context = transactionTemplate.execute(status -> createOptimizeRecord(resumeId, request));
+        try {
+            ResumeOptimizeAiResponseVO response = FeignResultUtils.unwrap(aiFeignClient.optimizeResume(context.aiRequest()));
+            JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
+            ResumeOptimizeRecord latestRecord = transactionTemplate.execute(status ->
+                    markOptimizeSuccess(context.record().getId(), resultJson.toString(),
+                            response == null ? null : response.getAiCallLogId()));
+            return toOptimizeSubmitVO(latestRecord, resultJson);
+        } catch (RuntimeException ex) {
+            ResumeOptimizeRecord failedRecord = transactionTemplate.execute(status ->
+                    markOptimizeFailed(context.record().getId(), ex));
+            return toOptimizeSubmitVO(failedRecord, null);
+        }
+    }
+
+    @Override
+    public List<ResumeOptimizeRecordVO> listOptimizeRecords(Long resumeId) {
+        Long userId = requireCurrentUserId();
+        getOwnedResume(resumeId, userId);
+        return optimizeRecordMapper.selectList(new LambdaQueryWrapper<ResumeOptimizeRecord>()
+                        .eq(ResumeOptimizeRecord::getResumeId, resumeId)
+                        .eq(ResumeOptimizeRecord::getUserId, userId)
+                        .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
+                        .orderByDesc(ResumeOptimizeRecord::getCreatedAt))
+                .stream()
+                .map(this::toOptimizeRecordVO)
+                .toList();
+    }
+
+    @Override
+    public ResumeOptimizeDetailVO getOptimizeRecordDetail(Long recordId) {
+        ResumeOptimizeRecord record = getOwnedOptimizeRecord(recordId, requireCurrentUserId());
+        return toOptimizeDetailVO(record);
     }
 
     @Override
@@ -506,6 +561,198 @@ public class ResumeServiceImpl implements ResumeService {
         return rawText.length() <= RAW_TEXT_SUMMARY_LENGTH ? rawText : rawText.substring(0, RAW_TEXT_SUMMARY_LENGTH);
     }
 
+    private OptimizeContext createOptimizeRecord(Long resumeId, ResumeOptimizeRequestDTO dto) {
+        Long userId = requireCurrentUserId();
+        Resume resume = getOwnedResume(resumeId, userId);
+        List<ResumeProject> selectedProjects = selectProjects(resumeId, dto.getSelectedProjectIds());
+        String targetPosition = firstText(dto.getTargetPosition(), resume.getTargetPosition());
+
+        ResumeOptimizeRecord record = new ResumeOptimizeRecord();
+        record.setUserId(userId);
+        record.setResumeId(resumeId);
+        record.setTargetPosition(targetPosition);
+        record.setExperienceYears(dto.getExperienceYears());
+        record.setIndustryDirection(dto.getIndustryDirection());
+        record.setOptimizeStatus(ResumeOptimizeStatus.PROCESSING.getCode());
+        optimizeRecordMapper.insert(record);
+
+        ResumeOptimizeAiRequestDTO aiRequest = buildOptimizeAiRequest(record.getId(), userId, resume, selectedProjects,
+                targetPosition, dto);
+        record.setRequestJson(toJson(aiRequest));
+        optimizeRecordMapper.updateById(record);
+        return new OptimizeContext(resume, selectedProjects, record, aiRequest);
+    }
+
+    private List<ResumeProject> selectProjects(Long resumeId, List<Long> selectedProjectIds) {
+        LambdaQueryWrapper<ResumeProject> query = new LambdaQueryWrapper<ResumeProject>()
+                .eq(ResumeProject::getResumeId, resumeId)
+                .eq(ResumeProject::getDeleted, CommonConstants.NO);
+        if (selectedProjectIds != null && !selectedProjectIds.isEmpty()) {
+            Set<Long> distinctIds = new LinkedHashSet<>(selectedProjectIds);
+            query.in(ResumeProject::getId, distinctIds);
+            List<ResumeProject> projects = projectMapper.selectList(query.orderByAsc(ResumeProject::getSortOrder)
+                    .orderByAsc(ResumeProject::getSort)
+                    .orderByDesc(ResumeProject::getUpdatedAt));
+            if (projects.size() != distinctIds.size()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Selected projects do not belong to the resume");
+            }
+            return projects;
+        }
+        return projectMapper.selectList(query.orderByAsc(ResumeProject::getSortOrder)
+                .orderByAsc(ResumeProject::getSort)
+                .orderByDesc(ResumeProject::getUpdatedAt));
+    }
+
+    private ResumeOptimizeAiRequestDTO buildOptimizeAiRequest(Long optimizeRecordId, Long userId, Resume resume,
+                                                             List<ResumeProject> projects, String targetPosition,
+                                                             ResumeOptimizeRequestDTO dto) {
+        ResumeOptimizeAiRequestDTO request = new ResumeOptimizeAiRequestDTO();
+        request.setOptimizeRecordId(optimizeRecordId);
+        request.setUserId(userId);
+        request.setResumeId(resume.getId());
+        request.setTargetPosition(targetPosition);
+        request.setExperienceYears(dto.getExperienceYears());
+        request.setIndustryDirection(dto.getIndustryDirection());
+        request.setResume(toResumeSnapshot(resume));
+        request.setProjects(projects.stream().map(this::toProjectSnapshot).toList());
+        return request;
+    }
+
+    private ResumeOptimizeAiRequestDTO.ResumeSnapshot toResumeSnapshot(Resume resume) {
+        ResumeOptimizeAiRequestDTO.ResumeSnapshot snapshot = new ResumeOptimizeAiRequestDTO.ResumeSnapshot();
+        snapshot.setRealName(resume.getRealName());
+        snapshot.setTargetPosition(resume.getTargetPosition());
+        snapshot.setSkillStack(resume.getSkillStack());
+        snapshot.setWorkExperience(resume.getWorkExperience());
+        snapshot.setEducationExperience(resume.getEducationExperience());
+        snapshot.setSummary(resume.getSummary());
+        return snapshot;
+    }
+
+    private ResumeOptimizeAiRequestDTO.ProjectSnapshot toProjectSnapshot(ResumeProject project) {
+        ResumeOptimizeAiRequestDTO.ProjectSnapshot snapshot = new ResumeOptimizeAiRequestDTO.ProjectSnapshot();
+        snapshot.setProjectId(project.getId());
+        snapshot.setProjectName(project.getProjectName());
+        snapshot.setProjectBackground(project.getProjectBackground());
+        snapshot.setRole(project.getRole());
+        snapshot.setTechStack(project.getTechStack());
+        snapshot.setResponsibility(project.getResponsibility());
+        snapshot.setTechnicalDifficulties(project.getTechnicalDifficulties());
+        snapshot.setOptimizationResults(project.getOptimizationResults());
+        snapshot.setDescription(project.getDescription());
+        snapshot.setHighlights(project.getHighlights());
+        return snapshot;
+    }
+
+    private ResumeOptimizeRecord markOptimizeSuccess(Long recordId, String resultJson, Long aiCallLogId) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectById(recordId);
+        record.setResultJson(resultJson);
+        record.setAiCallLogId(aiCallLogId);
+        record.setOptimizeStatus(ResumeOptimizeStatus.SUCCESS.getCode());
+        record.setErrorMessage(null);
+        optimizeRecordMapper.updateById(record);
+        return optimizeRecordMapper.selectById(recordId);
+    }
+
+    private ResumeOptimizeRecord markOptimizeFailed(Long recordId, RuntimeException ex) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectById(recordId);
+        record.setOptimizeStatus(ResumeOptimizeStatus.FAILED.getCode());
+        record.setErrorMessage(truncateErrorMessage(ex == null ? null : ex.getMessage()));
+        optimizeRecordMapper.updateById(record);
+        return optimizeRecordMapper.selectById(recordId);
+    }
+
+    private ResumeOptimizeSubmitVO toOptimizeSubmitVO(ResumeOptimizeRecord record, JsonNode resultJson) {
+        ResumeOptimizeSubmitVO vo = new ResumeOptimizeSubmitVO();
+        vo.setOptimizeRecordId(record.getId());
+        vo.setResumeId(record.getResumeId());
+        vo.setOptimizeStatus(record.getOptimizeStatus());
+        vo.setResultJson(resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
+        vo.setErrorMessage(record.getErrorMessage());
+        return vo;
+    }
+
+    private ResumeOptimizeRecordVO toOptimizeRecordVO(ResumeOptimizeRecord record) {
+        JsonNode resultJson = parseNullableJson(record.getResultJson());
+        ResumeOptimizeRecordVO vo = new ResumeOptimizeRecordVO();
+        vo.setOptimizeRecordId(record.getId());
+        vo.setResumeId(record.getResumeId());
+        vo.setTargetPosition(record.getTargetPosition());
+        vo.setExperienceYears(record.getExperienceYears());
+        vo.setIndustryDirection(record.getIndustryDirection());
+        vo.setOptimizeStatus(record.getOptimizeStatus());
+        vo.setSummary(textField(resultJson, "overallComment"));
+        vo.setOverallComment(textField(resultJson, "overallComment"));
+        vo.setErrorMessage(record.getErrorMessage());
+        vo.setCreatedAt(record.getCreatedAt());
+        vo.setUpdatedAt(record.getUpdatedAt());
+        return vo;
+    }
+
+    private ResumeOptimizeDetailVO toOptimizeDetailVO(ResumeOptimizeRecord record) {
+        ResumeOptimizeDetailVO vo = new ResumeOptimizeDetailVO();
+        vo.setOptimizeRecordId(record.getId());
+        vo.setResumeId(record.getResumeId());
+        vo.setTargetPosition(record.getTargetPosition());
+        vo.setExperienceYears(record.getExperienceYears());
+        vo.setIndustryDirection(record.getIndustryDirection());
+        vo.setOptimizeStatus(record.getOptimizeStatus());
+        vo.setResultJson(parseNullableJson(record.getResultJson()));
+        vo.setErrorMessage(record.getErrorMessage());
+        vo.setCreatedAt(record.getCreatedAt());
+        vo.setUpdatedAt(record.getUpdatedAt());
+        return vo;
+    }
+
+    private JsonNode parseResultJson(String resultJson) {
+        if (!StringUtils.hasText(resultJson)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result is empty");
+        }
+        try {
+            JsonNode root = objectMapper.readTree(resultJson);
+            if (root == null || !root.isObject()) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result must be a JSON object");
+            }
+            return root;
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result is not valid JSON");
+        }
+    }
+
+    private JsonNode parseNullableJson(String resultJson) {
+        if (!StringUtils.hasText(resultJson)) {
+            return null;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(resultJson);
+            return root == null || !root.isObject() ? null : root;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private String textField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            return null;
+        }
+        return json.path(fieldName).isTextual() ? json.path(fieldName).asText() : json.path(fieldName).toString();
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialization failed");
+        }
+    }
+
+    private String truncateErrorMessage(String message) {
+        String value = StringUtils.hasText(message) ? message : "Resume optimize failed";
+        return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    }
+
     private List<ResumeProjectVO> projects(Long resumeId) {
         return projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                         .eq(ResumeProject::getResumeId, resumeId)
@@ -576,8 +823,16 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private Resume getOwnedResume(Long id) {
-        Resume resume = resumeMapper.selectById(id);
-        if (resume == null || !requireCurrentUserId().equals(resume.getUserId())) {
+        return getOwnedResume(id, requireCurrentUserId());
+    }
+
+    private Resume getOwnedResume(Long id, Long userId) {
+        Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
+                .eq(Resume::getId, id)
+                .eq(Resume::getUserId, userId)
+                .eq(Resume::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (resume == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
         }
         return resume;
@@ -603,11 +858,39 @@ public class ResumeServiceImpl implements ResumeService {
         return project;
     }
 
+    private ResumeOptimizeRecord getOwnedOptimizeRecord(Long recordId, Long userId) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectOne(new LambdaQueryWrapper<ResumeOptimizeRecord>()
+                .eq(ResumeOptimizeRecord::getId, recordId)
+                .eq(ResumeOptimizeRecord::getUserId, userId)
+                .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (record == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume optimize record not found");
+        }
+        return record;
+    }
+
     private Long requireCurrentUserId() {
         Long userId = LoginUserContext.getUserId();
         if (userId == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return userId;
+    }
+
+    private String firstText(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private record OptimizeContext(Resume resume, List<ResumeProject> projects, ResumeOptimizeRecord record,
+                                   ResumeOptimizeAiRequestDTO aiRequest) {
     }
 }

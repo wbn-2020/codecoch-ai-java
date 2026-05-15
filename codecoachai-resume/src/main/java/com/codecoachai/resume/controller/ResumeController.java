@@ -1,6 +1,7 @@
 package com.codecoachai.resume.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
@@ -8,6 +9,9 @@ import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.service.ResumeService;
@@ -78,6 +82,31 @@ public class ResumeController {
     @PostMapping("/{id}/confirm-analysis")
     public Result<ResumeConfirmAnalysisVO> confirmAnalysis(@PathVariable Long id) {
         return Result.success(resumeService.confirmAnalysis(id));
+    }
+
+    /**
+     * A5 stage: path variable id is the confirmed resume.id.
+     */
+    @PostMapping("/{id}/optimize")
+    public Result<ResumeOptimizeSubmitVO> optimizeResume(@PathVariable Long id,
+                                                         @RequestBody(required = false) ResumeOptimizeRequestDTO dto) {
+        return Result.success(resumeService.optimizeResume(id, dto));
+    }
+
+    /**
+     * A5 stage: path variable id is the confirmed resume.id.
+     */
+    @GetMapping("/{id}/optimize-records")
+    public Result<List<ResumeOptimizeRecordVO>> listOptimizeRecords(@PathVariable Long id) {
+        return Result.success(resumeService.listOptimizeRecords(id));
+    }
+
+    /**
+     * A5 stage: recordId is resume_optimize_record.id.
+     */
+    @GetMapping("/optimize-records/{recordId}")
+    public Result<ResumeOptimizeDetailVO> getOptimizeRecordDetail(@PathVariable Long recordId) {
+        return Result.success(resumeService.getOptimizeRecordDetail(recordId));
     }
 
     @GetMapping("/{id}")
