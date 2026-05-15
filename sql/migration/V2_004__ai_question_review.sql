@@ -1,0 +1,42 @@
+-- CodeCoachAI V2 A7: AI question generation review pool.
+-- Scope: persist AI-generated question drafts for admin review.
+-- AI-generated questions must not enter the formal question table before approval.
+
+CREATE TABLE IF NOT EXISTS question_review (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  batch_id VARCHAR(64) NOT NULL,
+  created_by BIGINT NOT NULL,
+  review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  ai_call_log_id BIGINT DEFAULT NULL,
+  technology_stack VARCHAR(255) DEFAULT NULL,
+  knowledge_point VARCHAR(255) DEFAULT NULL,
+  question_type VARCHAR(32) NOT NULL,
+  difficulty VARCHAR(32) NOT NULL,
+  experience_years INT DEFAULT NULL,
+  raw_ai_result_json LONGTEXT DEFAULT NULL,
+  question_title VARCHAR(255) NOT NULL,
+  question_content TEXT DEFAULT NULL,
+  reference_answer TEXT DEFAULT NULL,
+  analysis TEXT DEFAULT NULL,
+  follow_up_questions_json LONGTEXT DEFAULT NULL,
+  tag_suggestions_json LONGTEXT DEFAULT NULL,
+  category_suggestion VARCHAR(128) DEFAULT NULL,
+  group_suggestion VARCHAR(255) DEFAULT NULL,
+  category_id BIGINT DEFAULT NULL,
+  group_id BIGINT DEFAULT NULL,
+  tag_ids_json VARCHAR(1000) DEFAULT NULL,
+  edited_content_json LONGTEXT DEFAULT NULL,
+  reject_reason VARCHAR(500) DEFAULT NULL,
+  approved_question_id BIGINT DEFAULT NULL,
+  reviewer_id BIGINT DEFAULT NULL,
+  reviewed_at DATETIME DEFAULT NULL,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_question_review_batch (batch_id),
+  KEY idx_question_review_status (review_status),
+  KEY idx_question_review_creator (created_by, created_at),
+  KEY idx_question_review_filter (review_status, question_type, difficulty),
+  KEY idx_question_review_approved_question (approved_question_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
