@@ -34,6 +34,7 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
+import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -56,6 +57,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
+    private final QuestionDuplicateService questionDuplicateService;
 
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
@@ -166,6 +168,7 @@ public class QuestionServiceImpl implements QuestionService {
         applyQuestion(question, dto);
         questionMapper.insert(question);
         replaceTags(question.getId(), dto.getTagIds());
+        questionDuplicateService.checkDuplicateForQuestion(question.getId(), requireCurrentUserId());
         return toDetailVO(question);
     }
 

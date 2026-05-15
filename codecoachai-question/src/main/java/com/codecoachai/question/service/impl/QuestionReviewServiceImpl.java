@@ -33,6 +33,7 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
+import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionReviewService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -61,6 +62,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private final QuestionGroupMapper groupMapper;
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
+    private final QuestionDuplicateService questionDuplicateService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -157,6 +159,11 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.APPROVED.name()));
         if (affected != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question review status has changed");
+        }
+        try {
+            questionDuplicateService.checkDuplicateForQuestion(question.getId(), reviewerId);
+        } catch (Exception ignored) {
+            // Duplicate hints must not break the A7 approve flow.
         }
         return getReview(id);
     }
