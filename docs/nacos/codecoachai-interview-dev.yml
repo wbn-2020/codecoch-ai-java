@@ -13,7 +13,7 @@ feign:
     config:
       default:
         connectTimeout: 3000
-        readTimeout: 10000
+        readTimeout: 40000
 
 codecoachai:
   interview:
