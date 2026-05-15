@@ -3,14 +3,18 @@ package com.codecoachai.common.security.filter;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.InternalSignatureUtils;
+import com.codecoachai.common.security.config.InternalAuthProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.time.Duration;
 import java.util.Set;
 import org.springframework.http.MediaType;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -27,12 +31,21 @@ public class InternalCallFilter extends OncePerRequestFilter {
             "codecoachai-system"
     );
 
+    private static final String INTERNAL_NONCE_KEY_PREFIX = "codecoachai:internal:nonce:";
+
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final InternalAuthProperties internalAuthProperties;
+    private final StringRedisTemplate stringRedisTemplate;
+
+    public InternalCallFilter(InternalAuthProperties internalAuthProperties, StringRedisTemplate stringRedisTemplate) {
+        this.internalAuthProperties = internalAuthProperties;
+        this.stringRedisTemplate = stringRedisTemplate;
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        String path = request.getRequestURI();
+        String path = normalizeRequestPath(request);
         if (!path.startsWith("/inner/")) {
             filterChain.doFilter(request, response);
             return;
@@ -46,13 +59,76 @@ public class InternalCallFilter extends OncePerRequestFilter {
             writeForbidden(response);
             return;
         }
+
+        if (internalAuthProperties.isEnabled() && !verifySignature(request, path, serviceName)) {
+            writeForbidden(response);
+            return;
+        }
+
         filterChain.doFilter(request, response);
+    }
+
+    private boolean verifySignature(HttpServletRequest request, String path, String serviceName) {
+        if (!StringUtils.hasText(internalAuthProperties.getSecret())) {
+            return false;
+        }
+
+        String timestamp = request.getHeader(HeaderConstants.INTERNAL_TIMESTAMP);
+        String nonce = request.getHeader(HeaderConstants.INTERNAL_NONCE);
+        String signature = request.getHeader(HeaderConstants.INTERNAL_SIGNATURE);
+        if (!StringUtils.hasText(timestamp) || !StringUtils.hasText(nonce) || !StringUtils.hasText(signature)) {
+            return false;
+        }
+
+        if (!isTimestampValid(timestamp)) {
+            return false;
+        }
+
+        if (!markNonceUsed(serviceName, nonce)) {
+            return false;
+        }
+
+        String payload = InternalSignatureUtils.canonicalPayload(
+                request.getMethod(), path, timestamp, nonce, serviceName);
+        String expectedSignature = InternalSignatureUtils.hmacSha256Hex(internalAuthProperties.getSecret(), payload);
+        return InternalSignatureUtils.constantTimeEquals(expectedSignature, signature);
+    }
+
+    private boolean isTimestampValid(String timestamp) {
+        try {
+            long requestTime = Long.parseLong(timestamp);
+            long allowedSkewMillis = Duration.ofSeconds(internalAuthProperties.getAllowedClockSkewSeconds()).toMillis();
+            return Math.abs(System.currentTimeMillis() - requestTime) <= allowedSkewMillis;
+        } catch (NumberFormatException ex) {
+            return false;
+        }
+    }
+
+    private boolean markNonceUsed(String serviceName, String nonce) {
+        try {
+            String key = INTERNAL_NONCE_KEY_PREFIX + serviceName + ":" + nonce;
+            Boolean inserted = stringRedisTemplate.opsForValue()
+                    .setIfAbsent(key, "1", Duration.ofSeconds(internalAuthProperties.getNonceTtlSeconds()));
+            return Boolean.TRUE.equals(inserted);
+        } catch (Exception ex) {
+            return false;
+        }
+    }
+
+    private String normalizeRequestPath(HttpServletRequest request) {
+        String path = InternalSignatureUtils.normalizePath(request.getRequestURI());
+        String contextPath = request.getContextPath();
+        if (StringUtils.hasText(contextPath) && path.startsWith(contextPath)) {
+            String withoutContextPath = path.substring(contextPath.length());
+            return InternalSignatureUtils.normalizePath(withoutContextPath);
+        }
+        return path;
     }
 
     private void writeForbidden(HttpServletResponse response) throws IOException {
         response.setStatus(HttpServletResponse.SC_OK);
         response.setCharacterEncoding("UTF-8");
-        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE + ";charset=UTF-8");
         response.getWriter().write(objectMapper.writeValueAsString(Result.fail(ErrorCode.FORBIDDEN)));
     }
 }
