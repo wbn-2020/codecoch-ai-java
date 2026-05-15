@@ -1,6 +1,7 @@
 package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -12,9 +13,11 @@ import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
+import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
+import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.feign.FileFeignClient;
@@ -38,7 +41,6 @@ public class ResumeServiceImpl implements ResumeService {
 
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
-    private static final String PARSE_STATUS_PENDING = "PENDING";
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
 
     private final ResumeMapper resumeMapper;
@@ -86,7 +88,7 @@ public class ResumeServiceImpl implements ResumeService {
         record.setUserId(userId);
         record.setFileId(uploadedFile.getFileId());
         record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
-        record.setParseStatus(PARSE_STATUS_PENDING);
+        record.setParseStatus(ResumeParseStatus.PENDING.getCode());
         analysisRecordMapper.insert(record);
 
         ResumeUploadVO vo = new ResumeUploadVO();
@@ -99,6 +101,61 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setFileExt(uploadedFile.getFileExt());
         vo.setMessage("上传成功，等待解析");
         return vo;
+    }
+
+    @Override
+    public ResumeParseStatusVO getParseStatus(Long analysisRecordId) {
+        return toParseStatusVO(getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeParseStatusVO reparse(Long analysisRecordId) {
+        Long userId = requireCurrentUserId();
+        ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
+        ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
+        if (status == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported parse status");
+        }
+        if (status == ResumeParseStatus.PENDING) {
+            return toParseStatusVO(record);
+        }
+        if (status == ResumeParseStatus.PARSING) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume is parsing");
+        }
+        if (status == ResumeParseStatus.SUCCESS) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume has been parsed successfully");
+        }
+        if (status == ResumeParseStatus.WAIT_CONFIRM) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is waiting for confirmation");
+        }
+
+        int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
+                .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PENDING.getCode())
+                .set(ResumeAnalysisRecord::getErrorMessage, null)
+                .eq(ResumeAnalysisRecord::getId, analysisRecordId)
+                .eq(ResumeAnalysisRecord::getUserId, userId)
+                .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.FAILED.getCode()));
+        ResumeAnalysisRecord latestRecord = getOwnedAnalysisRecord(analysisRecordId, userId);
+        if (affectedRows > 0) {
+            return toParseStatusVO(latestRecord);
+        }
+
+        ResumeParseStatus latestStatus = ResumeParseStatus.of(latestRecord.getParseStatus());
+        if (latestStatus == ResumeParseStatus.PENDING) {
+            return toParseStatusVO(latestRecord);
+        }
+        if (latestStatus == ResumeParseStatus.PARSING) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume is parsing");
+        }
+        if (latestStatus == ResumeParseStatus.SUCCESS) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume has been parsed successfully");
+        }
+        if (latestStatus == ResumeParseStatus.WAIT_CONFIRM) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is waiting for confirmation");
+        }
+        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Reparse status update failed");
     }
 
     @Override
@@ -187,6 +244,19 @@ public class ResumeServiceImpl implements ResumeService {
         return ResumeConvert.toDetailVO(resume, projects(resume.getId()));
     }
 
+    private ResumeParseStatusVO toParseStatusVO(ResumeAnalysisRecord record) {
+        ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
+        ResumeParseStatusVO vo = new ResumeParseStatusVO();
+        vo.setAnalysisRecordId(record.getId());
+        vo.setResumeId(record.getResumeId());
+        vo.setFileId(record.getFileId());
+        vo.setParseStatus(record.getParseStatus());
+        vo.setErrorMessage(record.getErrorMessage());
+        vo.setMessage(status == null ? "Unsupported parse status" : status.getMessage());
+        vo.setUpdatedAt(record.getUpdatedAt());
+        return vo;
+    }
+
     private List<ResumeProjectVO> projects(Long resumeId) {
         return projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                         .eq(ResumeProject::getResumeId, resumeId)
@@ -262,6 +332,18 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
         }
         return resume;
+    }
+
+    private ResumeAnalysisRecord getOwnedAnalysisRecord(Long analysisRecordId, Long userId) {
+        ResumeAnalysisRecord record = analysisRecordMapper.selectOne(new LambdaQueryWrapper<ResumeAnalysisRecord>()
+                .eq(ResumeAnalysisRecord::getId, analysisRecordId)
+                .eq(ResumeAnalysisRecord::getUserId, userId)
+                .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (record == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis record not found");
+        }
+        return record;
     }
 
     private ResumeProject getProject(Long resumeId, Long projectId) {
