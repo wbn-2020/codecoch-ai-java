@@ -36,6 +36,7 @@ import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import com.codecoachai.question.service.QuestionService;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -229,12 +230,54 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     public List<InnerQuestionVO> recommend(RecommendQuestionDTO dto) {
-        long limit = dto.getLimit() == null ? 5L : dto.getLimit();
-        return questionMapper.selectPage(Page.of(1, limit), new LambdaQueryWrapper<Question>()
-                        .eq(Question::getStatus, CommonConstants.YES)
+        long limit = dto == null || dto.getLimit() == null ? 5L : dto.getLimit();
+        List<String> weakTags = dto == null || dto.getWeakTags() == null
+                ? Collections.emptyList()
+                : dto.getWeakTags().stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .limit(8)
+                .toList();
+        LambdaQueryWrapper<Question> wrapper = new LambdaQueryWrapper<Question>()
+                .eq(Question::getStatus, CommonConstants.YES);
+        if (!weakTags.isEmpty()) {
+            wrapper.and(condition -> {
+                boolean first = true;
+                for (String keyword : weakTags) {
+                    if (first) {
+                        condition.like(Question::getTitle, keyword)
+                                .or()
+                                .like(Question::getContent, keyword)
+                                .or()
+                                .like(Question::getAnalysis, keyword)
+                                .or()
+                                .like(Question::getReferenceAnswer, keyword);
+                        first = false;
+                    } else {
+                        condition.or(group -> group.like(Question::getTitle, keyword)
+                                .or()
+                                .like(Question::getContent, keyword)
+                                .or()
+                                .like(Question::getAnalysis, keyword)
+                                .or()
+                                .like(Question::getReferenceAnswer, keyword));
+                    }
+                }
+            });
+        }
+        List<Question> records = questionMapper.selectPage(Page.of(1, limit), wrapper
+                        .orderByDesc(Question::getIsHighFrequency)
                         .orderByDesc(Question::getUpdatedAt))
-                .getRecords()
-                .stream()
+                .getRecords();
+        if (records.isEmpty() && !weakTags.isEmpty()) {
+            records = questionMapper.selectPage(Page.of(1, limit), new LambdaQueryWrapper<Question>()
+                            .eq(Question::getStatus, CommonConstants.YES)
+                            .orderByDesc(Question::getIsHighFrequency)
+                            .orderByDesc(Question::getUpdatedAt))
+                    .getRecords();
+        }
+        return new ArrayList<>(records).stream()
                 .map(QuestionConvert::toInnerVO)
                 .toList();
     }

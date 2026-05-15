@@ -203,15 +203,24 @@ public class AiServiceImpl implements AiService {
 
     private String reportPromptContent(PromptTemplate template, GenerateReportDTO dto) {
         String content = templateContent(template, defaultReportPrompt());
-        if (!StringUtils.hasText(dto == null ? null : dto.getProjectContent())) {
-            return content;
-        }
-        return """
-                报告必须包含项目深挖分析，并至少覆盖：项目表达评价、技术深度评价、项目薄弱点、改进建议。
-                项目信息：
+        String projectBlock = StringUtils.hasText(dto == null ? null : dto.getProjectContent())
+                ? """
+                项目深挖要求：
+                - 报告必须包含项目表达评价、技术深度评价、项目薄弱点、改进建议。
+                - 项目信息：
                 {{projectContent}}
-                请将项目深挖问题写入 projectProblems，并在 reportContent 中体现项目表达与技术深度分析。
+                - 请将项目深挖问题写入 projectProblems，并在 reportContent 中体现项目表达与技术深度分析。
                 """
+                : "";
+        return """
+                学习反馈闭环要求：
+                - weakPoints 必须输出结构化薄弱点，覆盖 Java 基础、数据库、并发、缓存、架构设计、项目表达中实际暴露的问题。
+                - reviewSuggestions/suggestions 必须输出可执行复习建议，包含薄弱知识点、复习方向、练习题方向、下一轮面试建议。
+                - recommendedQuestions 必须输出推荐练习题或练习方向，优先围绕薄弱点和面试阶段。
+                - reportContent 必须适合前端直接展示，明确回答：哪里弱、为什么弱、应该复习什么、应该练哪些题、下一轮重点练什么。
+                - 只输出 JSON，不要 Markdown 代码块，不要解释文字。
+                """
+                + "\n" + projectBlock
                 + "\n" + content;
     }
 
