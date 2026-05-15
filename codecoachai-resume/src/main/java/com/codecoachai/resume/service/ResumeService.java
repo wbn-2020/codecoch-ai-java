@@ -5,6 +5,7 @@ import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
+import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import java.util.List;
@@ -17,6 +18,10 @@ public interface ResumeService {
     ResumeDetailVO createResume(ResumeSaveDTO dto);
 
     ResumeUploadVO uploadResume(MultipartFile file);
+
+    ResumeParseStatusVO getParseStatus(Long analysisRecordId);
+
+    ResumeParseStatusVO reparse(Long analysisRecordId);
 
     ResumeDetailVO getResume(Long id);
 

@@ -6,6 +6,7 @@ import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
+import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.service.ResumeService;
 import jakarta.validation.Valid;
@@ -43,6 +44,22 @@ public class ResumeController {
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<ResumeUploadVO> uploadResume(@RequestPart("file") MultipartFile file) {
         return Result.success(resumeService.uploadResume(file));
+    }
+
+    /**
+     * A2 stage: path variable id is resume_analysis_record.id, not the confirmed resume.id.
+     */
+    @GetMapping("/{id}/parse-status")
+    public Result<ResumeParseStatusVO> getParseStatus(@PathVariable Long id) {
+        return Result.success(resumeService.getParseStatus(id));
+    }
+
+    /**
+     * A2 stage: path variable id is resume_analysis_record.id, not the confirmed resume.id.
+     */
+    @PostMapping("/{id}/reparse")
+    public Result<ResumeParseStatusVO> reparse(@PathVariable Long id) {
+        return Result.success(resumeService.reparse(id));
     }
 
     @GetMapping("/{id}")
