@@ -154,7 +154,9 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setId(session.getId());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
-        vo.setCurrentStage(InterviewConvert.toStageVO(session.getCurrentStageId() == null ? null : stageMapper.selectById(session.getCurrentStageId())));
+        vo.setCurrentStage(InterviewConvert.toStageVO(session.getCurrentStageId() == null
+                ? null
+                : stageMapper.selectById(session.getCurrentStageId())));
         vo.setCurrentQuestion(currentQuestion(session));
         return vo;
     }
@@ -174,7 +176,9 @@ public class InterviewServiceImpl implements InterviewService {
             vo.setStageProgress("COMPLETED");
             return vo;
         }
-        InterviewStage stage = session.getCurrentStageId() == null ? firstStage(session.getId()) : stageMapper.selectById(session.getCurrentStageId());
+        InterviewStage stage = session.getCurrentStageId() == null
+                ? firstStage(session.getId())
+                : stageMapper.selectById(session.getCurrentStageId());
         if (stage == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview stage missing");
         }
@@ -216,7 +220,9 @@ public class InterviewServiceImpl implements InterviewService {
         evaluateDTO.setQuestionId(question == null ? null : question.getId());
         evaluateDTO.setQuestionTitle(question == null ? null : question.getTitle());
         evaluateDTO.setRootQuestionContent(rootQuestionContent);
-        evaluateDTO.setCurrentQuestionContent(firstText(currentAiQuestion.getQuestionContent(), currentAiQuestion.getContent(), question == null ? null : question.getContent()));
+        evaluateDTO.setCurrentQuestionContent(firstText(currentAiQuestion.getQuestionContent(),
+                currentAiQuestion.getContent(),
+                question == null ? null : question.getContent()));
         evaluateDTO.setQuestionContent(evaluateDTO.getCurrentQuestionContent());
         evaluateDTO.setReferenceAnswer(question == null ? null : question.getReferenceAnswer());
         evaluateDTO.setAnswerContent(dto.getAnswerContent());
@@ -801,7 +807,9 @@ public class InterviewServiceImpl implements InterviewService {
         report.setWeaknesses(StringUtils.hasText(aiReport.getWeaknesses()) ? aiReport.getWeaknesses() : DEFAULT_REPORT_WEAKNESSES);
         report.setMainProblems(StringUtils.hasText(aiReport.getMainProblems()) ? aiReport.getMainProblems() : report.getWeaknesses());
         report.setProjectProblems(aiReport.getProjectProblems());
-        report.setReviewSuggestions(StringUtils.hasText(aiReport.getReviewSuggestions()) ? aiReport.getReviewSuggestions() : aiReport.getSuggestions());
+        report.setReviewSuggestions(StringUtils.hasText(aiReport.getReviewSuggestions())
+                ? aiReport.getReviewSuggestions()
+                : aiReport.getSuggestions());
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
         report.setReportContent(StringUtils.hasText(aiReport.getReportContent()) ? aiReport.getReportContent() : report.getSummary());
