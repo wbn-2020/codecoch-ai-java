@@ -18,4 +18,5 @@ public class GenerateFollowUpDTO {
     private String currentStage;
     private String historySummary;
     private String knowledgePoints;
+    private String industryContext;
 }

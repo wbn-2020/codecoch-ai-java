@@ -12,6 +12,7 @@ public class GenerateInterviewQuestionDTO {
     private String targetPosition;
     private String experienceLevel;
     private String industryDirection;
+    private String industryContext;
     private String difficulty;
     private String interviewerStyle;
     private Long questionId;
