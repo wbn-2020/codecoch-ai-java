@@ -1,13 +1,26 @@
 server:
-  port: 9204
+  port: 9209
 
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: wbn123..
+    password: ${MYSQL_PASSWORD:}
   servlet:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
+
+codecoachai:
+  file:
+    storage:
+      provider: LOCAL
+      root-path: ${CODECOACHAI_FILE_STORAGE_ROOT:./data/uploads}
+      max-size-mb: 10
+      allowed-extensions:
+        - pdf
+        - doc
+        - docx
+        - md
+        - txt

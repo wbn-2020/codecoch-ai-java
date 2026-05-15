@@ -4,12 +4,14 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.service.ResumeService;
 import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -18,6 +20,8 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequiredArgsConstructor
@@ -34,6 +38,11 @@ public class ResumeController {
     @PostMapping
     public Result<ResumeDetailVO> createResume(@Valid @RequestBody ResumeSaveDTO dto) {
         return Result.success(resumeService.createResume(dto));
+    }
+
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<ResumeUploadVO> uploadResume(@RequestPart("file") MultipartFile file) {
+        return Result.success(resumeService.uploadResume(file));
     }
 
     @GetMapping("/{id}")
