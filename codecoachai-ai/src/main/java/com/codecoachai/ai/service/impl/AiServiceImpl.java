@@ -9,6 +9,7 @@ import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
+import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.PromptTemplate;
 import com.codecoachai.ai.domain.enums.AiFailureType;
@@ -17,6 +18,7 @@ import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
+import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.service.AiService;
@@ -45,6 +47,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_FOLLOW_UP = "INTERVIEW_FOLLOW_UP_GENERATE";
     private static final String SCENE_REPORT = "INTERVIEW_REPORT_GENERATE";
     private static final String SCENE_RESUME_PARSE = "RESUME_STRUCTURED_PARSE";
+    private static final String SCENE_RESUME_OPTIMIZE = "RESUME_OPTIMIZE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptTemplateMapper promptTemplateMapper;
@@ -175,6 +178,30 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public ResumeOptimizeAiResponseVO optimizeResume(ResumeOptimizeAiRequestDTO dto) {
+        validateResumeOptimizeDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptTemplate template = enabledTemplate(SCENE_RESUME_OPTIMIZE);
+        String prompt = render(resumeOptimizePromptContent(template), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockResumeOptimizeJson()
+                    : parseResumeOptimizeJson(rawResponse = aiClient.chat(prompt));
+            Long logId = saveLog(SCENE_RESUME_OPTIMIZE, template, prompt, resultJson,
+                    businessId(dto.getOptimizeRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            ResumeOptimizeAiResponseVO vo = new ResumeOptimizeAiResponseVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(SCENE_RESUME_OPTIMIZE, template, prompt, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getOptimizeRecordId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toResumeOptimizeBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -190,6 +217,24 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateResumeOptimizeDTO(ResumeOptimizeAiRequestDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getOptimizeRecordId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "optimizeRecordId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getResumeId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
+        }
+        if (dto.getResume() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume snapshot is required");
+        }
+    }
+
     private BusinessException toBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
@@ -198,6 +243,16 @@ public class AiServiceImpl implements AiService {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
         return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume parse failed"));
+    }
+
+    private BusinessException toResumeOptimizeBusinessException(RuntimeException ex) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
+        }
+        if (ex instanceof AiProviderException aiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        }
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume optimize failed"));
     }
 
     private boolean isProjectStage(String stageType) {
@@ -278,6 +333,10 @@ public class AiServiceImpl implements AiService {
 
     private String resumeParsePromptContent(PromptTemplate template) {
         return templateContent(template, defaultResumeParsePrompt());
+    }
+
+    private String resumeOptimizePromptContent(PromptTemplate template) {
+        return templateContent(template, defaultResumeOptimizePrompt());
     }
 
     private String render(String template, Map<String, String> variables) {
@@ -370,6 +429,19 @@ public class AiServiceImpl implements AiService {
         values.put("originalFilename", dto.getOriginalFilename());
         values.put("fileExt", dto.getFileExt());
         values.put("rawText", dto.getRawText());
+        return values;
+    }
+
+    private Map<String, String> variables(ResumeOptimizeAiRequestDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("optimizeRecordId", dto.getOptimizeRecordId() == null ? "" : String.valueOf(dto.getOptimizeRecordId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("targetPosition", dto.getTargetPosition());
+        values.put("experienceYears", dto.getExperienceYears() == null ? "" : String.valueOf(dto.getExperienceYears()));
+        values.put("industryDirection", dto.getIndustryDirection());
+        values.put("resumeJson", toJson(dto.getResume()));
+        values.put("projectsJson", toJson(dto.getProjects()));
         return values;
     }
 
@@ -486,6 +558,14 @@ public class AiServiceImpl implements AiService {
     private String parseResumeStructuredJson(String raw) {
         JsonNode json = parseJson(raw);
         validateResumeStructuredJson(json);
+        return json.toString();
+    }
+
+    private String parseResumeOptimizeJson(String raw) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume optimize response must be a JSON object");
+        }
         return json.toString();
     }
 
@@ -643,6 +723,54 @@ public class AiServiceImpl implements AiService {
         return toJson(json);
     }
 
+    private String mockResumeOptimizeJson() {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("overallScore", 82);
+        json.put("overallComment", "简历整体结构完整，但项目难点和量化结果表达不足。");
+        json.put("targetPositionMatch", Map.of(
+                "score", 80,
+                "comment", "与目标岗位匹配度较高，可继续补充可验证的技术深度。",
+                "matchedPoints", List.of("Spring Boot", "MySQL", "Redis"),
+                "missingPoints", List.of("JVM 调优", "分布式事务")
+        ));
+        json.put("sectionScores", Map.of(
+                "skillStack", 78,
+                "projectExperience", 82,
+                "responsibilityClarity", 75,
+                "technicalDepth", 76,
+                "quantifiedResults", 60
+        ));
+        json.put("problems", List.of(Map.of(
+                "type", "PROJECT_DESCRIPTION_TOO_GENERAL",
+                "title", "项目描述偏泛",
+                "description", "项目职责描述停留在功能开发层面，缺少技术难点和解决方案。",
+                "severity", "MEDIUM"
+        )));
+        json.put("rewriteSuggestions", List.of(Map.of(
+                "section", "project",
+                "projectName", "电商订单系统",
+                "before", "负责订单模块开发。",
+                "after", "负责订单创建、状态流转和支付回调处理，重点处理重复回调下的幂等控制。",
+                "reason", "增强职责边界和技术问题表达。",
+                "fabricationRisk", false
+        )));
+        json.put("riskWarnings", List.of(Map.of(
+                "type", "OVER_PACKAGING",
+                "description", "如果没有真实压测数据，不建议写具体性能提升百分比。",
+                "suggestion", "可改为优化慢查询和缓存命中策略，降低接口响应耗时。"
+        )));
+        json.put("possibleInterviewQuestions", List.of(Map.of(
+                "question", "支付回调重复通知时如何保证幂等？",
+                "reason", "简历中提到了支付回调处理。"
+        )));
+        json.put("nextActions", List.of(
+                "补充每个项目的业务背景。",
+                "明确个人负责模块。",
+                "补充真实可验证的技术难点。"
+        ));
+        return toJson(json);
+    }
+
     private String mockQuestionContent(GenerateInterviewQuestionDTO dto, String scene) {
         if (SCENE_PROJECT_QUESTION.equals(scene)) {
             String project = summarize(firstText(dto == null ? null : dto.getProjectContent(),
@@ -696,7 +824,7 @@ public class AiServiceImpl implements AiService {
         return Math.min(95, Math.max(55, answerLength / 2));
     }
 
-    private void saveLog(String scene, PromptTemplate template, String prompt, String response, String businessId,
+    private Long saveLog(String scene, PromptTemplate template, String prompt, String response, String businessId,
                          long startMillis, String errorMessage, Long explicitUserId, AiFailureType failureType) {
         AiCallLog log = new AiCallLog();
         long elapsed = System.currentTimeMillis() - startMillis;
@@ -717,6 +845,7 @@ public class AiServiceImpl implements AiService {
         log.setStatus(errorMessage == null ? CommonConstants.YES : CommonConstants.NO);
         log.setErrorMessage(errorMessage);
         aiCallLogMapper.insert(log);
+        return log.getId();
     }
 
     private String buildRequestMetadata(String scene, PromptTemplate template, String prompt, AiFailureType failureType) {
@@ -1106,6 +1235,43 @@ public class AiServiceImpl implements AiService {
                 5. techStack、responsibilities、technicalDifficulties、achievements 使用数组。
                 输出示例：
                 {"basicInfo":{"name":"","phone":"","email":"","location":""},"targetPosition":"","skills":[],"workExperiences":[],"projectExperiences":[{"projectName":"","period":"","description":"","techStack":[],"responsibilities":[],"technicalDifficulties":[],"achievements":[]}],"educationExperiences":[]}
+                """;
+    }
+
+    private String defaultResumeOptimizePrompt() {
+        return """
+                你是资深 Java 后端招聘简历优化顾问。请基于用户已经确认的正式简历和项目经历，输出简历优化建议 JSON。
+                优化记录 ID：{{optimizeRecordId}}
+                用户 ID：{{userId}}
+                简历 ID：{{resumeId}}
+                目标岗位：{{targetPosition}}
+                工作年限：{{experienceYears}}
+                行业方向：{{industryDirection}}
+                简历信息：
+                {{resumeJson}}
+                项目经历：
+                {{projectsJson}}
+
+                安全边界：
+                1. 只能基于已有 resume / resume_project 内容做表达优化。
+                2. 禁止伪造公司、学历、岗位、项目、年限、职责、技术成果、业务指标。
+                3. 如果原文没有数据支撑，不得生成具体数字。
+                4. 如果发现过度包装风险，需要指出风险，而不是替用户补造。
+                5. 允许优化表达方式、结构层次、职责边界、技术难点描述和面试追问准备。
+                6. 不允许帮用户编造不存在的经历。
+
+                只输出 JSON object，不要 Markdown，不要代码块，不要解释文字。JSON 字段固定为：
+                {
+                  "overallScore":82,
+                  "overallComment":"简历整体评价",
+                  "targetPositionMatch":{"score":80,"comment":"岗位匹配评价","matchedPoints":[],"missingPoints":[]},
+                  "sectionScores":{"skillStack":78,"projectExperience":82,"responsibilityClarity":75,"technicalDepth":76,"quantifiedResults":60},
+                  "problems":[{"type":"PROJECT_DESCRIPTION_TOO_GENERAL","title":"问题标题","description":"问题描述","severity":"MEDIUM"}],
+                  "rewriteSuggestions":[{"section":"project","projectName":"项目名","before":"原表达","after":"优化表达","reason":"优化原因","fabricationRisk":false}],
+                  "riskWarnings":[{"type":"OVER_PACKAGING","description":"风险描述","suggestion":"修改建议"}],
+                  "possibleInterviewQuestions":[{"question":"可能追问","reason":"追问原因"}],
+                  "nextActions":["下一步动作"]
+                }
                 """;
     }
 

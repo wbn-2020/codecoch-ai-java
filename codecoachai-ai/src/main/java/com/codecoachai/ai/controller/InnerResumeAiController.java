@@ -1,7 +1,9 @@
 package com.codecoachai.ai.controller;
 
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
+import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
+import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.service.AiService;
 import com.codecoachai.common.core.domain.Result;
 import lombok.RequiredArgsConstructor;
@@ -20,5 +22,10 @@ public class InnerResumeAiController {
     @PostMapping("/parse")
     public Result<ParseResumeVO> parse(@RequestBody ParseResumeDTO dto) {
         return Result.success(aiService.parseResume(dto));
+    }
+
+    @PostMapping("/optimize")
+    public Result<ResumeOptimizeAiResponseVO> optimize(@RequestBody ResumeOptimizeAiRequestDTO dto) {
+        return Result.success(aiService.optimizeResume(dto));
     }
 }
