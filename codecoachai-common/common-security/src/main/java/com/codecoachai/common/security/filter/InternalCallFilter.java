@@ -30,6 +30,7 @@ public class InternalCallFilter extends OncePerRequestFilter {
             "codecoachai-user",
             "codecoachai-question",
             "codecoachai-resume",
+            "codecoachai-file",
             "codecoachai-interview",
             "codecoachai-ai",
             "codecoachai-system"

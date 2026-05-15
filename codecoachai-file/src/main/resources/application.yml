@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: codecoachai-file
+  profiles:
+    active: dev
+  config:
+    import:
+      - optional:nacos:codecoachai-common-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-redis-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-file-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+        file-extension: yml

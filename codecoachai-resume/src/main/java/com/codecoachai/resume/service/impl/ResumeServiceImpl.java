@@ -4,31 +4,47 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.convert.ResumeConvert;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.entity.Resume;
+import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
+import com.codecoachai.resume.domain.vo.ResumeUploadVO;
+import com.codecoachai.resume.feign.FileFeignClient;
+import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import com.codecoachai.resume.mapper.ResumeMapper;
+import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.service.ResumeService;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @RequiredArgsConstructor
 public class ResumeServiceImpl implements ResumeService {
 
+    private static final String BIZ_TYPE_RESUME = "RESUME";
+    private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
+    private static final String PARSE_STATUS_PENDING = "PENDING";
+    private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
+
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
+    private final ResumeAnalysisRecordMapper analysisRecordMapper;
+    private final FileFeignClient fileFeignClient;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -54,6 +70,35 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
         return toDetailVO(resume);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeUploadVO uploadResume(MultipartFile file) {
+        Long userId = requireCurrentUserId();
+        validateUploadFile(file);
+        InnerFileUploadVO uploadedFile = FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId));
+        if (uploadedFile == null || uploadedFile.getFileId() == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
+        }
+
+        ResumeAnalysisRecord record = new ResumeAnalysisRecord();
+        record.setUserId(userId);
+        record.setFileId(uploadedFile.getFileId());
+        record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
+        record.setParseStatus(PARSE_STATUS_PENDING);
+        analysisRecordMapper.insert(record);
+
+        ResumeUploadVO vo = new ResumeUploadVO();
+        vo.setFileId(uploadedFile.getFileId());
+        vo.setAnalysisRecordId(record.getId());
+        vo.setResumeId(record.getResumeId());
+        vo.setParseStatus(record.getParseStatus());
+        vo.setOriginalFilename(uploadedFile.getOriginalFilename());
+        vo.setFileSize(uploadedFile.getFileSize());
+        vo.setFileExt(uploadedFile.getFileExt());
+        vo.setMessage("上传成功，等待解析");
+        return vo;
     }
 
     @Override
@@ -169,6 +214,29 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setSummary(dto.getSummary());
         if (dto.getStatus() != null) {
             resume.setStatus(dto.getStatus());
+        }
+    }
+
+    private void validateUploadFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is empty");
+        }
+        String filename = file.getOriginalFilename();
+        if (!StringUtils.hasText(filename)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "filename is required");
+        }
+        String normalized = filename.replace('\\', '/');
+        String simpleName = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (!StringUtils.hasText(simpleName) || simpleName.contains("..")) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid filename");
+        }
+        int index = simpleName.lastIndexOf('.');
+        if (index < 0 || index == simpleName.length() - 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file extension is required");
+        }
+        String ext = simpleName.substring(index + 1).toLowerCase(Locale.ROOT);
+        if (!ALLOWED_EXTENSIONS.contains(ext)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
         }
     }
 

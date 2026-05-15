@@ -6,13 +6,17 @@ import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
+import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import java.util.List;
+import org.springframework.web.multipart.MultipartFile;
 
 public interface ResumeService {
 
     List<ResumeListVO> listResumes();
 
     ResumeDetailVO createResume(ResumeSaveDTO dto);
+
+    ResumeUploadVO uploadResume(MultipartFile file);
 
     ResumeDetailVO getResume(Long id);
 

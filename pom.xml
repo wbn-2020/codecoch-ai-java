@@ -25,6 +25,7 @@
         <module>codecoachai-user</module>
         <module>codecoachai-question</module>
         <module>codecoachai-resume</module>
+        <module>codecoachai-file</module>
         <module>codecoachai-interview</module>
         <module>codecoachai-ai</module>
         <module>codecoachai-system</module>
