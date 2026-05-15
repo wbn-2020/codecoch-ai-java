@@ -9,6 +9,9 @@ public final class HeaderConstants {
     public static final String TRACE_ID = "X-Trace-Id";
     public static final String INTERNAL_CALL = "X-Internal-Call";
     public static final String SERVICE_NAME = "X-Service-Name";
+    public static final String INTERNAL_TIMESTAMP = "X-Internal-Timestamp";
+    public static final String INTERNAL_NONCE = "X-Internal-Nonce";
+    public static final String INTERNAL_SIGNATURE = "X-Internal-Signature";
 
     private HeaderConstants() {
     }
