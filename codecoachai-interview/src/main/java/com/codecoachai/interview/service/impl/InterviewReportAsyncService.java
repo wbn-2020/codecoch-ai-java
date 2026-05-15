@@ -12,6 +12,7 @@ import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
+import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -112,7 +113,32 @@ public class InterviewReportAsyncService {
         if (resume == null || resume.getProjects() == null || resume.getProjects().isEmpty()) {
             return null;
         }
-        return resume.getProjects().toString();
+        StringBuilder builder = new StringBuilder();
+        int index = 1;
+        for (InnerResumeProjectVO project : resume.getProjects()) {
+            if (project == null) {
+                continue;
+            }
+            appendLine(builder, "项目" + index + "名称", project.getProjectName());
+            appendLine(builder, "项目周期", project.getProjectPeriod());
+            appendLine(builder, "项目背景", firstText(project.getProjectBackground(), project.getDescription()));
+            appendLine(builder, "技术栈", project.getTechStack());
+            appendLine(builder, "个人角色", project.getRole());
+            appendLine(builder, "个人职责", project.getResponsibility());
+            appendLine(builder, "核心功能", project.getCoreFeatures());
+            appendLine(builder, "技术难点", project.getTechnicalDifficulties());
+            appendLine(builder, "优化结果", project.getOptimizationResults());
+            appendLine(builder, "项目亮点", project.getHighlights());
+            builder.append('\n');
+            index++;
+        }
+        return builder.toString().trim();
+    }
+
+    private void appendLine(StringBuilder builder, String label, String value) {
+        if (StringUtils.hasText(value)) {
+            builder.append(label).append("：").append(value.trim()).append('\n');
+        }
     }
 
     private InterviewReport currentReport(Long sessionId) {

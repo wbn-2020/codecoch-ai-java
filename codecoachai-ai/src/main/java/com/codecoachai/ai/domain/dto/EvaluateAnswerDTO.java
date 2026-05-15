@@ -14,7 +14,9 @@ public class EvaluateAnswerDTO {
     private String answerContent;
     private Integer followUpCount;
     private Integer maxFollowUpCount;
+    private String stageType;
     private String currentStage;
+    private String projectContent;
     private String historySummary;
     private String knowledgePoints;
 }
