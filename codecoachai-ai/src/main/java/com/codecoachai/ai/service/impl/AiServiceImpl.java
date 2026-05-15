@@ -347,7 +347,9 @@ public class AiServiceImpl implements AiService {
                     score >= 75 ? "回答覆盖了主要知识点，建议补充项目落地细节。" : "回答偏简略，建议补充原理、边界条件和实践案例。"));
             fallback.setNextAction(decideNextAction(extractLabelValue(raw, "nextAction"), score, dto.getFollowUpCount(), maxFollowUp(dto)));
             fallback.setKnowledgePoints(firstText(dto.getQuestionTitle(), "Java 后端基础"));
-            fillFollowUpFromEvaluation(fallback, dto, firstText(extractLabelValue(raw, "followUpQuestion"), extractLabelValue(raw, "questionContent")));
+            fillFollowUpFromEvaluation(fallback, dto, firstText(
+                    extractLabelValue(raw, "followUpQuestion"),
+                    extractLabelValue(raw, "questionContent")));
             return fallback;
         }
         EvaluateAnswerVO vo = new EvaluateAnswerVO();
@@ -720,7 +722,9 @@ public class AiServiceImpl implements AiService {
         if (!looksLikeQuestion) {
             return true;
         }
-        boolean hasTechContext = containsAny(lower, "java", "jvm", "spring", "mysql", "redis", "线程", "并发", "集合", "事务", "索引", "缓存", "锁", "gc", "接口", "数据库");
+        boolean hasTechContext = containsAny(lower,
+                "java", "jvm", "spring", "mysql", "redis",
+                "线程", "并发", "集合", "事务", "索引", "缓存", "锁", "gc", "接口", "数据库");
         boolean relatedToContext = sharesKeyword(value, rootQuestion) || sharesKeyword(value, currentQuestion) || sharesKeyword(value, answer);
         return !hasTechContext && !relatedToContext;
     }
@@ -732,7 +736,10 @@ public class AiServiceImpl implements AiService {
                 dto == null ? null : dto.getQuestionTitle(),
                 "当前 Java 技术问题");
         String answer = summarize(firstText(dto == null ? null : dto.getAnswerContent(), "回答较简略"), 80);
-        String missing = summarize(firstText(dto == null ? null : dto.getKnowledgePoints(), dto == null ? null : dto.getReferenceAnswer(), "核心原理、边界条件和项目实践"), 90);
+        String missing = summarize(firstText(
+                dto == null ? null : dto.getKnowledgePoints(),
+                dto == null ? null : dto.getReferenceAnswer(),
+                "核心原理、边界条件和项目实践"), 90);
         return "你刚才的回答是：" + answer + "。请继续围绕「" + summarize(root, 80) + "」补充说明：" + missing + "。";
     }
 
@@ -743,7 +750,10 @@ public class AiServiceImpl implements AiService {
                 dto == null ? null : dto.getQuestionTitle(),
                 "当前 Java 技术问题");
         String answer = summarize(firstText(dto == null ? null : dto.getAnswerContent(), "回答较简略"), 80);
-        String missing = summarize(firstText(dto == null ? null : dto.getKnowledgePoints(), dto == null ? null : dto.getReferenceAnswer(), "核心原理、边界条件和项目实践"), 90);
+        String missing = summarize(firstText(
+                dto == null ? null : dto.getKnowledgePoints(),
+                dto == null ? null : dto.getReferenceAnswer(),
+                "核心原理、边界条件和项目实践"), 90);
         return "你刚才的回答是：" + answer + "。请继续围绕「" + summarize(root, 80) + "」补充说明：" + missing + "。";
     }
 
@@ -893,7 +903,8 @@ public class AiServiceImpl implements AiService {
                 5. nextAction=FOLLOW_UP 时，followUpQuestion 必须紧扣原始主问题和候选人回答，必须是 Java 技术面试追问。
                 6. 不允许出现“假设原问题”“如果你有具体问题请提供”“由于没有上下文”等话术。
                 7. 不允许输出 Markdown、代码块或解释文字。
-                只输出 JSON：{"score":80,"comment":"中文点评","nextAction":"FOLLOW_UP","followUpQuestion":"追问内容","followUpReason":"追问原因","knowledgePoints":"相关知识点"}
+                只输出 JSON：
+                {"score":80,"comment":"中文点评","nextAction":"FOLLOW_UP","followUpQuestion":"追问内容","followUpReason":"追问原因","knowledgePoints":"相关知识点"}
                 """;
     }
 
@@ -928,7 +939,12 @@ public class AiServiceImpl implements AiService {
     }
 
     private String defaultReportPrompt() {
-        return "你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{\"totalScore\":82,\"summary\":\"总分来源说明\",\"strengths\":[],\"weakPoints\":[],\"mainProblems\":[],\"projectProblems\":[],\"reviewSuggestions\":[],\"recommendedQuestions\":[],\"qaReview\":[],\"stageScores\":{},\"reportContent\":\"报告正文\"}";
+        return """
+                你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。
+                只输出 JSON，不要 Markdown，不要代码块，不要解释文字。
+                字段固定：
+                {"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}
+                """;
     }
 
     private String firstText(String... values) {
