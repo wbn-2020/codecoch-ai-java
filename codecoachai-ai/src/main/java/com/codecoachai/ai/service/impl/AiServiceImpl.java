@@ -60,7 +60,8 @@ public class AiServiceImpl implements AiService {
         String scene = isProjectStage(dto.getStageType()) ? SCENE_PROJECT_QUESTION : SCENE_QUESTION;
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(scene);
-        String prompt = render(questionPromptContent(scene, template), variables(dto, null));
+        String prompt = render(industryContextBlock(dto == null ? null : dto.getIndustryContext())
+                + questionPromptContent(scene, template), variables(dto, null));
         String rawResponse = null;
         try {
             GenerateInterviewQuestionVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
@@ -107,7 +108,8 @@ public class AiServiceImpl implements AiService {
     public GenerateFollowUpVO generateFollowUp(GenerateFollowUpDTO dto) {
         long start = System.currentTimeMillis();
         PromptTemplate template = enabledTemplate(SCENE_FOLLOW_UP);
-        String prompt = render(templateContent(template, defaultFollowUpPrompt()), variables(dto));
+        String prompt = render(industryContextBlock(dto == null ? null : dto.getIndustryContext())
+                + templateContent(template, defaultFollowUpPrompt()), variables(dto));
         String rawResponse = null;
         try {
             GenerateFollowUpVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
@@ -142,13 +144,13 @@ public class AiServiceImpl implements AiService {
         String rawResponse = null;
         try {
             GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockReport()
+                    ? mockReport(dto)
                     : parseReport(rawResponse = aiClient.chat(prompt));
             saveLog(SCENE_REPORT, template, prompt, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getInterviewId()), start, null, dto.getUserId(), AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
-            GenerateReportVO fallback = mockReport();
+            GenerateReportVO fallback = mockReport(dto);
             saveLog(SCENE_REPORT, template, prompt, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             return fallback;
@@ -295,9 +297,10 @@ public class AiServiceImpl implements AiService {
 
     private String evaluatePromptContent(PromptTemplate template, EvaluateAnswerDTO dto) {
         String content = templateContent(template, defaultEvaluatePrompt());
+        String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
         if (!isProjectStage(dto == null ? null : dto.getStageType(), dto == null ? null : dto.getCurrentStage())
                 && !StringUtils.hasText(dto == null ? null : dto.getProjectContent())) {
-            return content;
+            return industryBlock + content;
         }
         return """
                 这是项目深挖阶段的回答评分。评分必须重点关注：项目理解、技术深度、表达清晰度、问题解决能力、架构思维。
@@ -305,11 +308,13 @@ public class AiServiceImpl implements AiService {
                 {{projectContent}}
                 请避免只给通用 Java 评分，必须结合候选人在项目背景、技术架构、数据库设计、核心难点、性能优化、故障排查、技术取舍、个人职责上的表达进行判断。
                 """
+                + "\n" + industryBlock
                 + "\n" + content;
     }
 
     private String reportPromptContent(PromptTemplate template, GenerateReportDTO dto) {
         String content = templateContent(template, defaultReportPrompt());
+        String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
         String projectBlock = StringUtils.hasText(dto == null ? null : dto.getProjectContent())
                 ? """
                 项目深挖要求：
@@ -325,10 +330,27 @@ public class AiServiceImpl implements AiService {
                 - reviewSuggestions/suggestions 必须输出可执行复习建议，包含薄弱知识点、复习方向、练习题方向、下一轮面试建议。
                 - recommendedQuestions 必须输出推荐练习题或练习方向，优先围绕薄弱点和面试阶段。
                 - reportContent 必须适合前端直接展示，明确回答：哪里弱、为什么弱、应该复习什么、应该练哪些题、下一轮重点练什么。
+                - 如果存在行业上下文，必须在 reportContent 或 reviewSuggestions 中体现行业匹配、行业短板、行业迁移能力建议。
                 - 只输出 JSON，不要 Markdown 代码块，不要解释文字。
                 """
+                + "\n" + industryBlock
                 + "\n" + projectBlock
                 + "\n" + content;
+    }
+
+    private String industryContextBlock(String industryContext) {
+        if (!StringUtils.hasText(industryContext)) {
+            return "";
+        }
+        return """
+                行业场景上下文：
+                {{industryContext}}
+                行业上下文使用边界：
+                1. 行业模板只是场景化提问参考，不是候选人真实经历事实。
+                2. 如果候选人项目没有对应行业背景，只能以假设场景或迁移能力方式追问。
+                3. 禁止伪造候选人做过某行业项目、公司、职责、指标或业务成果。
+                4. 评估时要区分真实经历不足、行业迁移能力不足和技术能力不足。
+                """;
     }
 
     private String resumeParsePromptContent(PromptTemplate template) {
@@ -354,6 +376,7 @@ public class AiServiceImpl implements AiService {
             values.put("experienceLevel", dto.getExperienceLevel());
             values.put("industry", dto.getIndustryDirection());
             values.put("industryDirection", dto.getIndustryDirection());
+            values.put("industryContext", dto.getIndustryContext());
             values.put("difficulty", dto.getDifficulty());
             values.put("interviewerStyle", dto.getInterviewerStyle());
             values.put("stageName", firstText(dto.getCurrentStage(), dto.getStageType()));
@@ -378,6 +401,7 @@ public class AiServiceImpl implements AiService {
             values.put("answerContent", answerDTO.getAnswerContent());
             values.put("referenceAnswer", answerDTO.getReferenceAnswer());
             values.put("historySummary", answerDTO.getHistorySummary());
+            values.put("industryContext", answerDTO.getIndustryContext());
             values.put("aiComment", "");
             values.put("followUpCount", String.valueOf(safeInt(answerDTO.getFollowUpCount())));
             values.put("maxFollowUpCount", String.valueOf(maxFollowUp(answerDTO)));
@@ -401,6 +425,7 @@ public class AiServiceImpl implements AiService {
         values.put("userAnswer", dto.getAnswerContent());
         values.put("answerContent", dto.getAnswerContent());
         values.put("historySummary", dto.getHistorySummary());
+        values.put("industryContext", dto.getIndustryContext());
         values.put("aiComment", dto.getComment());
         values.put("followUpCount", String.valueOf(safeInt(dto.getFollowUpCount())));
         values.put("maxFollowUpCount", String.valueOf(maxFollowUp(dto)));
@@ -414,6 +439,7 @@ public class AiServiceImpl implements AiService {
         values.put("experienceLevel", dto.getExperienceLevel());
         values.put("industry", dto.getIndustryDirection());
         values.put("industryDirection", dto.getIndustryDirection());
+        values.put("industryContext", dto.getIndustryContext());
         values.put("difficulty", dto.getDifficulty());
         values.put("resumeContent", dto.getResumeContent());
         values.put("projectExperience", dto.getProjectContent());
@@ -668,10 +694,11 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
-    private GenerateReportVO mockReport() {
+    private GenerateReportVO mockReport(GenerateReportDTO dto) {
         GenerateReportVO vo = new GenerateReportVO();
         vo.setTotalScore(82);
         if (applyProjectAwareMockReport(vo)) {
+            applyIndustryAwareMockReport(vo, dto);
             return vo;
         }
         vo.setSummary("本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。");
@@ -686,7 +713,12 @@ public class AiServiceImpl implements AiService {
         vo.setRecommendedQuestions("[]");
         vo.setQaReview("[]");
         vo.setReportContent(vo.getSummary());
+        applyIndustryAwareMockReport(vo, dto);
         return vo;
+    }
+
+    private GenerateReportVO mockReport() {
+        return mockReport(null);
     }
 
     private String mockResumeStructuredJson() {
@@ -778,12 +810,18 @@ public class AiServiceImpl implements AiService {
                     "候选人项目经历"), 120);
             String focus = firstText(dto == null ? null : dto.getFocusPoints(),
                     "项目背景、技术架构、数据库设计、核心难点、性能优化、故障排查、技术取舍和个人职责");
+            String industry = StringUtils.hasText(dto == null ? null : dto.getIndustryContext())
+                    ? "，并以行业场景作为参考，不能把行业模板当成候选人真实项目经历"
+                    : "";
             return "请结合项目经历【" + project + "】，围绕【" + focus
-                    + "】追问一个具体项目深挖问题，要求候选人说明背景、方案、取舍、落地细节和量化结果。";
+                    + "】追问一个具体项目深挖问题" + industry + "，要求候选人说明背景、方案、取舍、落地细节和量化结果。";
         }
+        String industry = StringUtils.hasText(dto == null ? null : dto.getIndustryContext())
+                ? "，可结合行业场景考察迁移能力，但不要伪造候选人真实经历"
+                : "";
         return "请结合" + firstText(dto == null ? null : dto.getQuestionTitle(),
                 dto == null ? null : dto.getQuestionContent(),
-                "当前 Java 后端主题") + "说明核心原理、适用场景和生产实践注意点。";
+                "当前 Java 后端主题") + "说明核心原理、适用场景和生产实践注意点" + industry + "。";
     }
 
     private boolean applyProjectAwareMockEvaluation(EvaluateAnswerVO vo, EvaluateAnswerDTO dto, int score) {
@@ -817,6 +855,39 @@ public class AiServiceImpl implements AiService {
         vo.setQaReview("[]");
         vo.setReportContent(vo.getSummary());
         return true;
+    }
+
+    private void applyIndustryAwareMockReport(GenerateReportVO vo, GenerateReportDTO dto) {
+        if (!StringUtils.hasText(dto == null ? null : dto.getIndustryContext())) {
+            return;
+        }
+        String direction = firstText(dto.getIndustryDirection(), "目标行业");
+        String industryFeedback = "行业反馈：" + direction
+                + "场景会重点关注业务链路、数据一致性、异常补偿、权限边界和可观测性。本次面试可继续补充真实项目与该行业场景的匹配点；如果过往项目不属于该行业，应按假设场景说明迁移方案，而不是包装成真实经历。";
+        vo.setSummary(firstText(vo.getSummary(), "") + " 已结合" + direction + "行业场景给出反馈。");
+        vo.setWeakPoints(appendJsonArrayText(vo.getWeakPoints(), "行业场景迁移能力"));
+        vo.setProjectProblems(appendJsonArrayText(vo.getProjectProblems(), "行业业务链路和风险点结合不足"));
+        vo.setReviewSuggestions(appendJsonArrayText(vo.getReviewSuggestions(), industryFeedback));
+        vo.setSuggestions(appendJsonArrayText(vo.getSuggestions(), industryFeedback));
+        vo.setReportContent(firstText(vo.getReportContent(), vo.getSummary()) + "\n" + industryFeedback);
+    }
+
+    private String appendJsonArrayText(String jsonArray, String item) {
+        if (!StringUtils.hasText(jsonArray)) {
+            return toJson(List.of(item));
+        }
+        try {
+            JsonNode node = objectMapper.readTree(jsonArray);
+            if (node.isArray()) {
+                List<String> values = new java.util.ArrayList<>();
+                node.forEach(value -> values.add(value.asText()));
+                values.add(item);
+                return toJson(values);
+            }
+        } catch (Exception ignored) {
+            // Keep existing non-JSON report text and append a readable item.
+        }
+        return jsonArray + "\n" + item;
     }
 
     private int scoreByLength(String answer) {

@@ -11,6 +11,7 @@ public class InterviewListVO {
     private String mode;
     private String targetPosition;
     private String experienceLevel;
+    private Long industryTemplateId;
     private String industryDirection;
     private String difficulty;
     private String interviewerStyle;

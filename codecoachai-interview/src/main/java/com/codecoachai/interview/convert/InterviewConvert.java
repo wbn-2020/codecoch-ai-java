@@ -50,6 +50,7 @@ public final class InterviewConvert {
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
         vo.setExperienceLevel(session.getExperienceLevel());
+        vo.setIndustryTemplateId(session.getIndustryTemplateId());
         vo.setIndustryDirection(session.getIndustryDirection());
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());

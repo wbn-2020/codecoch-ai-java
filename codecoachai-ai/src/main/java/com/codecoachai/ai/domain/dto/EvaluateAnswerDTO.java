@@ -19,4 +19,5 @@ public class EvaluateAnswerDTO {
     private String projectContent;
     private String historySummary;
     private String knowledgePoints;
+    private String industryContext;
 }

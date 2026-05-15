@@ -13,6 +13,7 @@ public class CreateInterviewDTO {
     private Integer maxQuestionCount;
     private String targetPosition;
     private String experienceLevel;
+    private Long industryTemplateId;
     private String industryDirection;
     private String difficulty;
     private String interviewerStyle;

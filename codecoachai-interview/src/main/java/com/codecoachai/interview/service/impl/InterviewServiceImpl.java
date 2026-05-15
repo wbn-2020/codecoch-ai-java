@@ -10,6 +10,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.convert.InterviewConvert;
 import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
+import com.codecoachai.interview.domain.entity.IndustryTemplate;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
@@ -47,6 +48,7 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewStageMapper;
+import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -77,6 +79,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
     private final InterviewReportAsyncService reportAsyncService;
+    private final IndustryTemplateService industryTemplateService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -84,6 +87,7 @@ public class InterviewServiceImpl implements InterviewService {
         Long userId = requireCurrentUserId();
         String mode = normalizeMode(StringUtils.hasText(dto.getInterviewMode()) ? dto.getInterviewMode() : dto.getMode());
         validateResumeOwnership(userId, mode, dto);
+        IndustryTemplateSnapshot industrySnapshot = resolveIndustrySnapshot(dto);
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -92,7 +96,9 @@ public class InterviewServiceImpl implements InterviewService {
         session.setTitle(StringUtils.hasText(dto.getTitle()) ? dto.getTitle() : "CodeCoachAI V1 模拟面试");
         session.setTargetPosition(dto.getTargetPosition());
         session.setExperienceLevel(dto.getExperienceLevel());
-        session.setIndustryDirection(dto.getIndustryDirection());
+        session.setIndustryTemplateId(industrySnapshot.industryTemplateId());
+        session.setIndustryDirection(industrySnapshot.industryDirection());
+        session.setIndustryContext(industrySnapshot.industryContext());
         session.setDifficulty(dto.getDifficulty());
         session.setInterviewerStyle(dto.getInterviewerStyle());
         session.setBasedOnResume(Boolean.TRUE.equals(dto.getBasedOnResume()));
@@ -111,7 +117,9 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
         vo.setExperienceLevel(session.getExperienceLevel());
+        vo.setIndustryTemplateId(session.getIndustryTemplateId());
         vo.setIndustryDirection(session.getIndustryDirection());
+        vo.setIndustryContext(session.getIndustryContext());
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
         vo.setBasedOnResume(session.getBasedOnResume());
@@ -231,6 +239,7 @@ public class InterviewServiceImpl implements InterviewService {
         evaluateDTO.setStageType(stage == null ? null : stage.getStageType());
         evaluateDTO.setCurrentStage(stage == null ? null : stage.getStageName());
         evaluateDTO.setProjectContent(buildProjectContent(loadResume(session)));
+        evaluateDTO.setIndustryContext(session.getIndustryContext());
         evaluateDTO.setHistorySummary(historySummary(session.getId()));
         EvaluateAnswerVO evaluation = FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO));
 
@@ -354,7 +363,9 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
         vo.setExperienceLevel(session.getExperienceLevel());
+        vo.setIndustryTemplateId(session.getIndustryTemplateId());
         vo.setIndustryDirection(session.getIndustryDirection());
+        vo.setIndustryContext(session.getIndustryContext());
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
         vo.setBasedOnResume(session.getBasedOnResume());
@@ -447,6 +458,7 @@ public class InterviewServiceImpl implements InterviewService {
             reportDTO.setTargetPosition(session.getTargetPosition());
             reportDTO.setExperienceLevel(session.getExperienceLevel());
             reportDTO.setIndustryDirection(session.getIndustryDirection());
+            reportDTO.setIndustryContext(session.getIndustryContext());
             reportDTO.setDifficulty(session.getDifficulty());
             reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
             reportDTO.setProjectContent(buildProjectContent(resume));
@@ -496,6 +508,7 @@ public class InterviewServiceImpl implements InterviewService {
         aiDTO.setTargetPosition(session.getTargetPosition());
         aiDTO.setExperienceLevel(session.getExperienceLevel());
         aiDTO.setIndustryDirection(session.getIndustryDirection());
+        aiDTO.setIndustryContext(session.getIndustryContext());
         aiDTO.setDifficulty(session.getDifficulty());
         aiDTO.setInterviewerStyle(session.getInterviewerStyle());
         aiDTO.setQuestionId(question == null ? null : question.getId());
@@ -659,6 +672,7 @@ public class InterviewServiceImpl implements InterviewService {
         followUpDTO.setCurrentStage(stage == null ? null : stage.getStageName());
         followUpDTO.setHistorySummary(evaluateDTO.getHistorySummary());
         followUpDTO.setKnowledgePoints(evaluation == null ? null : evaluation.getKnowledgePoints());
+        followUpDTO.setIndustryContext(evaluateDTO.getIndustryContext());
         return followUpDTO;
     }
 
@@ -878,6 +892,38 @@ public class InterviewServiceImpl implements InterviewService {
         }
     }
 
+    private IndustryTemplateSnapshot resolveIndustrySnapshot(CreateInterviewDTO dto) {
+        if (dto == null || dto.getIndustryTemplateId() == null) {
+            String direction = normalizeText(dto == null ? null : dto.getIndustryDirection());
+            String context = StringUtils.hasText(direction)
+                    ? "行业方向：" + direction + "\n行业上下文仅作为场景化提问参考，不代表候选人真实项目经历。"
+                    : null;
+            return new IndustryTemplateSnapshot(null, direction, context);
+        }
+        IndustryTemplate template = industryTemplateService.getEnabledTemplate(dto.getIndustryTemplateId());
+        String direction = firstText(normalizeText(dto.getIndustryDirection()), template.getIndustryName());
+        return new IndustryTemplateSnapshot(template.getId(), direction, buildIndustryContext(template, direction));
+    }
+
+    private String buildIndustryContext(IndustryTemplate template, String direction) {
+        StringBuilder builder = new StringBuilder();
+        appendLine(builder, "行业方向", direction);
+        appendLine(builder, "行业编码", template.getIndustryCode());
+        appendLine(builder, "行业说明", template.getDescription());
+        appendLine(builder, "适用岗位", template.getTargetPositions());
+        appendLine(builder, "核心业务场景", template.getCoreBusinessScenarios());
+        appendLine(builder, "关键技术关注点", template.getKeyTechnicalPoints());
+        appendLine(builder, "常见追问方向", template.getCommonQuestionDirections());
+        appendLine(builder, "常见风险点", template.getRiskPoints());
+        appendLine(builder, "Prompt上下文", template.getPromptContext());
+        builder.append("边界要求：行业上下文只作为场景化提问参考，不代表候选人真实经历；如果简历项目没有对应行业背景，只能以假设场景或迁移能力方式追问。");
+        return builder.toString().trim();
+    }
+
+    private String normalizeText(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
     private void markAnswered(InterviewSession session, InterviewStage stage) {
         session.setAnsweredQuestionCount(safeInt(session.getAnsweredQuestionCount()) + 1);
         session.setCurrentFollowUpCount(0);
@@ -957,6 +1003,9 @@ public class InterviewServiceImpl implements InterviewService {
             }
         }
         return null;
+    }
+
+    private record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
     }
 
     private int safeInt(Integer value) {
