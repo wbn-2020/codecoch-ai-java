@@ -1,5 +1,6 @@
 package com.codecoachai.common.security.config;
 
+import com.codecoachai.common.security.filter.AdminRoleFilter;
 import com.codecoachai.common.security.filter.InternalCallFilter;
 import com.codecoachai.common.security.filter.LoginUserContextFilter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -33,6 +34,15 @@ public class CommonSecurityAutoConfiguration {
         FilterRegistrationBean<InternalCallFilter> registrationBean = new FilterRegistrationBean<>();
         registrationBean.setFilter(new InternalCallFilter());
         registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
+        registrationBean.addUrlPatterns("/*");
+        return registrationBean;
+    }
+
+    @Bean
+    public FilterRegistrationBean<AdminRoleFilter> adminRoleFilter() {
+        FilterRegistrationBean<AdminRoleFilter> registrationBean = new FilterRegistrationBean<>();
+        registrationBean.setFilter(new AdminRoleFilter());
+        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 15);
         registrationBean.addUrlPatterns("/*");
         return registrationBean;
     }
