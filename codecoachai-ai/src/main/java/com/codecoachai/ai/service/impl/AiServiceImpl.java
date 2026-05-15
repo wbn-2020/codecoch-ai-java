@@ -8,6 +8,7 @@ import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
+import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.PromptTemplate;
 import com.codecoachai.ai.domain.enums.AiFailureType;
@@ -15,6 +16,7 @@ import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
+import com.codecoachai.ai.domain.vo.ParseResumeVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.service.AiService;
@@ -25,6 +27,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -41,6 +44,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_EVALUATE = "INTERVIEW_ANSWER_EVALUATE";
     private static final String SCENE_FOLLOW_UP = "INTERVIEW_FOLLOW_UP_GENERATE";
     private static final String SCENE_REPORT = "INTERVIEW_REPORT_GENERATE";
+    private static final String SCENE_RESUME_PARSE = "RESUME_STRUCTURED_PARSE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptTemplateMapper promptTemplateMapper;
@@ -148,6 +152,54 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public ParseResumeVO parseResume(ParseResumeDTO dto) {
+        validateParseResumeDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptTemplate template = enabledTemplate(SCENE_RESUME_PARSE);
+        String prompt = render(resumeParsePromptContent(template), variables(dto));
+        String rawResponse = null;
+        try {
+            String structuredJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockResumeStructuredJson()
+                    : parseResumeStructuredJson(rawResponse = aiClient.chat(prompt));
+            ParseResumeVO vo = new ParseResumeVO();
+            vo.setStructuredJson(structuredJson);
+            saveLog(SCENE_RESUME_PARSE, template, prompt, structuredJson,
+                    businessId(dto.getAnalysisRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(SCENE_RESUME_PARSE, template, prompt, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getAnalysisRecordId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    private void validateParseResumeDTO(ParseResumeDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getAnalysisRecordId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysisRecordId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (!StringUtils.hasText(dto.getRawText())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "rawText is required");
+        }
+    }
+
+    private BusinessException toBusinessException(RuntimeException ex) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
+        }
+        if (ex instanceof AiProviderException aiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        }
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume parse failed"));
+    }
+
     private boolean isProjectStage(String stageType) {
         return isProjectStage(stageType, null);
     }
@@ -222,6 +274,10 @@ public class AiServiceImpl implements AiService {
                 """
                 + "\n" + projectBlock
                 + "\n" + content;
+    }
+
+    private String resumeParsePromptContent(PromptTemplate template) {
+        return templateContent(template, defaultResumeParsePrompt());
     }
 
     private String render(String template, Map<String, String> variables) {
@@ -304,6 +360,16 @@ public class AiServiceImpl implements AiService {
         values.put("projectExperience", dto.getProjectContent());
         values.put("projectContent", dto.getProjectContent());
         values.put("historySummary", dto.getMessages() == null ? "" : String.join("\n", dto.getMessages()));
+        return values;
+    }
+
+    private Map<String, String> variables(ParseResumeDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("analysisRecordId", dto.getAnalysisRecordId() == null ? "" : String.valueOf(dto.getAnalysisRecordId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("originalFilename", dto.getOriginalFilename());
+        values.put("fileExt", dto.getFileExt());
+        values.put("rawText", dto.getRawText());
         return values;
     }
 
@@ -417,6 +483,42 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private String parseResumeStructuredJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateResumeStructuredJson(json);
+        return json.toString();
+    }
+
+    private void validateResumeStructuredJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
+        }
+        requireJsonField(json, "basicInfo");
+        requireJsonField(json, "targetPosition");
+        requireJsonField(json, "skills");
+        requireJsonField(json, "workExperiences");
+        requireJsonField(json, "projectExperiences");
+        requireJsonField(json, "educationExperiences");
+        JsonNode projects = json.path("projectExperiences");
+        if (projects.isArray()) {
+            for (JsonNode project : projects) {
+                if (project != null && project.isObject()) {
+                    requireJsonField(project, "techStack");
+                    requireJsonField(project, "responsibilities");
+                    requireJsonField(project, "technicalDifficulties");
+                    requireJsonField(project, "achievements");
+                }
+            }
+        }
+    }
+
+    private void requireJsonField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume parse response missing field: " + fieldName);
+        }
+    }
+
     private JsonNode parseJson(String raw) {
         try {
             return objectMapper.readTree(extractJson(raw));
@@ -505,6 +607,40 @@ public class AiServiceImpl implements AiService {
         vo.setQaReview("[]");
         vo.setReportContent(vo.getSummary());
         return vo;
+    }
+
+    private String mockResumeStructuredJson() {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("basicInfo", Map.of(
+                "name", "张三",
+                "phone", "13800000000",
+                "email", "zhangsan@example.com",
+                "location", "上海"
+        ));
+        json.put("targetPosition", "Java 后端开发工程师");
+        json.put("skills", List.of("Java", "Spring Boot", "MySQL", "Redis", "微服务"));
+        json.put("workExperiences", List.of(Map.of(
+                "company", "示例科技有限公司",
+                "position", "Java 后端开发工程师",
+                "period", "2022.07-至今",
+                "description", "负责核心业务系统后端研发、接口设计和性能优化。"
+        )));
+        json.put("projectExperiences", List.of(Map.of(
+                "projectName", "在线面试训练平台",
+                "period", "2023.01-2024.12",
+                "description", "面向求职用户的刷题、模拟面试和报告生成平台。",
+                "techStack", List.of("Spring Cloud", "MyBatis-Plus", "MySQL", "Redis"),
+                "responsibilities", List.of("负责简历与面试核心服务设计", "实现 AI 面试报告生成链路"),
+                "technicalDifficulties", List.of("跨服务调用稳定性", "AI 返回 JSON 格式约束"),
+                "achievements", List.of("完成核心闭环交付", "提升面试报告生成稳定性")
+        )));
+        json.put("educationExperiences", List.of(Map.of(
+                "school", "示例大学",
+                "degree", "本科",
+                "major", "计算机科学与技术",
+                "period", "2018.09-2022.06"
+        )));
+        return toJson(json);
     }
 
     private String mockQuestionContent(GenerateInterviewQuestionDTO dto, String scene) {
@@ -944,6 +1080,32 @@ public class AiServiceImpl implements AiService {
                 只输出 JSON，不要 Markdown，不要代码块，不要解释文字。
                 字段固定：
                 {"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}
+                """;
+    }
+
+    private String defaultResumeParsePrompt() {
+        return """
+                你是资深 Java 后端招聘简历解析助手。请从候选人简历原文中抽取结构化 JSON。
+                文件名：{{originalFilename}}
+                文件类型：{{fileExt}}
+                简历原文：
+                {{rawText}}
+
+                要求：
+                1. 只输出 JSON object，不要 Markdown，不要代码块，不要解释文字。
+                2. 不要编造简历原文中没有的信息；无法识别的字段使用空字符串或空数组。
+                3. JSON 顶层字段固定为：
+                   - basicInfo：基本信息，包含 name、phone、email、location。
+                   - targetPosition：求职岗位。
+                   - skills：技能栈数组。
+                   - workExperiences：工作经历数组。
+                   - projectExperiences：项目经历数组。
+                   - educationExperiences：教育经历数组。
+                4. projectExperiences 中每个项目必须包含：
+                   projectName、period、description、techStack、responsibilities、technicalDifficulties、achievements。
+                5. techStack、responsibilities、technicalDifficulties、achievements 使用数组。
+                输出示例：
+                {"basicInfo":{"name":"","phone":"","email":"","location":""},"targetPosition":"","skills":[],"workExperiences":[],"projectExperiences":[{"projectName":"","period":"","description":"","techStack":[],"responsibilities":[],"technicalDifficulties":[],"achievements":[]}],"educationExperiences":[]}
                 """;
     }
 
