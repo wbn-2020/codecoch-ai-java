@@ -15,8 +15,10 @@ import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
 import com.codecoachai.interview.service.InterviewService;
+import com.codecoachai.interview.service.InterviewStreamService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -24,6 +26,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.List;
 
 @RestController
@@ -32,6 +35,7 @@ import java.util.List;
 public class InterviewController {
 
     private final InterviewService interviewService;
+    private final InterviewStreamService interviewStreamService;
 
     @PostMapping
     public Result<CreateInterviewVO> create(@Valid @RequestBody CreateInterviewDTO dto) {
@@ -53,10 +57,21 @@ public class InterviewController {
         return Result.success(interviewService.currentQuestion(id));
     }
 
+    @PostMapping(value = "/{id}/questions/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter currentQuestionStream(@PathVariable Long id) {
+        return interviewStreamService.streamCurrentQuestion(id);
+    }
+
     @PostMapping("/{id}/answer")
     public Result<SubmitInterviewAnswerVO> answer(@PathVariable Long id,
                                                   @Valid @RequestBody SubmitInterviewAnswerDTO dto) {
         return Result.success(interviewService.answer(id, dto));
+    }
+
+    @PostMapping(value = "/{id}/answer/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter answerStream(@PathVariable Long id,
+                                   @Valid @RequestBody SubmitInterviewAnswerDTO dto) {
+        return interviewStreamService.streamAnswer(id, dto);
     }
 
     @PostMapping("/{id}/finish")
