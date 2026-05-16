@@ -10,6 +10,7 @@ import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
+import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiFailureType;
@@ -20,6 +21,7 @@ import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
+import com.codecoachai.ai.domain.vo.PracticeReviewVO;
 import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
@@ -59,6 +61,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_RESUME_OPTIMIZE = "RESUME_OPTIMIZE";
     private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
+    private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -120,6 +123,37 @@ public class AiServiceImpl implements AiService {
                 throw businessException;
             }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "AI question generation failed"));
+        }
+    }
+
+    @Override
+    public PracticeReviewVO reviewPractice(PracticeReviewDTO dto) {
+        validatePracticeReviewDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_PRACTICE_REVIEW,
+                defaultPracticeReviewPrompt(), variables(dto));
+        String rawResponse = null;
+        try {
+            PracticeReviewVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockPracticeReview(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                vo = parsePracticeReview(rawResponse, dto);
+            }
+            Long logId = saveLog(promptResult, rawResponse, businessId(dto.getRecordId()),
+                    start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(rawResponse);
+            return vo;
+        } catch (RuntimeException ex) {
+            PracticeReviewVO fallback = mockPracticeReview(dto);
+            Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getRecordId()),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            fallback.setAiCallLogId(logId);
+            fallback.setRawResponse(firstText(rawResponse, ex.getMessage()));
+            return fallback;
         }
     }
 
@@ -580,6 +614,18 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(PracticeReviewDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("recordId", dto.getRecordId() == null ? "" : String.valueOf(dto.getRecordId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("questionId", dto.getQuestionId() == null ? "" : String.valueOf(dto.getQuestionId()));
+        values.put("questionTitle", dto.getQuestionTitle());
+        values.put("questionContent", dto.getQuestionContent());
+        values.put("referenceAnswer", dto.getReferenceAnswer());
+        values.put("answerContent", dto.getAnswerContent());
+        return values;
+    }
+
     private Map<String, String> variables(GenerateLearningPlanDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("learningPlanId", dto.getLearningPlanId() == null ? "" : String.valueOf(dto.getLearningPlanId()));
@@ -596,6 +642,54 @@ public class AiServiceImpl implements AiService {
         values.put("expectedDurationDays", dto.getExpectedDurationDays() == null ? "14" : String.valueOf(dto.getExpectedDurationDays()));
         values.put("extraRequirements", dto.getExtraRequirements());
         return values;
+    }
+
+    private PracticeReviewVO parsePracticeReview(String raw, PracticeReviewDTO dto) {
+        JsonNode json = parseJson(raw);
+        PracticeReviewVO vo = new PracticeReviewVO();
+        vo.setRecordId(dto.getRecordId());
+        vo.setQuestionId(dto.getQuestionId());
+        int score = clampScore(json.path("score").asInt(scoreByLength(dto.getAnswerContent())));
+        vo.setScore(score);
+        vo.setMasteryStatus(firstText(json.path("masteryStatus").asText(null), masteryByScore(score)));
+        vo.setComment(firstText(json.path("comment").asText(null), json.path("aiComment").asText(null)));
+        vo.setSuggestions(firstText(json.path("suggestions").asText(null), json.path("advice").asText(null)));
+        vo.setKnowledgePoints(firstText(json.path("knowledgePoints").asText(null), json.path("knowledgePoint").asText(null)));
+        return vo;
+    }
+
+    private PracticeReviewVO mockPracticeReview(PracticeReviewDTO dto) {
+        PracticeReviewVO vo = new PracticeReviewVO();
+        int score = scoreByLength(dto == null ? null : dto.getAnswerContent());
+        vo.setRecordId(dto == null ? null : dto.getRecordId());
+        vo.setQuestionId(dto == null ? null : dto.getQuestionId());
+        vo.setScore(score);
+        vo.setMasteryStatus(masteryByScore(score));
+        vo.setComment(score >= 75
+                ? "回答覆盖了主要结论，建议继续补充原理边界、适用场景和生产实践细节。"
+                : "回答偏概括，建议先对齐核心概念，再按原理、场景、优缺点和排查步骤展开。");
+        vo.setSuggestions("对照参考答案补齐遗漏点，使用 2-3 个关键词组织答案，并加入一个真实项目或线上问题示例。");
+        vo.setKnowledgePoints(firstText(dto == null ? null : dto.getQuestionTitle(), "Java 后端基础知识"));
+        return vo;
+    }
+
+    private void validatePracticeReviewDTO(PracticeReviewDTO dto) {
+        if (dto == null || dto.getRecordId() == null || dto.getQuestionId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "practice record and question are required");
+        }
+        if (!StringUtils.hasText(dto.getAnswerContent())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "answerContent is required");
+        }
+    }
+
+    private String masteryByScore(int score) {
+        if (score >= 80) {
+            return "MASTERED";
+        }
+        if (score >= 60) {
+            return "FAMILIAR";
+        }
+        return "NOT_MASTERED";
     }
 
     private GenerateInterviewQuestionVO parseQuestion(String raw, String scene) {
@@ -1771,6 +1865,30 @@ public class AiServiceImpl implements AiService {
 
                 JSON 格式：
                 {"questions":[{"title":"题目标题","content":"题目内容","referenceAnswer":"参考答案","analysis":"答案解析","difficulty":"MEDIUM","questionType":"SHORT_ANSWER","followUpQuestions":["追问题"],"tagSuggestions":["标签建议"],"categorySuggestion":"分类建议","groupSuggestion":"问题组建议"}]}
+                """;
+    }
+
+    private String defaultPracticeReviewPrompt() {
+        return """
+                你是 Java 后端刷题教练。请基于题目、参考答案和用户答案生成简答题点评。
+                练习记录 ID：{{recordId}}
+                题目 ID：{{questionId}}
+                题目标题：{{questionTitle}}
+                题目内容：
+                {{questionContent}}
+                参考答案：
+                {{referenceAnswer}}
+                用户答案：
+                {{answerContent}}
+                要求：
+                1. 只基于用户答案点评，不编造用户没有表达的经历。
+                2. score 必须是 0-100 整数。
+                3. masteryStatus 只能是 MASTERED、FAMILIAR、NOT_MASTERED。
+                4. comment 说明优点和缺口。
+                5. suggestions 给出下一步复习建议。
+                6. knowledgePoints 给出相关知识点，逗号分隔。
+                只输出 JSON，不要 Markdown，不要代码块。
+                JSON 字段固定：{"score":80,"masteryStatus":"FAMILIAR","comment":"点评","suggestions":"建议","knowledgePoints":"知识点"}
                 """;
     }
 

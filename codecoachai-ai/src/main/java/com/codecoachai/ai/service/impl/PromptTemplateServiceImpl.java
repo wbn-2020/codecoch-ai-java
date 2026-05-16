@@ -3,6 +3,8 @@ package com.codecoachai.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.ai.client.AiClient;
+import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.convert.AiConvert;
 import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
@@ -10,6 +12,7 @@ import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptVersionActionDTO;
+import com.codecoachai.ai.domain.dto.PromptVersionTestDTO;
 import com.codecoachai.ai.domain.dto.UpdatePromptStatusDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.PromptTemplate;
@@ -19,6 +22,7 @@ import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateDetailVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.mapper.PromptTemplateVersionMapper;
@@ -29,6 +33,11 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
 import java.time.LocalDateTime;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Collections;
+import java.util.HexFormat;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +50,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private final PromptTemplateMapper promptTemplateMapper;
     private final PromptTemplateVersionMapper promptTemplateVersionMapper;
     private final AiCallLogMapper aiCallLogMapper;
+    private final AiProperties aiProperties;
+    private final AiClient aiClient;
 
     @Override
     public PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize, String keyword, String scene,
@@ -217,6 +228,31 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
+    public PromptVersionTestVO testVersion(Long versionId, PromptVersionTestDTO dto) {
+        PromptTemplateVersion version = getVersion(versionId);
+        PromptTemplate template = getTemplate(version.getTemplateId());
+        Map<String, String> variables = dto == null || dto.getInputVariables() == null
+                ? Collections.emptyMap()
+                : dto.getInputVariables();
+        String renderedPrompt = render(version.getContent(), variables);
+        boolean callAi = dto == null || !Boolean.FALSE.equals(dto.getCallAi());
+        String response = callAi ? testAiResponse(renderedPrompt) : "PROMPT_RENDER_ONLY";
+        Long logId = savePromptTestLog(template, version, renderedPrompt, variables, response);
+
+        PromptVersionTestVO vo = new PromptVersionTestVO();
+        vo.setVersionId(version.getId());
+        vo.setTemplateId(template.getId());
+        vo.setScene(version.getScene());
+        vo.setVersionCode(version.getVersionCode());
+        vo.setRenderedPrompt(renderedPrompt);
+        vo.setInputVariables(variables);
+        vo.setAiResponse(response);
+        vo.setAiCallLogId(logId);
+        vo.setMockMode(Boolean.TRUE.equals(aiProperties.getMockEnabled()));
+        return vo;
+    }
+
+    @Override
     public PageResult<AiCallLogVO> pageLogs(Long pageNo, Long pageSize) {
         AiCallLogQueryDTO query = new AiCallLogQueryDTO();
         query.setPageNo(pageNo);
@@ -262,6 +298,66 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "AI call log not found");
         }
         return AiConvert.toLogVO(log);
+    }
+
+    private String render(String content, Map<String, String> variables) {
+        String rendered = content == null ? "" : content;
+        for (Map.Entry<String, String> entry : variables.entrySet()) {
+            rendered = rendered.replace("{{" + entry.getKey() + "}}", entry.getValue() == null ? "" : entry.getValue());
+        }
+        return rendered;
+    }
+
+    private String testAiResponse(String renderedPrompt) {
+        if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+            return "PROMPT_VERSION_TEST_MOCK_RESPONSE";
+        }
+        try {
+            return aiClient.chat(renderedPrompt);
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Prompt version test failed"));
+        }
+    }
+
+    private Long savePromptTestLog(PromptTemplate template, PromptTemplateVersion version, String renderedPrompt,
+                                   Map<String, String> variables, String response) {
+        AiCallLog log = new AiCallLog();
+        log.setUserId(LoginUserContext.getUserId());
+        log.setScene("PROMPT_VERSION_TEST");
+        log.setModelName(Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                ? aiProperties.getModel() + "(mock)"
+                : aiProperties.getModel());
+        log.setPromptTemplateId(template.getId());
+        log.setPromptTemplateVersionId(version.getId());
+        log.setPromptVersion(version.getVersionCode());
+        log.setInputVariablesJson(variables.toString());
+        log.setPromptHash(sha256(renderedPrompt));
+        log.setResponseFormat("TEXT");
+        log.setRequestPrompt(renderedPrompt);
+        log.setResponseContent(response);
+        log.setBusinessId(String.valueOf(version.getId()));
+        log.setRequestBody("promptVersionTest=true");
+        log.setResponseBody(response);
+        log.setElapsedMs(0L);
+        log.setCostMillis(0L);
+        log.setSuccess(CommonConstants.YES);
+        log.setStatus(CommonConstants.YES);
+        try {
+            aiCallLogMapper.insert(log);
+            return log.getId();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest((value == null ? "" : value)
+                    .getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private void apply(PromptTemplate template, PromptTemplateSaveDTO dto) {

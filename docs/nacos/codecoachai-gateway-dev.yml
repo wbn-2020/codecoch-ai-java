@@ -28,10 +28,22 @@ spring:
           uri: lb://codecoachai-question
           predicates:
             - Path=/questions/**
+        - id: codecoachai-question-practice
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/practice/**
         - id: codecoachai-question-admin-questions
           uri: lb://codecoachai-question
           predicates:
             - Path=/admin/questions/**
+        - id: codecoachai-question-admin-reviews
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/question-reviews/**
+        - id: codecoachai-question-admin-duplicate-reviews
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/question-duplicate-reviews/**
         - id: codecoachai-question-admin-categories
           uri: lb://codecoachai-question
           predicates:
@@ -48,14 +60,30 @@ spring:
           uri: lb://codecoachai-resume
           predicates:
             - Path=/resumes/**
+        - id: codecoachai-resume-sse
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/ai/sse/resume-optimize
         - id: codecoachai-interview
           uri: lb://codecoachai-interview
           predicates:
             - Path=/interviews/**
+        - id: codecoachai-study
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/study-plans/**,/study-tasks/**
+        - id: codecoachai-interview-sse
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/report,/ai/sse/study-plan
         - id: codecoachai-ai-admin
           uri: lb://codecoachai-ai
           predicates:
             - Path=/admin/ai/**
+        - id: codecoachai-file-admin
+          uri: lb://codecoachai-file
+          predicates:
+            - Path=/admin/files/**
         - id: codecoachai-system-admin
           uri: lb://codecoachai-system
           predicates:

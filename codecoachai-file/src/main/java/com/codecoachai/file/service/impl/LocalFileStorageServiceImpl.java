@@ -1,10 +1,14 @@
 package com.codecoachai.file.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.file.config.FileStorageProperties;
+import com.codecoachai.file.domain.dto.AdminFileQueryDTO;
 import com.codecoachai.file.domain.entity.FileInfo;
+import com.codecoachai.file.domain.vo.FileInfoVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
@@ -110,6 +114,29 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         } catch (IOException ex) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
         }
+    }
+
+    @Override
+    public PageResult<FileInfoVO> pageAdminFiles(AdminFileQueryDTO query) {
+        AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
+        Page<FileInfo> page = fileInfoMapper.selectPage(
+                Page.of(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize())),
+                new LambdaQueryWrapper<FileInfo>()
+                        .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
+                        .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
+                        .eq(StringUtils.hasText(actualQuery.getStatus()), FileInfo::getStatus, actualQuery.getStatus())
+                        .orderByDesc(FileInfo::getCreatedAt));
+        return PageResult.of(page.getRecords().stream().map(this::toFileInfoVO).toList(),
+                page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public FileInfoVO getAdminFile(Long fileId) {
+        FileInfo fileInfo = fileInfoMapper.selectById(fileId);
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+        }
+        return toFileInfoVO(fileInfo);
     }
 
     private MediaType resolveMediaType(String mimeType) {
@@ -247,6 +274,31 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setStatus(fileInfo.getStatus());
         vo.setCreatedAt(fileInfo.getCreatedAt());
         return vo;
+    }
+
+    private FileInfoVO toFileInfoVO(FileInfo fileInfo) {
+        FileInfoVO vo = new FileInfoVO();
+        vo.setId(fileInfo.getId());
+        vo.setUserId(fileInfo.getUserId());
+        vo.setBizType(fileInfo.getBizType());
+        vo.setOriginalFilename(fileInfo.getOriginalFilename());
+        vo.setStoredFilename(fileInfo.getStoredFilename());
+        vo.setFileExt(fileInfo.getFileExt());
+        vo.setMimeType(fileInfo.getMimeType());
+        vo.setFileSize(fileInfo.getFileSize());
+        vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setStatus(fileInfo.getStatus());
+        vo.setCreatedAt(fileInfo.getCreatedAt());
+        vo.setUpdatedAt(fileInfo.getUpdatedAt());
+        return vo;
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null ? 10L : pageSize;
     }
 
     private void deleteQuietly(Path target) {
