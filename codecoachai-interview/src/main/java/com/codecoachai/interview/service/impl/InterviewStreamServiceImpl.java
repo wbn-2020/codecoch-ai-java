@@ -13,9 +13,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -28,6 +30,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private static final long CHUNK_DELAY_MILLIS = 30L;
 
     private final InterviewService interviewService;
+    @Qualifier("sseStreamExecutor")
+    private final Executor sseStreamExecutor;
 
     @Override
     public SseEmitter streamCurrentQuestion(Long sessionId) {
@@ -37,7 +41,9 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         LoginUser loginUser = LoginUserContext.getLoginUser();
 
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
-            sendStart(emitter, active, requestId, sessionId, "question stream started");
+            if (!sendStart(emitter, active, requestId, sessionId, "question stream started") || !active.get()) {
+                return;
+            }
             CurrentQuestionVO question = interviewService.currentQuestion(sessionId);
             String fullContent = question == null ? null : question.getQuestionContent();
             sendDeltas(emitter, active, requestId, sessionId, fullContent);
@@ -47,7 +53,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendDone(emitter, active, requestId, sessionId,
                     question == null ? null : question.getMessageId(),
                     fullContent);
-        }));
+        }), sseStreamExecutor);
         return emitter;
     }
 
@@ -59,7 +65,9 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         LoginUser loginUser = LoginUserContext.getLoginUser();
 
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
-            sendStart(emitter, active, requestId, sessionId, "answer evaluation stream started");
+            if (!sendStart(emitter, active, requestId, sessionId, "answer evaluation stream started") || !active.get()) {
+                return;
+            }
             SubmitInterviewAnswerVO answer = interviewService.answer(sessionId, dto);
             CurrentQuestionVO nextQuestion = answer == null ? null : answer.getNextQuestion();
             String fullContent = answerVisibleContent(answer);
@@ -70,7 +78,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendDone(emitter, active, requestId, sessionId,
                     nextQuestion == null ? null : nextQuestion.getMessageId(),
                     fullContent);
-        }));
+        }), sseStreamExecutor);
         return emitter;
     }
 
@@ -80,15 +88,15 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             LoginUserContext.setLoginUser(loginUser);
             runnable.run();
         } catch (RuntimeException ex) {
-            sendError(emitter, active, requestId, "SSE_STREAM_ERROR", ex.getMessage());
             log.warn("SSE stream task failed, requestId={}", requestId, ex);
+            sendError(emitter, active, requestId, "SSE_STREAM_ERROR");
         } finally {
             LoginUserContext.clear();
         }
     }
 
-    private void sendStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String message) {
-        SseEmitterUtils.send(emitter, active, "start", SseEventVO.builder()
+    private boolean sendStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String message) {
+        return SseEmitterUtils.send(emitter, active, "start", SseEventVO.builder()
                 .requestId(requestId)
                 .sessionId(sessionId)
                 .message(message)
@@ -134,11 +142,11 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         }
     }
 
-    private void sendError(SseEmitter emitter, AtomicBoolean active, String requestId, String code, String message) {
+    private void sendError(SseEmitter emitter, AtomicBoolean active, String requestId, String code) {
         if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
                 .requestId(requestId)
                 .code(code)
-                .message(StringUtils.hasText(message) ? message : "SSE stream failed")
+                .message("SSE stream failed")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }
