@@ -1,7 +1,6 @@
 package com.codecoachai.interview.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
@@ -36,7 +35,6 @@ import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.service.StudyPlanService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
@@ -71,7 +69,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         Long userId = requireCurrentUserId();
         InterviewReport report = getOwnedGeneratedReport(dto.getReportId(), userId);
         StudyPlan existing = latestPlan(userId, report.getId());
-        if (existing != null && (PLAN_ACTIVE.equals(existing.getPlanStatus()) || PLAN_GENERATING.equals(existing.getPlanStatus()))) {
+        if (existing != null && (PLAN_ACTIVE.equals(existing.getPlanStatus())
+                || PLAN_GENERATING.equals(existing.getPlanStatus()))) {
             return toGenerateVO(existing);
         }
         return generateNewPlan(userId, report, dto, null);
@@ -161,7 +160,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setReportId(report.getId());
         plan.setSessionId(session.getId());
         plan.setResumeId(resume == null ? firstLong(dto.getResumeId(), session.getResumeId()) : resume.getId());
-        plan.setOptimizeRecordId(optimizeRecord == null ? dto.getOptimizeRecordId() : optimizeRecord.getOptimizeRecordId());
+        plan.setOptimizeRecordId(optimizeRecord == null ? dto.getOptimizeRecordId()
+                : optimizeRecord.getOptimizeRecordId());
         plan.setTargetPosition(firstText(dto.getTargetPosition(), session.getTargetPosition()));
         plan.setIndustryDirection(firstText(dto.getIndustryDirection(), session.getIndustryDirection()));
         plan.setDurationDays(normalizeDuration(dto.getExpectedDurationDays()));
@@ -172,7 +172,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             studyPlanMapper.insert(plan);
         } else {
             studyPlanMapper.updateById(plan);
-            studyTaskMapper.delete(new LambdaQueryWrapper<StudyTask>().eq(StudyTask::getPlanId, plan.getId()));
+            cleanupTasks(plan.getId());
         }
 
         GenerateLearningPlanDTO aiRequest = buildAiRequest(plan, session, report, dto, resume, optimizeRecord);
@@ -186,11 +186,12 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             plan.setDurationDays(normalizeDuration(aiPlan.getDurationDays()));
             plan.setAiCallLogId(aiPlan.getAiCallLogId());
             plan.setResultJson(toJson(aiPlan));
-            plan.setPlanStatus(PLAN_ACTIVE);
             plan.setFailureReason(null);
-            studyPlanMapper.updateById(plan);
             insertTasks(plan, aiPlan);
+            plan.setPlanStatus(PLAN_ACTIVE);
+            studyPlanMapper.updateById(plan);
         } catch (RuntimeException ex) {
+            cleanupTasks(plan.getId());
             plan.setPlanStatus(PLAN_FAILED);
             plan.setFailureReason(truncate(firstText(ex.getMessage(), "Learning plan generation failed"), 500));
             studyPlanMapper.updateById(plan);
@@ -244,12 +245,21 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 task.setPriority(normalizePriority(item.getPriority()));
                 task.setEstimatedHours(item.getEstimatedHours() == null ? 1 : Math.max(1, item.getEstimatedHours()));
                 task.setTaskStatus(TASK_TODO);
-                task.setRelatedQuestionIdsJson(toJson(item.getRelatedQuestionIds() == null ? List.of() : item.getRelatedQuestionIds()));
+                task.setRelatedQuestionIdsJson(toJson(item.getRelatedQuestionIds() == null
+                        ? List.of()
+                        : item.getRelatedQuestionIds()));
                 task.setRelatedTagsJson(toJson(item.getRelatedTags() == null ? List.of() : item.getRelatedTags()));
                 task.setResourcesJson(toJson(item.getResources() == null ? List.of() : item.getResources()));
                 studyTaskMapper.insert(task);
             }
         }
+    }
+
+    private void cleanupTasks(Long planId) {
+        if (planId == null) {
+            return;
+        }
+        studyTaskMapper.delete(new LambdaQueryWrapper<StudyTask>().eq(StudyTask::getPlanId, planId));
     }
 
     private StudyPlan latestPlan(Long userId, Long reportId) {

@@ -508,14 +508,28 @@ VALUES
   (5, 'INTERVIEW_REPORT_GENERATE', '面试报告生成', '面试报告生成', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}', 'historySummary,targetPosition,experienceLevel,industryDirection,difficulty,resumeContent,projectContent', 'v1', 1)
 ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
 
-INSERT INTO prompt_template (id, scene, name, template_name, content, template_content, variables, version, status)
-VALUES
-  (6, 'LEARNING_PLAN_GENERATE', '学习计划生成', '学习计划生成',
-   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages.',
-   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences.',
-   'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
-   'v2-a9', 1)
-ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
+UPDATE prompt_template
+SET name = CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+    template_name = CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+    content = 'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages.',
+    template_content = 'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences.',
+    variables = 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+    version = 'v2-a9',
+    status = 1
+WHERE scene = 'LEARNING_PLAN_GENERATE';
+
+INSERT INTO prompt_template (scene, name, template_name, content, template_content, variables, version, status)
+SELECT 'LEARNING_PLAN_GENERATE',
+       CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+       CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+       'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages.',
+       'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences.',
+       'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+       'v2-a9',
+       1
+WHERE NOT EXISTS (
+  SELECT 1 FROM prompt_template WHERE scene = 'LEARNING_PLAN_GENERATE'
+);
 
 INSERT INTO industry_template (
   industry_code, industry_name, description, target_positions,

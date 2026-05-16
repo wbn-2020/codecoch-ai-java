@@ -1,4 +1,4 @@
-# AGENTS.md — CodeCoachAI Java Backend
+# AGENTS.md - CodeCoachAI Java Backend
 
 ## Project Identity
 
@@ -10,16 +10,13 @@ Related repositories:
 - Backend: <https://github.com/wbn-2020/codecoch-ai-java.git>
 - Docs: <https://github.com/wbn-2020/codecoch-ai-doc.git>
 
-Current project phase:
+Current execution strategy:
 
-- V1 has been completed.
-- The current final goal is to implement the full official V2 PRD.
-- The current execution route is:
-  1. Complete V2 backend first.
-  2. Complete V2 frontend after backend contracts are stable.
-  3. Run full integration and E2E testing at the end.
+1. Complete the V2 backend first.
+2. Complete the V2 frontend after backend contracts are stable.
+3. Run full integration and E2E testing at the end.
 
-Do not treat the previous V2 technical baseline work as the full V2.
+V1 has been completed and must remain stable. Do not treat previous V2 technical baseline work as the full official V2.
 
 ## Official V2 Scope Source
 
@@ -41,11 +38,7 @@ Before planning or implementing a V2 backend task, read the official V2 PRD and 
 
 ## Completed Baseline Work
 
-The following completed items are classified as:
-
-> V2 technical baseline and AI interview enhancement prerequisites.
-
-They are useful foundations, but they are not the full official V2:
+The following completed items are classified as V2 technical baseline and AI interview enhancement prerequisites. They are useful foundations, but they are not the full official V2:
 
 - Service-side `ADMIN` secondary checks for `/admin/**`.
 - HMAC signature protection for `/inner/**` internal calls.
@@ -104,26 +97,24 @@ Do not break existing V1 login, question, resume, interview, report, admin, or A
 
 ## V2 Backend Route
 
-The backend V2 route is:
-
-| Stage | Priority | Goal |
-|---|---|---|
-| A0 | P0 | PRD alignment and backend gap list |
-| A1 | P0 | `codecoach-file` / resume file upload |
-| A2 | P0 | Resume parse records and parse status flow |
-| A3 | P0 | AI structured resume parsing |
-| A4 | P0 | AI resume optimization |
-| A5 | P0 | Industry templates and industry scenario interviews |
-| A6 | P0 | AI question generation and review |
-| A7 | P1 | Initial question-bank deduplication |
-| A8 | P1 | Formal learning plan module |
-| A9 | P1 | Prompt template version management |
-| A10 | P1 | SSE streaming output |
-| A11 | P0 | Final backend static closure |
+| Stage | Priority | Goal | Status |
+|---|---|---|---|
+| A0 | P0 | PRD alignment and backend gap list | Completed |
+| A1 | P0 | Resume file upload minimal loop | Completed |
+| A2 | P0 | Resume parse status and retry state machine | Completed |
+| A3 | P0 | Resume text extraction and AI structured parsing | Completed |
+| A4 | P0 | Resume analysis result viewing and confirmation | Completed |
+| A5 | P0 | AI resume optimization | Completed |
+| A6 | P0 | Industry templates and scenario interviews | Completed |
+| A7 | P0 | AI question generation and review pool | Completed |
+| A8 | P1 | Initial question-bank deduplication | Completed |
+| A9 | P1 | Learning plan backend loop | Completed |
+| A10 | P1 | SSE streaming output | Current |
+| A11 | P1 | Prompt template versioning and AI log enhancement | Pending |
 
 Each backend development task must state the following before implementation:
 
-1. Corresponding PRD section.
+1. Corresponding PRD scope.
 2. Priority: P0 / P1 / P2.
 3. Affected backend services.
 4. Affected database tables.
@@ -132,6 +123,164 @@ Each backend development task must state the following before implementation:
 7. Whether the task adds a new module.
 8. Whether SQL migration is required.
 9. Compile and verification method.
+
+## Current V2 Backend Progress
+
+### A0: V2 PRD Alignment And Backend Gap List - Completed
+
+### A1: Resume File Upload Minimal Loop - Completed
+
+Key points:
+
+- `POST /resumes/upload`.
+- Save file information.
+- Create `resume_analysis_record` with status `PENDING`.
+- Do not perform AI parsing in A1.
+
+### A2: Resume Parse Status, Retry, And State Machine - Completed
+
+Key points:
+
+- `GET /resumes/{id}/parse-status`.
+- `POST /resumes/{id}/reparse`.
+- `{id}` is `resume_analysis_record.id`.
+- Statuses include `PENDING`, `PARSING`, `SUCCESS`, `FAILED`, and `WAIT_CONFIRM`.
+- `reparse` only allows `FAILED -> PENDING`.
+
+### A3: Resume Text Extraction And AI Structured Parsing - Completed
+
+Key points:
+
+- `file-service` internal file download.
+- `resume-service` text extraction.
+- `ai-service` resume structured parsing.
+- State flow: `PENDING -> PARSING -> WAIT_CONFIRM`.
+- Failure enters `FAILED`.
+- Successful parsing terminal state is `WAIT_CONFIRM`, not `SUCCESS`.
+
+### A4: Resume Analysis Result Viewing And Confirmation - Completed
+
+Key points:
+
+- `GET /resumes/{id}/analysis-result`.
+- `POST /resumes/{id}/confirm-analysis`.
+- `{id}` is still `resume_analysis_record.id`.
+- Only `WAIT_CONFIRM` can be confirmed.
+- `structured_json` is converted into formal `resume` / `resume_project` data.
+- After confirmation, `parse_status = SUCCESS`.
+- Backfill `resume_id`.
+
+### A5: AI Resume Optimization - Completed
+
+Key points:
+
+- `POST /resumes/{id}/optimize`.
+- `GET /resumes/{id}/optimize-records`.
+- `GET /resumes/optimize-records/{recordId}`.
+- `{id}` is formal `resume.id`.
+- Adds `resume_optimize_record`.
+- `ai-service` adds `/inner/ai/resume/optimize`.
+- AI output must be a JSON object.
+- Record `ai_call_log`.
+- Do not fabricate experience, companies, education, years, responsibilities, or achievements.
+
+### A6: Industry Templates And Scenario Interviews - Completed
+
+Key points:
+
+- Adds `industry_template`.
+- `interview_session` adds `industry_template_id` / `industry_context`.
+- Admin industry template CRUD.
+- User-side industry template read-only APIs.
+- Interview creation supports `industryTemplateId`.
+- `generateQuestion`, `generateFollowUp`, `evaluate`, and `generateReport` prompts inject `industryContext`.
+- Industry templates are scenario references only and must not fabricate candidate experience.
+
+### A7: AI Question Generation And Review - Completed
+
+Key points:
+
+- Admin starts AI question generation.
+- `ai-service` adds `/inner/ai/questions/generate`.
+- AI generated questions enter the `question_review` review pool first.
+- Only approved questions are written into formal `question`.
+- Rejected questions are not written into formal `question`.
+- `approve` supports edit-before-approve.
+- `approve` uses `id + review_status=PENDING` concurrency protection.
+- Question-bank deduplication is not part of A7; it belongs to A8.
+
+### A8: Initial Question-Bank Deduplication - Completed
+
+Key points:
+
+- Adds `question_duplicate_review`.
+- Adds `question_relation`.
+- Supports rule-based duplicate candidate detection.
+- Supports candidate list, detail, `merge`, and `ignore`.
+- Supports question relation query, creation, and logical delete.
+- A7 `approve` may trigger duplicate detection non-blockingly.
+- `createQuestion` may trigger duplicate detection non-blockingly.
+- Does not call `ai-service`.
+- Does not use ES, vector databases, or embedding.
+- `merge` is not physical question merging.
+- Does not delete formal `question` records.
+- Does not automatically modify `question` content.
+
+### A9: Learning Plan Backend Loop - Completed
+
+Key points:
+
+- Adds `study_plan`.
+- Adds `study_task`.
+- Users can generate a study plan from an interview report.
+- Supports study plan list, detail, and task list.
+- Supports regenerate after `FAILED`.
+- Supports study task status updates.
+- `ai-service` adds `POST /inner/ai/learning-plans/generate`.
+- `mockEnabled=true` returns stable mock JSON.
+- `mockEnabled=false` reuses `AiClient.chat(prompt)`.
+- Records `ai_call_log`.
+- Does not implement frontend.
+- Does not implement SSE.
+- Does not implement a complex recommendation system.
+
+### Current Stage: A10 SSE Streaming Output - Ready To Plan / Implement
+
+A10 boundaries:
+
+- Only implement backend SSE streaming output.
+- Do not implement frontend.
+- Do not use WebSocket.
+- Do not replace existing synchronous APIs.
+- Do not break A1-A9 completed flows.
+- Do not implement A11 Prompt template version management.
+- Do not introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, or embedding.
+- Prefer adding stream-version APIs instead of changing old APIs.
+- Must evaluate Gateway, authentication filters, global response wrapping, and whether `AiClient` supports real streaming.
+
+### A11: Prompt Template Version Management And AI Log Enhancement - Pending
+
+## A10 SSE Streaming Guardrails
+
+1. A10 only implements SSE. Do not use WebSocket.
+2. Do not replace existing synchronous APIs. Prefer adding stream-version APIs.
+3. Confirm whether `AiClient` supports real streaming before implementation.
+4. If `AiClient` does not support real streaming, only implement a synchronous-result chunked SSE fallback and clearly mark it as not strict real streaming.
+5. Check whether Gateway supports `text/event-stream`.
+6. Check whether global response wrapping breaks SSE.
+7. Check whether authentication filters and token propagation support long-lived connections.
+8. Recommended SSE event names:
+   - `start`
+   - `delta`
+   - `metadata`
+   - `done`
+   - `error`
+   - `heartbeat` optional
+9. A10 minimal loop should prioritize one interview-module AI output interface.
+10. Do not convert report and study-plan flows to SSE all at once.
+11. Do not implement A11 Prompt template version management.
+12. Do not implement frontend.
+13. Do not run full runtime integration or E2E testing unless explicitly requested.
 
 ## V2 Scope Guardrails
 
@@ -144,12 +293,13 @@ Follow these boundaries unless the user explicitly changes the scope:
 - Keep admin APIs under `/admin/**` and user APIs under their existing user-side paths.
 - Do not break service-side `/admin/**` permission checks.
 - Do not break `/inner/**` HMAC internal-call protection.
-- Do not mix frontend implementation into backend tasks.
+- Do not mix frontend implementation into backend tasks unless the user explicitly enters the frontend phase.
 - Do not run full runtime testing unless the user explicitly asks for it.
 - Do not silently change database schema.
 - If schema changes are required, add compatible SQL migration or patch SQL and explain the compatibility impact.
 - If frontend integration is involved, verify request and response DTOs against frontend API files.
 - For AI-related changes, clearly distinguish mock mode and real model mode.
+- Do not casually introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, embedding, or other new infrastructure unless the official V2 PRD explicitly requires it.
 
 ## Security Rules
 
