@@ -9,6 +9,12 @@ public class AiCallLogQueryDTO {
     private Long userId;
     private String scene;
     private String modelName;
+    private Long promptTemplateId;
+    private Long promptTemplateVersionId;
+    private String promptVersion;
+    private String traceId;
+    private String requestId;
+    private Integer success;
     private Integer status;
     private String businessId;
     private LocalDateTime startTime;

@@ -15,7 +15,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -24,14 +23,18 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private static final long CHUNK_DELAY_MILLIS = 30L;
 
     private final InterviewService interviewService;
-    @Qualifier("sseStreamExecutor")
     private final Executor sseStreamExecutor;
+
+    public InterviewStreamServiceImpl(InterviewService interviewService,
+                                      @Qualifier("sseStreamExecutor") Executor sseStreamExecutor) {
+        this.interviewService = interviewService;
+        this.sseStreamExecutor = sseStreamExecutor;
+    }
 
     @Override
     public SseEmitter streamCurrentQuestion(Long sessionId) {
@@ -146,7 +149,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
                 .requestId(requestId)
                 .code(code)
-                .message("SSE stream failed")
+                .message("流式输出失败，请稍后重试")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }

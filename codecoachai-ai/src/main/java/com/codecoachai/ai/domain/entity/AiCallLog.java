@@ -14,6 +14,14 @@ public class AiCallLog extends BaseEntity {
     private String scene;
     private String modelName;
     private Long promptTemplateId;
+    private Long promptTemplateVersionId;
+    private String promptVersion;
+    private String requestId;
+    private String traceId;
+    private String inputVariablesJson;
+    private String modelParamsJson;
+    private String promptHash;
+    private String responseFormat;
     private String requestPrompt;
     private String responseContent;
     private String businessId;
@@ -21,6 +29,10 @@ public class AiCallLog extends BaseEntity {
     private String responseBody;
     private Long elapsedMs;
     private Long costMillis;
+    private Integer success;
+    private Integer promptTokens;
+    private Integer completionTokens;
+    private Integer totalTokens;
     private Integer status;
     private String errorMessage;
 }
