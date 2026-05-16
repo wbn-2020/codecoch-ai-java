@@ -8,8 +8,12 @@ import com.codecoachai.resume.service.ResumeService;
 import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
-import lombok.RequiredArgsConstructor;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,49 +22,73 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+@Slf4j
 @RestController
-@RequiredArgsConstructor
 @RequestMapping("/ai/sse")
 public class AiSseController {
 
     private static final long TIMEOUT_MILLIS = 120_000L;
-    private static final int CHUNK_SIZE = 24;
+    private static final int CHUNK_SIZE = 48;
 
     private final ResumeService resumeService;
+    private final Executor resumeSseStreamExecutor;
+
+    public AiSseController(ResumeService resumeService,
+                           @Qualifier("resumeSseStreamExecutor") Executor resumeSseStreamExecutor) {
+        this.resumeService = resumeService;
+        this.resumeSseStreamExecutor = resumeSseStreamExecutor;
+    }
 
     @GetMapping(value = "/resume-optimize", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter resumeOptimize(@RequestParam Long resumeId,
                                      @RequestParam(required = false) String targetPosition,
                                      @RequestParam(required = false) Integer experienceYears,
                                      @RequestParam(required = false) String industryDirection) {
-        SseEmitter emitter = new SseEmitter(TIMEOUT_MILLIS);
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
         CompletableFuture.runAsync(() -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
-                send(emitter, "start", Map.of("message", "resume optimize stream started", "resumeId", resumeId));
+                send(emitter, active, "start", Map.of(
+                        "requestId", requestId,
+                        "message", "resume optimize stream started",
+                        "resumeId", resumeId));
                 ResumeOptimizeRequestDTO dto = new ResumeOptimizeRequestDTO();
                 dto.setTargetPosition(targetPosition);
                 dto.setExperienceYears(experienceYears);
                 dto.setIndustryDirection(industryDirection);
                 ResumeOptimizeSubmitVO result = resumeService.optimizeResume(resumeId, dto);
                 String fullContent = optimizeContent(result);
-                sendDeltas(emitter, fullContent);
-                Map<String, Object> metadata = new LinkedHashMap<>();
-                metadata.put("resumeId", result.getResumeId());
-                metadata.put("optimizeRecordId", result.getOptimizeRecordId());
-                metadata.put("optimizeStatus", result.getOptimizeStatus());
-                metadata.put("errorMessage", result.getErrorMessage());
-                send(emitter, "metadata", metadata);
-                send(emitter, "done", Map.of("fullContent", fullContent));
-                emitter.complete();
+                sendChunks(emitter, active, requestId, fullContent);
+                send(emitter, active, "metadata", metadata(requestId, result));
+                send(emitter, active, "done", Map.of("requestId", requestId, "fullContent", fullContent));
+                complete(emitter, active);
             } catch (RuntimeException ex) {
-                sendSilently(emitter, "error",
-                        Map.of("code", "SSE_STREAM_ERROR", "message", "Streaming failed. Please retry later."));
-                emitter.complete();
+                log.warn("Resume SSE stream task failed, requestId={}", requestId, ex);
+                send(emitter, active, "error", Map.of(
+                        "requestId", requestId,
+                        "code", "SSE_STREAM_ERROR",
+                        "message", "Streaming failed. Please retry later."));
+                complete(emitter, active);
             } finally {
                 LoginUserContext.clear();
             }
+        }, resumeSseStreamExecutor);
+        return emitter;
+    }
+
+    private SseEmitter createEmitter(String requestId, AtomicBoolean active) {
+        SseEmitter emitter = new SseEmitter(TIMEOUT_MILLIS);
+        emitter.onCompletion(() -> active.set(false));
+        emitter.onTimeout(() -> {
+            active.set(false);
+            completeQuietly(emitter, requestId, "timeout");
+        });
+        emitter.onError(ex -> {
+            active.set(false);
+            log.debug("Resume SSE connection error, requestId={}", requestId, ex);
         });
         return emitter;
     }
@@ -78,31 +106,67 @@ public class AiSseController {
         return "Resume optimization submitted";
     }
 
-    private void sendDeltas(SseEmitter emitter, String content) {
+    private Map<String, Object> metadata(String requestId, ResumeOptimizeSubmitVO result) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("requestId", requestId);
+        if (result == null) {
+            return metadata;
+        }
+        metadata.put("resumeId", result.getResumeId());
+        metadata.put("optimizeRecordId", result.getOptimizeRecordId());
+        metadata.put("optimizeStatus", result.getOptimizeStatus());
+        metadata.put("errorMessage", result.getErrorMessage());
+        return metadata;
+    }
+
+    private void sendChunks(SseEmitter emitter, AtomicBoolean active, String requestId, String content) {
         String value = content == null ? "" : content;
         int index = 1;
         for (int start = 0; start < value.length(); start += CHUNK_SIZE) {
             int end = Math.min(value.length(), start + CHUNK_SIZE);
-            send(emitter, "delta", Map.of("index", index++, "content", value.substring(start, end)));
+            Map<String, Object> event = Map.of(
+                    "requestId", requestId,
+                    "index", index++,
+                    "content", value.substring(start, end));
+            if (!send(emitter, active, "chunk", event)) {
+                return;
+            }
+            if (!send(emitter, active, "delta", event)) {
+                return;
+            }
         }
         if (value.isEmpty()) {
-            send(emitter, "delta", Map.of("index", index, "content", ""));
+            Map<String, Object> event = Map.of("requestId", requestId, "index", index, "content", "");
+            send(emitter, active, "chunk", event);
+            send(emitter, active, "delta", event);
         }
     }
 
-    private void send(SseEmitter emitter, String event, Object data) {
+    private boolean send(SseEmitter emitter, AtomicBoolean active, String event, Object data) {
+        if (!active.get()) {
+            return false;
+        }
         try {
             emitter.send(SseEmitter.event().name(event).data(data));
-        } catch (IOException ex) {
-            throw new IllegalStateException(ex);
+            return true;
+        } catch (IOException | IllegalStateException ex) {
+            active.set(false);
+            log.debug("Resume SSE send failed, event={}", event, ex);
+            return false;
         }
     }
 
-    private void sendSilently(SseEmitter emitter, String event, Object data) {
+    private void complete(SseEmitter emitter, AtomicBoolean active) {
+        if (active.getAndSet(false)) {
+            emitter.complete();
+        }
+    }
+
+    private void completeQuietly(SseEmitter emitter, String requestId, String reason) {
         try {
-            emitter.send(SseEmitter.event().name(event).data(data));
-        } catch (IOException ignored) {
-            // Client disconnected; there is nothing else to clean up for this fallback stream.
+            emitter.complete();
+        } catch (RuntimeException ex) {
+            log.debug("Resume SSE complete ignored, requestId={}, reason={}", requestId, reason, ex);
         }
     }
 }

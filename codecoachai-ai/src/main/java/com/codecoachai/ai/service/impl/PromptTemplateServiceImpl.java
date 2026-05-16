@@ -32,6 +32,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -52,6 +53,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private final AiCallLogMapper aiCallLogMapper;
     private final AiProperties aiProperties;
     private final AiClient aiClient;
+    private final ObjectMapper objectMapper;
 
     @Override
     public PageResult<PromptTemplateVO> pagePrompts(Long pageNo, Long pageSize, String keyword, String scene,
@@ -128,7 +130,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public PromptTemplateVO updatePrompt(Long id, PromptTemplateSaveDTO dto) {
         PromptTemplate template = getTemplate(id);
         if (hasPromptContent(dto)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt 内容请通过版本接口创建并启用");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt content must be changed through prompt version APIs");
         }
         applyMetadata(template, dto);
         promptTemplateMapper.updateById(template);
@@ -330,7 +333,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         log.setPromptTemplateId(template.getId());
         log.setPromptTemplateVersionId(version.getId());
         log.setPromptVersion(version.getVersionCode());
-        log.setInputVariablesJson(variables.toString());
+        log.setInputVariablesJson(toJson(variables));
         log.setPromptHash(sha256(renderedPrompt));
         log.setResponseFormat("TEXT");
         log.setRequestPrompt(renderedPrompt);
@@ -357,6 +360,14 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                     .getBytes(StandardCharsets.UTF_8)));
         } catch (Exception ex) {
             return null;
+        }
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            return "{}";
         }
     }
 
