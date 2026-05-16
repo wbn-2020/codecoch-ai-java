@@ -2,12 +2,16 @@ package com.codecoachai.interview.service.impl;
 
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.CurrentQuestionVO;
+import com.codecoachai.interview.domain.vo.InterviewReportVO;
+import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.SseEventVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
 import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.service.InterviewStreamService;
+import com.codecoachai.interview.service.StudyPlanService;
 import com.codecoachai.interview.util.SseEmitterUtils;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -28,11 +32,14 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private static final long CHUNK_DELAY_MILLIS = 30L;
 
     private final InterviewService interviewService;
+    private final StudyPlanService studyPlanService;
     private final Executor sseStreamExecutor;
 
     public InterviewStreamServiceImpl(InterviewService interviewService,
+                                      StudyPlanService studyPlanService,
                                       @Qualifier("sseStreamExecutor") Executor sseStreamExecutor) {
         this.interviewService = interviewService;
+        this.studyPlanService = studyPlanService;
         this.sseStreamExecutor = sseStreamExecutor;
     }
 
@@ -81,6 +88,48 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendDone(emitter, active, requestId, sessionId,
                     nextQuestion == null ? null : nextQuestion.getMessageId(),
                     fullContent);
+        }), sseStreamExecutor);
+        return emitter;
+    }
+
+    @Override
+    public SseEmitter streamReport(Long sessionId) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+
+        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+            if (!sendStart(emitter, active, requestId, sessionId, "report stream started") || !active.get()) {
+                return;
+            }
+            InterviewReportVO report = interviewService.report(sessionId);
+            String fullContent = firstText(report == null ? null : report.getReportContent(),
+                    report == null ? null : report.getSummary(),
+                    "面试报告已生成");
+            sendDeltas(emitter, active, requestId, sessionId, fullContent);
+            sendMetadata(emitter, active, requestId, sessionId, null, reportMetadata(report));
+            sendDone(emitter, active, requestId, sessionId, null, fullContent);
+        }), sseStreamExecutor);
+        return emitter;
+    }
+
+    @Override
+    public SseEmitter streamStudyPlan(StudyPlanGenerateDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+
+        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+            if (!sendStart(emitter, active, requestId, null, "study plan stream started") || !active.get()) {
+                return;
+            }
+            StudyPlanGenerateVO plan = studyPlanService.generate(dto);
+            String fullContent = "学习计划生成完成：" + firstText(plan == null ? null : plan.getPlanTitle(), "未命名计划");
+            sendDeltas(emitter, active, requestId, null, fullContent);
+            sendMetadata(emitter, active, requestId, null, null, studyPlanMetadata(plan));
+            sendDone(emitter, active, requestId, null, null, fullContent);
         }), sseStreamExecutor);
         return emitter;
     }
@@ -188,6 +237,31 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         return metadata;
     }
 
+    private Map<String, Object> reportMetadata(InterviewReportVO report) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (report == null) {
+            return metadata;
+        }
+        metadata.put("reportId", report.getId());
+        metadata.put("status", report.getStatus());
+        metadata.put("totalScore", report.getTotalScore());
+        metadata.put("weakPoints", report.getWeakPoints());
+        metadata.put("recommendedQuestions", report.getRecommendedQuestions());
+        return metadata;
+    }
+
+    private Map<String, Object> studyPlanMetadata(StudyPlanGenerateVO plan) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (plan == null) {
+            return metadata;
+        }
+        metadata.put("planId", plan.getPlanId());
+        metadata.put("planStatus", plan.getPlanStatus());
+        metadata.put("planTitle", plan.getPlanTitle());
+        metadata.put("failureReason", plan.getFailureReason());
+        return metadata;
+    }
+
     private String answerVisibleContent(SubmitInterviewAnswerVO answer) {
         if (answer == null) {
             return "";
@@ -220,5 +294,17 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    private String firstText(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 }

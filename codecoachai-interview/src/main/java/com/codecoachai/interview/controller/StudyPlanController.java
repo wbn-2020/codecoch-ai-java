@@ -58,4 +58,14 @@ public class StudyPlanController {
                                                 @Valid @RequestBody StudyTaskStatusUpdateDTO dto) {
         return Result.success(studyPlanService.updateTaskStatus(taskId, dto));
     }
+
+    @PostMapping("/study-tasks/{taskId}/complete")
+    public Result<StudyTaskVO> completeTask(@PathVariable Long taskId) {
+        return Result.success(studyPlanService.completeTask(taskId));
+    }
+
+    @PostMapping("/study-tasks/{taskId}/skip")
+    public Result<StudyTaskVO> skipTask(@PathVariable Long taskId) {
+        return Result.success(studyPlanService.skipTask(taskId));
+    }
 }

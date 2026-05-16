@@ -51,6 +51,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private static final String PLAN_ACTIVE = "ACTIVE";
     private static final String PLAN_FAILED = "FAILED";
     private static final String TASK_TODO = "TODO";
+    private static final String TASK_COMPLETED = "COMPLETED";
+    private static final String TASK_SKIPPED = "SKIPPED";
     private static final int DEFAULT_DURATION_DAYS = 14;
     private static final int MAX_SUMMARY_LENGTH = 4000;
 
@@ -126,6 +128,20 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         task.setTaskStatus(normalizeTaskStatus(dto.getTaskStatus()));
         studyTaskMapper.updateById(task);
         return toTaskVO(task);
+    }
+
+    @Override
+    public StudyTaskVO completeTask(Long taskId) {
+        StudyTaskStatusUpdateDTO dto = new StudyTaskStatusUpdateDTO();
+        dto.setTaskStatus(TASK_COMPLETED);
+        return updateTaskStatus(taskId, dto);
+    }
+
+    @Override
+    public StudyTaskVO skipTask(Long taskId) {
+        StudyTaskStatusUpdateDTO dto = new StudyTaskStatusUpdateDTO();
+        dto.setTaskStatus(TASK_SKIPPED);
+        return updateTaskStatus(taskId, dto);
     }
 
     @Override
@@ -384,7 +400,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private void fillProgress(StudyPlanListVO vo, Long planId) {
         List<StudyTask> tasks = taskEntities(planId);
         int total = tasks.size();
-        int done = (int) tasks.stream().filter(task -> "DONE".equals(task.getTaskStatus())).count();
+        int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
         vo.setDoneTaskCount(done);
         vo.setProgressPercent(total == 0 ? 0 : done * 100 / total);
@@ -393,7 +409,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private void fillProgress(StudyPlanDetailVO vo, Long planId) {
         List<StudyTask> tasks = taskEntities(planId);
         int total = tasks.size();
-        int done = (int) tasks.stream().filter(task -> "DONE".equals(task.getTaskStatus())).count();
+        int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
         vo.setDoneTaskCount(done);
         vo.setProgressPercent(total == 0 ? 0 : done * 100 / total);
@@ -504,10 +520,14 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private String normalizeTaskStatus(String status) {
         String value = status.trim().toUpperCase(Locale.ROOT);
-        if (!List.of(TASK_TODO, "DOING", "DONE", "SKIPPED").contains(value)) {
+        if (!List.of(TASK_TODO, "DOING", "DONE", TASK_COMPLETED, TASK_SKIPPED).contains(value)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported taskStatus");
         }
         return value;
+    }
+
+    private boolean isTaskDone(String taskStatus) {
+        return "DONE".equals(taskStatus) || TASK_COMPLETED.equals(taskStatus);
     }
 
     private String normalizeTaskType(String taskType) {

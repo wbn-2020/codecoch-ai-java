@@ -22,5 +22,9 @@ public interface StudyPlanService {
 
     StudyTaskVO updateTaskStatus(Long taskId, StudyTaskStatusUpdateDTO dto);
 
+    StudyTaskVO completeTask(Long taskId);
+
+    StudyTaskVO skipTask(Long taskId);
+
     StudyPlanGenerateVO regenerate(Long id);
 }

@@ -5,12 +5,14 @@ import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionQueryDTO;
+import com.codecoachai.ai.domain.dto.PromptVersionTestDTO;
 import com.codecoachai.ai.domain.dto.PromptVersionActionDTO;
 import com.codecoachai.ai.domain.dto.UpdatePromptStatusDTO;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateDetailVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.common.core.domain.PageResult;
 
 public interface PromptTemplateService {
@@ -38,6 +40,8 @@ public interface PromptTemplateService {
     PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto);
 
     void disableVersion(Long versionId, PromptVersionActionDTO dto);
+
+    PromptVersionTestVO testVersion(Long versionId, PromptVersionTestDTO dto);
 
     PageResult<AiCallLogVO> pageLogs(Long pageNo, Long pageSize);
 

@@ -6,11 +6,13 @@ import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptVersionActionDTO;
+import com.codecoachai.ai.domain.dto.PromptVersionTestDTO;
 import com.codecoachai.ai.domain.dto.UpdatePromptStatusDTO;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateDetailVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.core.domain.PageResult;
@@ -126,6 +128,13 @@ public class AdminAiController {
         SecurityAssert.requireAdmin();
         promptTemplateService.disableVersion(versionId, dto);
         return Result.success();
+    }
+
+    @PostMapping("/admin/ai/prompt-template-versions/{versionId}/test")
+    public Result<PromptVersionTestVO> testPromptVersion(@PathVariable Long versionId,
+                                                         @RequestBody(required = false) PromptVersionTestDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.testVersion(versionId, dto));
     }
 
     @GetMapping({"/admin/ai/call-logs", "/admin/ai/logs"})
