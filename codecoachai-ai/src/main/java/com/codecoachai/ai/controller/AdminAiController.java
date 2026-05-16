@@ -2,9 +2,15 @@ package com.codecoachai.ai.controller;
 
 import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
+import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
+import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
+import com.codecoachai.ai.domain.dto.PromptTemplateVersionQueryDTO;
+import com.codecoachai.ai.domain.dto.PromptVersionActionDTO;
 import com.codecoachai.ai.domain.dto.UpdatePromptStatusDTO;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
+import com.codecoachai.ai.domain.vo.PromptTemplateDetailVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
+import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.core.domain.PageResult;
@@ -36,6 +42,12 @@ public class AdminAiController {
         return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize, keyword, scene, status));
     }
 
+    @GetMapping("/admin/ai/prompt-templates")
+    public Result<PageResult<PromptTemplateVO>> pagePromptTemplates(PromptTemplateQueryDTO query) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.pagePrompts(query));
+    }
+
     @GetMapping("/admin/ai/prompts/page")
     public Result<PageResult<PromptTemplateVO>> pagePromptsAlias(@RequestParam(required = false) Long pageNo,
                                                                  @RequestParam(required = false) Long pageSize,
@@ -56,6 +68,12 @@ public class AdminAiController {
     public Result<PromptTemplateVO> getPrompt(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         return Result.success(promptTemplateService.getPrompt(id));
+    }
+
+    @GetMapping("/admin/ai/prompt-templates/{id}")
+    public Result<PromptTemplateDetailVO> getPromptTemplate(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.getPromptDetail(id));
     }
 
     @PutMapping("/admin/ai/prompts/{id}")
@@ -80,11 +98,48 @@ public class AdminAiController {
         return Result.success();
     }
 
+    @GetMapping("/admin/ai/prompt-templates/{id}/versions")
+    public Result<PageResult<PromptTemplateVersionVO>> pagePromptVersions(@PathVariable Long id,
+                                                                          PromptTemplateVersionQueryDTO query) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.pageVersions(id, query));
+    }
+
+    @PostMapping("/admin/ai/prompt-templates/{id}/versions")
+    public Result<PromptTemplateVersionVO> createPromptVersion(@PathVariable Long id,
+                                                               @Valid @RequestBody PromptTemplateVersionCreateDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.createVersion(id, dto));
+    }
+
+    @PostMapping("/admin/ai/prompt-template-versions/{versionId}/activate")
+    public Result<PromptTemplateVersionVO> activatePromptVersion(@PathVariable Long versionId,
+                                                                 @RequestBody(required = false)
+                                                                 PromptVersionActionDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(promptTemplateService.activateVersion(versionId, dto));
+    }
+
+    @PostMapping("/admin/ai/prompt-template-versions/{versionId}/disable")
+    public Result<Void> disablePromptVersion(@PathVariable Long versionId,
+                                             @RequestBody(required = false) PromptVersionActionDTO dto) {
+        SecurityAssert.requireAdmin();
+        promptTemplateService.disableVersion(versionId, dto);
+        return Result.success();
+    }
+
     @GetMapping({"/admin/ai/call-logs", "/admin/ai/logs"})
-    public Result<PageResult<AiCallLogVO>> pageLogs(@RequestParam(required = false) Long pageNo,
+    public Result<PageResult<AiCallLogVO>> pageLogs(AiCallLogQueryDTO query,
+                                                    @RequestParam(required = false) Long pageNo,
                                                     @RequestParam(required = false) Long pageSize) {
         SecurityAssert.requireAdmin();
-        return Result.success(promptTemplateService.pageLogs(pageNo, pageSize));
+        if (pageNo != null) {
+            query.setPageNo(pageNo);
+        }
+        if (pageSize != null) {
+            query.setPageSize(pageSize);
+        }
+        return Result.success(promptTemplateService.pageLogs(query));
     }
 
     @GetMapping("/admin/ai/logs/page")

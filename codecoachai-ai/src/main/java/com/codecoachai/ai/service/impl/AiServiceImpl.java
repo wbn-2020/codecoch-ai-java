@@ -1,6 +1,5 @@
 package com.codecoachai.ai.service.impl;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
@@ -13,7 +12,6 @@ import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
-import com.codecoachai.ai.domain.entity.PromptTemplate;
 import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
@@ -25,22 +23,28 @@ import com.codecoachai.ai.domain.vo.ParseResumeVO;
 import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
-import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.service.AiService;
+import com.codecoachai.ai.service.PromptRenderResult;
+import com.codecoachai.ai.service.PromptRenderService;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 @Service
 @RequiredArgsConstructor
@@ -57,7 +61,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
 
     private final AiCallLogMapper aiCallLogMapper;
-    private final PromptTemplateMapper promptTemplateMapper;
+    private final PromptRenderService promptRenderService;
     private final AiProperties aiProperties;
     private final AiClient aiClient;
     private final ObjectMapper objectMapper;
@@ -66,20 +70,21 @@ public class AiServiceImpl implements AiService {
     public GenerateInterviewQuestionVO generateQuestion(GenerateInterviewQuestionDTO dto) {
         String scene = isProjectStage(dto.getStageType()) ? SCENE_PROJECT_QUESTION : SCENE_QUESTION;
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(scene);
-        String prompt = render(industryContextBlock(dto == null ? null : dto.getIndustryContext())
-                + questionPromptContent(scene, template), variables(dto, null));
+        Map<String, String> variables = variables(dto, null);
+        PromptRenderResult promptResult = promptRenderService.render(scene, questionPromptContent(scene),
+                variables, industryContextBlock(dto == null ? null : dto.getIndustryContext()), null);
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateInterviewQuestionVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockQuestion(dto, scene)
                     : parseQuestion(rawResponse = aiClient.chat(prompt), scene);
-            saveLog(scene, template, prompt, toJson(vo), businessId(dto.getQuestionId()), start,
+            saveLog(promptResult, toJson(vo), businessId(dto.getQuestionId()), start,
                     null, null, AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
             GenerateInterviewQuestionVO fallback = mockQuestion(dto, scene);
-            saveLog(scene, template, prompt, mergeRawAndFinal(rawResponse, fallback),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
             return fallback;
         }
@@ -89,8 +94,9 @@ public class AiServiceImpl implements AiService {
     public GenerateQuestionDraftVO generateQuestionDrafts(GenerateQuestionDraftDTO dto) {
         validateQuestionDraftDTO(dto);
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_AI_QUESTION_GENERATE);
-        String prompt = render(questionDraftPromptContent(template), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_AI_QUESTION_GENERATE,
+                questionDraftPromptContent(), variables(dto));
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateQuestionDraftVO vo;
@@ -101,14 +107,14 @@ public class AiServiceImpl implements AiService {
                 rawResponse = aiClient.chat(prompt);
                 vo = parseQuestionDrafts(rawResponse, dto);
             }
-            Long logId = saveLog(SCENE_AI_QUESTION_GENERATE, template, prompt, rawResponse,
+            Long logId = saveLog(promptResult, rawResponse,
                     dto.getBatchId(), start, null, dto.getAdminUserId(), AiFailureType.NONE);
             vo.setBatchId(dto.getBatchId());
             vo.setAiCallLogId(logId);
             vo.setRawResponse(rawResponse);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_AI_QUESTION_GENERATE, template, prompt, firstText(rawResponse, ex.getMessage()),
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     dto.getBatchId(), start, ex.getMessage(), dto.getAdminUserId(), failureType(ex));
             if (ex instanceof BusinessException businessException) {
                 throw businessException;
@@ -120,8 +126,10 @@ public class AiServiceImpl implements AiService {
     @Override
     public EvaluateAnswerVO evaluate(EvaluateAnswerDTO dto) {
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_EVALUATE);
-        String prompt = render(evaluatePromptContent(template, dto), variables(null, dto));
+        Map<String, String> variables = variables(null, dto);
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_EVALUATE, defaultEvaluatePrompt(),
+                variables, evaluatePromptPrefix(dto), null);
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             EvaluateAnswerVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
@@ -132,12 +140,12 @@ public class AiServiceImpl implements AiService {
                 vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "AI 追问无效，使用本地兜底追问")));
                 vo.setFollowUpValid(true);
             }
-            saveLog(SCENE_EVALUATE, template, prompt, mergeRawAndFinal(rawResponse, vo),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
             EvaluateAnswerVO fallback = mockEvaluate(dto);
-            saveLog(SCENE_EVALUATE, template, prompt, mergeRawAndFinal(rawResponse, fallback),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
             return fallback;
         }
@@ -146,9 +154,9 @@ public class AiServiceImpl implements AiService {
     @Override
     public GenerateFollowUpVO generateFollowUp(GenerateFollowUpDTO dto) {
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_FOLLOW_UP);
-        String prompt = render(industryContextBlock(dto == null ? null : dto.getIndustryContext())
-                + templateContent(template, defaultFollowUpPrompt()), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_FOLLOW_UP, defaultFollowUpPrompt(),
+                variables(dto), industryContextBlock(dto == null ? null : dto.getIndustryContext()), null);
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateFollowUpVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
@@ -160,7 +168,7 @@ public class AiServiceImpl implements AiService {
                 vo.setRelatedToOriginalQuestion(true);
                 vo.setFollowUpValid(true);
             }
-            saveLog(SCENE_FOLLOW_UP, template, prompt, mergeRawAndFinal(rawResponse, vo),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
@@ -169,7 +177,7 @@ public class AiServiceImpl implements AiService {
             fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
             fallback.setRelatedToOriginalQuestion(true);
             fallback.setFollowUpValid(true);
-            saveLog(SCENE_FOLLOW_UP, template, prompt, mergeRawAndFinal(rawResponse, fallback),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
             return fallback;
         }
@@ -178,19 +186,20 @@ public class AiServiceImpl implements AiService {
     @Override
     public GenerateReportVO generateReport(GenerateReportDTO dto) {
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_REPORT);
-        String prompt = render(reportPromptContent(template, dto), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_REPORT, defaultReportPrompt(),
+                variables(dto), reportPromptPrefix(dto), null);
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockReport(dto)
                     : parseReport(rawResponse = aiClient.chat(prompt));
-            saveLog(SCENE_REPORT, template, prompt, mergeRawAndFinal(rawResponse, vo),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getInterviewId()), start, null, dto.getUserId(), AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
             GenerateReportVO fallback = mockReport(dto);
-            saveLog(SCENE_REPORT, template, prompt, mergeRawAndFinal(rawResponse, fallback),
+            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             return fallback;
         }
@@ -200,8 +209,9 @@ public class AiServiceImpl implements AiService {
     public ParseResumeVO parseResume(ParseResumeDTO dto) {
         validateParseResumeDTO(dto);
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_RESUME_PARSE);
-        String prompt = render(resumeParsePromptContent(template), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_PARSE, resumeParsePromptContent(),
+                variables(dto));
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             String structuredJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
@@ -209,11 +219,11 @@ public class AiServiceImpl implements AiService {
                     : parseResumeStructuredJson(rawResponse = aiClient.chat(prompt));
             ParseResumeVO vo = new ParseResumeVO();
             vo.setStructuredJson(structuredJson);
-            saveLog(SCENE_RESUME_PARSE, template, prompt, structuredJson,
+            saveLog(promptResult, structuredJson,
                     businessId(dto.getAnalysisRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_RESUME_PARSE, template, prompt, firstText(rawResponse, ex.getMessage()),
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getAnalysisRecordId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             throw toBusinessException(ex);
         }
@@ -223,21 +233,22 @@ public class AiServiceImpl implements AiService {
     public ResumeOptimizeAiResponseVO optimizeResume(ResumeOptimizeAiRequestDTO dto) {
         validateResumeOptimizeDTO(dto);
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_RESUME_OPTIMIZE);
-        String prompt = render(resumeOptimizePromptContent(template), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_OPTIMIZE,
+                resumeOptimizePromptContent(), variables(dto));
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockResumeOptimizeJson()
                     : parseResumeOptimizeJson(rawResponse = aiClient.chat(prompt));
-            Long logId = saveLog(SCENE_RESUME_OPTIMIZE, template, prompt, resultJson,
+            Long logId = saveLog(promptResult, resultJson,
                     businessId(dto.getOptimizeRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
             ResumeOptimizeAiResponseVO vo = new ResumeOptimizeAiResponseVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_RESUME_OPTIMIZE, template, prompt, firstText(rawResponse, ex.getMessage()),
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getOptimizeRecordId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             throw toResumeOptimizeBusinessException(ex);
         }
@@ -247,8 +258,9 @@ public class AiServiceImpl implements AiService {
     public GenerateLearningPlanVO generateLearningPlan(GenerateLearningPlanDTO dto) {
         validateLearningPlanDTO(dto);
         long start = System.currentTimeMillis();
-        PromptTemplate template = enabledTemplate(SCENE_LEARNING_PLAN_GENERATE);
-        String prompt = render(learningPlanPromptContent(template), variables(dto));
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_LEARNING_PLAN_GENERATE,
+                learningPlanPromptContent(), variables(dto));
+        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateLearningPlanVO vo;
@@ -259,12 +271,12 @@ public class AiServiceImpl implements AiService {
                 rawResponse = aiClient.chat(prompt);
                 vo = parseLearningPlan(rawResponse, dto);
             }
-            Long logId = saveLog(SCENE_LEARNING_PLAN_GENERATE, template, prompt, rawResponse,
+            Long logId = saveLog(promptResult, rawResponse,
                     businessId(dto.getLearningPlanId()), start, null, dto.getUserId(), AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(SCENE_LEARNING_PLAN_GENERATE, template, prompt, firstText(rawResponse, ex.getMessage()),
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getLearningPlanId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             throw toBusinessException(ex);
         }
@@ -370,37 +382,18 @@ public class AiServiceImpl implements AiService {
                 || value.contains("SCALABILITY");
     }
 
-    private PromptTemplate enabledTemplate(String scene) {
-        return promptTemplateMapper.selectOne(new LambdaQueryWrapper<PromptTemplate>()
-                .eq(PromptTemplate::getScene, scene)
-                .eq(PromptTemplate::getStatus, CommonConstants.YES)
-                .orderByDesc(PromptTemplate::getUpdatedAt)
-                .last("limit 1"));
-    }
-
-    private String templateContent(PromptTemplate template, String fallback) {
-        if (template == null) {
-            return fallback;
-        }
-        if (StringUtils.hasText(template.getTemplateContent())) {
-            return template.getTemplateContent();
-        }
-        return StringUtils.hasText(template.getContent()) ? template.getContent() : fallback;
-    }
-
-    private String questionPromptContent(String scene, PromptTemplate template) {
+    private String questionPromptContent(String scene) {
         if (SCENE_PROJECT_QUESTION.equals(scene)) {
-            return templateContent(template, defaultProjectQuestionPrompt());
+            return defaultProjectQuestionPrompt();
         }
-        return templateContent(template, defaultQuestionPrompt());
+        return defaultQuestionPrompt();
     }
 
-    private String evaluatePromptContent(PromptTemplate template, EvaluateAnswerDTO dto) {
-        String content = templateContent(template, defaultEvaluatePrompt());
+    private String evaluatePromptPrefix(EvaluateAnswerDTO dto) {
         String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
         if (!isProjectStage(dto == null ? null : dto.getStageType(), dto == null ? null : dto.getCurrentStage())
                 && !StringUtils.hasText(dto == null ? null : dto.getProjectContent())) {
-            return industryBlock + content;
+            return industryBlock;
         }
         return """
                 这是项目深挖阶段的回答评分。评分必须重点关注：项目理解、技术深度、表达清晰度、问题解决能力、架构思维。
@@ -409,11 +402,10 @@ public class AiServiceImpl implements AiService {
                 请避免只给通用 Java 评分，必须结合候选人在项目背景、技术架构、数据库设计、核心难点、性能优化、故障排查、技术取舍、个人职责上的表达进行判断。
                 """
                 + "\n" + industryBlock
-                + "\n" + content;
+                + "\n";
     }
 
-    private String reportPromptContent(PromptTemplate template, GenerateReportDTO dto) {
-        String content = templateContent(template, defaultReportPrompt());
+    private String reportPromptPrefix(GenerateReportDTO dto) {
         String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
         String projectBlock = StringUtils.hasText(dto == null ? null : dto.getProjectContent())
                 ? """
@@ -435,11 +427,11 @@ public class AiServiceImpl implements AiService {
                 """
                 + "\n" + industryBlock
                 + "\n" + projectBlock
-                + "\n" + content;
+                + "\n";
     }
 
-    private String learningPlanPromptContent(PromptTemplate template) {
-        return templateContent(template, defaultLearningPlanPrompt());
+    private String learningPlanPromptContent() {
+        return defaultLearningPlanPrompt();
     }
 
     private String industryContextBlock(String industryContext) {
@@ -457,24 +449,16 @@ public class AiServiceImpl implements AiService {
                 """;
     }
 
-    private String resumeParsePromptContent(PromptTemplate template) {
-        return templateContent(template, defaultResumeParsePrompt());
+    private String resumeParsePromptContent() {
+        return defaultResumeParsePrompt();
     }
 
-    private String resumeOptimizePromptContent(PromptTemplate template) {
-        return templateContent(template, defaultResumeOptimizePrompt());
+    private String resumeOptimizePromptContent() {
+        return defaultResumeOptimizePrompt();
     }
 
-    private String questionDraftPromptContent(PromptTemplate template) {
-        return templateContent(template, defaultQuestionDraftPrompt());
-    }
-
-    private String render(String template, Map<String, String> variables) {
-        String prompt = template;
-        for (Map.Entry<String, String> entry : variables.entrySet()) {
-            prompt = prompt.replace("{{" + entry.getKey() + "}}", entry.getValue() == null ? "" : entry.getValue());
-        }
-        return prompt;
+    private String questionDraftPromptContent() {
+        return defaultQuestionDraftPrompt();
     }
 
     private Map<String, String> variables(GenerateInterviewQuestionDTO dto, EvaluateAnswerDTO answerDTO) {
@@ -1299,36 +1283,63 @@ public class AiServiceImpl implements AiService {
         return Math.min(95, Math.max(55, answerLength / 2));
     }
 
-    private Long saveLog(String scene, PromptTemplate template, String prompt, String response, String businessId,
+    private Long saveLog(PromptRenderResult promptResult, String response, String businessId,
                          long startMillis, String errorMessage, Long explicitUserId, AiFailureType failureType) {
         AiCallLog log = new AiCallLog();
         long elapsed = System.currentTimeMillis() - startMillis;
         AiFailureType resolvedFailureType = failureType == null ? AiFailureType.UNKNOWN_ERROR : failureType;
+        String requestId = UUID.randomUUID().toString();
+        String traceId = currentTraceId();
         log.setUserId(explicitUserId == null ? LoginUserContext.getUserId() : explicitUserId);
-        log.setScene(scene);
+        log.setScene(promptResult.getScene());
         log.setModelName(Boolean.TRUE.equals(aiProperties.getMockEnabled())
                 ? aiProperties.getModel() + "(mock)"
                 : aiProperties.getModel());
-        log.setPromptTemplateId(template == null ? null : template.getId());
-        log.setRequestPrompt(prompt);
+        log.setPromptTemplateId(promptResult.getPromptTemplateId());
+        log.setPromptTemplateVersionId(promptResult.getPromptTemplateVersionId());
+        log.setPromptVersion(promptResult.getPromptVersion());
+        log.setRequestId(requestId);
+        log.setTraceId(traceId);
+        log.setInputVariablesJson(promptResult.getInputVariablesJson());
+        log.setModelParamsJson(promptResult.getModelParamsJson());
+        log.setPromptHash(promptResult.getPromptHash());
+        log.setResponseFormat("JSON");
+        log.setRequestPrompt(promptResult.getRenderedPrompt());
         log.setResponseContent(response);
         log.setBusinessId(businessId);
-        log.setRequestBody(buildRequestMetadata(scene, template, prompt, resolvedFailureType));
+        log.setRequestBody(buildRequestMetadata(promptResult, resolvedFailureType, requestId, traceId));
         log.setResponseBody(buildResponseMetadata(response, elapsed, errorMessage, resolvedFailureType));
         log.setElapsedMs(elapsed);
         log.setCostMillis(elapsed);
+        log.setSuccess(errorMessage == null ? CommonConstants.YES : CommonConstants.NO);
+        log.setPromptTokens(null);
+        log.setCompletionTokens(null);
+        log.setTotalTokens(null);
         log.setStatus(errorMessage == null ? CommonConstants.YES : CommonConstants.NO);
         log.setErrorMessage(errorMessage);
-        aiCallLogMapper.insert(log);
-        return log.getId();
+        try {
+            aiCallLogMapper.insert(log);
+            return log.getId();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
-    private String buildRequestMetadata(String scene, PromptTemplate template, String prompt, AiFailureType failureType) {
-        Map<String, Object> metadata = baseMetadata(scene, failureType);
-        metadata.put("promptTemplateId", template == null ? null : template.getId());
-        metadata.put("promptTemplateVersion", template == null ? null : template.getVersion());
+    private String buildRequestMetadata(PromptRenderResult promptResult, AiFailureType failureType,
+                                        String requestId, String traceId) {
+        Map<String, Object> metadata = baseMetadata(promptResult.getScene(), failureType);
+        metadata.put("promptTemplateId", promptResult.getPromptTemplateId());
+        metadata.put("promptTemplateVersionId", promptResult.getPromptTemplateVersionId());
+        metadata.put("promptTemplateVersion", promptResult.getPromptVersion());
+        metadata.put("promptVersion", promptResult.getPromptVersion());
+        metadata.put("fallbackUsed", promptResult.getFallbackUsed());
+        metadata.put("inputVariables", promptResult.getInputVariablesJson());
+        metadata.put("modelParams", promptResult.getModelParamsJson());
+        metadata.put("promptHash", promptResult.getPromptHash());
+        metadata.put("requestId", requestId);
+        metadata.put("traceId", traceId);
         metadata.put("timeoutSeconds", aiProperties.getTimeoutSeconds());
-        metadata.put("prompt", prompt);
+        metadata.put("prompt", promptResult.getRenderedPrompt());
         return toJson(metadata);
     }
 
@@ -1355,6 +1366,14 @@ public class AiServiceImpl implements AiService {
         metadata.put("failureType", failureType == null ? AiFailureType.UNKNOWN_ERROR.name() : failureType.name());
         metadata.put("retryCount", 0);
         return metadata;
+    }
+
+    private String currentTraceId() {
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
+            HttpServletRequest request = attributes.getRequest();
+            return request.getHeader(HeaderConstants.TRACE_ID);
+        }
+        return null;
     }
 
     private AiFailureType failureType(RuntimeException ex) {

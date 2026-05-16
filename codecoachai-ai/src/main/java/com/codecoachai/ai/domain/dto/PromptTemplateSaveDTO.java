@@ -11,11 +11,14 @@ public class PromptTemplateSaveDTO {
 
     private String name;
     private String templateName;
+    private String description;
 
     private String content;
     private String templateContent;
     private String variables;
     private String version;
 
+    private Long activeVersionId;
+    private Integer enabled;
     private Integer status;
 }
