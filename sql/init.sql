@@ -380,6 +380,60 @@ CREATE TABLE IF NOT EXISTS interview_report (
   UNIQUE KEY uk_interview_report_session (session_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS study_plan (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  source_type VARCHAR(32) NOT NULL,
+  source_id BIGINT DEFAULT NULL,
+  report_id BIGINT DEFAULT NULL,
+  session_id BIGINT DEFAULT NULL,
+  resume_id BIGINT DEFAULT NULL,
+  optimize_record_id BIGINT DEFAULT NULL,
+  target_position VARCHAR(128) DEFAULT NULL,
+  industry_direction VARCHAR(128) DEFAULT NULL,
+  plan_title VARCHAR(200) DEFAULT NULL,
+  plan_summary TEXT,
+  plan_status VARCHAR(32) NOT NULL DEFAULT 'GENERATING',
+  duration_days INT DEFAULT NULL,
+  ai_call_log_id BIGINT DEFAULT NULL,
+  request_json LONGTEXT,
+  result_json LONGTEXT,
+  failure_reason VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_study_plan_user_status (user_id, plan_status, created_at),
+  KEY idx_study_plan_report (report_id),
+  KEY idx_study_plan_session (session_id),
+  KEY idx_study_plan_source (source_type, source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS study_task (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  plan_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  stage_no INT NOT NULL DEFAULT 1,
+  stage_title VARCHAR(128) DEFAULT NULL,
+  task_order INT NOT NULL DEFAULT 0,
+  knowledge_point VARCHAR(128) DEFAULT NULL,
+  task_title VARCHAR(200) NOT NULL,
+  task_description TEXT,
+  task_type VARCHAR(64) NOT NULL DEFAULT 'KNOWLEDGE_REVIEW',
+  priority VARCHAR(16) NOT NULL DEFAULT 'MEDIUM',
+  estimated_hours INT DEFAULT NULL,
+  task_status VARCHAR(32) NOT NULL DEFAULT 'TODO',
+  related_question_ids_json TEXT,
+  related_tags_json TEXT,
+  resources_json TEXT,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_study_task_plan (plan_id, stage_no, task_order),
+  KEY idx_study_task_user_status (user_id, task_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS system_config (
   id BIGINT NOT NULL AUTO_INCREMENT,
   config_key VARCHAR(128) NOT NULL,
@@ -452,6 +506,15 @@ VALUES
   (3, 'INTERVIEW_ANSWER_EVALUATE', '回答评分点评', '回答评分点评', '你是资深 Java 面试官。请一次性完成评分、点评、流程决策，并在需要时生成一个追问。原始主问题：{{rootQuestionContent}}。当前问题：{{currentQuestionContent}}。参考答案：{{referenceAnswer}}。候选人回答：{{userAnswer}}。当前阶段：{{stageName}}。历史摘要：{{historySummary}}。当前追问次数：{{followUpCount}}。最大追问次数：{{maxFollowUpCount}}。要求：score 必须是 0-100 整数；nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE、FINISH；followUpCount >= maxFollowUpCount 时禁止 FOLLOW_UP；FOLLOW_UP 时 followUpQuestion 必须紧扣原始主问题和候选人回答，且必须是 Java 技术面试追问；不允许出现“假设原问题”“如果你有具体问题请提供”“由于没有上下文”等话术。只输出 JSON：{"score":80,"comment":"中文点评","nextAction":"FOLLOW_UP","followUpQuestion":"追问内容","followUpReason":"追问原因","knowledgePoints":"相关知识点"}', '你是资深 Java 面试官。请一次性完成评分、点评、流程决策，并在需要时生成一个追问。原始主问题：{{rootQuestionContent}}。当前问题：{{currentQuestionContent}}。参考答案：{{referenceAnswer}}。候选人回答：{{userAnswer}}。当前阶段：{{stageName}}。历史摘要：{{historySummary}}。当前追问次数：{{followUpCount}}。最大追问次数：{{maxFollowUpCount}}。要求：score 必须是 0-100 整数；nextAction 只能是 FOLLOW_UP、NEXT_QUESTION、NEXT_STAGE、FINISH；followUpCount >= maxFollowUpCount 时禁止 FOLLOW_UP；FOLLOW_UP 时 followUpQuestion 必须紧扣原始主问题和候选人回答，且必须是 Java 技术面试追问；不允许出现“假设原问题”“如果你有具体问题请提供”“由于没有上下文”等话术。只输出 JSON：{"score":80,"comment":"中文点评","nextAction":"FOLLOW_UP","followUpQuestion":"追问内容","followUpReason":"追问原因","knowledgePoints":"相关知识点"}', 'rootQuestionContent,currentQuestionContent,questionContent,referenceAnswer,userAnswer,currentStage,stageName,historySummary,followUpCount,maxFollowUpCount,knowledgePoints', 'v1', 1),
   (4, 'INTERVIEW_FOLLOW_UP_GENERATE', '动态追问生成', '动态追问生成', '你是资深 Java 面试官。请基于以下上下文生成一个追问。原始主问题：{{rootQuestionContent}}。当前问题：{{currentQuestionContent}}。参考答案：{{referenceAnswer}}。候选人回答：{{userAnswer}}。AI 评分点评：{{aiComment}}。当前阶段：{{stageName}}。历史摘要：{{historySummary}}。追问必须紧扣原始主问题和候选人回答，不能换题；必须指出候选人回答中具体缺失或错误的点；只生成一个更深入的问题；不要重复原问题；不要编造“假设原问题”；不要说“请提供具体问题”；不允许跳到团队协作、用户增长、市场运营等非 Java 技术面试主题。只返回 JSON：{"followUpQuestion":"追问内容","reason":"追问原因","relatedToOriginalQuestion":true}', '你是资深 Java 面试官。请基于以下上下文生成一个追问。原始主问题：{{rootQuestionContent}}。当前问题：{{currentQuestionContent}}。参考答案：{{referenceAnswer}}。候选人回答：{{userAnswer}}。AI 评分点评：{{aiComment}}。当前阶段：{{stageName}}。历史摘要：{{historySummary}}。追问必须紧扣原始主问题和候选人回答，不能换题；必须指出候选人回答中具体缺失或错误的点；只生成一个更深入的问题；不要重复原问题；不要编造“假设原问题”；不要说“请提供具体问题”；不允许跳到团队协作、用户增长、市场运营等非 Java 技术面试主题。只返回 JSON：{"followUpQuestion":"追问内容","reason":"追问原因","relatedToOriginalQuestion":true}', 'rootQuestionContent,currentQuestionContent,questionContent,referenceAnswer,userAnswer,aiComment,currentStage,stageName,historySummary,followUpCount,maxFollowUpCount,knowledgePoints', 'v1', 1),
   (5, 'INTERVIEW_REPORT_GENERATE', '面试报告生成', '面试报告生成', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}', '你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。只输出 JSON，不要 Markdown，不要代码块，不要解释文字。字段固定：{"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}', 'historySummary,targetPosition,experienceLevel,industryDirection,difficulty,resumeContent,projectContent', 'v1', 1)
+ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
+
+INSERT INTO prompt_template (id, scene, name, template_name, content, template_content, variables, version, status)
+VALUES
+  (6, 'LEARNING_PLAN_GENERATE', '学习计划生成', '学习计划生成',
+   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages.',
+   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences.',
+   'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+   'v2-a9', 1)
 ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
 
 INSERT INTO industry_template (

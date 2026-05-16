@@ -4,10 +4,12 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.interview.feign.dto.EvaluateAnswerDTO;
 import com.codecoachai.interview.feign.dto.GenerateFollowUpDTO;
 import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
+import com.codecoachai.interview.feign.dto.GenerateLearningPlanDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
+import com.codecoachai.interview.feign.vo.GenerateLearningPlanVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,4 +29,7 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/interview/report")
     Result<GenerateReportVO> report(@RequestBody GenerateReportDTO dto);
+
+    @PostMapping("/inner/ai/learning-plans/generate")
+    Result<GenerateLearningPlanVO> generateLearningPlan(@RequestBody GenerateLearningPlanDTO dto);
 }

@@ -4,6 +4,7 @@ import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
+import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
@@ -56,4 +57,6 @@ public interface ResumeService {
     InnerResumeDetailVO getInnerResume(Long id);
 
     InnerResumeDetailVO getDefaultInnerResume();
+
+    InnerResumeOptimizeRecordVO getInnerOptimizeRecord(Long recordId);
 }

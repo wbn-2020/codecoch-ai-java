@@ -2,6 +2,7 @@ package com.codecoachai.resume.controller;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
+import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.service.ResumeService;
 import java.util.List;
@@ -31,5 +32,10 @@ public class InnerResumeController {
     @GetMapping("/default")
     public Result<InnerResumeDetailVO> getDefaultResume() {
         return Result.success(resumeService.getDefaultInnerResume());
+    }
+
+    @GetMapping("/optimize-records/{recordId}")
+    public Result<InnerResumeOptimizeRecordVO> getOptimizeRecord(@PathVariable Long recordId) {
+        return Result.success(resumeService.getInnerOptimizeRecord(recordId));
     }
 }

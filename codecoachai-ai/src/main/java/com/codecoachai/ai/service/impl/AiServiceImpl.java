@@ -7,6 +7,7 @@ import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
+import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
@@ -17,6 +18,7 @@ import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
+import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
@@ -52,6 +54,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_RESUME_PARSE = "RESUME_STRUCTURED_PARSE";
     private static final String SCENE_RESUME_OPTIMIZE = "RESUME_OPTIMIZE";
     private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
+    private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptTemplateMapper promptTemplateMapper;
@@ -240,6 +243,33 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public GenerateLearningPlanVO generateLearningPlan(GenerateLearningPlanDTO dto) {
+        validateLearningPlanDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptTemplate template = enabledTemplate(SCENE_LEARNING_PLAN_GENERATE);
+        String prompt = render(learningPlanPromptContent(template), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateLearningPlanVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockLearningPlan(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(prompt);
+                vo = parseLearningPlan(rawResponse, dto);
+            }
+            Long logId = saveLog(SCENE_LEARNING_PLAN_GENERATE, template, prompt, rawResponse,
+                    businessId(dto.getLearningPlanId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(SCENE_LEARNING_PLAN_GENERATE, template, prompt, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getLearningPlanId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -286,6 +316,24 @@ public class AiServiceImpl implements AiService {
         int count = dto.getCount() == null ? 5 : dto.getCount();
         if (count < 1 || count > 20) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "count must be between 1 and 20");
+        }
+    }
+
+    private void validateLearningPlanDTO(GenerateLearningPlanDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getLearningPlanId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "learningPlanId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reportId is required");
+        }
+        if (!StringUtils.hasText(dto.getInterviewSummary()) && !StringUtils.hasText(dto.getWeaknessSummary())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview summary or weakness summary is required");
         }
     }
 
@@ -388,6 +436,10 @@ public class AiServiceImpl implements AiService {
                 + "\n" + industryBlock
                 + "\n" + projectBlock
                 + "\n" + content;
+    }
+
+    private String learningPlanPromptContent(PromptTemplate template) {
+        return templateContent(template, defaultLearningPlanPrompt());
     }
 
     private String industryContextBlock(String industryContext) {
@@ -544,6 +596,24 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(GenerateLearningPlanDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("learningPlanId", dto.getLearningPlanId() == null ? "" : String.valueOf(dto.getLearningPlanId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("reportId", dto.getReportId() == null ? "" : String.valueOf(dto.getReportId()));
+        values.put("sessionId", dto.getSessionId() == null ? "" : String.valueOf(dto.getSessionId()));
+        values.put("targetPosition", dto.getTargetPosition());
+        values.put("industryDirection", dto.getIndustryDirection());
+        values.put("experienceLevel", dto.getExperienceLevel());
+        values.put("interviewSummary", dto.getInterviewSummary());
+        values.put("weaknessSummary", dto.getWeaknessSummary());
+        values.put("questionPerformanceSummary", dto.getQuestionPerformanceSummary());
+        values.put("resumeWeaknessSummary", dto.getResumeWeaknessSummary());
+        values.put("expectedDurationDays", dto.getExpectedDurationDays() == null ? "14" : String.valueOf(dto.getExpectedDurationDays()));
+        values.put("extraRequirements", dto.getExtraRequirements());
+        return values;
+    }
+
     private GenerateInterviewQuestionVO parseQuestion(String raw, String scene) {
         JsonNode json;
         try {
@@ -617,6 +687,15 @@ public class AiServiceImpl implements AiService {
         return value;
     }
 
+    private String requireLearningText(JsonNode json, String fieldName) {
+        String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI learning plan item missing field: " + fieldName);
+        }
+        return value;
+    }
+
     private List<String> textArray(JsonNode node) {
         if (node == null || !node.isArray()) {
             return List.of();
@@ -629,6 +708,58 @@ public class AiServiceImpl implements AiService {
             }
         }
         return values;
+    }
+
+    private List<Long> longArray(JsonNode node) {
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<Long> values = new java.util.ArrayList<>();
+        for (JsonNode item : node) {
+            if (item.isIntegralNumber()) {
+                values.add(item.asLong());
+            } else {
+                String value = item.asText(null);
+                if (StringUtils.hasText(value)) {
+                    try {
+                        values.add(Long.valueOf(value));
+                    } catch (NumberFormatException ignored) {
+                        // Ignore non-numeric related question ids from the model.
+                    }
+                }
+            }
+        }
+        return values;
+    }
+
+    private String normalizeTaskType(String taskType) {
+        String value = StringUtils.hasText(taskType) ? taskType.trim().toUpperCase() : "KNOWLEDGE_REVIEW";
+        if (!List.of("KNOWLEDGE_REVIEW", "CODING_PRACTICE", "PROJECT_REVIEW", "INTERVIEW_PRACTICE",
+                "RESUME_IMPROVEMENT").contains(value)) {
+            return "KNOWLEDGE_REVIEW";
+        }
+        return value;
+    }
+
+    private String normalizePriority(String priority) {
+        String value = StringUtils.hasText(priority) ? priority.trim().toUpperCase() : "MEDIUM";
+        if (!List.of("HIGH", "MEDIUM", "LOW").contains(value)) {
+            return "MEDIUM";
+        }
+        return value;
+    }
+
+    private int normalizeDuration(Integer durationDays) {
+        if (durationDays == null) {
+            return 14;
+        }
+        if (durationDays <= 7) {
+            return 7;
+        }
+        if (durationDays <= 14) {
+            return 14;
+        }
+        return 30;
     }
 
     private EvaluateAnswerVO parseEvaluate(String raw, EvaluateAnswerDTO dto) {
@@ -711,6 +842,59 @@ public class AiServiceImpl implements AiService {
         vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), vo.getRecommendedQuestions()));
         vo.setQaReview(jsonOrDefault(json.path("qaReview"), vo.getQaReview()));
         vo.setReportContent(firstText(json.path("reportContent").asText(null), vo.getSummary()));
+        return vo;
+    }
+
+    private GenerateLearningPlanVO parseLearningPlan(String raw, GenerateLearningPlanDTO dto) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response must be a JSON object");
+        }
+        JsonNode stagesNode = json.path("stages");
+        if (!stagesNode.isArray() || stagesNode.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response missing stages array");
+        }
+        GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
+        vo.setPlanTitle(firstText(json.path("planTitle").asText(null), defaultLearningPlanTitle(dto)));
+        vo.setPlanSummary(firstText(json.path("planSummary").asText(null), "Study plan generated from interview report"));
+        vo.setDurationDays(json.path("durationDays").isNumber()
+                ? normalizeDuration(json.path("durationDays").asInt())
+                : normalizeDuration(dto.getExpectedDurationDays()));
+        List<GenerateLearningPlanVO.StageVO> stages = new java.util.ArrayList<>();
+        for (JsonNode stageNode : stagesNode) {
+            if (stageNode == null || !stageNode.isObject()) {
+                throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage must be object");
+            }
+            JsonNode itemsNode = stageNode.path("items");
+            if (!itemsNode.isArray() || itemsNode.isEmpty()) {
+                throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage missing items array");
+            }
+            GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
+            stage.setStageNo(stageNode.path("stageNo").isNumber() ? stageNode.path("stageNo").asInt() : stages.size() + 1);
+            stage.setStageTitle(firstText(stageNode.path("stageTitle").asText(null), "Stage " + stage.getStageNo()));
+            List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
+            for (JsonNode itemNode : itemsNode) {
+                if (itemNode == null || !itemNode.isObject()) {
+                    throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan item must be object");
+                }
+                GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+                item.setKnowledgePoint(itemNode.path("knowledgePoint").asText(null));
+                item.setTaskTitle(requireLearningText(itemNode, "taskTitle"));
+                item.setTaskDescription(requireLearningText(itemNode, "taskDescription"));
+                item.setTaskType(normalizeTaskType(itemNode.path("taskType").asText(null)));
+                item.setPriority(normalizePriority(itemNode.path("priority").asText(null)));
+                item.setEstimatedHours(itemNode.path("estimatedHours").isNumber()
+                        ? Math.max(1, itemNode.path("estimatedHours").asInt())
+                        : 1);
+                item.setRelatedQuestionIds(longArray(itemNode.path("relatedQuestionIds")));
+                item.setRelatedTags(textArray(itemNode.path("relatedTags")));
+                item.setResources(textArray(itemNode.path("resources")));
+                items.add(item);
+            }
+            stage.setItems(items);
+            stages.add(stage);
+        }
+        vo.setStages(stages);
         return vo;
     }
 
@@ -882,6 +1066,63 @@ public class AiServiceImpl implements AiService {
 
     private GenerateReportVO mockReport() {
         return mockReport(null);
+    }
+
+    private GenerateLearningPlanVO mockLearningPlan(GenerateLearningPlanDTO dto) {
+        GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
+        int duration = normalizeDuration(dto == null ? null : dto.getExpectedDurationDays());
+        vo.setPlanTitle(defaultLearningPlanTitle(dto));
+        vo.setPlanSummary("A focused " + duration + "-day plan generated from interview weaknesses, resume signals, and target role.");
+        vo.setDurationDays(duration);
+
+        GenerateLearningPlanVO.ItemVO foundations = learningItem("Java core and collection internals",
+                "Review HashMap, ArrayList, and common collection trade-offs",
+                "Summarize key internals, edge cases, and interview-ready examples.",
+                "KNOWLEDGE_REVIEW", "HIGH", 2, List.of("Java", "Collections"));
+        GenerateLearningPlanVO.ItemVO concurrency = learningItem("Java concurrency",
+                "Practice thread pool and lock scenario questions",
+                "Prepare answers that cover parameters, rejection policy, monitoring, and production risks.",
+                "INTERVIEW_PRACTICE", "HIGH", 2, List.of("Concurrency", "ThreadPool"));
+        GenerateLearningPlanVO.StageVO stageOne = learningStage(1, "Weakness repair", List.of(foundations, concurrency));
+
+        GenerateLearningPlanVO.ItemVO project = learningItem("Project review",
+                "Refine one project story with measurable outcomes",
+                "Rewrite background, responsibility, technical challenge, trade-off, and result.",
+                "PROJECT_REVIEW", "MEDIUM", 2, List.of("Project", "Resume"));
+        GenerateLearningPlanVO.ItemVO database = learningItem("Database and cache",
+                "Review MySQL index and Redis consistency scenarios",
+                "Prepare answers for index failure, slow query diagnosis, cache aside, and consistency boundaries.",
+                "CODING_PRACTICE", "MEDIUM", 2, List.of("MySQL", "Redis"));
+        GenerateLearningPlanVO.StageVO stageTwo = learningStage(2, "Scenario consolidation", List.of(project, database));
+
+        vo.setStages(List.of(stageOne, stageTwo));
+        return vo;
+    }
+
+    private GenerateLearningPlanVO.StageVO learningStage(int stageNo, String stageTitle,
+                                                        List<GenerateLearningPlanVO.ItemVO> items) {
+        GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
+        stage.setStageNo(stageNo);
+        stage.setStageTitle(stageTitle);
+        stage.setItems(items);
+        return stage;
+    }
+
+    private GenerateLearningPlanVO.ItemVO learningItem(String knowledgePoint, String taskTitle,
+                                                      String taskDescription, String taskType,
+                                                      String priority, int estimatedHours,
+                                                      List<String> tags) {
+        GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+        item.setKnowledgePoint(knowledgePoint);
+        item.setTaskTitle(taskTitle);
+        item.setTaskDescription(taskDescription);
+        item.setTaskType(taskType);
+        item.setPriority(priority);
+        item.setEstimatedHours(estimatedHours);
+        item.setRelatedQuestionIds(List.of());
+        item.setRelatedTags(tags);
+        item.setResources(List.of());
+        return item;
     }
 
     private String mockResumeStructuredJson() {
@@ -1446,6 +1687,37 @@ public class AiServiceImpl implements AiService {
                 """;
     }
 
+    private String defaultLearningPlanPrompt() {
+        return """
+                You are a senior Java backend interview coach. Generate a practical study plan in Chinese.
+                Use only the given interview report, weakness summary, question performance, resume weakness, target position, and industry context.
+                targetPosition: {{targetPosition}}
+                industryDirection: {{industryDirection}}
+                experienceLevel: {{experienceLevel}}
+                expectedDurationDays: {{expectedDurationDays}}
+                interviewSummary:
+                {{interviewSummary}}
+                weaknessSummary:
+                {{weaknessSummary}}
+                questionPerformanceSummary:
+                {{questionPerformanceSummary}}
+                resumeWeaknessSummary:
+                {{resumeWeaknessSummary}}
+                extraRequirements:
+                {{extraRequirements}}
+
+                Output only one JSON object. Do not output Markdown. Do not output code fences. Do not add explanations.
+                Top-level fields must be planTitle, planSummary, durationDays, stages.
+                stages must be an array. Each stage must contain stageNo, stageTitle, items.
+                items must be an array. Each item must contain knowledgePoint, taskTitle, taskDescription, taskType, priority, estimatedHours, relatedTags, resources.
+                taskType must be one of KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE, RESUME_IMPROVEMENT.
+                priority must be one of HIGH, MEDIUM, LOW.
+                Use 2 to 4 stages and 2 to 5 items per stage.
+                Example:
+                {"planTitle":"Java backend 14 day plan","planSummary":"Focus on weak points and interview practice.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Foundation repair","items":[{"knowledgePoint":"Java Collections","taskTitle":"Review HashMap resize mechanism","taskDescription":"Summarize core flow, edge cases, and interview expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedHours":2,"relatedTags":["Java"],"resources":[]}]}]}
+                """;
+    }
+
     private String defaultQuestionDraftPrompt() {
         return """
                 你是 Java 后端面试题生成助手。
@@ -1544,6 +1816,12 @@ public class AiServiceImpl implements AiService {
                   "nextActions":["下一步动作"]
                 }
                 """;
+    }
+
+    private String defaultLearningPlanTitle(GenerateLearningPlanDTO dto) {
+        String target = firstText(dto == null ? null : dto.getTargetPosition(), "Java backend");
+        int duration = normalizeDuration(dto == null ? null : dto.getExpectedDurationDays());
+        return target + " " + duration + "-day study plan";
     }
 
     private String firstText(String... values) {
