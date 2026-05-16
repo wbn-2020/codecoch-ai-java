@@ -4,5 +4,6 @@ public enum PromptVersionStatus {
 
     DRAFT,
     ACTIVE,
+    INACTIVE,
     DISABLED
 }

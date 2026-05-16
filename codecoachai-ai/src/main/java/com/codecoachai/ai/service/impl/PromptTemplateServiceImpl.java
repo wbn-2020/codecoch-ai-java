@@ -116,14 +116,20 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     public PromptTemplateVO updatePrompt(Long id, PromptTemplateSaveDTO dto) {
         PromptTemplate template = getTemplate(id);
-        apply(template, dto);
+        if (hasPromptContent(dto)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt 内容请通过版本接口创建并启用");
+        }
+        applyMetadata(template, dto);
         promptTemplateMapper.updateById(template);
         return AiConvert.toPromptVO(template);
     }
 
     @Override
     public void deletePrompt(Long id) {
-        promptTemplateMapper.deleteById(id);
+        PromptTemplate template = getTemplate(id);
+        template.setStatus(CommonConstants.NO);
+        template.setEnabled(CommonConstants.NO);
+        promptTemplateMapper.updateById(template);
     }
 
     @Override
@@ -163,7 +169,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         version.setContent(dto.getContent());
         version.setVariablesJson(dto.getVariablesJson());
         version.setModelParamsJson(dto.getModelParamsJson());
-        version.setStatus(StringUtils.hasText(dto.getStatus()) ? dto.getStatus() : PromptVersionStatus.DRAFT.name());
+        version.setStatus(normalizeCreateStatus(dto.getStatus()));
         version.setIsActive(CommonConstants.NO);
         version.setCreatedBy(LoginUserContext.getUserId());
         version.setChangeLog(dto.getChangeLog());
@@ -180,7 +186,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 .eq(PromptTemplateVersion::getTemplateId, template.getId())
                 .eq(PromptTemplateVersion::getIsActive, CommonConstants.YES)
                 .set(PromptTemplateVersion::getIsActive, CommonConstants.NO)
-                .set(PromptTemplateVersion::getStatus, PromptVersionStatus.DISABLED.name()));
+                .set(PromptTemplateVersion::getStatus, PromptVersionStatus.INACTIVE.name()));
         version.setStatus(PromptVersionStatus.ACTIVE.name());
         version.setIsActive(CommonConstants.YES);
         version.setActivatedBy(LoginUserContext.getUserId());
@@ -276,6 +282,44 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         template.setActiveVersionId(dto.getActiveVersionId());
         template.setEnabled(dto.getEnabled() == null ? CommonConstants.YES : dto.getEnabled());
         template.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
+    }
+
+    private void applyMetadata(PromptTemplate template, PromptTemplateSaveDTO dto) {
+        if (StringUtils.hasText(dto.getName())) {
+            template.setName(dto.getName());
+        }
+        if (StringUtils.hasText(dto.getTemplateName())) {
+            template.setTemplateName(dto.getTemplateName());
+        }
+        if (dto.getDescription() != null) {
+            template.setDescription(dto.getDescription());
+        }
+        if (dto.getEnabled() != null) {
+            template.setEnabled(dto.getEnabled());
+        }
+        if (dto.getStatus() != null) {
+            template.setStatus(dto.getStatus());
+        }
+    }
+
+    private boolean hasPromptContent(PromptTemplateSaveDTO dto) {
+        return StringUtils.hasText(dto.getContent()) || StringUtils.hasText(dto.getTemplateContent());
+    }
+
+    private String normalizeCreateStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return PromptVersionStatus.DRAFT.name();
+        }
+        PromptVersionStatus versionStatus;
+        try {
+            versionStatus = PromptVersionStatus.valueOf(status.trim().toUpperCase());
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Invalid prompt version status");
+        }
+        if (PromptVersionStatus.ACTIVE.equals(versionStatus)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt version must be activated through activate endpoint");
+        }
+        return versionStatus.name();
     }
 
     private void assertVersionCodeUnique(Long templateId, String versionCode) {
