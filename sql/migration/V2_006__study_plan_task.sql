@@ -52,13 +52,25 @@ CREATE TABLE IF NOT EXISTS study_task (
   KEY idx_study_task_user_status (user_id, task_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Tasks inside a study plan';
 
-INSERT INTO prompt_template (id, scene, name, template_name, content, template_content, variables, version, status)
-VALUES
-  (6, 'LEARNING_PLAN_GENERATE', '学习计划生成', '学习计划生成',
-   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages. Each stage contains stageNo, stageTitle and items. Each item contains knowledgePoint, taskTitle, taskDescription, taskType, priority, estimatedHours, relatedTags and resources.',
-   'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences. taskType must be KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE or RESUME_IMPROVEMENT. priority must be HIGH, MEDIUM or LOW.',
-   'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
-   'v2-a9', 1)
-ON DUPLICATE KEY UPDATE scene = VALUES(scene), name = VALUES(name), template_name = VALUES(template_name),
-  content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables),
-  version = VALUES(version), status = VALUES(status);
+UPDATE prompt_template
+SET name = CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+    template_name = CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+    content = 'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages. Each stage contains stageNo, stageTitle and items. Each item contains knowledgePoint, taskTitle, taskDescription, taskType, priority, estimatedHours, relatedTags and resources.',
+    template_content = 'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences. taskType must be KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE or RESUME_IMPROVEMENT. priority must be HIGH, MEDIUM or LOW.',
+    variables = 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+    version = 'v2-a9',
+    status = 1
+WHERE scene = 'LEARNING_PLAN_GENERATE';
+
+INSERT INTO prompt_template (scene, name, template_name, content, template_content, variables, version, status)
+SELECT 'LEARNING_PLAN_GENERATE',
+       CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+       CONVERT(0xE5ADA6E4B9A0E8AEA1E58892E7949FE68890 USING utf8mb4),
+       'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only one JSON object with planTitle, planSummary, durationDays and stages. Each stage contains stageNo, stageTitle and items. Each item contains knowledgePoint, taskTitle, taskDescription, taskType, priority, estimatedHours, relatedTags and resources.',
+       'You are a senior Java backend interview coach. Generate a practical study plan in Chinese. targetPosition={{targetPosition}}, industryDirection={{industryDirection}}, experienceLevel={{experienceLevel}}, expectedDurationDays={{expectedDurationDays}}. Use interviewSummary={{interviewSummary}}, weaknessSummary={{weaknessSummary}}, questionPerformanceSummary={{questionPerformanceSummary}}, resumeWeaknessSummary={{resumeWeaknessSummary}}, extraRequirements={{extraRequirements}}. Output only JSON object, no Markdown, no code fences. taskType must be KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE or RESUME_IMPROVEMENT. priority must be HIGH, MEDIUM or LOW.',
+       'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+       'v2-a9',
+       1
+WHERE NOT EXISTS (
+  SELECT 1 FROM prompt_template WHERE scene = 'LEARNING_PLAN_GENERATE'
+);
