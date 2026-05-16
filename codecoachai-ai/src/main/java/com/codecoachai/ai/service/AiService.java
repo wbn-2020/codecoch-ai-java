@@ -3,6 +3,7 @@ package com.codecoachai.ai.service;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
+import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
@@ -10,6 +11,7 @@ import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
+import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
@@ -30,4 +32,6 @@ public interface AiService {
     ParseResumeVO parseResume(ParseResumeDTO dto);
 
     ResumeOptimizeAiResponseVO optimizeResume(ResumeOptimizeAiRequestDTO dto);
+
+    GenerateLearningPlanVO generateLearningPlan(GenerateLearningPlanDTO dto);
 }

@@ -33,6 +33,7 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
+import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionReviewService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -61,6 +62,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private final QuestionGroupMapper groupMapper;
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
+    private final QuestionDuplicateService questionDuplicateService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -70,14 +72,18 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         Long adminUserId = SecurityAssert.requireLoginUserId();
         String batchId = "QG" + UUID.randomUUID().toString().replace("-", "");
         GenerateQuestionDraftDTO aiRequest = toAiRequest(batchId, adminUserId, dto);
-        GenerateQuestionDraftVO aiResponse = FeignResultUtils.unwrap(aiQuestionFeignClient.generateQuestions(aiRequest));
+        GenerateQuestionDraftVO aiResponse = FeignResultUtils.unwrap(
+                aiQuestionFeignClient.generateQuestions(aiRequest));
         if (aiResponse == null || aiResponse.getQuestions() == null || aiResponse.getQuestions().isEmpty()) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned no questions");
         }
         List<Long> reviewIds = new ArrayList<>();
-        String rawAiResultJson = StringUtils.hasText(aiResponse.getRawResponse()) ? aiResponse.getRawResponse() : toJson(aiResponse);
+        String rawAiResultJson = StringUtils.hasText(aiResponse.getRawResponse())
+                ? aiResponse.getRawResponse()
+                : toJson(aiResponse);
         for (QuestionDraftItemVO item : aiResponse.getQuestions()) {
-            QuestionReview review = toReview(dto, batchId, adminUserId, aiResponse.getAiCallLogId(), rawAiResultJson, item);
+            QuestionReview review = toReview(dto, batchId, adminUserId, aiResponse.getAiCallLogId(),
+                    rawAiResultJson, item);
             questionReviewMapper.insert(review);
             reviewIds.add(review.getId());
         }
@@ -113,6 +119,24 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         }
         ApprovedQuestionPayload payload = buildApprovedPayload(review, dto);
         validateQuestionRefs(payload.categoryId(), payload.groupId(), payload.tagIds());
+
+        Long reviewerId = SecurityAssert.requireLoginUserId();
+        LocalDateTime reviewedAt = LocalDateTime.now();
+        String editedContentJson = hasEditedFields(dto)
+                ? toJson(payload.toMap(dto == null ? null : dto.getEditedReason()))
+                : null;
+        QuestionReview claim = new QuestionReview();
+        claim.setReviewStatus(QuestionReviewStatus.APPROVED.name());
+        claim.setReviewerId(reviewerId);
+        claim.setReviewedAt(reviewedAt);
+        claim.setEditedContentJson(editedContentJson);
+        int claimed = questionReviewMapper.update(claim, new LambdaUpdateWrapper<QuestionReview>()
+                .eq(QuestionReview::getId, id)
+                .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.PENDING.name()));
+        if (claimed != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question review status has changed");
+        }
+
         Question question = new Question();
         question.setTitle(payload.title());
         question.setContent(payload.content());
@@ -128,20 +152,18 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         questionMapper.insert(question);
         insertTagRelations(question.getId(), payload.tagIds());
 
-        Long reviewerId = SecurityAssert.requireLoginUserId();
         QuestionReview update = new QuestionReview();
-        update.setReviewStatus(QuestionReviewStatus.APPROVED.name());
         update.setApprovedQuestionId(question.getId());
-        update.setReviewerId(reviewerId);
-        update.setReviewedAt(LocalDateTime.now());
-        if (hasEditedFields(dto)) {
-            update.setEditedContentJson(toJson(payload.toMap(dto == null ? null : dto.getEditedReason())));
-        }
         int affected = questionReviewMapper.update(update, new LambdaUpdateWrapper<QuestionReview>()
                 .eq(QuestionReview::getId, id)
-                .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.PENDING.name()));
+                .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.APPROVED.name()));
         if (affected != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question review status has changed");
+        }
+        try {
+            questionDuplicateService.checkDuplicateForQuestion(question.getId(), reviewerId);
+        } catch (Exception ignored) {
+            // Duplicate hints must not break the A7 approve flow.
         }
         return getReview(id);
     }
@@ -203,7 +225,8 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         review.setAiCallLogId(aiCallLogId);
         review.setTechnologyStack(request.getTechnologyStack());
         review.setKnowledgePoint(request.getKnowledgePoint());
-        review.setQuestionType(defaultText(item.getQuestionType(), defaultText(request.getQuestionType(), "SHORT_ANSWER")));
+        review.setQuestionType(defaultText(item.getQuestionType(),
+                defaultText(request.getQuestionType(), "SHORT_ANSWER")));
         review.setDifficulty(defaultText(item.getDifficulty(), defaultText(request.getDifficulty(), "MEDIUM")));
         review.setExperienceYears(request.getExperienceYears());
         review.setRawAiResultJson(rawAiResultJson);
@@ -220,12 +243,16 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
 
     private LambdaQueryWrapper<QuestionReview> buildQueryWrapper(QuestionReviewQueryDTO query) {
         return new LambdaQueryWrapper<QuestionReview>()
-                .eq(StringUtils.hasText(query.getReviewStatus()), QuestionReview::getReviewStatus, query.getReviewStatus())
+                .eq(StringUtils.hasText(query.getReviewStatus()), QuestionReview::getReviewStatus,
+                        query.getReviewStatus())
                 .eq(StringUtils.hasText(query.getBatchId()), QuestionReview::getBatchId, query.getBatchId())
-                .eq(StringUtils.hasText(query.getQuestionType()), QuestionReview::getQuestionType, query.getQuestionType())
+                .eq(StringUtils.hasText(query.getQuestionType()), QuestionReview::getQuestionType,
+                        query.getQuestionType())
                 .eq(StringUtils.hasText(query.getDifficulty()), QuestionReview::getDifficulty, query.getDifficulty())
-                .like(StringUtils.hasText(query.getTechnologyStack()), QuestionReview::getTechnologyStack, query.getTechnologyStack())
-                .like(StringUtils.hasText(query.getKnowledgePoint()), QuestionReview::getKnowledgePoint, query.getKnowledgePoint())
+                .like(StringUtils.hasText(query.getTechnologyStack()), QuestionReview::getTechnologyStack,
+                        query.getTechnologyStack())
+                .like(StringUtils.hasText(query.getKnowledgePoint()), QuestionReview::getKnowledgePoint,
+                        query.getKnowledgePoint())
                 .and(StringUtils.hasText(query.getKeyword()), condition -> condition
                         .like(QuestionReview::getQuestionTitle, query.getKeyword())
                         .or()
@@ -244,7 +271,9 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     }
 
     private ApprovedQuestionPayload buildApprovedPayload(QuestionReview review, QuestionReviewApproveDTO dto) {
-        List<Long> tagIds = dto != null && dto.getTagIds() != null ? dto.getTagIds() : parseLongList(review.getTagIdsJson());
+        List<Long> tagIds = dto != null && dto.getTagIds() != null
+                ? dto.getTagIds()
+                : parseLongList(review.getTagIdsJson());
         String title = defaultText(dto == null ? null : dto.getTitle(), review.getQuestionTitle());
         if (!StringUtils.hasText(title)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "question title is required");
@@ -261,7 +290,8 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 tagIds,
                 dto != null && dto.getStatus() != null ? dto.getStatus() : CommonConstants.YES,
                 dto != null && dto.getIsHighFrequency() != null ? dto.getIsHighFrequency() : CommonConstants.NO,
-                defaultText(dto == null ? null : dto.getExperienceLevel(), review.getExperienceYears() == null ? null : String.valueOf(review.getExperienceYears()))
+                defaultText(dto == null ? null : dto.getExperienceLevel(),
+                        review.getExperienceYears() == null ? null : String.valueOf(review.getExperienceYears()))
         );
     }
 

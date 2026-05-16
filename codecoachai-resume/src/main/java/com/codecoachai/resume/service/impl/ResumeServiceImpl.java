@@ -19,6 +19,7 @@ import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
+import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
@@ -361,6 +362,28 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Default resume not found");
         }
         return ResumeConvert.toInnerVO(resume, projects(resume.getId()));
+    }
+
+    @Override
+    public InnerResumeOptimizeRecordVO getInnerOptimizeRecord(Long recordId) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectOne(new LambdaQueryWrapper<ResumeOptimizeRecord>()
+                .eq(ResumeOptimizeRecord::getId, recordId)
+                .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (record == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume optimize record not found");
+        }
+        InnerResumeOptimizeRecordVO vo = new InnerResumeOptimizeRecordVO();
+        vo.setOptimizeRecordId(record.getId());
+        vo.setUserId(record.getUserId());
+        vo.setResumeId(record.getResumeId());
+        vo.setTargetPosition(record.getTargetPosition());
+        vo.setExperienceYears(record.getExperienceYears());
+        vo.setIndustryDirection(record.getIndustryDirection());
+        vo.setOptimizeStatus(record.getOptimizeStatus());
+        vo.setResultJson(record.getResultJson());
+        vo.setErrorMessage(record.getErrorMessage());
+        return vo;
     }
 
     private ResumeDetailVO toDetailVO(Resume resume) {
