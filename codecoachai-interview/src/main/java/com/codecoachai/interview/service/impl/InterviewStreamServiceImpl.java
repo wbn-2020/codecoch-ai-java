@@ -146,7 +146,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
                 .requestId(requestId)
                 .code(code)
-                .message("SSE stream failed")
+                .message("流式输出失败，请稍后重试")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }

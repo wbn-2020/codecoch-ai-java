@@ -20,4 +20,15 @@ public class InterviewAsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    @Bean(name = "sseStreamExecutor")
+    public Executor sseStreamExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(16);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("sse-stream-");
+        executor.initialize();
+        return executor;
+    }
 }
