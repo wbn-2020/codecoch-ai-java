@@ -17,6 +17,7 @@ import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.StudyPlan;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
+import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
@@ -35,6 +36,9 @@ import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.service.StudyPlanService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Locale;
 import lombok.RequiredArgsConstructor;
@@ -107,6 +111,35 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     public List<StudyTaskVO> tasks(Long planId) {
         StudyPlan plan = getOwnedPlan(planId, requireCurrentUserId());
         return taskEntities(plan.getId()).stream().map(this::toTaskVO).toList();
+    }
+
+    @Override
+    public StudyPlanDailyViewVO dailyView(Long planId, String date) {
+        Long userId = requireCurrentUserId();
+        StudyPlan plan = getOwnedPlan(planId, userId);
+        LocalDate targetDate = parseDailyViewDate(date);
+        int dayIndex = inferDayIndex(plan, targetDate);
+        List<StudyTask> tasks = taskEntities(plan.getId(), userId).stream()
+                .filter(task -> dayIndex == normalizeTaskDayIndex(task.getStageNo()))
+                .toList();
+
+        int total = tasks.size();
+        int completed = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
+        int skipped = (int) tasks.stream().filter(task -> TASK_SKIPPED.equals(task.getTaskStatus())).count();
+        int pending = Math.max(0, total - completed - skipped);
+
+        StudyPlanDailyViewVO vo = new StudyPlanDailyViewVO();
+        vo.setPlanId(plan.getId());
+        vo.setPlanTitle(plan.getPlanTitle());
+        vo.setDate(targetDate);
+        vo.setDayIndex(dayIndex);
+        vo.setTotalTaskCount(total);
+        vo.setCompletedTaskCount(completed);
+        vo.setSkippedTaskCount(skipped);
+        vo.setPendingTaskCount(pending);
+        vo.setCompletionRate(total == 0 ? 0 : completed * 100 / total);
+        vo.setTasks(tasks.stream().map(this::toTaskVO).toList());
+        return vo;
     }
 
     @Override
@@ -355,6 +388,40 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .orderByAsc(StudyTask::getStageNo)
                 .orderByAsc(StudyTask::getTaskOrder)
                 .orderByAsc(StudyTask::getId));
+    }
+
+    private List<StudyTask> taskEntities(Long planId, Long userId) {
+        return studyTaskMapper.selectList(new LambdaQueryWrapper<StudyTask>()
+                .eq(StudyTask::getPlanId, planId)
+                .eq(StudyTask::getUserId, userId)
+                .eq(StudyTask::getDeleted, CommonConstants.NO)
+                .orderByAsc(StudyTask::getStageNo)
+                .orderByAsc(StudyTask::getTaskOrder)
+                .orderByAsc(StudyTask::getId));
+    }
+
+    private LocalDate parseDailyViewDate(String date) {
+        if (!StringUtils.hasText(date)) {
+            return LocalDate.now();
+        }
+        try {
+            return LocalDate.parse(date.trim());
+        } catch (DateTimeParseException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "date must be yyyy-MM-dd");
+        }
+    }
+
+    private int inferDayIndex(StudyPlan plan, LocalDate targetDate) {
+        if (plan.getCreatedAt() == null) {
+            return 1;
+        }
+        LocalDate startDate = plan.getCreatedAt().toLocalDate();
+        long days = ChronoUnit.DAYS.between(startDate, targetDate);
+        return days < 0 ? 1 : Math.toIntExact(days + 1);
+    }
+
+    private int normalizeTaskDayIndex(Integer stageNo) {
+        return stageNo == null || stageNo < 1 ? 1 : stageNo;
     }
 
     private StudyPlanListVO toListVO(StudyPlan plan) {

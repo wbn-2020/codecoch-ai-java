@@ -9,6 +9,7 @@ import com.codecoachai.file.config.FileStorageProperties;
 import com.codecoachai.file.domain.dto.AdminFileQueryDTO;
 import com.codecoachai.file.domain.entity.FileInfo;
 import com.codecoachai.file.domain.vo.FileInfoVO;
+import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
@@ -19,9 +20,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -33,9 +39,14 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class LocalFileStorageServiceImpl implements FileStorageService {
 
     private static final String STATUS_AVAILABLE = "AVAILABLE";
+    private static final String BIZ_TYPE_RESUME = "RESUME";
+    private static final String PARSE_STATUS_SUCCESS = "SUCCESS";
+    private static final String PARSE_STATUS_FAILED = "FAILED";
+    private static final String PARSE_STATUS_WAIT_CONFIRM = "WAIT_CONFIRM";
     private static final String PROVIDER_LOCAL = "LOCAL";
     private static final int NOT_DELETED = 0;
     private static final String HEADER_ORIGINAL_FILENAME = "X-Original-Filename";
@@ -126,7 +137,9 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                         .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
                         .eq(StringUtils.hasText(actualQuery.getStatus()), FileInfo::getStatus, actualQuery.getStatus())
                         .orderByDesc(FileInfo::getCreatedAt));
-        return PageResult.of(page.getRecords().stream().map(this::toFileInfoVO).toList(),
+        List<FileInfoVO> records = page.getRecords().stream().map(this::toFileInfoVO).toList();
+        fillResumeAnalysisStatus(records);
+        return PageResult.of(records,
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
 
@@ -136,7 +149,13 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         if (fileInfo == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
         }
-        return toFileInfoVO(fileInfo);
+        FileInfoVO vo = toFileInfoVO(fileInfo);
+        try {
+            fillResumeAnalysisStatus(vo, fileInfoMapper.selectLatestResumeAnalysisByFileId(fileId));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to fill resume analysis status for fileId={}", fileId, ex);
+        }
+        return vo;
     }
 
     private MediaType resolveMediaType(String mimeType) {
@@ -281,6 +300,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setId(fileInfo.getId());
         vo.setUserId(fileInfo.getUserId());
         vo.setBizType(fileInfo.getBizType());
+        vo.setBusinessType(fileInfo.getBizType());
         vo.setOriginalFilename(fileInfo.getOriginalFilename());
         vo.setStoredFilename(fileInfo.getStoredFilename());
         vo.setFileExt(fileInfo.getFileExt());
@@ -291,6 +311,53 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setCreatedAt(fileInfo.getCreatedAt());
         vo.setUpdatedAt(fileInfo.getUpdatedAt());
         return vo;
+    }
+
+    private void fillResumeAnalysisStatus(List<FileInfoVO> records) {
+        List<Long> resumeFileIds = records.stream()
+                .filter(item -> item.getId() != null)
+                .filter(item -> BIZ_TYPE_RESUME.equals(item.getBizType()))
+                .map(FileInfoVO::getId)
+                .distinct()
+                .toList();
+        if (resumeFileIds.isEmpty()) {
+            return;
+        }
+        try {
+            Map<Long, FileResumeAnalysisStatusVO> latestRecordMap = fileInfoMapper
+                    .selectLatestResumeAnalysisByFileIds(resumeFileIds)
+                    .stream()
+                    .collect(Collectors.toMap(FileResumeAnalysisStatusVO::getFileId, Function.identity(), (left, right) -> left));
+            for (FileInfoVO record : records) {
+                fillResumeAnalysisStatus(record, latestRecordMap.get(record.getId()));
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Failed to fill resume analysis status for fileIds={}", resumeFileIds, ex);
+        }
+    }
+
+    private void fillResumeAnalysisStatus(FileInfoVO vo, FileResumeAnalysisStatusVO analysisStatus) {
+        if (vo == null || analysisStatus == null) {
+            return;
+        }
+        vo.setResumeId(analysisStatus.getResumeId());
+        vo.setBusinessId(analysisStatus.getResumeId());
+        vo.setResumeAnalysisRecordId(analysisStatus.getResumeAnalysisRecordId());
+        vo.setParseStatus(analysisStatus.getParseStatus());
+        vo.setParseErrorMessage(analysisStatus.getParseErrorMessage());
+        vo.setAnalysisConfirmed(PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus()));
+        if (isTerminalParseStatus(analysisStatus.getParseStatus())) {
+            vo.setParsedAt(analysisStatus.getUpdatedAt());
+        }
+        if (PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus())) {
+            vo.setConfirmedAt(analysisStatus.getUpdatedAt());
+        }
+    }
+
+    private boolean isTerminalParseStatus(String parseStatus) {
+        return PARSE_STATUS_SUCCESS.equals(parseStatus)
+                || PARSE_STATUS_FAILED.equals(parseStatus)
+                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
     }
 
     private long defaultPage(Long pageNo) {
