@@ -1,9 +1,11 @@
 package com.codecoachai.resume.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
+import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
@@ -107,6 +109,16 @@ public class ResumeController {
     @GetMapping("/optimize-records/{recordId}")
     public Result<ResumeOptimizeDetailVO> getOptimizeRecordDetail(@PathVariable Long recordId) {
         return Result.success(resumeService.getOptimizeRecordDetail(recordId));
+    }
+
+    /**
+     * P0-3-B: apply an AI optimization record by creating a new draft copy.
+     */
+    @PostMapping("/optimize-records/{recordId}/apply")
+    public Result<ApplyResumeOptimizeResultVO> applyOptimizeResult(
+            @PathVariable Long recordId,
+            @RequestBody(required = false) ApplyResumeOptimizeResultDTO dto) {
+        return Result.success(resumeService.applyOptimizeResult(recordId, dto));
     }
 
     @GetMapping("/{id}")

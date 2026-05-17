@@ -1,8 +1,10 @@
 package com.codecoachai.resume.service;
 
+import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
+import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
@@ -39,6 +41,8 @@ public interface ResumeService {
     List<ResumeOptimizeRecordVO> listOptimizeRecords(Long resumeId);
 
     ResumeOptimizeDetailVO getOptimizeRecordDetail(Long recordId);
+
+    ApplyResumeOptimizeResultVO applyOptimizeResult(Long recordId, ApplyResumeOptimizeResultDTO dto);
 
     ResumeDetailVO getResume(Long id);
 

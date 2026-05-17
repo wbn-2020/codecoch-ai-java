@@ -293,11 +293,16 @@ CREATE TABLE IF NOT EXISTS resume (
   summary TEXT,
   is_default TINYINT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
+  source_resume_id BIGINT DEFAULT NULL,
+  source_optimize_record_id BIGINT DEFAULT NULL,
+  applied_at DATETIME DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
-  KEY idx_resume_user (user_id)
+  KEY idx_resume_user (user_id),
+  KEY idx_resume_source_resume (source_resume_id),
+  KEY idx_resume_source_optimize_record (source_optimize_record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS resume_project (
