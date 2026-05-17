@@ -195,6 +195,9 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Transactional(rollbackFor = Exception.class)
     public PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
+        if (PromptVersionStatus.DISABLED.name().equals(version.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Disabled prompt version cannot be activated");
+        }
         PromptTemplate template = getTemplate(version.getTemplateId());
         promptTemplateVersionMapper.update(null, new LambdaUpdateWrapper<PromptTemplateVersion>()
                 .eq(PromptTemplateVersion::getTemplateId, template.getId())
@@ -217,6 +220,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         template.setStatus(CommonConstants.YES);
         promptTemplateMapper.updateById(template);
         return AiConvert.toVersionVO(version);
+    }
+
+    @Override
+    public PromptTemplateVersionVO rollbackVersion(Long versionId, PromptVersionActionDTO dto) {
+        return activateVersion(versionId, dto);
     }
 
     @Override
@@ -292,6 +300,23 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                         .orderByDesc(AiCallLog::getCreatedAt));
         return PageResult.of(page.getRecords().stream().map(AiConvert::toLogVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public PageResult<AiCallLogVO> pageTemplateLogs(Long templateId, AiCallLogQueryDTO query) {
+        getTemplate(templateId);
+        AiCallLogQueryDTO actualQuery = query == null ? new AiCallLogQueryDTO() : query;
+        actualQuery.setPromptTemplateId(templateId);
+        return pageLogs(actualQuery);
+    }
+
+    @Override
+    public PageResult<AiCallLogVO> pageVersionLogs(Long versionId, AiCallLogQueryDTO query) {
+        PromptTemplateVersion version = getVersion(versionId);
+        AiCallLogQueryDTO actualQuery = query == null ? new AiCallLogQueryDTO() : query;
+        actualQuery.setPromptTemplateId(version.getTemplateId());
+        actualQuery.setPromptTemplateVersionId(versionId);
+        return pageLogs(actualQuery);
     }
 
     @Override
