@@ -26,6 +26,7 @@ import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewDetailVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
+import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
@@ -53,6 +54,7 @@ import com.codecoachai.interview.service.InterviewService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -201,15 +203,30 @@ public class InterviewServiceImpl implements InterviewService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SubmitInterviewAnswerVO answer(Long id, SubmitInterviewAnswerDTO dto) {
+        return answerInternal(id, dto, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SubmitInterviewAnswerVO answerForSse(Long id, SubmitInterviewAnswerDTO dto, Consumer<String> progressConsumer) {
+        return answerInternal(id, dto, progressConsumer);
+    }
+
+    private SubmitInterviewAnswerVO answerInternal(Long id, SubmitInterviewAnswerDTO dto, Consumer<String> progressConsumer) {
+        progress(progressConsumer, "VALIDATE_REQUEST");
         InterviewSession session = getOwnedSession(id);
         if (!InterviewStatusEnum.WAITING_ANSWER.name().equals(session.getStatus())
                 && !InterviewStatusEnum.IN_PROGRESS.name().equals(session.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview is not waiting for answer");
         }
+        progress(progressConsumer, "LOAD_INTERVIEW");
         InterviewStage stage = stageMapper.selectById(session.getCurrentStageId());
         InterviewMessage currentAiQuestion = currentAiQuestionMessage(session);
         if (currentAiQuestion == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "No current question");
+        }
+        if (dto.getQuestionId() != null && !dto.getQuestionId().equals(currentAiQuestion.getQuestionId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question does not belong to current interview state");
         }
         InnerQuestionVO question = loadCurrentQuestion(session);
         InterviewMessage rootAiQuestion = rootQuestionMessage(currentAiQuestion);
@@ -219,11 +236,13 @@ public class InterviewServiceImpl implements InterviewService {
                 question == null ? null : question.getContent());
         int maxFollowUp = stage == null || stage.getMaxFollowUpCount() == null ? MAX_FOLLOW_UP_COUNT : stage.getMaxFollowUpCount();
 
-        saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
+        progress(progressConsumer, "SAVE_ANSWER");
+        InterviewMessage answerMessage = saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null, null);
         session.setStatus(InterviewStatusEnum.AI_EVALUATING.name());
         sessionMapper.updateById(session);
 
+        progress(progressConsumer, "BUILD_PROMPT");
         EvaluateAnswerDTO evaluateDTO = new EvaluateAnswerDTO();
         evaluateDTO.setQuestionId(question == null ? null : question.getId());
         evaluateDTO.setQuestionTitle(question == null ? null : question.getTitle());
@@ -241,23 +260,32 @@ public class InterviewServiceImpl implements InterviewService {
         evaluateDTO.setProjectContent(buildProjectContent(loadResume(session)));
         evaluateDTO.setIndustryContext(session.getIndustryContext());
         evaluateDTO.setHistorySummary(historySummary(session.getId()));
+        progress(progressConsumer, "CALL_AI_REVIEW");
         EvaluateAnswerVO evaluation = FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO));
 
-        saveMessage(session, stage, question, "AI", "EVALUATION", evaluation == null ? null : evaluation.getComment(),
+        progress(progressConsumer, "SAVE_REVIEW");
+        InterviewMessage evaluationMessage = saveMessage(session, stage, question, "AI", "EVALUATION", evaluation == null ? null : evaluation.getComment(),
                 evaluation == null ? null : evaluation.getScore(), evaluation == null ? null : evaluation.getComment(),
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null,
                 evaluation == null ? null : evaluation.getKnowledgePoints());
 
         NextActionEnum nextAction = decideNextAction(session, stage, evaluation);
+        if (NextActionEnum.FOLLOW_UP.equals(nextAction) && Boolean.FALSE.equals(dto.getNeedFollowUp())) {
+            nextAction = NextActionEnum.NEXT_QUESTION;
+        }
         CurrentQuestionVO nextQuestion = null;
+        InterviewMessage followUpMessage = null;
+        Long followUpAiCallLogId = null;
         if (NextActionEnum.FOLLOW_UP.equals(nextAction)) {
             String followUpQuestion = evaluation == null ? null : evaluation.getFollowUpQuestion();
             String followUpReason = evaluation == null ? null : evaluation.getFollowUpReason();
             if (!isValidFollowUp(followUpQuestion)) {
+                progress(progressConsumer, "GENERATE_FOLLOW_UP");
                 GenerateFollowUpVO followUp = FeignResultUtils.unwrap(aiFeignClient.followUp(buildFollowUpDTO(
                         question, stage, evaluateDTO, dto.getAnswerContent(), evaluation)));
                 followUpQuestion = followUp == null ? null : followUp.getFollowUpQuestion();
                 followUpReason = followUp == null ? followUpReason : firstText(followUp.getReason(), followUpReason);
+                followUpAiCallLogId = followUp == null ? null : followUp.getAiCallLogId();
             }
             if (evaluation != null) {
                 evaluation.setFollowUpQuestion(followUpQuestion);
@@ -266,7 +294,8 @@ public class InterviewServiceImpl implements InterviewService {
             }
             int nextFollowUpCount = safeInt(session.getCurrentFollowUpCount()) + 1;
             session.setCurrentFollowUpCount(nextFollowUpCount);
-            InterviewMessage followUpMessage = saveMessage(session, stage, question, "AI", "FOLLOW_UP",
+            progress(progressConsumer, "SAVE_FOLLOW_UP");
+            followUpMessage = saveMessage(session, stage, question, "AI", "FOLLOW_UP",
                     followUpQuestion, null, null,
                     currentAiQuestion.getId(), true, nextFollowUpCount,
                     followUpReason, evaluation == null ? null : evaluation.getKnowledgePoints());
@@ -298,6 +327,13 @@ public class InterviewServiceImpl implements InterviewService {
         sessionMapper.updateById(session);
 
         SubmitInterviewAnswerVO vo = new SubmitInterviewAnswerVO();
+        vo.setInterviewId(session.getId());
+        vo.setQuestionId(question == null ? session.getCurrentQuestionId() : question.getId());
+        vo.setAnswerId(answerMessage.getId());
+        vo.setEvaluationMessageId(evaluationMessage.getId());
+        vo.setFollowUpMessageId(followUpMessage == null ? null : followUpMessage.getId());
+        vo.setAiCallLogId(evaluation == null ? null : evaluation.getAiCallLogId());
+        vo.setFollowUpAiCallLogId(followUpAiCallLogId);
         vo.setScore(evaluation == null ? null : evaluation.getScore());
         vo.setComment(evaluation == null ? null : evaluation.getComment());
         vo.setNextAction(nextAction.name());
@@ -399,6 +435,109 @@ public class InterviewServiceImpl implements InterviewService {
         }
         normalizeReportContent(report);
         return InterviewConvert.toReportVO(report);
+    }
+
+    @Override
+    public InterviewReportGenerateResultVO generateReportForSse(Long id, Long reportId, Boolean forceRegenerate,
+                                                                Consumer<String> progressConsumer) {
+        InterviewSession session = getOwnedSession(id);
+        InterviewReport existing = currentReport(session.getId());
+        if (reportId != null && (existing == null || !reportId.equals(existing.getId()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not found");
+        }
+        boolean force = Boolean.TRUE.equals(forceRegenerate);
+        if (!force && existing != null && ReportStatusEnum.GENERATED.name().equals(existing.getStatus())) {
+            progress(progressConsumer, "LOAD_INTERVIEW");
+            return buildReportGenerateResult(session.getId(), null, existing);
+        }
+
+        progress(progressConsumer, "LOAD_INTERVIEW");
+        session.setReportStatus(ReportStatusEnum.GENERATING.name());
+        session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
+        session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
+        session.setFailureReason(null);
+        sessionMapper.updateById(session);
+
+        InterviewReport report = existing == null ? new InterviewReport() : existing;
+        if (report.getId() == null) {
+            report.setSessionId(session.getId());
+            report.setUserId(session.getUserId());
+        }
+        report.setStatus(ReportStatusEnum.GENERATING.name());
+        report.setFailureReason(null);
+        saveReport(report);
+
+        Long aiCallLogId = null;
+        try {
+            progress(progressConsumer, "LOAD_ANSWERS");
+            List<InterviewMessage> messages = messageEntities(session.getId());
+            progress(progressConsumer, "BUILD_PROMPT");
+            GenerateReportDTO reportDTO = buildReportDTO(session, messages);
+            progress(progressConsumer, "CALL_AI");
+            GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
+            aiCallLogId = aiReport == null ? null : aiReport.getAiCallLogId();
+
+            progress(progressConsumer, "SAVE_REPORT");
+            report.setStatus(ReportStatusEnum.GENERATED.name());
+            applyReportContent(report, aiReport);
+            report.setFailureReason(null);
+            saveReport(report);
+
+            session.setStatus(InterviewStatusEnum.COMPLETED.name());
+            session.setReportStatus(ReportStatusEnum.GENERATED.name());
+            session.setTotalScore(report.getTotalScore());
+            session.setEndTime(LocalDateTime.now());
+            session.setFailureReason(null);
+            sessionMapper.updateById(session);
+            return buildReportGenerateResult(session.getId(), aiCallLogId, report);
+        } catch (RuntimeException ex) {
+            report.setStatus(ReportStatusEnum.FAILED.name());
+            report.setFailureReason(ex.getMessage());
+            saveReport(report);
+
+            session.setStatus(InterviewStatusEnum.FAILED.name());
+            session.setReportStatus(ReportStatusEnum.FAILED.name());
+            session.setFailureReason(ex.getMessage());
+            sessionMapper.updateById(session);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview report generation failed");
+        }
+    }
+
+    private GenerateReportDTO buildReportDTO(InterviewSession session, List<InterviewMessage> messages) {
+        InnerResumeDetailVO resume = loadResume(session);
+        GenerateReportDTO reportDTO = new GenerateReportDTO();
+        reportDTO.setInterviewId(session.getId());
+        reportDTO.setUserId(session.getUserId());
+        reportDTO.setMode(session.getMode());
+        reportDTO.setTargetPosition(session.getTargetPosition());
+        reportDTO.setExperienceLevel(session.getExperienceLevel());
+        reportDTO.setIndustryDirection(session.getIndustryDirection());
+        reportDTO.setIndustryContext(session.getIndustryContext());
+        reportDTO.setDifficulty(session.getDifficulty());
+        reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
+        reportDTO.setProjectContent(buildProjectContent(resume));
+        reportDTO.setMessages(messages.stream()
+                .map(message -> firstText(message.getQuestionContent(), message.getUserAnswer(),
+                        message.getAiComment(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .toList());
+        return reportDTO;
+    }
+
+    private InterviewReportGenerateResultVO buildReportGenerateResult(Long interviewId, Long aiCallLogId,
+                                                                      InterviewReport report) {
+        InterviewReportGenerateResultVO result = new InterviewReportGenerateResultVO();
+        result.setInterviewId(interviewId);
+        result.setReportId(report == null ? null : report.getId());
+        result.setAiCallLogId(aiCallLogId);
+        result.setResult(InterviewConvert.toReportVO(report));
+        return result;
+    }
+
+    private void progress(Consumer<String> progressConsumer, String stage) {
+        if (progressConsumer != null) {
+            progressConsumer.accept(stage);
+        }
     }
 
     private FinishInterviewVO prepareReportGeneration(InterviewSession session) {

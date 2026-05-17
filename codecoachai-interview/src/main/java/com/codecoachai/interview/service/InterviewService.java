@@ -9,6 +9,7 @@ import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewDetailVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
+import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
@@ -25,6 +26,9 @@ public interface InterviewService {
 
     SubmitInterviewAnswerVO answer(Long id, SubmitInterviewAnswerDTO dto);
 
+    SubmitInterviewAnswerVO answerForSse(Long id, SubmitInterviewAnswerDTO dto,
+                                         java.util.function.Consumer<String> progressConsumer);
+
     FinishInterviewVO finish(Long id);
 
     FinishInterviewVO retryReport(Long id);
@@ -36,4 +40,7 @@ public interface InterviewService {
     java.util.List<InterviewMessageVO> messages(Long id);
 
     InterviewReportVO report(Long id);
+
+    InterviewReportGenerateResultVO generateReportForSse(Long id, Long reportId, Boolean forceRegenerate,
+                                                         java.util.function.Consumer<String> progressConsumer);
 }

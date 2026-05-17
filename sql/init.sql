@@ -260,12 +260,24 @@ CREATE TABLE IF NOT EXISTS practice_record (
   user_id BIGINT NOT NULL,
   question_id BIGINT NOT NULL,
   answer_content TEXT NOT NULL,
+  answer_duration_seconds INT DEFAULT NULL,
+  source VARCHAR(64) NOT NULL DEFAULT 'QUESTION_BANK',
   review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   score INT DEFAULT NULL,
+  level VARCHAR(32) DEFAULT NULL,
   mastery_status VARCHAR(32) DEFAULT NULL,
   ai_comment TEXT,
   suggestions TEXT,
   knowledge_points TEXT,
+  strengths TEXT,
+  weaknesses TEXT,
+  improvement_suggestions TEXT,
+  reference_comparison TEXT,
+  knowledge_gaps TEXT,
+  suggested_follow_ups TEXT,
+  reference_answer_snapshot TEXT,
+  question_snapshot_json LONGTEXT,
+  review_json LONGTEXT,
   reference_answer TEXT,
   ai_call_log_id BIGINT DEFAULT NULL,
   error_message VARCHAR(500) DEFAULT NULL,
@@ -293,11 +305,16 @@ CREATE TABLE IF NOT EXISTS resume (
   summary TEXT,
   is_default TINYINT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
+  source_resume_id BIGINT DEFAULT NULL,
+  source_optimize_record_id BIGINT DEFAULT NULL,
+  applied_at DATETIME DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
-  KEY idx_resume_user (user_id)
+  KEY idx_resume_user (user_id),
+  KEY idx_resume_source_resume (source_resume_id),
+  KEY idx_resume_source_optimize_record (source_optimize_record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS resume_project (
@@ -696,7 +713,7 @@ SET name = 'Learning Plan Generate',
 WHERE scene = 'LEARNING_PLAN_GENERATE';
 
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
-SELECT 'PRACTICE_ANSWER_REVIEW', 'Practice Answer Review', 'Practice Answer Review', 'V2 practice short-answer AI review prompt', 'Review the short answer. Output JSON only with score, masteryStatus, comment, suggestions, and knowledgePoints.', 'Review the short answer. Output JSON only with score, masteryStatus, comment, suggestions, and knowledgePoints.', 'recordId,userId,questionId,questionTitle,questionContent,referenceAnswer,answerContent', 'v2-a12-practice', 1, 1
+SELECT 'PRACTICE_ANSWER_REVIEW', 'Question Answer AI Review', 'Question Answer AI Review', 'P0-4 short-answer practice AI review prompt', 'You are a senior Java backend interview coach. Review the user short-answer practice response using questionTitle, questionContent, referenceAnswer, analysis, userAnswer, difficulty, knowledgePoint, and answerDurationSeconds. Output one JSON object only with score, level, summary, strengths, weaknesses, improvementSuggestions, referenceComparison, knowledgeGaps, and suggestedFollowUps.', 'You are a senior Java backend interview coach. Review the user short-answer practice response using questionTitle, questionContent, referenceAnswer, analysis, userAnswer, difficulty, knowledgePoint, and answerDurationSeconds. Output one JSON object only with score, level, summary, strengths, weaknesses, improvementSuggestions, referenceComparison, knowledgeGaps, and suggestedFollowUps.', 'recordId,userId,questionId,questionTitle,questionContent,questionType,difficulty,technologyStack,knowledgePoint,referenceAnswer,analysis,userAnswer,answerDurationSeconds,targetPosition,experienceLevel', 'v2-p0-4-practice-review', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'PRACTICE_ANSWER_REVIEW');
 
 INSERT IGNORE INTO prompt_template_version (

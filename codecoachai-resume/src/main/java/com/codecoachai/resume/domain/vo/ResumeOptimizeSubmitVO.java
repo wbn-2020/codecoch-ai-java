@@ -8,6 +8,7 @@ public class ResumeOptimizeSubmitVO {
 
     private Long optimizeRecordId;
     private Long resumeId;
+    private Long aiCallLogId;
     private String optimizeStatus;
     private JsonNode resultJson;
     private String errorMessage;

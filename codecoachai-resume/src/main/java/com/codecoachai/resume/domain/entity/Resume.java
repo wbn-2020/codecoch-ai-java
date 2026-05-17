@@ -2,6 +2,7 @@ package com.codecoachai.resume.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -22,4 +23,7 @@ public class Resume extends BaseEntity {
     private String summary;
     private Integer isDefault;
     private Integer status;
+    private Long sourceResumeId;
+    private Long sourceOptimizeRecordId;
+    private LocalDateTime appliedAt;
 }

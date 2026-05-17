@@ -8,6 +8,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.convert.ResumeConvert;
+import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ParsedResumeStructuredDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
@@ -18,6 +19,7 @@ import com.codecoachai.resume.domain.entity.ResumeOptimizeRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
+import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
@@ -42,6 +44,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -61,6 +64,7 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
     private static final String DEFAULT_AI_RESUME_TITLE = "AI Parsed Resume";
+    private static final String APPLY_MODE_CREATE_DRAFT = "CREATE_DRAFT";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
@@ -283,6 +287,41 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ApplyResumeOptimizeResultVO applyOptimizeResult(Long recordId, ApplyResumeOptimizeResultDTO dto) {
+        Long userId = requireCurrentUserId();
+        String applyMode = dto == null || !StringUtils.hasText(dto.getApplyMode())
+                ? APPLY_MODE_CREATE_DRAFT : dto.getApplyMode();
+        if (!APPLY_MODE_CREATE_DRAFT.equals(applyMode)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only CREATE_DRAFT applyMode is supported");
+        }
+        ResumeOptimizeRecord record = getOwnedOptimizeRecord(recordId, userId);
+        if (!ResumeOptimizeStatus.SUCCESS.getCode().equals(record.getOptimizeStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only successful optimize record can be applied");
+        }
+        if (record.getResumeId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Optimize record source resume is missing");
+        }
+        parseResultJson(record.getResultJson());
+        Resume sourceResume = getOwnedResume(record.getResumeId(), userId);
+        LocalDateTime appliedAt = LocalDateTime.now();
+        Resume draft = copyResumeDraft(sourceResume, record.getId(), appliedAt);
+        resumeMapper.insert(draft);
+        copyProjects(sourceResume.getId(), draft.getId());
+
+        ApplyResumeOptimizeResultVO vo = new ApplyResumeOptimizeResultVO();
+        vo.setSourceResumeId(sourceResume.getId());
+        vo.setSourceOptimizeRecordId(record.getId());
+        vo.setNewResumeId(draft.getId());
+        vo.setAppliedAt(appliedAt);
+        vo.setApplyMode(APPLY_MODE_CREATE_DRAFT);
+        vo.setMessage("AI optimization suggestions are linked to a new draft copy. Please edit and confirm manually.");
+        vo.setWarnings(List.of("Optimization result is suggestion JSON, not a stable resume patch; resume fields were copied from the original resume."));
+        vo.setResumeDetail(toDetailVO(draft));
+        return vo;
+    }
+
+    @Override
     public ResumeDetailVO getResume(Long id) {
         return toDetailVO(getOwnedResume(id));
     }
@@ -388,6 +427,67 @@ public class ResumeServiceImpl implements ResumeService {
 
     private ResumeDetailVO toDetailVO(Resume resume) {
         return ResumeConvert.toDetailVO(resume, projects(resume.getId()));
+    }
+
+    private Resume copyResumeDraft(Resume source, Long optimizeRecordId, LocalDateTime appliedAt) {
+        Resume draft = new Resume();
+        draft.setUserId(source.getUserId());
+        draft.setTitle(buildDraftTitle(source.getTitle()));
+        draft.setRealName(source.getRealName());
+        draft.setEmail(source.getEmail());
+        draft.setPhone(source.getPhone());
+        draft.setTargetPosition(source.getTargetPosition());
+        draft.setSkillStack(source.getSkillStack());
+        draft.setWorkExperience(source.getWorkExperience());
+        draft.setEducationExperience(source.getEducationExperience());
+        draft.setSummary(source.getSummary());
+        draft.setIsDefault(CommonConstants.NO);
+        draft.setStatus(source.getStatus() == null ? CommonConstants.YES : source.getStatus());
+        draft.setSourceResumeId(source.getId());
+        draft.setSourceOptimizeRecordId(optimizeRecordId);
+        draft.setAppliedAt(appliedAt);
+        return draft;
+    }
+
+    private String buildDraftTitle(String sourceTitle) {
+        String title = StringUtils.hasText(sourceTitle) ? sourceTitle : DEFAULT_AI_RESUME_TITLE;
+        String suffix = " - AI优化草稿";
+        int maxLength = 128;
+        if (title.endsWith(suffix)) {
+            return title;
+        }
+        int allowedTitleLength = maxLength - suffix.length();
+        if (title.length() > allowedTitleLength) {
+            title = title.substring(0, allowedTitleLength);
+        }
+        return title + suffix;
+    }
+
+    private void copyProjects(Long sourceResumeId, Long draftResumeId) {
+        List<ResumeProject> projects = projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
+                .eq(ResumeProject::getResumeId, sourceResumeId)
+                .eq(ResumeProject::getDeleted, CommonConstants.NO)
+                .orderByAsc(ResumeProject::getSortOrder)
+                .orderByAsc(ResumeProject::getSort)
+                .orderByDesc(ResumeProject::getUpdatedAt));
+        for (ResumeProject source : projects) {
+            ResumeProject draft = new ResumeProject();
+            draft.setResumeId(draftResumeId);
+            draft.setProjectName(source.getProjectName());
+            draft.setProjectPeriod(source.getProjectPeriod());
+            draft.setProjectBackground(source.getProjectBackground());
+            draft.setRole(source.getRole());
+            draft.setTechStack(source.getTechStack());
+            draft.setResponsibility(source.getResponsibility());
+            draft.setCoreFeatures(source.getCoreFeatures());
+            draft.setTechnicalDifficulties(source.getTechnicalDifficulties());
+            draft.setOptimizationResults(source.getOptimizationResults());
+            draft.setDescription(source.getDescription());
+            draft.setHighlights(source.getHighlights());
+            draft.setSort(source.getSort());
+            draft.setSortOrder(source.getSortOrder());
+            projectMapper.insert(draft);
+        }
     }
 
     private ResumeParseStatusVO toParseStatusVO(ResumeAnalysisRecord record) {
@@ -636,6 +736,9 @@ public class ResumeServiceImpl implements ResumeService {
         request.setTargetPosition(targetPosition);
         request.setExperienceYears(dto.getExperienceYears());
         request.setIndustryDirection(dto.getIndustryDirection());
+        request.setTargetCompany(dto.getTargetCompany());
+        request.setExtraRequirements(dto.getExtraRequirements());
+        request.setOptimizeFocus(dto.getOptimizeFocus());
         request.setResume(toResumeSnapshot(resume));
         request.setProjects(projects.stream().map(this::toProjectSnapshot).toList());
         return request;
@@ -689,6 +792,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeOptimizeSubmitVO vo = new ResumeOptimizeSubmitVO();
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
+        vo.setAiCallLogId(record.getAiCallLogId());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         vo.setResultJson(resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
         vo.setErrorMessage(record.getErrorMessage());

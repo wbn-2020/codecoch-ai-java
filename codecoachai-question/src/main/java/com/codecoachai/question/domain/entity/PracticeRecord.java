@@ -13,13 +13,24 @@ public class PracticeRecord extends BaseEntity {
     private Long userId;
     private Long questionId;
     private String answerContent;
+    private Integer answerDurationSeconds;
+    private String source;
     private String reviewStatus;
     private Integer score;
+    private String level;
     private String masteryStatus;
     private String aiComment;
     private String suggestions;
     private String knowledgePoints;
-    private String referenceAnswer;
+    private String strengths;
+    private String weaknesses;
+    private String improvementSuggestions;
+    private String referenceComparison;
+    private String knowledgeGaps;
+    private String suggestedFollowUps;
+    private String referenceAnswerSnapshot;
+    private String questionSnapshotJson;
+    private String reviewJson;
     private Long aiCallLogId;
     private String errorMessage;
 }

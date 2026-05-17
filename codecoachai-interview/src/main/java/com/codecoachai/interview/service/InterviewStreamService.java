@@ -12,5 +12,7 @@ public interface InterviewStreamService {
 
     SseEmitter streamReport(Long sessionId);
 
+    SseEmitter streamInterviewReport(Long interviewId, Long reportId, Boolean forceRegenerate);
+
     SseEmitter streamStudyPlan(StudyPlanGenerateDTO dto);
 }

@@ -39,6 +39,8 @@ public interface PromptTemplateService {
 
     PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto);
 
+    PromptTemplateVersionVO rollbackVersion(Long versionId, PromptVersionActionDTO dto);
+
     void disableVersion(Long versionId, PromptVersionActionDTO dto);
 
     PromptVersionTestVO testVersion(Long versionId, PromptVersionTestDTO dto);
@@ -46,6 +48,10 @@ public interface PromptTemplateService {
     PageResult<AiCallLogVO> pageLogs(Long pageNo, Long pageSize);
 
     PageResult<AiCallLogVO> pageLogs(AiCallLogQueryDTO query);
+
+    PageResult<AiCallLogVO> pageTemplateLogs(Long templateId, AiCallLogQueryDTO query);
+
+    PageResult<AiCallLogVO> pageVersionLogs(Long versionId, AiCallLogQueryDTO query);
 
     AiCallLogVO getLog(Long id);
 }

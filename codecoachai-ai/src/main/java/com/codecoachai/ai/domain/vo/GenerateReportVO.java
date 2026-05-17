@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class GenerateReportVO {
 
+    private Long aiCallLogId;
     private Integer totalScore;
     private String summary;
     private String stageScores;

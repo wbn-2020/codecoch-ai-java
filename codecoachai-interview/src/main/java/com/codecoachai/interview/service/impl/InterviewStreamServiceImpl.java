@@ -5,6 +5,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.CurrentQuestionVO;
+import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.SseEventVO;
@@ -71,17 +72,21 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
-            if (!sendStart(emitter, active, requestId, sessionId, "answer evaluation stream started") || !active.get()) {
-                return;
+            try {
+                if (!sendAnswerReviewStart(emitter, active, requestId, sessionId) || !active.get()) {
+                    return;
+                }
+                SubmitInterviewAnswerVO answer = interviewService.answerForSse(sessionId, dto,
+                        stage -> sendAnswerReviewProgress(emitter, active, requestId, sessionId, stage));
+                if (!active.get()) {
+                    return;
+                }
+                sendAnswerReviewResult(emitter, active, requestId, sessionId, answer);
+                sendAnswerReviewDone(emitter, active, requestId, sessionId, answer);
+            } catch (RuntimeException ex) {
+                log.warn("Interview answer review SSE failed, requestId={}, interviewId={}", requestId, sessionId, ex);
+                sendAnswerReviewError(emitter, active, requestId, sessionId);
             }
-            SubmitInterviewAnswerVO answer = interviewService.answer(sessionId, dto);
-            CurrentQuestionVO nextQuestion = answer == null ? null : answer.getNextQuestion();
-            String fullContent = answerVisibleContent(answer);
-            sendChunks(emitter, active, requestId, sessionId, fullContent);
-            sendMetadata(emitter, active, requestId, sessionId,
-                    nextQuestion == null ? null : nextQuestion.getMessageId(), answerMetadata(answer));
-            sendDone(emitter, active, requestId, sessionId,
-                    nextQuestion == null ? null : nextQuestion.getMessageId(), fullContent);
         }), sseStreamExecutor);
         return emitter;
     }
@@ -103,6 +108,32 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId, null, reportMetadata(report));
             sendDone(emitter, active, requestId, sessionId, null, fullContent);
+        }), sseStreamExecutor);
+        return emitter;
+    }
+
+    @Override
+    public SseEmitter streamInterviewReport(Long interviewId, Long reportId, Boolean forceRegenerate) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+            try {
+                if (!sendInterviewReportStart(emitter, active, requestId, interviewId) || !active.get()) {
+                    return;
+                }
+                InterviewReportGenerateResultVO result = interviewService.generateReportForSse(interviewId, reportId,
+                        forceRegenerate, stage -> sendInterviewReportProgress(emitter, active, requestId, interviewId, stage));
+                if (!active.get()) {
+                    return;
+                }
+                sendInterviewReportResult(emitter, active, requestId, result);
+                sendInterviewReportDone(emitter, active, requestId, result);
+            } catch (RuntimeException ex) {
+                log.warn("Interview report SSE failed, requestId={}, interviewId={}", requestId, interviewId, ex);
+                sendInterviewReportError(emitter, active, requestId, interviewId, reportId);
+            }
         }), sseStreamExecutor);
         return emitter;
     }
@@ -142,6 +173,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private boolean sendStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String message) {
         return SseEmitterUtils.send(emitter, active, "start", SseEventVO.builder()
+                .type("start")
                 .requestId(requestId)
                 .sessionId(sessionId)
                 .message(message)
@@ -151,16 +183,26 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private void sendChunks(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String fullContent) {
         int index = 1;
         for (String chunk : SseEmitterUtils.splitContent(fullContent)) {
-            SseEventVO event = SseEventVO.builder()
+            SseEventVO chunkEvent = SseEventVO.builder()
+                    .type("chunk")
                     .requestId(requestId)
                     .sessionId(sessionId)
                     .content(chunk)
+                    .message(chunk)
+                    .index(index)
+                    .build();
+            SseEventVO deltaEvent = SseEventVO.builder()
+                    .type("delta")
+                    .requestId(requestId)
+                    .sessionId(sessionId)
+                    .content(chunk)
+                    .message(chunk)
                     .index(index++)
                     .build();
-            if (!SseEmitterUtils.send(emitter, active, "chunk", event)) {
+            if (!SseEmitterUtils.send(emitter, active, "chunk", chunkEvent)) {
                 return;
             }
-            if (!SseEmitterUtils.send(emitter, active, "delta", event)) {
+            if (!SseEmitterUtils.send(emitter, active, "delta", deltaEvent)) {
                 return;
             }
             sleepBetweenChunks();
@@ -170,6 +212,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private void sendMetadata(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
                               Long messageId, Map<String, Object> metadata) {
         SseEmitterUtils.send(emitter, active, "metadata", SseEventVO.builder()
+                .type("metadata")
                 .requestId(requestId)
                 .sessionId(sessionId)
                 .messageId(messageId)
@@ -181,11 +224,14 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private void sendDone(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
                           Long messageId, String fullContent) {
         if (SseEmitterUtils.send(emitter, active, "done", SseEventVO.builder()
+                .type("done")
                 .requestId(requestId)
                 .sessionId(sessionId)
                 .messageId(messageId)
                 .aiCallLogId(null)
+                .message("stream completed")
                 .fullContent(fullContent)
+                .metadata(Map.of("status", "SUCCESS"))
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }
@@ -193,12 +239,255 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private void sendError(SseEmitter emitter, AtomicBoolean active, String requestId, String code) {
         if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
+                .type("error")
                 .requestId(requestId)
                 .code(code)
                 .message("Streaming failed. Please retry later.")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }
+    }
+
+    private boolean sendInterviewReportStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long interviewId) {
+        return SseEmitterUtils.send(emitter, active, "start", SseEventVO.builder()
+                .type("start")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .message("面试报告生成开始")
+                .build());
+    }
+
+    private void sendInterviewReportProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                             Long interviewId, String stage) {
+        String message = interviewReportStageMessage(stage);
+        SseEventVO standardEvent = SseEventVO.builder()
+                .type("delta")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .content(message)
+                .metadata(Map.of("stage", stage, "status", "PROCESSING"))
+                .build();
+        if (!SseEmitterUtils.send(emitter, active, "delta", standardEvent)) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "metadata", SseEventVO.builder()
+                .type("metadata")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .metadata(Map.of("stage", stage, "status", "PROCESSING"))
+                .build());
+        SseEmitterUtils.send(emitter, active, "progress", SseEventVO.builder()
+                .type("progress")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .build());
+    }
+
+    private void sendInterviewReportResult(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                           InterviewReportGenerateResultVO result) {
+        if (result == null) {
+            return;
+        }
+        Map<String, Object> metadata = interviewReportMetadata(result);
+        if (!SseEmitterUtils.send(emitter, active, "metadata", SseEventVO.builder()
+                .type("metadata")
+                .requestId(requestId)
+                .interviewId(result.getInterviewId())
+                .sessionId(result.getInterviewId())
+                .reportId(result.getReportId())
+                .aiCallLogId(result.getAiCallLogId())
+                .message("面试报告结果元数据")
+                .metadata(metadata)
+                .build())) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "result", SseEventVO.builder()
+                .type("result")
+                .requestId(requestId)
+                .interviewId(result.getInterviewId())
+                .sessionId(result.getInterviewId())
+                .reportId(result.getReportId())
+                .aiCallLogId(result.getAiCallLogId())
+                .result(result.getResult())
+                .metadata(metadata)
+                .build());
+    }
+
+    private void sendInterviewReportDone(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                         InterviewReportGenerateResultVO result) {
+        if (result == null) {
+            return;
+        }
+        if (SseEmitterUtils.send(emitter, active, "done", SseEventVO.builder()
+                .type("done")
+                .requestId(requestId)
+                .interviewId(result.getInterviewId())
+                .sessionId(result.getInterviewId())
+                .reportId(result.getReportId())
+                .message("面试报告生成完成")
+                .result(result.getResult())
+                .metadata(interviewReportMetadata(result))
+                .build())) {
+            SseEmitterUtils.complete(emitter, active);
+        }
+    }
+
+    private void sendInterviewReportError(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                          Long interviewId, Long reportId) {
+        if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
+                .type("error")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .reportId(reportId)
+                .code("INTERVIEW_REPORT_FAILED")
+                .message("面试报告生成失败，请稍后重试")
+                .build())) {
+            SseEmitterUtils.complete(emitter, active);
+        }
+    }
+
+    private boolean sendAnswerReviewStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long interviewId) {
+        return SseEmitterUtils.send(emitter, active, "start", SseEventVO.builder()
+                .type("start")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .message("interview answer review started")
+                .build());
+    }
+
+    private void sendAnswerReviewProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                          Long interviewId, String stage) {
+        String message = answerReviewStageMessage(stage);
+        SseEventVO standardEvent = SseEventVO.builder()
+                .type("delta")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .content(message)
+                .metadata(Map.of("stage", stage, "status", "PROCESSING"))
+                .build();
+        if (!SseEmitterUtils.send(emitter, active, "delta", standardEvent)) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "metadata", SseEventVO.builder()
+                .type("metadata")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .metadata(Map.of("stage", stage, "status", "PROCESSING"))
+                .build());
+        SseEmitterUtils.send(emitter, active, "progress", SseEventVO.builder()
+                .type("progress")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage(stage)
+                .message(message)
+                .build());
+    }
+
+    private void sendAnswerReviewResult(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                        Long interviewId, SubmitInterviewAnswerVO answer) {
+        if (answer == null) {
+            return;
+        }
+        Map<String, Object> metadata = answerMetadata(answer);
+        if (!SseEmitterUtils.send(emitter, active, "metadata", SseEventVO.builder()
+                .type("metadata")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .messageId(answer.getEvaluationMessageId())
+                .aiCallLogId(answer.getAiCallLogId())
+                .message("AI review metadata")
+                .metadata(metadata)
+                .build())) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "result", SseEventVO.builder()
+                .type("result")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .messageId(answer.getEvaluationMessageId())
+                .aiCallLogId(answer.getAiCallLogId())
+                .result(answerResult(answer))
+                .metadata(metadata)
+                .build());
+    }
+
+    private void sendAnswerReviewDone(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                      Long interviewId, SubmitInterviewAnswerVO answer) {
+        if (answer == null) {
+            return;
+        }
+        if (SseEmitterUtils.send(emitter, active, "done", SseEventVO.builder()
+                .type("done")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .messageId(answer.getEvaluationMessageId())
+                .aiCallLogId(answer.getAiCallLogId())
+                .message("AI review completed")
+                .result(doneResult(answer))
+                .metadata(answerMetadata(answer))
+                .build())) {
+            SseEmitterUtils.complete(emitter, active);
+        }
+    }
+
+    private void sendAnswerReviewError(SseEmitter emitter, AtomicBoolean active, String requestId, Long interviewId) {
+        if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
+                .type("error")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .code("INTERVIEW_ANSWER_REVIEW_FAILED")
+                .message("AI review failed. Please retry later.")
+                .build())) {
+            SseEmitterUtils.complete(emitter, active);
+        }
+    }
+
+    private String interviewReportStageMessage(String stage) {
+        return switch (stage) {
+            case "LOAD_INTERVIEW" -> "加载面试信息";
+            case "LOAD_ANSWERS" -> "加载面试问答";
+            case "BUILD_PROMPT" -> "构建报告提示词";
+            case "CALL_AI" -> "调用 AI 生成报告";
+            case "SAVE_REPORT" -> "保存面试报告";
+            default -> "处理面试报告";
+        };
+    }
+
+    private String answerReviewStageMessage(String stage) {
+        return switch (stage) {
+            case "VALIDATE_REQUEST" -> "validate request";
+            case "LOAD_INTERVIEW" -> "load interview";
+            case "SAVE_ANSWER" -> "save answer";
+            case "BUILD_PROMPT" -> "build prompt";
+            case "CALL_AI_REVIEW" -> "call AI review";
+            case "SAVE_REVIEW" -> "save review";
+            case "GENERATE_FOLLOW_UP" -> "generate follow-up";
+            case "SAVE_FOLLOW_UP" -> "save follow-up";
+            default -> "process answer review";
+        };
     }
 
     private Map<String, Object> questionMetadata(CurrentQuestionVO question) {
@@ -223,6 +512,13 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (answer == null) {
             return metadata;
         }
+        metadata.put("interviewId", answer.getInterviewId());
+        metadata.put("questionId", answer.getQuestionId());
+        metadata.put("answerId", answer.getAnswerId());
+        metadata.put("evaluationMessageId", answer.getEvaluationMessageId());
+        metadata.put("followUpMessageId", answer.getFollowUpMessageId());
+        metadata.put("aiCallLogId", answer.getAiCallLogId());
+        metadata.put("followUpAiCallLogId", answer.getFollowUpAiCallLogId());
         metadata.put("score", answer.getScore());
         metadata.put("nextAction", answer.getNextAction());
         metadata.put("knowledgePoints", answer.getKnowledgePoints());
@@ -232,6 +528,49 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             metadata.put("nextQuestion", questionMetadata(answer.getNextQuestion()));
         }
         return metadata;
+    }
+
+    private Map<String, Object> interviewReportMetadata(InterviewReportGenerateResultVO result) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (result == null) {
+            return metadata;
+        }
+        metadata.put("interviewId", result.getInterviewId());
+        metadata.put("reportId", result.getReportId());
+        metadata.put("aiCallLogId", result.getAiCallLogId());
+        metadata.put("status", "SUCCESS");
+        return metadata;
+    }
+
+    private Map<String, Object> answerResult(SubmitInterviewAnswerVO answer) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("type", "result");
+        result.put("interviewId", answer.getInterviewId());
+        result.put("questionId", answer.getQuestionId());
+        result.put("answerId", answer.getAnswerId());
+        result.put("score", answer.getScore());
+        result.put("feedback", answer.getComment());
+        result.put("strengths", java.util.List.of());
+        result.put("weaknesses", java.util.List.of());
+        result.put("suggestions", java.util.List.of());
+        result.put("knowledgePoints", answer.getKnowledgePoints());
+        result.put("followUpQuestion", answer.getFollowUpQuestion());
+        result.put("followUpReason", answer.getFollowUpReason());
+        result.put("nextAction", answer.getNextAction());
+        result.put("nextQuestion", answer.getNextQuestion());
+        result.put("aiCallLogId", answer.getAiCallLogId());
+        result.put("followUpAiCallLogId", answer.getFollowUpAiCallLogId());
+        return result;
+    }
+
+    private Map<String, Object> doneResult(SubmitInterviewAnswerVO answer) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("type", "done");
+        result.put("interviewId", answer.getInterviewId());
+        result.put("questionId", answer.getQuestionId());
+        result.put("answerId", answer.getAnswerId());
+        result.put("message", "AI review completed");
+        return result;
     }
 
     private Map<String, Object> reportMetadata(InterviewReportVO report) {
