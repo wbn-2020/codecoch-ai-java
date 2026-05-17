@@ -5,11 +5,15 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyTaskStatusUpdateDTO;
+import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
 import com.codecoachai.interview.domain.vo.StudyTaskVO;
 import com.codecoachai.interview.service.StudyPlanService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -19,11 +23,13 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequiredArgsConstructor
 @RequestMapping
+@Tag(name = "Study Plan", description = "User study plan APIs")
 public class StudyPlanController {
 
     private final StudyPlanService studyPlanService;
@@ -46,6 +52,17 @@ public class StudyPlanController {
     @GetMapping("/study-plans/{id}/tasks")
     public Result<List<StudyTaskVO>> tasks(@PathVariable Long id) {
         return Result.success(studyPlanService.tasks(id));
+    }
+
+    @GetMapping("/study-plans/{planId}/daily-view")
+    @Operation(summary = "Get daily study task view",
+            description = "Returns task statistics and task list for one day in a user-owned study plan. "
+                    + "date is optional and uses yyyy-MM-dd; when omitted, the server uses today.")
+    public Result<StudyPlanDailyViewVO> dailyView(
+            @Parameter(description = "Study plan id") @PathVariable Long planId,
+            @Parameter(description = "Optional date in yyyy-MM-dd format. Defaults to today.")
+            @RequestParam(required = false) String date) {
+        return Result.success(studyPlanService.dailyView(planId, date));
     }
 
     @PostMapping("/study-plans/{id}/regenerate")
