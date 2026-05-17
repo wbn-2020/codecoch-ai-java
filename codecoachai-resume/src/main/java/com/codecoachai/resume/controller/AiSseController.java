@@ -86,6 +86,9 @@ public class AiSseController {
                     complete(emitter, active);
                     return;
                 }
+                if (!send(emitter, active, "metadata", metadataEvent(requestId, result))) {
+                    return;
+                }
                 if (!send(emitter, active, "result", resultEvent(requestId, result))) {
                     return;
                 }
@@ -104,21 +107,53 @@ public class AiSseController {
 
     private boolean sendProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
                                  Long resumeId, String stage, String message) {
+        if (!send(emitter, active, "delta", deltaEvent(requestId, resumeId, stage, message))) {
+            return false;
+        }
+        if (!send(emitter, active, "metadata", stageMetadataEvent(requestId, resumeId, stage, message))) {
+            return false;
+        }
         Map<String, Object> data = event(requestId, "progress", message, resumeId, null, null, null);
         data.put("stage", stage);
         return send(emitter, active, "progress", data);
+    }
+
+    private Map<String, Object> deltaEvent(String requestId, Long resumeId, String stage, String message) {
+        Map<String, Object> data = event(requestId, "delta", message, resumeId, null, null, null);
+        data.put("stage", stage);
+        data.put("content", message);
+        data.put("metadata", stageMetadata(stage, "PROCESSING"));
+        return data;
+    }
+
+    private Map<String, Object> stageMetadataEvent(String requestId, Long resumeId, String stage, String message) {
+        Map<String, Object> data = event(requestId, "metadata", message, resumeId, null, null, null);
+        data.put("stage", stage);
+        data.put("metadata", stageMetadata(stage, "PROCESSING"));
+        return data;
     }
 
     private Map<String, Object> resultEvent(String requestId, ResumeOptimizeSubmitVO result) {
         Map<String, Object> data = event(requestId, "result", "简历优化结果已生成",
                 result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), result.getResultJson());
         data.put("optimizeStatus", result.getOptimizeStatus());
+        data.put("metadata", resultMetadata(result));
         return data;
     }
 
     private Map<String, Object> doneEvent(String requestId, ResumeOptimizeSubmitVO result) {
-        return event(requestId, "done", "简历优化完成",
+        Map<String, Object> data = event(requestId, "done", "简历优化完成",
                 result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), null);
+        data.put("result", result.getResultJson());
+        data.put("metadata", resultMetadata(result));
+        return data;
+    }
+
+    private Map<String, Object> metadataEvent(String requestId, ResumeOptimizeSubmitVO result) {
+        Map<String, Object> data = event(requestId, "metadata", "简历优化结果元数据",
+                result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), null);
+        data.put("metadata", resultMetadata(result));
+        return data;
     }
 
     private Map<String, Object> errorEvent(String requestId, Long resumeId, ResumeOptimizeSubmitVO result) {
@@ -128,7 +163,28 @@ public class AiSseController {
         Map<String, Object> data = event(requestId, "error", "简历优化失败，请稍后重试",
                 resolvedResumeId, recordId, aiCallLogId, null);
         data.put("code", "RESUME_OPTIMIZE_FAILED");
+        data.put("metadata", result == null ? stageMetadata("ERROR", "FAILED") : resultMetadata(result));
         return data;
+    }
+
+    private Map<String, Object> resultMetadata(ResumeOptimizeSubmitVO result) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (result == null) {
+            return metadata;
+        }
+        metadata.put("resumeId", result.getResumeId());
+        metadata.put("recordId", result.getOptimizeRecordId());
+        metadata.put("aiCallLogId", result.getAiCallLogId());
+        metadata.put("status", result.getOptimizeStatus());
+        metadata.put("optimizeStatus", result.getOptimizeStatus());
+        return metadata;
+    }
+
+    private Map<String, Object> stageMetadata(String stage, String status) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("stage", stage);
+        metadata.put("status", status);
+        return metadata;
     }
 
     private Map<String, Object> event(String requestId, String type, String message, Long resumeId,

@@ -75,6 +75,9 @@ public class AdminAiQuestionSseController {
             if (!sendProgress(emitter, active, requestId, "SAVE_REVIEW", "Saving generated questions to review pool")) {
                 return;
             }
+            if (!send(emitter, active, "metadata", metadataEvent(requestId, result))) {
+                return;
+            }
             if (!send(emitter, active, "result", resultEvent(requestId, result))) {
                 return;
             }
@@ -91,9 +94,30 @@ public class AdminAiQuestionSseController {
 
     private boolean sendProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
                                  String stage, String message) {
+        if (!send(emitter, active, "delta", deltaEvent(requestId, stage, message))) {
+            return false;
+        }
+        if (!send(emitter, active, "metadata", stageMetadataEvent(requestId, stage, message))) {
+            return false;
+        }
         Map<String, Object> data = event(requestId, "progress", message);
         data.put("stage", stage);
         return send(emitter, active, "progress", data);
+    }
+
+    private Map<String, Object> deltaEvent(String requestId, String stage, String message) {
+        Map<String, Object> data = event(requestId, "delta", message);
+        data.put("stage", stage);
+        data.put("content", message);
+        data.put("metadata", stageMetadata(stage, "PROCESSING"));
+        return data;
+    }
+
+    private Map<String, Object> stageMetadataEvent(String requestId, String stage, String message) {
+        Map<String, Object> data = event(requestId, "metadata", message);
+        data.put("stage", stage);
+        data.put("metadata", stageMetadata(stage, "PROCESSING"));
+        return data;
     }
 
     private Map<String, Object> resultEvent(String requestId, AiQuestionGenerateResultVO result) {
@@ -103,18 +127,34 @@ public class AdminAiQuestionSseController {
         data.put("aiCallLogId", result == null ? null : result.getAiCallLogId());
         data.put("count", result == null ? null : result.getGeneratedCount());
         data.put("successCount", result == null ? null : result.getGeneratedCount());
+        data.put("metadata", resultMetadata(result));
         return data;
     }
 
     private Map<String, Object> doneEvent(String requestId, AiQuestionGenerateResultVO result) {
         Map<String, Object> data = event(requestId, "done", "AI question generation done");
         data.put("batchId", result == null ? null : result.getBatchId());
+        data.put("result", result);
+        data.put("metadata", resultMetadata(result));
+        return data;
+    }
+
+    private Map<String, Object> metadataEvent(String requestId, AiQuestionGenerateResultVO result) {
+        Map<String, Object> data = event(requestId, "metadata", "AI question generation metadata");
+        data.put("batchId", result == null ? null : result.getBatchId());
+        data.put("reviewIds", result == null ? null : result.getReviewIds());
+        data.put("aiCallLogId", result == null ? null : result.getAiCallLogId());
+        data.put("count", result == null ? null : result.getGeneratedCount());
+        data.put("successCount", result == null ? null : result.getGeneratedCount());
+        data.put("metadata", resultMetadata(result));
         return data;
     }
 
     private Map<String, Object> errorEvent(String requestId) {
         Map<String, Object> data = event(requestId, "error", "AI question generation failed. Please retry later.");
         data.put("aiCallLogId", null);
+        data.put("code", "AI_QUESTION_GENERATE_FAILED");
+        data.put("metadata", stageMetadata("ERROR", "FAILED"));
         return data;
     }
 
@@ -124,6 +164,27 @@ public class AdminAiQuestionSseController {
         data.put("type", type);
         data.put("message", message);
         return data;
+    }
+
+    private Map<String, Object> resultMetadata(AiQuestionGenerateResultVO result) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        if (result == null) {
+            return metadata;
+        }
+        metadata.put("batchId", result.getBatchId());
+        metadata.put("reviewIds", result.getReviewIds());
+        metadata.put("aiCallLogId", result.getAiCallLogId());
+        metadata.put("count", result.getGeneratedCount());
+        metadata.put("successCount", result.getGeneratedCount());
+        metadata.put("status", "SUCCESS");
+        return metadata;
+    }
+
+    private Map<String, Object> stageMetadata(String stage, String status) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("stage", stage);
+        metadata.put("status", status);
+        return metadata;
     }
 
     private SseEmitter createEmitter(String requestId, AtomicBoolean active) {
