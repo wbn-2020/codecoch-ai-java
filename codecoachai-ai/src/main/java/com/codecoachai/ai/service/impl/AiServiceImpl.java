@@ -622,8 +622,17 @@ public class AiServiceImpl implements AiService {
         values.put("questionId", dto.getQuestionId() == null ? "" : String.valueOf(dto.getQuestionId()));
         values.put("questionTitle", dto.getQuestionTitle());
         values.put("questionContent", dto.getQuestionContent());
+        values.put("questionType", dto.getQuestionType());
+        values.put("difficulty", dto.getDifficulty());
+        values.put("technologyStack", dto.getTechnologyStack());
+        values.put("knowledgePoint", dto.getKnowledgePoint());
         values.put("referenceAnswer", dto.getReferenceAnswer());
+        values.put("analysis", dto.getAnalysis());
         values.put("answerContent", dto.getAnswerContent());
+        values.put("userAnswer", dto.getAnswerContent());
+        values.put("answerDurationSeconds", dto.getAnswerDurationSeconds() == null ? "" : String.valueOf(dto.getAnswerDurationSeconds()));
+        values.put("targetPosition", dto.getTargetPosition());
+        values.put("experienceLevel", dto.getExperienceLevel());
         return values;
     }
 
@@ -652,10 +661,20 @@ public class AiServiceImpl implements AiService {
         vo.setQuestionId(dto.getQuestionId());
         int score = clampScore(json.path("score").asInt(scoreByLength(dto.getAnswerContent())));
         vo.setScore(score);
+        vo.setLevel(firstText(json.path("level").asText(null), levelByScore(score)));
         vo.setMasteryStatus(firstText(json.path("masteryStatus").asText(null), masteryByScore(score)));
-        vo.setComment(firstText(json.path("comment").asText(null), json.path("aiComment").asText(null)));
-        vo.setSuggestions(firstText(json.path("suggestions").asText(null), json.path("advice").asText(null)));
-        vo.setKnowledgePoints(firstText(json.path("knowledgePoints").asText(null), json.path("knowledgePoint").asText(null)));
+        vo.setSummary(firstText(json.path("summary").asText(null), json.path("comment").asText(null), json.path("aiComment").asText(null)));
+        vo.setComment(vo.getSummary());
+        vo.setStrengths(textArray(json.path("strengths")));
+        vo.setWeaknesses(textArray(json.path("weaknesses")));
+        vo.setImprovementSuggestions(textArray(json.path("improvementSuggestions")));
+        vo.setSuggestions(firstText(json.path("suggestions").asText(null), json.path("advice").asText(null),
+                String.join("\n", vo.getImprovementSuggestions())));
+        vo.setReferenceComparison(json.path("referenceComparison").asText(null));
+        vo.setKnowledgeGaps(textArray(json.path("knowledgeGaps")));
+        vo.setSuggestedFollowUps(textArray(json.path("suggestedFollowUps")));
+        vo.setKnowledgePoints(firstText(json.path("knowledgePoints").asText(null), json.path("knowledgePoint").asText(null),
+                String.join(",", vo.getKnowledgeGaps())));
         return vo;
     }
 
@@ -665,11 +684,19 @@ public class AiServiceImpl implements AiService {
         vo.setRecordId(dto == null ? null : dto.getRecordId());
         vo.setQuestionId(dto == null ? null : dto.getQuestionId());
         vo.setScore(score);
+        vo.setLevel(levelByScore(score));
         vo.setMasteryStatus(masteryByScore(score));
-        vo.setComment(score >= 75
+        vo.setSummary(score >= 75
                 ? "回答覆盖了主要结论，建议继续补充原理边界、适用场景和生产实践细节。"
                 : "回答偏概括，建议先对齐核心概念，再按原理、场景、优缺点和排查步骤展开。");
+        vo.setComment(vo.getSummary());
+        vo.setStrengths(List.of(score >= 75 ? "覆盖了主要知识点" : "已给出基础回答方向"));
+        vo.setWeaknesses(List.of(score >= 75 ? "边界条件和落地细节仍可补充" : "核心概念、原理和场景展开不足"));
+        vo.setImprovementSuggestions(List.of("对照参考答案补齐遗漏点", "按原理、场景、优缺点和排查步骤组织答案"));
         vo.setSuggestions("对照参考答案补齐遗漏点，使用 2-3 个关键词组织答案，并加入一个真实项目或线上问题示例。");
+        vo.setReferenceComparison("请对照参考答案检查核心概念、关键步骤和边界条件是否覆盖。");
+        vo.setKnowledgeGaps(List.of(firstText(dto == null ? null : dto.getKnowledgePoint(), dto == null ? null : dto.getQuestionTitle(), "Java 后端基础知识")));
+        vo.setSuggestedFollowUps(List.of("请结合一个生产问题说明该知识点的排查思路。"));
         vo.setKnowledgePoints(firstText(dto == null ? null : dto.getQuestionTitle(), "Java 后端基础知识"));
         return vo;
     }
@@ -681,6 +708,22 @@ public class AiServiceImpl implements AiService {
         if (!StringUtils.hasText(dto.getAnswerContent())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "answerContent is required");
         }
+        if (dto.getAnswerContent().length() > 5000) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "answerContent length must be less than 5000");
+        }
+    }
+
+    private String levelByScore(int score) {
+        if (score >= 90) {
+            return "EXCELLENT";
+        }
+        if (score >= 75) {
+            return "GOOD";
+        }
+        if (score >= 60) {
+            return "NORMAL";
+        }
+        return "WEAK";
     }
 
     private String masteryByScore(int score) {
@@ -1874,25 +1917,32 @@ public class AiServiceImpl implements AiService {
 
     private String defaultPracticeReviewPrompt() {
         return """
-                你是 Java 后端刷题教练。请基于题目、参考答案和用户答案生成简答题点评。
+                你是资深 Java 后端面试刷题教练。请基于题目、参考答案、答案解析和用户答案生成简答题 AI 点评。
                 练习记录 ID：{{recordId}}
                 题目 ID：{{questionId}}
                 题目标题：{{questionTitle}}
+                题型：{{questionType}}
+                难度：{{difficulty}}
+                知识点：{{knowledgePoint}}
+                经验级别：{{experienceLevel}}
+                答题耗时秒数：{{answerDurationSeconds}}
                 题目内容：
                 {{questionContent}}
                 参考答案：
                 {{referenceAnswer}}
+                答案解析：
+                {{analysis}}
                 用户答案：
-                {{answerContent}}
+                {{userAnswer}}
                 要求：
                 1. 只基于用户答案点评，不编造用户没有表达的经历。
                 2. score 必须是 0-100 整数。
-                3. masteryStatus 只能是 MASTERED、FAMILIAR、NOT_MASTERED。
-                4. comment 说明优点和缺口。
-                5. suggestions 给出下一步复习建议。
-                6. knowledgePoints 给出相关知识点，逗号分隔。
+                3. level 只能是 EXCELLENT、GOOD、NORMAL、WEAK。
+                4. summary 简要说明整体表现。
+                5. strengths、weaknesses、improvementSuggestions、knowledgeGaps、suggestedFollowUps 必须是字符串数组。
+                6. referenceComparison 对比用户答案和参考答案的关键差异。
                 只输出 JSON，不要 Markdown，不要代码块。
-                JSON 字段固定：{"score":80,"masteryStatus":"FAMILIAR","comment":"点评","suggestions":"建议","knowledgePoints":"知识点"}
+                JSON 字段固定：{"score":82,"level":"GOOD","summary":"点评摘要","strengths":["优点"],"weaknesses":["问题"],"improvementSuggestions":["改进建议"],"referenceComparison":"参考答案对比","knowledgeGaps":["知识缺口"],"suggestedFollowUps":["后续练习题"]}
                 """;
     }
 

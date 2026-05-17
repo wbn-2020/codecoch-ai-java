@@ -20,6 +20,11 @@ import com.codecoachai.question.feign.vo.PracticeReviewVO;
 import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.service.PracticeService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,9 +34,12 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class PracticeServiceImpl implements PracticeService {
 
+    private static final String DEFAULT_SOURCE = "QUESTION_BANK";
+
     private final PracticeRecordMapper practiceRecordMapper;
     private final QuestionMapper questionMapper;
     private final AiPracticeFeignClient aiPracticeFeignClient;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -41,8 +49,11 @@ public class PracticeServiceImpl implements PracticeService {
         PracticeRecord record = new PracticeRecord();
         record.setUserId(userId);
         record.setQuestionId(question.getId());
-        record.setAnswerContent(dto.getAnswerContent());
-        record.setReferenceAnswer(question.getReferenceAnswer());
+        record.setAnswerContent(dto.getAnswerContent().trim());
+        record.setAnswerDurationSeconds(dto.getAnswerDurationSeconds());
+        record.setSource(defaultSource(dto.getSource()));
+        record.setReferenceAnswerSnapshot(question.getReferenceAnswer());
+        record.setQuestionSnapshotJson(questionSnapshot(question));
         record.setReviewStatus(PracticeReviewStatus.PENDING.name());
         practiceRecordMapper.insert(record);
 
@@ -98,18 +109,32 @@ public class PracticeServiceImpl implements PracticeService {
         dto.setQuestionId(question.getId());
         dto.setQuestionTitle(question.getTitle());
         dto.setQuestionContent(question.getContent());
+        dto.setQuestionType(question.getQuestionType());
+        dto.setDifficulty(question.getDifficulty());
+        dto.setKnowledgePoint(question.getAnalysis());
         dto.setReferenceAnswer(question.getReferenceAnswer());
+        dto.setAnalysis(question.getAnalysis());
         dto.setAnswerContent(record.getAnswerContent());
+        dto.setAnswerDurationSeconds(record.getAnswerDurationSeconds());
+        dto.setExperienceLevel(question.getExperienceLevel());
         return dto;
     }
 
     private void applyReview(PracticeRecord record, PracticeReviewVO review) {
         record.setReviewStatus(PracticeReviewStatus.SUCCESS.name());
         record.setScore(review.getScore());
+        record.setLevel(review.getLevel());
         record.setMasteryStatus(review.getMasteryStatus());
-        record.setAiComment(review.getComment());
-        record.setSuggestions(review.getSuggestions());
+        record.setAiComment(firstText(review.getSummary(), review.getComment()));
+        record.setSuggestions(firstText(review.getSuggestions(), join(review.getImprovementSuggestions())));
         record.setKnowledgePoints(review.getKnowledgePoints());
+        record.setStrengths(join(review.getStrengths()));
+        record.setWeaknesses(join(review.getWeaknesses()));
+        record.setImprovementSuggestions(join(review.getImprovementSuggestions()));
+        record.setReferenceComparison(review.getReferenceComparison());
+        record.setKnowledgeGaps(join(review.getKnowledgeGaps()));
+        record.setSuggestedFollowUps(join(review.getSuggestedFollowUps()));
+        record.setReviewJson(reviewJson(review));
         record.setAiCallLogId(review.getAiCallLogId());
         record.setErrorMessage(null);
     }
@@ -125,14 +150,31 @@ public class PracticeServiceImpl implements PracticeService {
         vo.setUserId(record.getUserId());
         vo.setQuestionId(record.getQuestionId());
         vo.setQuestionTitle(question == null ? null : question.getTitle());
+        vo.setQuestionType(question == null ? null : question.getQuestionType());
+        vo.setDifficulty(question == null ? null : question.getDifficulty());
+        vo.setKnowledgePoint(question == null ? null : question.getAnalysis());
         vo.setAnswerContent(record.getAnswerContent());
+        vo.setUserAnswer(record.getAnswerContent());
+        vo.setAnswerDurationSeconds(record.getAnswerDurationSeconds());
+        vo.setSource(record.getSource());
         vo.setReviewStatus(record.getReviewStatus());
         vo.setScore(record.getScore());
+        vo.setLevel(record.getLevel());
         vo.setMasteryStatus(record.getMasteryStatus());
+        vo.setSummary(record.getAiComment());
         vo.setAiComment(record.getAiComment());
         vo.setSuggestions(record.getSuggestions());
         vo.setKnowledgePoints(record.getKnowledgePoints());
-        vo.setReferenceAnswer(record.getReferenceAnswer());
+        vo.setStrengths(record.getStrengths());
+        vo.setWeaknesses(record.getWeaknesses());
+        vo.setImprovementSuggestions(record.getImprovementSuggestions());
+        vo.setReferenceComparison(record.getReferenceComparison());
+        vo.setKnowledgeGaps(record.getKnowledgeGaps());
+        vo.setSuggestedFollowUps(record.getSuggestedFollowUps());
+        vo.setReferenceAnswer(record.getReferenceAnswerSnapshot());
+        vo.setReferenceAnswerSnapshot(record.getReferenceAnswerSnapshot());
+        vo.setQuestionSnapshotJson(record.getQuestionSnapshotJson());
+        vo.setReviewJson(record.getReviewJson());
         vo.setAiCallLogId(record.getAiCallLogId());
         vo.setErrorMessage(record.getErrorMessage());
         vo.setCreatedAt(record.getCreatedAt());
@@ -170,5 +212,62 @@ public class PracticeServiceImpl implements PracticeService {
         }
         String sanitized = message.replaceAll("[\\r\\n\\t]+", " ").trim();
         return sanitized.length() > 500 ? sanitized.substring(0, 500) : sanitized;
+    }
+
+    private String defaultSource(String source) {
+        return StringUtils.hasText(source) ? source.trim() : DEFAULT_SOURCE;
+    }
+
+    private String questionSnapshot(Question question) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", question.getId());
+        snapshot.put("title", question.getTitle());
+        snapshot.put("content", question.getContent());
+        snapshot.put("questionType", question.getQuestionType());
+        snapshot.put("difficulty", question.getDifficulty());
+        snapshot.put("analysis", question.getAnalysis());
+        snapshot.put("experienceLevel", question.getExperienceLevel());
+        return toJson(snapshot);
+    }
+
+    private String reviewJson(PracticeReviewVO review) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("score", review.getScore());
+        json.put("level", review.getLevel());
+        json.put("summary", firstText(review.getSummary(), review.getComment()));
+        json.put("strengths", review.getStrengths());
+        json.put("weaknesses", review.getWeaknesses());
+        json.put("improvementSuggestions", review.getImprovementSuggestions());
+        json.put("referenceComparison", review.getReferenceComparison());
+        json.put("knowledgeGaps", review.getKnowledgeGaps());
+        json.put("suggestedFollowUps", review.getSuggestedFollowUps());
+        return toJson(json);
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException ex) {
+            return "{}";
+        }
+    }
+
+    private String join(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        return String.join("\n", values);
+    }
+
+    private String firstText(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 }
