@@ -93,6 +93,7 @@ POST /ai/sse/interview-comment?sessionId={id}
 GET  /ai/sse/report?sessionId={id}
 GET  /ai/sse/resume-optimize?resumeId={id}
 GET  /ai/sse/study-plan?reportId={id}
+GET  /ai/sse/admin/questions/generate?count={count}
 ```
 
 `POST /ai/sse/interview-comment` accepts:
@@ -109,8 +110,10 @@ SSE event contract:
 
 ```text
 start    stream accepted
+progress stage progress event
 chunk    primary content chunk event
 delta    legacy alias for chunk, kept for existing clients
+result   structured business result
 metadata structured business metadata
 done     stream completed
 error    sanitized failure event
