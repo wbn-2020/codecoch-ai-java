@@ -736,6 +736,9 @@ public class ResumeServiceImpl implements ResumeService {
         request.setTargetPosition(targetPosition);
         request.setExperienceYears(dto.getExperienceYears());
         request.setIndustryDirection(dto.getIndustryDirection());
+        request.setTargetCompany(dto.getTargetCompany());
+        request.setExtraRequirements(dto.getExtraRequirements());
+        request.setOptimizeFocus(dto.getOptimizeFocus());
         request.setResume(toResumeSnapshot(resume));
         request.setProjects(projects.stream().map(this::toProjectSnapshot).toList());
         return request;
@@ -789,6 +792,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeOptimizeSubmitVO vo = new ResumeOptimizeSubmitVO();
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
+        vo.setAiCallLogId(record.getAiCallLogId());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         vo.setResultJson(resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
         vo.setErrorMessage(record.getErrorMessage());

@@ -592,6 +592,9 @@ public class AiServiceImpl implements AiService {
         values.put("targetPosition", dto.getTargetPosition());
         values.put("experienceYears", dto.getExperienceYears() == null ? "" : String.valueOf(dto.getExperienceYears()));
         values.put("industryDirection", dto.getIndustryDirection());
+        values.put("targetCompany", dto.getTargetCompany());
+        values.put("extraRequirements", dto.getExtraRequirements());
+        values.put("optimizeFocus", dto.getOptimizeFocus());
         values.put("resumeJson", toJson(dto.getResume()));
         values.put("projectsJson", toJson(dto.getProjects()));
         return values;
@@ -1981,6 +1984,10 @@ public class AiServiceImpl implements AiService {
                 目标岗位：{{targetPosition}}
                 工作年限：{{experienceYears}}
                 行业方向：{{industryDirection}}
+                目标公司：{{targetCompany}}
+                优化重点：{{optimizeFocus}}
+                额外要求：
+                {{extraRequirements}}
                 简历信息：
                 {{resumeJson}}
                 项目经历：

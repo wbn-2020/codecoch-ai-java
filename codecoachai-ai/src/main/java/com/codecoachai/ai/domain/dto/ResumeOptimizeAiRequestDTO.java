@@ -12,6 +12,9 @@ public class ResumeOptimizeAiRequestDTO {
     private String targetPosition;
     private Integer experienceYears;
     private String industryDirection;
+    private String targetCompany;
+    private String extraRequirements;
+    private String optimizeFocus;
     private ResumeSnapshot resume;
     private List<ProjectSnapshot> projects;
 
