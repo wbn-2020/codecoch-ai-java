@@ -199,6 +199,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         GenerateQuestionDraftDTO request = new GenerateQuestionDraftDTO();
         request.setBatchId(batchId);
         request.setAdminUserId(adminUserId);
+        request.setTargetPosition(dto.getTargetPosition());
         request.setTechnologyStack(dto.getTechnologyStack());
         request.setKnowledgePoint(dto.getKnowledgePoint());
         request.setQuestionType(defaultText(dto.getQuestionType(), "SHORT_ANSWER"));
@@ -223,6 +224,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         review.setCreatedBy(adminUserId);
         review.setReviewStatus(QuestionReviewStatus.PENDING.name());
         review.setAiCallLogId(aiCallLogId);
+        review.setTargetPosition(request.getTargetPosition());
         review.setTechnologyStack(request.getTechnologyStack());
         review.setKnowledgePoint(request.getKnowledgePoint());
         review.setQuestionType(defaultText(item.getQuestionType(),
@@ -351,6 +353,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         vo.setBatchId(review.getBatchId());
         vo.setReviewStatus(review.getReviewStatus());
         vo.setAiCallLogId(review.getAiCallLogId());
+        vo.setTargetPosition(review.getTargetPosition());
         vo.setTechnologyStack(review.getTechnologyStack());
         vo.setKnowledgePoint(review.getKnowledgePoint());
         vo.setQuestionType(review.getQuestionType());
@@ -373,6 +376,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         vo.setCreatedBy(review.getCreatedBy());
         vo.setReviewStatus(review.getReviewStatus());
         vo.setAiCallLogId(review.getAiCallLogId());
+        vo.setTargetPosition(review.getTargetPosition());
         vo.setTechnologyStack(review.getTechnologyStack());
         vo.setKnowledgePoint(review.getKnowledgePoint());
         vo.setQuestionType(review.getQuestionType());

@@ -600,6 +600,7 @@ public class AiServiceImpl implements AiService {
     private Map<String, String> variables(GenerateQuestionDraftDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("batchId", dto.getBatchId());
+        values.put("targetPosition", dto.getTargetPosition());
         values.put("technologyStack", dto.getTechnologyStack());
         values.put("knowledgePoint", dto.getKnowledgePoint());
         values.put("questionType", firstText(dto.getQuestionType(), "SHORT_ANSWER"));
@@ -1069,13 +1070,14 @@ public class AiServiceImpl implements AiService {
     private GenerateQuestionDraftVO mockQuestionDrafts(GenerateQuestionDraftDTO dto) {
         int count = dto.getCount() == null ? 5 : dto.getCount();
         String topic = firstText(dto.getKnowledgePoint(), dto.getTechnologyStack(), "Java 后端");
+        String targetPosition = firstText(dto.getTargetPosition(), "Java 后端开发工程师");
         String difficulty = firstText(dto.getDifficulty(), "MEDIUM");
         String questionType = firstText(dto.getQuestionType(), "SHORT_ANSWER");
         List<QuestionDraftItemVO> questions = new java.util.ArrayList<>();
         for (int i = 1; i <= count; i++) {
             QuestionDraftItemVO item = new QuestionDraftItemVO();
             item.setTitle(topic + " 核心面试题 " + i);
-            item.setContent("请说明 " + topic + " 的核心原理、典型生产场景、边界问题和工程取舍。");
+            item.setContent("面向" + targetPosition + "，请说明 " + topic + " 的核心原理、典型生产场景、边界问题和工程取舍。");
             item.setReferenceAnswer(topic + " 需要从基本原理、关键机制、常见异常场景、可观测性和生产取舍几个角度回答。");
             item.setAnalysis("优秀回答应覆盖该机制为什么存在、如何工作、什么时候会失效，以及在真实 Java 后端系统中如何验证和排查。");
             item.setDifficulty(difficulty);
@@ -1834,9 +1836,11 @@ public class AiServiceImpl implements AiService {
     private String defaultQuestionDraftPrompt() {
         return """
                 你是 Java 后端面试题生成助手。
-                请根据输入的 technologyStack、knowledgePoint、questionType、difficulty、experienceYears、count 生成面试题草稿。
+                请根据输入的 targetPosition、technologyStack、knowledgePoint、questionType、difficulty、experienceYears、count 生成面试题草稿。
+                如果 targetPosition 为空，请生成通用 Java 后端面试题。
 
                 输入：
+                - targetPosition: {{targetPosition}}
                 - technologyStack: {{technologyStack}}
                 - knowledgePoint: {{knowledgePoint}}
                 - questionType: {{questionType}}

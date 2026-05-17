@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS question_review (
   created_by BIGINT NOT NULL,
   review_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   ai_call_log_id BIGINT DEFAULT NULL,
+  target_position VARCHAR(128) DEFAULT NULL,
   technology_stack VARCHAR(255) DEFAULT NULL,
   knowledge_point VARCHAR(255) DEFAULT NULL,
   question_type VARCHAR(32) NOT NULL,
@@ -663,6 +664,21 @@ VALUES
   (4, 'INTERVIEW_FOLLOW_UP_GENERATE', 'Interview Follow Up Generate', 'Interview Follow Up Generate', 'Generate one follow-up question. Output JSON only with followUpQuestion, reason, and relatedToOriginalQuestion.', 'Generate one follow-up question. Output JSON only with followUpQuestion, reason, and relatedToOriginalQuestion.', 'rootQuestionContent,currentQuestionContent,questionContent,referenceAnswer,userAnswer,aiComment,currentStage,stageName,historySummary,followUpCount,maxFollowUpCount,knowledgePoints', 'v1', 1),
   (5, 'INTERVIEW_REPORT_GENERATE', 'Interview Report Generate', 'Interview Report Generate', 'Generate a structured interview report. Output JSON only with totalScore, summary, strengths, weakPoints, suggestions, and reportContent.', 'Generate a structured interview report. Output JSON only with totalScore, summary, strengths, weakPoints, suggestions, and reportContent.', 'historySummary,targetPosition,experienceLevel,industryDirection,difficulty,resumeContent,projectContent', 'v1', 1)
 ON DUPLICATE KEY UPDATE name = VALUES(name), template_name = VALUES(template_name), content = VALUES(content), template_content = VALUES(template_content), variables = VALUES(variables), version = VALUES(version), status = VALUES(status);
+
+INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
+SELECT 'AI_QUESTION_GENERATE', 'AI Question Generate', 'AI Question Generate', 'V2 AI question generation prompt', 'You are a Java backend interview question generator. Generate question drafts by targetPosition={{targetPosition}}, technologyStack={{technologyStack}}, knowledgePoint={{knowledgePoint}}, questionType={{questionType}}, difficulty={{difficulty}}, experienceYears={{experienceYears}}, count={{count}}. If targetPosition is empty, generate general Java backend interview questions. Output only one JSON object with questions array. Each item must contain title, content, referenceAnswer, analysis, difficulty, questionType, followUpQuestions, tagSuggestions, categorySuggestion and groupSuggestion.', 'You are a Java backend interview question generator. Generate question drafts by targetPosition={{targetPosition}}, technologyStack={{technologyStack}}, knowledgePoint={{knowledgePoint}}, questionType={{questionType}}, difficulty={{difficulty}}, experienceYears={{experienceYears}}, count={{count}}. If targetPosition is empty, generate general Java backend interview questions. Output only one JSON object with questions array. Each item must contain title, content, referenceAnswer, analysis, difficulty, questionType, followUpQuestions, tagSuggestions, categorySuggestion and groupSuggestion.', 'targetPosition,technologyStack,knowledgePoint,questionType,difficulty,experienceYears,count,generateReferenceAnswer,generateFollowUps,generateTagSuggestions,generateCategorySuggestion,extraRequirements', 'v2-a7', 1, 1
+WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'AI_QUESTION_GENERATE');
+
+UPDATE prompt_template
+SET name = 'AI Question Generate',
+    template_name = 'AI Question Generate',
+    content = 'You are a Java backend interview question generator. Generate question drafts by targetPosition={{targetPosition}}, technologyStack={{technologyStack}}, knowledgePoint={{knowledgePoint}}, questionType={{questionType}}, difficulty={{difficulty}}, experienceYears={{experienceYears}}, count={{count}}. If targetPosition is empty, generate general Java backend interview questions. Output only one JSON object with questions array. Each item must contain title, content, referenceAnswer, analysis, difficulty, questionType, followUpQuestions, tagSuggestions, categorySuggestion and groupSuggestion.',
+    template_content = 'You are a Java backend interview question generator. Generate question drafts by targetPosition={{targetPosition}}, technologyStack={{technologyStack}}, knowledgePoint={{knowledgePoint}}, questionType={{questionType}}, difficulty={{difficulty}}, experienceYears={{experienceYears}}, count={{count}}. If targetPosition is empty, generate general Java backend interview questions. Output only one JSON object with questions array. Each item must contain title, content, referenceAnswer, analysis, difficulty, questionType, followUpQuestions, tagSuggestions, categorySuggestion and groupSuggestion.',
+    variables = 'targetPosition,technologyStack,knowledgePoint,questionType,difficulty,experienceYears,count,generateReferenceAnswer,generateFollowUps,generateTagSuggestions,generateCategorySuggestion,extraRequirements',
+    version = 'v2-a7',
+    status = 1,
+    enabled = 1
+WHERE scene = 'AI_QUESTION_GENERATE';
 
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
 SELECT 'LEARNING_PLAN_GENERATE', 'Learning Plan Generate', 'Learning Plan Generate', 'V2 learning plan generation prompt', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.', 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements', 'v2-a9', 1, 1

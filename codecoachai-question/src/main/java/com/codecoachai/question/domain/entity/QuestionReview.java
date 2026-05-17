@@ -15,6 +15,7 @@ public class QuestionReview extends BaseEntity {
     private Long createdBy;
     private String reviewStatus;
     private Long aiCallLogId;
+    private String targetPosition;
     private String technologyStack;
     private String knowledgePoint;
     private String questionType;

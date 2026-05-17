@@ -2,10 +2,15 @@ package com.codecoachai.question.domain.dto;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 @Data
+@Schema(description = "AI question generation request")
 public class AiQuestionGenerateRequestDTO {
+
+    @Schema(description = "Target position, optional. Empty value generates general Java backend questions.")
+    private String targetPosition;
 
     private String technologyStack;
     private String knowledgePoint;
