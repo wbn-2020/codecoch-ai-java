@@ -2,7 +2,7 @@
 
 This repository is the Java backend for CodeCoachAI.
 
-Current branch focus: V2 backend completion and backend freeze testing.
+Current branch focus: V2 backend completion, B0 backend freeze testing, and API contract stabilization.
 
 Authoritative V2 scope source:
 
@@ -55,9 +55,9 @@ mvn -pl codecoachai-file spring-boot:run
 
 ## Database
 
-The current local dev configs may still point to `codecoachai_v1`. Keep the database name consistent with Nacos datasource config.
+Keep the database name consistent with Nacos datasource config.
 
-`sql/init.sql` currently creates and uses `codecoachai_v1` for local dev compatibility. For an isolated V2 verification database, create a temporary copy with the database name replaced, then import that temporary file.
+`sql/init.sql` currently creates and uses `codecoachai_v1` for local dev compatibility. The name is historical; after the V2 migrations below are applied, it is the local V2 verification schema. For an isolated V2 verification database, create a temporary copy with the database name replaced, then import that temporary file.
 
 Migration order:
 
@@ -82,6 +82,48 @@ mysql --host=127.0.0.1 --user=root --password=wbn123.. --default-character-set=u
 
 Local V2 backend smoke tests should use mock AI unless explicitly validating a real model provider. Check the `codecoachai-ai-dev.yml` Nacos config and keep `mockEnabled=true` for deterministic local verification.
 
+## B0 Backend Freeze Contract
+
+SSE public endpoints:
+
+```text
+GET  /ai/sse/interview-question?sessionId={id}
+GET  /ai/sse/interview-comment?sessionId={id}&answerContent={shortAnswer}
+POST /ai/sse/interview-comment?sessionId={id}
+GET  /ai/sse/report?sessionId={id}
+GET  /ai/sse/resume-optimize?resumeId={id}
+GET  /ai/sse/study-plan?reportId={id}
+```
+
+`POST /ai/sse/interview-comment` accepts:
+
+```json
+{
+  "answerContent": "candidate answer"
+}
+```
+
+`GET /ai/sse/interview-comment` is retained only for compatibility and short smoke tests. Frontend code should prefer the POST form to avoid URL length limits, log exposure, and escaping issues.
+
+SSE event contract:
+
+```text
+start    stream accepted
+chunk    primary content chunk event
+delta    legacy alias for chunk, kept for existing clients
+metadata structured business metadata
+done     stream completed
+error    sanitized failure event
+```
+
+Common payload fields:
+
+```text
+requestId, sessionId, content, index, messageId, aiCallLogId, fullContent, code, message, metadata
+```
+
+The current backend uses synchronous AI results split into SSE chunks where the AI client does not provide native token streaming.
+
 ## Verification
 
 After backend changes, run:
@@ -104,6 +146,18 @@ Recommended backend smoke scope before V2 API freeze:
 - prompt version test and AI log fields
 - admin file list/detail
 - sampled user isolation and admin permission checks
+
+B0-1 smoke endpoints:
+
+```text
+/ai/sse/interview-question
+/ai/sse/interview-comment
+/ai/sse/report
+/ai/sse/resume-optimize
+/ai/sse/study-plan
+/admin/ai/prompt-template-versions/{versionId}/test
+/questions/{questionId}/practice
+```
 
 ## Boundaries
 

@@ -49,20 +49,17 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "question stream started") || !active.get()) {
                 return;
             }
             CurrentQuestionVO question = interviewService.currentQuestion(sessionId);
             String fullContent = question == null ? null : question.getQuestionContent();
-            sendDeltas(emitter, active, requestId, sessionId, fullContent);
+            sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId,
-                    question == null ? null : question.getMessageId(),
-                    questionMetadata(question));
+                    question == null ? null : question.getMessageId(), questionMetadata(question));
             sendDone(emitter, active, requestId, sessionId,
-                    question == null ? null : question.getMessageId(),
-                    fullContent);
+                    question == null ? null : question.getMessageId(), fullContent);
         }), sseStreamExecutor);
         return emitter;
     }
@@ -73,7 +70,6 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "answer evaluation stream started") || !active.get()) {
                 return;
@@ -81,13 +77,11 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             SubmitInterviewAnswerVO answer = interviewService.answer(sessionId, dto);
             CurrentQuestionVO nextQuestion = answer == null ? null : answer.getNextQuestion();
             String fullContent = answerVisibleContent(answer);
-            sendDeltas(emitter, active, requestId, sessionId, fullContent);
+            sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId,
-                    nextQuestion == null ? null : nextQuestion.getMessageId(),
-                    answerMetadata(answer));
+                    nextQuestion == null ? null : nextQuestion.getMessageId(), answerMetadata(answer));
             sendDone(emitter, active, requestId, sessionId,
-                    nextQuestion == null ? null : nextQuestion.getMessageId(),
-                    fullContent);
+                    nextQuestion == null ? null : nextQuestion.getMessageId(), fullContent);
         }), sseStreamExecutor);
         return emitter;
     }
@@ -98,7 +92,6 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "report stream started") || !active.get()) {
                 return;
@@ -106,8 +99,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             InterviewReportVO report = interviewService.report(sessionId);
             String fullContent = firstText(report == null ? null : report.getReportContent(),
                     report == null ? null : report.getSummary(),
-                    "面试报告已生成");
-            sendDeltas(emitter, active, requestId, sessionId, fullContent);
+                    "Interview report generated");
+            sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId, null, reportMetadata(report));
             sendDone(emitter, active, requestId, sessionId, null, fullContent);
         }), sseStreamExecutor);
@@ -120,14 +113,14 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-
         CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, null, "study plan stream started") || !active.get()) {
                 return;
             }
             StudyPlanGenerateVO plan = studyPlanService.generate(dto);
-            String fullContent = "学习计划生成完成：" + firstText(plan == null ? null : plan.getPlanTitle(), "未命名计划");
-            sendDeltas(emitter, active, requestId, null, fullContent);
+            String fullContent = "Study plan generated: "
+                    + firstText(plan == null ? null : plan.getPlanTitle(), "Untitled plan");
+            sendChunks(emitter, active, requestId, null, fullContent);
             sendMetadata(emitter, active, requestId, null, null, studyPlanMetadata(plan));
             sendDone(emitter, active, requestId, null, null, fullContent);
         }), sseStreamExecutor);
@@ -155,15 +148,19 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .build());
     }
 
-    private void sendDeltas(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String fullContent) {
+    private void sendChunks(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String fullContent) {
         int index = 1;
         for (String chunk : SseEmitterUtils.splitContent(fullContent)) {
-            if (!SseEmitterUtils.send(emitter, active, "delta", SseEventVO.builder()
+            SseEventVO event = SseEventVO.builder()
                     .requestId(requestId)
                     .sessionId(sessionId)
                     .content(chunk)
                     .index(index++)
-                    .build())) {
+                    .build();
+            if (!SseEmitterUtils.send(emitter, active, "chunk", event)) {
+                return;
+            }
+            if (!SseEmitterUtils.send(emitter, active, "delta", event)) {
                 return;
             }
             sleepBetweenChunks();
@@ -198,7 +195,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (SseEmitterUtils.send(emitter, active, "error", SseEventVO.builder()
                 .requestId(requestId)
                 .code(code)
-                .message("流式输出失败，请稍后重试")
+                .message("Streaming failed. Please retry later.")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }

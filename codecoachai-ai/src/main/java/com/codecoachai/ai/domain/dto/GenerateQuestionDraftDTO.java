@@ -7,6 +7,7 @@ public class GenerateQuestionDraftDTO {
 
     private String batchId;
     private Long adminUserId;
+    private String targetPosition;
     private String technologyStack;
     private String knowledgePoint;
     private String questionType;

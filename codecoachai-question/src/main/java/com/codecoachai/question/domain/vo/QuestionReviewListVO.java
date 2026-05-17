@@ -10,6 +10,7 @@ public class QuestionReviewListVO {
     private String batchId;
     private String reviewStatus;
     private Long aiCallLogId;
+    private String targetPosition;
     private String technologyStack;
     private String knowledgePoint;
     private String questionType;

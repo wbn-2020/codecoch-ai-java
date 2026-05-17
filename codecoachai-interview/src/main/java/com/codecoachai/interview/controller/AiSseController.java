@@ -7,6 +7,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -29,6 +31,12 @@ public class AiSseController {
                                        @RequestParam String answerContent) {
         SubmitInterviewAnswerDTO dto = new SubmitInterviewAnswerDTO();
         dto.setAnswerContent(answerContent);
+        return interviewStreamService.streamAnswer(sessionId, dto);
+    }
+
+    @PostMapping(value = "/interview-comment", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter interviewCommentByBody(@RequestParam Long sessionId,
+                                             @RequestBody SubmitInterviewAnswerDTO dto) {
         return interviewStreamService.streamAnswer(sessionId, dto);
     }
 
