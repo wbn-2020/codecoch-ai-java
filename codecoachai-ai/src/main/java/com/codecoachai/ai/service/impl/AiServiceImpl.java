@@ -228,13 +228,15 @@ public class AiServiceImpl implements AiService {
             GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
                     ? mockReport(dto)
                     : parseReport(rawResponse = aiClient.chat(prompt));
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getInterviewId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
             GenerateReportVO fallback = mockReport(dto);
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            fallback.setAiCallLogId(logId);
             return fallback;
         }
     }

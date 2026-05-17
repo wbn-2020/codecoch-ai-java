@@ -26,6 +26,7 @@ import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewDetailVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
+import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.domain.vo.SubmitInterviewAnswerVO;
@@ -53,6 +54,7 @@ import com.codecoachai.interview.service.InterviewService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -399,6 +401,109 @@ public class InterviewServiceImpl implements InterviewService {
         }
         normalizeReportContent(report);
         return InterviewConvert.toReportVO(report);
+    }
+
+    @Override
+    public InterviewReportGenerateResultVO generateReportForSse(Long id, Long reportId, Boolean forceRegenerate,
+                                                                Consumer<String> progressConsumer) {
+        InterviewSession session = getOwnedSession(id);
+        InterviewReport existing = currentReport(session.getId());
+        if (reportId != null && (existing == null || !reportId.equals(existing.getId()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not found");
+        }
+        boolean force = Boolean.TRUE.equals(forceRegenerate);
+        if (!force && existing != null && ReportStatusEnum.GENERATED.name().equals(existing.getStatus())) {
+            progress(progressConsumer, "LOAD_INTERVIEW");
+            return buildReportGenerateResult(session.getId(), null, existing);
+        }
+
+        progress(progressConsumer, "LOAD_INTERVIEW");
+        session.setReportStatus(ReportStatusEnum.GENERATING.name());
+        session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
+        session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
+        session.setFailureReason(null);
+        sessionMapper.updateById(session);
+
+        InterviewReport report = existing == null ? new InterviewReport() : existing;
+        if (report.getId() == null) {
+            report.setSessionId(session.getId());
+            report.setUserId(session.getUserId());
+        }
+        report.setStatus(ReportStatusEnum.GENERATING.name());
+        report.setFailureReason(null);
+        saveReport(report);
+
+        Long aiCallLogId = null;
+        try {
+            progress(progressConsumer, "LOAD_ANSWERS");
+            List<InterviewMessage> messages = messageEntities(session.getId());
+            progress(progressConsumer, "BUILD_PROMPT");
+            GenerateReportDTO reportDTO = buildReportDTO(session, messages);
+            progress(progressConsumer, "CALL_AI");
+            GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
+            aiCallLogId = aiReport == null ? null : aiReport.getAiCallLogId();
+
+            progress(progressConsumer, "SAVE_REPORT");
+            report.setStatus(ReportStatusEnum.GENERATED.name());
+            applyReportContent(report, aiReport);
+            report.setFailureReason(null);
+            saveReport(report);
+
+            session.setStatus(InterviewStatusEnum.COMPLETED.name());
+            session.setReportStatus(ReportStatusEnum.GENERATED.name());
+            session.setTotalScore(report.getTotalScore());
+            session.setEndTime(LocalDateTime.now());
+            session.setFailureReason(null);
+            sessionMapper.updateById(session);
+            return buildReportGenerateResult(session.getId(), aiCallLogId, report);
+        } catch (RuntimeException ex) {
+            report.setStatus(ReportStatusEnum.FAILED.name());
+            report.setFailureReason(ex.getMessage());
+            saveReport(report);
+
+            session.setStatus(InterviewStatusEnum.FAILED.name());
+            session.setReportStatus(ReportStatusEnum.FAILED.name());
+            session.setFailureReason(ex.getMessage());
+            sessionMapper.updateById(session);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview report generation failed");
+        }
+    }
+
+    private GenerateReportDTO buildReportDTO(InterviewSession session, List<InterviewMessage> messages) {
+        InnerResumeDetailVO resume = loadResume(session);
+        GenerateReportDTO reportDTO = new GenerateReportDTO();
+        reportDTO.setInterviewId(session.getId());
+        reportDTO.setUserId(session.getUserId());
+        reportDTO.setMode(session.getMode());
+        reportDTO.setTargetPosition(session.getTargetPosition());
+        reportDTO.setExperienceLevel(session.getExperienceLevel());
+        reportDTO.setIndustryDirection(session.getIndustryDirection());
+        reportDTO.setIndustryContext(session.getIndustryContext());
+        reportDTO.setDifficulty(session.getDifficulty());
+        reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
+        reportDTO.setProjectContent(buildProjectContent(resume));
+        reportDTO.setMessages(messages.stream()
+                .map(message -> firstText(message.getQuestionContent(), message.getUserAnswer(),
+                        message.getAiComment(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .toList());
+        return reportDTO;
+    }
+
+    private InterviewReportGenerateResultVO buildReportGenerateResult(Long interviewId, Long aiCallLogId,
+                                                                      InterviewReport report) {
+        InterviewReportGenerateResultVO result = new InterviewReportGenerateResultVO();
+        result.setInterviewId(interviewId);
+        result.setReportId(report == null ? null : report.getId());
+        result.setAiCallLogId(aiCallLogId);
+        result.setResult(InterviewConvert.toReportVO(report));
+        return result;
+    }
+
+    private void progress(Consumer<String> progressConsumer, String stage) {
+        if (progressConsumer != null) {
+            progressConsumer.accept(stage);
+        }
     }
 
     private FinishInterviewVO prepareReportGeneration(InterviewSession session) {
