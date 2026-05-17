@@ -1,6 +1,7 @@
 package com.codecoachai.system.service;
 
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
+import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
 import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
 import java.util.List;
@@ -16,4 +17,6 @@ public interface SystemConfigService {
     void deleteConfig(Long id);
 
     AdminSystemOverviewVO overview();
+
+    AdminDashboardOverviewVO dashboardOverview();
 }

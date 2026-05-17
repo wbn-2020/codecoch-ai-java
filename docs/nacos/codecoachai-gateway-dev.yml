@@ -16,6 +16,10 @@ spring:
           uri: lb://codecoachai-user
           predicates:
             - Path=/users/**
+        - id: codecoachai-user-dashboard
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/dashboard/**
         - id: codecoachai-user-admin-users
           uri: lb://codecoachai-user
           predicates:
@@ -92,6 +96,10 @@ spring:
           uri: lb://codecoachai-system
           predicates:
             - Path=/admin/system/**
+        - id: codecoachai-system-admin-dashboard
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/dashboard/**
         - id: codecoachai-system-configs
           uri: lb://codecoachai-system
           predicates:

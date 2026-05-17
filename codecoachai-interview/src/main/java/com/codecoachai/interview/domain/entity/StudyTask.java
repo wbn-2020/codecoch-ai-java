@@ -2,6 +2,7 @@ package com.codecoachai.interview.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDate;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -13,6 +14,7 @@ public class StudyTask extends BaseEntity {
     private Long planId;
     private Long userId;
     private Integer stageNo;
+    private LocalDate plannedDate;
     private String stageTitle;
     private Integer taskOrder;
     private String knowledgePoint;

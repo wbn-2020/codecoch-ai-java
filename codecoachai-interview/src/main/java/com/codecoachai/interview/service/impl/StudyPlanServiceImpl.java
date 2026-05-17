@@ -120,7 +120,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         LocalDate targetDate = parseDailyViewDate(date);
         int dayIndex = inferDayIndex(plan, targetDate);
         List<StudyTask> tasks = taskEntities(plan.getId(), userId).stream()
-                .filter(task -> dayIndex == normalizeTaskDayIndex(task.getStageNo()))
+                .filter(task -> matchesDailyViewDate(task, targetDate, dayIndex))
                 .toList();
 
         int total = tasks.size();
@@ -285,6 +285,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 task.setPlanId(plan.getId());
                 task.setUserId(plan.getUserId());
                 task.setStageNo(stageNo);
+                task.setPlannedDate(plannedDate(plan, stageNo));
                 task.setStageTitle(stage.getStageTitle());
                 task.setTaskOrder(order++);
                 task.setKnowledgePoint(item.getKnowledgePoint());
@@ -424,6 +425,18 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return stageNo == null || stageNo < 1 ? 1 : stageNo;
     }
 
+    private boolean matchesDailyViewDate(StudyTask task, LocalDate targetDate, int fallbackDayIndex) {
+        if (task.getPlannedDate() != null) {
+            return task.getPlannedDate().equals(targetDate);
+        }
+        return fallbackDayIndex == normalizeTaskDayIndex(task.getStageNo());
+    }
+
+    private LocalDate plannedDate(StudyPlan plan, Integer stageNo) {
+        LocalDate startDate = plan.getCreatedAt() == null ? LocalDate.now() : plan.getCreatedAt().toLocalDate();
+        return startDate.plusDays(Math.max(0, normalizeTaskDayIndex(stageNo) - 1));
+    }
+
     private StudyPlanListVO toListVO(StudyPlan plan) {
         StudyPlanListVO vo = new StudyPlanListVO();
         vo.setId(plan.getId());
@@ -487,6 +500,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setId(task.getId());
         vo.setPlanId(task.getPlanId());
         vo.setStageNo(task.getStageNo());
+        vo.setPlannedDate(task.getPlannedDate());
         vo.setStageTitle(task.getStageTitle());
         vo.setTaskOrder(task.getTaskOrder());
         vo.setKnowledgePoint(task.getKnowledgePoint());
