@@ -4,10 +4,13 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
+import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
+import com.codecoachai.question.domain.dto.BatchQuestionReviewRejectDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewQueryDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewRejectDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
+import com.codecoachai.question.domain.vo.BatchQuestionReviewResultVO;
 import com.codecoachai.question.domain.vo.QuestionReviewDetailVO;
 import com.codecoachai.question.domain.vo.QuestionReviewListVO;
 import com.codecoachai.question.service.QuestionReviewService;
@@ -57,11 +60,27 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.approve(id, dto));
     }
 
+    @PostMapping("/admin/question-reviews/batch-approve")
+    @Operation(summary = "Batch approve AI question drafts", description = "Admin endpoint. Each draft reuses the single approve flow; failed items are returned without stopping the batch.")
+    public Result<BatchQuestionReviewResultVO> batchApprove(
+            @Valid @RequestBody BatchQuestionReviewApproveDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(questionReviewService.batchApprove(dto));
+    }
+
     @PostMapping("/admin/question-reviews/{id}/reject")
     @Operation(summary = "Reject AI question draft", description = "Admin endpoint. Rejected drafts stay out of the formal question table.")
     public Result<QuestionReviewDetailVO> reject(@PathVariable Long id,
                                                  @Valid @RequestBody QuestionReviewRejectDTO dto) {
         SecurityAssert.requireAdmin();
         return Result.success(questionReviewService.reject(id, dto));
+    }
+
+    @PostMapping("/admin/question-reviews/batch-reject")
+    @Operation(summary = "Batch reject AI question drafts", description = "Admin endpoint. Each draft reuses the single reject flow; failed items are returned without stopping the batch.")
+    public Result<BatchQuestionReviewResultVO> batchReject(
+            @Valid @RequestBody BatchQuestionReviewRejectDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(questionReviewService.batchReject(dto));
     }
 }

@@ -10,6 +10,8 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
+import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
+import com.codecoachai.question.domain.dto.BatchQuestionReviewRejectDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewQueryDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewRejectDTO;
@@ -21,6 +23,8 @@ import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.enums.QuestionReviewStatus;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
+import com.codecoachai.question.domain.vo.BatchQuestionReviewFailureVO;
+import com.codecoachai.question.domain.vo.BatchQuestionReviewResultVO;
 import com.codecoachai.question.domain.vo.QuestionReviewDetailVO;
 import com.codecoachai.question.domain.vo.QuestionReviewListVO;
 import com.codecoachai.question.feign.AiQuestionFeignClient;
@@ -46,7 +50,9 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -54,6 +60,7 @@ import org.springframework.util.StringUtils;
 public class QuestionReviewServiceImpl implements QuestionReviewService {
 
     private static final int MAX_GENERATE_COUNT = 20;
+    private static final int MAX_BATCH_REVIEW_COUNT = 100;
 
     private final AiQuestionFeignClient aiQuestionFeignClient;
     private final QuestionReviewMapper questionReviewMapper;
@@ -64,6 +71,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private final QuestionTagRelationMapper tagRelationMapper;
     private final QuestionDuplicateService questionDuplicateService;
     private final ObjectMapper objectMapper;
+    private final PlatformTransactionManager transactionManager;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -185,6 +193,28 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         return getReview(id);
     }
 
+    @Override
+    public BatchQuestionReviewResultVO batchApprove(BatchQuestionReviewApproveDTO dto) {
+        validateBatchReviewIds(dto == null ? null : dto.getReviewIds());
+        BatchQuestionReviewResultVO result = newBatchResult(dto.getReviewIds());
+        for (Long reviewId : dto.getReviewIds()) {
+            processBatchItem(result, reviewId, () -> approve(reviewId, dto.getApproveData()));
+        }
+        finishBatchResult(result);
+        return result;
+    }
+
+    @Override
+    public BatchQuestionReviewResultVO batchReject(BatchQuestionReviewRejectDTO dto) {
+        validateBatchReviewIds(dto == null ? null : dto.getReviewIds());
+        BatchQuestionReviewResultVO result = newBatchResult(dto.getReviewIds());
+        for (Long reviewId : dto.getReviewIds()) {
+            processBatchItem(result, reviewId, () -> reject(reviewId, toRejectDTO(dto.getRejectReason())));
+        }
+        finishBatchResult(result);
+        return result;
+    }
+
     private void validateGenerateRequest(AiQuestionGenerateRequestDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -193,6 +223,47 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         if (count < 1 || count > MAX_GENERATE_COUNT) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "count must be between 1 and 20");
         }
+    }
+
+    private void validateBatchReviewIds(List<Long> reviewIds) {
+        if (reviewIds == null || reviewIds.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds is required");
+        }
+        if (reviewIds.size() > MAX_BATCH_REVIEW_COUNT) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds must be at most 100");
+        }
+        if (reviewIds.stream().anyMatch(id -> id == null || id <= 0)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds contains invalid id");
+        }
+    }
+
+    private QuestionReviewRejectDTO toRejectDTO(String rejectReason) {
+        QuestionReviewRejectDTO rejectDTO = new QuestionReviewRejectDTO();
+        rejectDTO.setRejectReason(rejectReason);
+        return rejectDTO;
+    }
+
+    private BatchQuestionReviewResultVO newBatchResult(List<Long> reviewIds) {
+        BatchQuestionReviewResultVO result = new BatchQuestionReviewResultVO();
+        result.setTotal(reviewIds.size());
+        return result;
+    }
+
+    private void processBatchItem(BatchQuestionReviewResultVO result, Long reviewId, Runnable action) {
+        try {
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> action.run());
+            result.getSuccessIds().add(reviewId);
+        } catch (Exception ex) {
+            BatchQuestionReviewFailureVO failure = new BatchQuestionReviewFailureVO();
+            failure.setReviewId(reviewId);
+            failure.setReason(StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : "Question review failed");
+            result.getFailures().add(failure);
+        }
+    }
+
+    private void finishBatchResult(BatchQuestionReviewResultVO result) {
+        result.setSuccessCount(result.getSuccessIds().size());
+        result.setFailureCount(result.getFailures().size());
     }
 
     private GenerateQuestionDraftDTO toAiRequest(String batchId, Long adminUserId, AiQuestionGenerateRequestDTO dto) {
