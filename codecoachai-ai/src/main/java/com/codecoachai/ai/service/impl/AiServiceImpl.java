@@ -174,13 +174,15 @@ public class AiServiceImpl implements AiService {
                 vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "AI 追问无效，使用本地兜底追问")));
                 vo.setFollowUpValid(true);
             }
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
             EvaluateAnswerVO fallback = mockEvaluate(dto);
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
+            fallback.setAiCallLogId(logId);
             return fallback;
         }
     }
@@ -202,8 +204,9 @@ public class AiServiceImpl implements AiService {
                 vo.setRelatedToOriginalQuestion(true);
                 vo.setFollowUpValid(true);
             }
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
                     businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
             GenerateFollowUpVO fallback = new GenerateFollowUpVO();
@@ -211,8 +214,9 @@ public class AiServiceImpl implements AiService {
             fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
             fallback.setRelatedToOriginalQuestion(true);
             fallback.setFollowUpValid(true);
-            saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
+            fallback.setAiCallLogId(logId);
             return fallback;
         }
     }

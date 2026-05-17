@@ -5,6 +5,7 @@ import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.service.InterviewStreamService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,8 +40,16 @@ public class AiSseController {
 
     @PostMapping(value = "/interview-comment", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter interviewCommentByBody(@RequestParam Long sessionId,
-                                             @RequestBody SubmitInterviewAnswerDTO dto) {
+                                             @Valid @RequestBody SubmitInterviewAnswerDTO dto) {
         return interviewStreamService.streamAnswer(sessionId, dto);
+    }
+
+    @PostMapping(value = "/interview-answer-review", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "Stream interview answer review and follow-up progress",
+            description = "User-side text/event-stream endpoint for staged answer review/follow-up generation. The synchronous /interviews/{id}/answer API remains the fallback API.")
+    public SseEmitter interviewAnswerReview(@RequestParam Long interviewId,
+                                            @Valid @RequestBody SubmitInterviewAnswerDTO dto) {
+        return interviewStreamService.streamAnswer(interviewId, dto);
     }
 
     @GetMapping(value = "/report", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

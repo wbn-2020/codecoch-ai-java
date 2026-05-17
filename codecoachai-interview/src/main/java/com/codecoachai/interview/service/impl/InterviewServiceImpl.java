@@ -203,15 +203,30 @@ public class InterviewServiceImpl implements InterviewService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SubmitInterviewAnswerVO answer(Long id, SubmitInterviewAnswerDTO dto) {
+        return answerInternal(id, dto, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SubmitInterviewAnswerVO answerForSse(Long id, SubmitInterviewAnswerDTO dto, Consumer<String> progressConsumer) {
+        return answerInternal(id, dto, progressConsumer);
+    }
+
+    private SubmitInterviewAnswerVO answerInternal(Long id, SubmitInterviewAnswerDTO dto, Consumer<String> progressConsumer) {
+        progress(progressConsumer, "VALIDATE_REQUEST");
         InterviewSession session = getOwnedSession(id);
         if (!InterviewStatusEnum.WAITING_ANSWER.name().equals(session.getStatus())
                 && !InterviewStatusEnum.IN_PROGRESS.name().equals(session.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview is not waiting for answer");
         }
+        progress(progressConsumer, "LOAD_INTERVIEW");
         InterviewStage stage = stageMapper.selectById(session.getCurrentStageId());
         InterviewMessage currentAiQuestion = currentAiQuestionMessage(session);
         if (currentAiQuestion == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "No current question");
+        }
+        if (dto.getQuestionId() != null && !dto.getQuestionId().equals(currentAiQuestion.getQuestionId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question does not belong to current interview state");
         }
         InnerQuestionVO question = loadCurrentQuestion(session);
         InterviewMessage rootAiQuestion = rootQuestionMessage(currentAiQuestion);
@@ -221,11 +236,13 @@ public class InterviewServiceImpl implements InterviewService {
                 question == null ? null : question.getContent());
         int maxFollowUp = stage == null || stage.getMaxFollowUpCount() == null ? MAX_FOLLOW_UP_COUNT : stage.getMaxFollowUpCount();
 
-        saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
+        progress(progressConsumer, "SAVE_ANSWER");
+        InterviewMessage answerMessage = saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null, null);
         session.setStatus(InterviewStatusEnum.AI_EVALUATING.name());
         sessionMapper.updateById(session);
 
+        progress(progressConsumer, "BUILD_PROMPT");
         EvaluateAnswerDTO evaluateDTO = new EvaluateAnswerDTO();
         evaluateDTO.setQuestionId(question == null ? null : question.getId());
         evaluateDTO.setQuestionTitle(question == null ? null : question.getTitle());
@@ -243,23 +260,32 @@ public class InterviewServiceImpl implements InterviewService {
         evaluateDTO.setProjectContent(buildProjectContent(loadResume(session)));
         evaluateDTO.setIndustryContext(session.getIndustryContext());
         evaluateDTO.setHistorySummary(historySummary(session.getId()));
+        progress(progressConsumer, "CALL_AI_REVIEW");
         EvaluateAnswerVO evaluation = FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO));
 
-        saveMessage(session, stage, question, "AI", "EVALUATION", evaluation == null ? null : evaluation.getComment(),
+        progress(progressConsumer, "SAVE_REVIEW");
+        InterviewMessage evaluationMessage = saveMessage(session, stage, question, "AI", "EVALUATION", evaluation == null ? null : evaluation.getComment(),
                 evaluation == null ? null : evaluation.getScore(), evaluation == null ? null : evaluation.getComment(),
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null,
                 evaluation == null ? null : evaluation.getKnowledgePoints());
 
         NextActionEnum nextAction = decideNextAction(session, stage, evaluation);
+        if (NextActionEnum.FOLLOW_UP.equals(nextAction) && Boolean.FALSE.equals(dto.getNeedFollowUp())) {
+            nextAction = NextActionEnum.NEXT_QUESTION;
+        }
         CurrentQuestionVO nextQuestion = null;
+        InterviewMessage followUpMessage = null;
+        Long followUpAiCallLogId = null;
         if (NextActionEnum.FOLLOW_UP.equals(nextAction)) {
             String followUpQuestion = evaluation == null ? null : evaluation.getFollowUpQuestion();
             String followUpReason = evaluation == null ? null : evaluation.getFollowUpReason();
             if (!isValidFollowUp(followUpQuestion)) {
+                progress(progressConsumer, "GENERATE_FOLLOW_UP");
                 GenerateFollowUpVO followUp = FeignResultUtils.unwrap(aiFeignClient.followUp(buildFollowUpDTO(
                         question, stage, evaluateDTO, dto.getAnswerContent(), evaluation)));
                 followUpQuestion = followUp == null ? null : followUp.getFollowUpQuestion();
                 followUpReason = followUp == null ? followUpReason : firstText(followUp.getReason(), followUpReason);
+                followUpAiCallLogId = followUp == null ? null : followUp.getAiCallLogId();
             }
             if (evaluation != null) {
                 evaluation.setFollowUpQuestion(followUpQuestion);
@@ -268,7 +294,8 @@ public class InterviewServiceImpl implements InterviewService {
             }
             int nextFollowUpCount = safeInt(session.getCurrentFollowUpCount()) + 1;
             session.setCurrentFollowUpCount(nextFollowUpCount);
-            InterviewMessage followUpMessage = saveMessage(session, stage, question, "AI", "FOLLOW_UP",
+            progress(progressConsumer, "SAVE_FOLLOW_UP");
+            followUpMessage = saveMessage(session, stage, question, "AI", "FOLLOW_UP",
                     followUpQuestion, null, null,
                     currentAiQuestion.getId(), true, nextFollowUpCount,
                     followUpReason, evaluation == null ? null : evaluation.getKnowledgePoints());
@@ -300,6 +327,13 @@ public class InterviewServiceImpl implements InterviewService {
         sessionMapper.updateById(session);
 
         SubmitInterviewAnswerVO vo = new SubmitInterviewAnswerVO();
+        vo.setInterviewId(session.getId());
+        vo.setQuestionId(question == null ? session.getCurrentQuestionId() : question.getId());
+        vo.setAnswerId(answerMessage.getId());
+        vo.setEvaluationMessageId(evaluationMessage.getId());
+        vo.setFollowUpMessageId(followUpMessage == null ? null : followUpMessage.getId());
+        vo.setAiCallLogId(evaluation == null ? null : evaluation.getAiCallLogId());
+        vo.setFollowUpAiCallLogId(followUpAiCallLogId);
         vo.setScore(evaluation == null ? null : evaluation.getScore());
         vo.setComment(evaluation == null ? null : evaluation.getComment());
         vo.setNextAction(nextAction.name());

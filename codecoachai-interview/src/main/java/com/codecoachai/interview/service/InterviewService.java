@@ -26,6 +26,9 @@ public interface InterviewService {
 
     SubmitInterviewAnswerVO answer(Long id, SubmitInterviewAnswerDTO dto);
 
+    SubmitInterviewAnswerVO answerForSse(Long id, SubmitInterviewAnswerDTO dto,
+                                         java.util.function.Consumer<String> progressConsumer);
+
     FinishInterviewVO finish(Long id);
 
     FinishInterviewVO retryReport(Long id);
