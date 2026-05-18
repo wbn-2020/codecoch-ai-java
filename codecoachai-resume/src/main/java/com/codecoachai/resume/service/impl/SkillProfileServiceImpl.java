@@ -23,6 +23,8 @@ import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.enums.SkillProfileStatus;
+import com.codecoachai.resume.domain.vo.InnerSkillGapItemVO;
+import com.codecoachai.resume.domain.vo.InnerSkillProfileVO;
 import com.codecoachai.resume.domain.vo.SkillGapItemVO;
 import com.codecoachai.resume.domain.vo.SkillProfileDetailVO;
 import com.codecoachai.resume.domain.vo.SkillProfileGenerateVO;
@@ -145,6 +147,27 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             matchReportId = profile.getMatchReportId();
         }
         return generateFromMatchReport(matchReportId, userId);
+    }
+
+    @Override
+    public InnerSkillProfileVO getInnerProfile(Long profileId) {
+        Long userId = requireCurrentUserId();
+        SkillProfile profile = getOwnedProfile(profileId, userId);
+        return toInnerProfileVO(profile);
+    }
+
+    @Override
+    public InnerSkillProfileVO getInnerSuccessProfileByMatchReport(Long matchReportId) {
+        Long userId = requireCurrentUserId();
+        ResumeJobMatchReport report = getOwnedReport(matchReportId, userId);
+        SkillProfile profile = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+                .eq(SkillProfile::getMatchReportId, report.getId())
+                .eq(SkillProfile::getUserId, userId)
+                .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
+                .eq(SkillProfile::getDeleted, CommonConstants.NO)
+                .orderByDesc(SkillProfile::getUpdatedAt)
+                .last("limit 1"));
+        return profile == null ? null : toInnerProfileVO(profile);
     }
 
     private SkillProfileGenerateVO generateFromMatchReport(Long matchReportId, Long userId) {
@@ -474,6 +497,71 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         item.setGapLevel(gap.getGapLevel());
         item.setSeverity(gap.getSeverity());
         return item;
+    }
+
+    private InnerSkillProfileVO toInnerProfileVO(SkillProfile profile) {
+        TargetJob targetJob = targetJobMapper.selectById(profile.getTargetJobId());
+        InnerSkillProfileVO vo = new InnerSkillProfileVO();
+        vo.setProfileId(profile.getId());
+        vo.setUserId(profile.getUserId());
+        vo.setTargetJobId(profile.getTargetJobId());
+        vo.setMatchReportId(profile.getMatchReportId());
+        vo.setProfileName(profile.getProfileName());
+        vo.setOverallLevel(profile.getOverallLevel());
+        vo.setOverallScore(profile.getOverallScore());
+        vo.setSummary(profile.getSummary());
+        vo.setSourceType(profile.getSourceType());
+        vo.setSourceBizId(profile.getSourceBizId());
+        vo.setStatus(profile.getStatus());
+        vo.setRawResultJson(profile.getRawResultJson());
+        vo.setAiCallLogId(profile.getAiCallLogId());
+        vo.setErrorMessage(profile.getErrorMessage());
+        if (targetJob != null && CommonConstants.NO.equals(targetJob.getDeleted())) {
+            vo.setTargetJobTitle(targetJob.getJobTitle());
+            vo.setTargetCompanyName(targetJob.getCompanyName());
+            vo.setTargetJobLevel(targetJob.getJobLevel());
+            vo.setTargetJdSource(targetJob.getJdSource());
+        }
+        vo.setGapItems(innerGapItems(profile));
+        vo.setCreatedAt(profile.getCreatedAt());
+        vo.setUpdatedAt(profile.getUpdatedAt());
+        return vo;
+    }
+
+    private List<InnerSkillGapItemVO> innerGapItems(SkillProfile profile) {
+        return gapItemMapper.selectList(new LambdaQueryWrapper<SkillGapItem>()
+                        .eq(SkillGapItem::getProfileId, profile.getId())
+                        .eq(SkillGapItem::getUserId, profile.getUserId())
+                        .eq(SkillGapItem::getDeleted, CommonConstants.NO)
+                        .orderByAsc(SkillGapItem::getPriority)
+                        .orderByAsc(SkillGapItem::getId))
+                .stream()
+                .map(this::toInnerGapItemVO)
+                .toList();
+    }
+
+    private InnerSkillGapItemVO toInnerGapItemVO(SkillGapItem item) {
+        InnerSkillGapItemVO vo = new InnerSkillGapItemVO();
+        vo.setId(item.getId());
+        vo.setProfileId(item.getProfileId());
+        vo.setUserId(item.getUserId());
+        vo.setTargetJobId(item.getTargetJobId());
+        vo.setSkillName(item.getSkillName());
+        vo.setCategory(item.getCategory());
+        vo.setTargetLevel(item.getTargetLevel());
+        vo.setCurrentLevel(item.getCurrentLevel());
+        vo.setGapLevel(item.getGapLevel());
+        vo.setConfidence(item.getConfidence());
+        vo.setSeverity(item.getSeverity());
+        vo.setEvidenceSourcesJson(item.getEvidenceSourcesJson());
+        vo.setGapDescription(item.getGapDescription());
+        vo.setRecommendedActionsJson(item.getRecommendedActionsJson());
+        vo.setPriority(item.getPriority());
+        vo.setSourceType(item.getSourceType());
+        vo.setSourceBizId(item.getSourceBizId());
+        vo.setCreatedAt(item.getCreatedAt());
+        vo.setUpdatedAt(item.getUpdatedAt());
+        return vo;
     }
 
     private List<SkillGapItemVO> listGapItems(SkillProfile profile) {

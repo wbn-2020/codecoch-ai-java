@@ -8,6 +8,7 @@ import com.codecoachai.resume.domain.vo.SkillProfileDetailVO;
 import com.codecoachai.resume.domain.vo.SkillProfileGenerateVO;
 import com.codecoachai.resume.domain.vo.SkillProfileListVO;
 import com.codecoachai.resume.domain.vo.SkillProfileOverviewVO;
+import com.codecoachai.resume.domain.vo.InnerSkillProfileVO;
 
 public interface SkillProfileService {
 
@@ -20,4 +21,8 @@ public interface SkillProfileService {
     PageResult<SkillProfileListVO> listProfiles(SkillProfileQueryDTO query);
 
     SkillProfileGenerateVO refresh(SkillProfileRefreshDTO dto);
+
+    InnerSkillProfileVO getInnerProfile(Long profileId);
+
+    InnerSkillProfileVO getInnerSuccessProfileByMatchReport(Long matchReportId);
 }

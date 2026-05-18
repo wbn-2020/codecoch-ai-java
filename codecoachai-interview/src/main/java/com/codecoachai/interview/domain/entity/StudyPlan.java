@@ -13,6 +13,9 @@ public class StudyPlan extends BaseEntity {
     private Long userId;
     private String sourceType;
     private Long sourceId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private Long reportId;
     private Long sessionId;
     private Long resumeId;
@@ -23,6 +26,8 @@ public class StudyPlan extends BaseEntity {
     private String planSummary;
     private String planStatus;
     private Integer durationDays;
+    private Integer dailyMinutes;
+    private java.time.LocalDate startDate;
     private Long aiCallLogId;
     private String requestJson;
     private String resultJson;

@@ -8,6 +8,7 @@ import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
+import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
@@ -44,6 +45,8 @@ public interface AiService {
     ResumeOptimizeAiResponseVO optimizeResume(ResumeOptimizeAiRequestDTO dto);
 
     GenerateLearningPlanVO generateLearningPlan(GenerateLearningPlanDTO dto);
+
+    GenerateLearningPlanVO generateTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto);
 
     ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto);
 

@@ -9,6 +9,9 @@ public class StudyPlanDetailVO {
 
     private Long id;
     private Long reportId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private Long sessionId;
     private Long resumeId;
     private Long optimizeRecordId;
@@ -19,6 +22,8 @@ public class StudyPlanDetailVO {
     private String planSummary;
     private String planStatus;
     private Integer durationDays;
+    private Integer dailyMinutes;
+    private java.time.LocalDate startDate;
     private Long aiCallLogId;
     private String failureReason;
     private Integer totalTaskCount;

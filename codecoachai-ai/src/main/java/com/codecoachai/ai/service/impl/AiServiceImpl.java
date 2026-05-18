@@ -11,6 +11,7 @@ import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
+import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
@@ -71,6 +72,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
     private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
+    private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -332,6 +334,35 @@ public class AiServiceImpl implements AiService {
     }
 
     @Override
+    public GenerateLearningPlanVO generateTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto) {
+        validateTargetedStudyPlanDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_TARGETED_STUDY_PLAN_GENERATE,
+                targetedStudyPlanPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateLearningPlanVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockTargetedStudyPlan(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                vo = parseTargetedStudyPlan(rawResponse, dto);
+            }
+            Long logId = saveLog(promptResult, rawResponse,
+                    businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
+                    start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
     public ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto) {
         validateParseJobDescriptionDTO(dto);
         long start = System.currentTimeMillis();
@@ -540,6 +571,30 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateTargetedStudyPlanDTO(GenerateTargetedStudyPlanDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getLearningPlanId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "learningPlanId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getSkillProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillProfileId is required");
+        }
+        if (!StringUtils.hasText(dto.getSkillGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+        }
+        if (dto.getAvailableDays() == null || dto.getAvailableDays() < 1 || dto.getAvailableDays() > 60) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "availableDays must be between 1 and 60");
+        }
+        if (dto.getDailyMinutes() == null || dto.getDailyMinutes() < 15 || dto.getDailyMinutes() > 480) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dailyMinutes must be between 15 and 480");
+        }
+    }
+
     private BusinessException toBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
@@ -633,6 +688,10 @@ public class AiServiceImpl implements AiService {
 
     private String learningPlanPromptContent() {
         return defaultLearningPlanPrompt();
+    }
+
+    private String targetedStudyPlanPromptContent() {
+        return defaultTargetedStudyPlanPrompt();
     }
 
     private String industryContextBlock(String industryContext) {
@@ -884,6 +943,24 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(GenerateTargetedStudyPlanDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("learningPlanId", dto.getLearningPlanId() == null ? "" : String.valueOf(dto.getLearningPlanId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("skillProfileId", dto.getSkillProfileId() == null ? "" : String.valueOf(dto.getSkillProfileId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("skillProfileJson", dto.getSkillProfileJson());
+        values.put("skillGapsJson", dto.getSkillGapsJson());
+        values.put("availableDays", dto.getAvailableDays() == null ? "14" : String.valueOf(dto.getAvailableDays()));
+        values.put("dailyMinutes", dto.getDailyMinutes() == null ? "60" : String.valueOf(dto.getDailyMinutes()));
+        values.put("startDate", dto.getStartDate() == null ? "" : dto.getStartDate().toString());
+        values.put("existingStudyPlansJson", dto.getExistingStudyPlansJson());
+        values.put("planTitle", dto.getPlanTitle());
+        return values;
+    }
+
     private PracticeReviewVO parsePracticeReview(String raw, PracticeReviewDTO dto) {
         JsonNode json = parseJson(raw);
         PracticeReviewVO vo = new PracticeReviewVO();
@@ -1041,6 +1118,15 @@ public class AiServiceImpl implements AiService {
 
     private String requireLearningText(JsonNode json, String fieldName) {
         String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI learning plan item missing field: " + fieldName);
+        }
+        return value;
+    }
+
+    private String requireLearningText(JsonNode json, String fieldName, String aliasFieldName) {
+        String value = firstText(json.path(fieldName).asText(null), json.path(aliasFieldName).asText(null));
         if (!StringUtils.hasText(value)) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI learning plan item missing field: " + fieldName);
@@ -1230,14 +1316,21 @@ public class AiServiceImpl implements AiService {
                     throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan item must be object");
                 }
                 GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+                item.setDayOffset(itemNode.path("dayOffset").isNumber() ? itemNode.path("dayOffset").asInt() : null);
                 item.setKnowledgePoint(itemNode.path("knowledgePoint").asText(null));
-                item.setTaskTitle(requireLearningText(itemNode, "taskTitle"));
-                item.setTaskDescription(requireLearningText(itemNode, "taskDescription"));
+                item.setSkillName(itemNode.path("skillName").asText(null));
+                item.setSourceGapId(itemNode.path("sourceGapId").asText(null));
+                item.setTaskTitle(requireLearningText(itemNode, "taskTitle", "title"));
+                item.setTaskDescription(requireLearningText(itemNode, "taskDescription", "description"));
                 item.setTaskType(normalizeTaskType(itemNode.path("taskType").asText(null)));
                 item.setPriority(normalizePriority(itemNode.path("priority").asText(null)));
                 item.setEstimatedHours(itemNode.path("estimatedHours").isNumber()
                         ? Math.max(1, itemNode.path("estimatedHours").asInt())
                         : 1);
+                item.setEstimatedMinutes(itemNode.path("estimatedMinutes").isNumber()
+                        ? Math.max(1, itemNode.path("estimatedMinutes").asInt())
+                        : null);
+                item.setAcceptance(itemNode.path("acceptance").asText(null));
                 item.setRelatedQuestionIds(longArray(itemNode.path("relatedQuestionIds")));
                 item.setRelatedTags(textArray(itemNode.path("relatedTags")));
                 item.setResources(textArray(itemNode.path("resources")));
@@ -1247,6 +1340,19 @@ public class AiServiceImpl implements AiService {
             stages.add(stage);
         }
         vo.setStages(stages);
+        return vo;
+    }
+
+    private GenerateLearningPlanVO parseTargetedStudyPlan(String raw, GenerateTargetedStudyPlanDTO dto) {
+        GenerateLearningPlanDTO fallback = new GenerateLearningPlanDTO();
+        fallback.setLearningPlanId(dto.getLearningPlanId());
+        fallback.setUserId(dto.getUserId());
+        fallback.setReportId(firstLong(dto.getMatchReportId(), dto.getSkillProfileId()));
+        fallback.setTargetPosition(dto.getPlanTitle());
+        fallback.setExpectedDurationDays(dto.getAvailableDays());
+        GenerateLearningPlanVO vo = parseLearningPlan(raw, fallback);
+        vo.setPlanTitle(firstText(vo.getPlanTitle(), dto.getPlanTitle(), defaultTargetedStudyPlanTitle(dto)));
+        vo.setDurationDays(dto.getAvailableDays());
         return vo;
     }
 
@@ -1528,6 +1634,52 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private GenerateLearningPlanVO mockTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto) {
+        GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
+        int duration = dto == null || dto.getAvailableDays() == null ? 14 : dto.getAvailableDays();
+        int minutes = dto == null || dto.getDailyMinutes() == null ? 60 : dto.getDailyMinutes();
+        vo.setPlanTitle(defaultTargetedStudyPlanTitle(dto));
+        vo.setPlanSummary("A targeted " + duration + "-day plan generated from selected skill gaps.");
+        vo.setDurationDays(duration);
+
+        List<JsonNode> gaps = readArrayNodes(dto == null ? null : dto.getSkillGapsJson());
+        if (gaps.isEmpty()) {
+            GenerateLearningPlanVO.ItemVO item = learningItem("Redis",
+                    "Review Redis cache penetration, breakdown, and avalanche",
+                    "Summarize causes, protection strategies, and project-ready examples.",
+                    "KNOWLEDGE_REVIEW", "HIGH", Math.max(1, minutes / 60), List.of("Redis"));
+            item.setDayOffset(1);
+            item.setSkillName("Redis");
+            item.setSourceGapId(null);
+            item.setEstimatedMinutes(minutes);
+            item.setAcceptance("Explain at least two cache protection strategies with project examples.");
+            vo.setStages(List.of(learningStage(1, "Targeted gap repair", List.of(item))));
+            return vo;
+        }
+
+        List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
+        int day = 1;
+        for (JsonNode gap : gaps.stream().limit(5).toList()) {
+            String skillName = firstText(gap.path("skillName").asText(null), "Java backend skill");
+            GenerateLearningPlanVO.ItemVO item = learningItem(skillName,
+                    "Strengthen " + skillName + " interview expression",
+                    firstText(gap.path("gapDescription").asText(null),
+                            "Review weak concepts, summarize scenarios, and prepare project evidence."),
+                    "KNOWLEDGE_REVIEW",
+                    firstText(gap.path("severity").asText(null), "HIGH"),
+                    Math.max(1, minutes / 60),
+                    List.of(skillName));
+            item.setDayOffset(day++);
+            item.setSkillName(skillName);
+            item.setSourceGapId(gap.path("id").asText(null));
+            item.setEstimatedMinutes(minutes);
+            item.setAcceptance("Can explain " + skillName + " with one concrete project or troubleshooting example.");
+            items.add(item);
+        }
+        vo.setStages(List.of(learningStage(1, "Targeted gap repair", items)));
+        return vo;
+    }
+
     private GenerateLearningPlanVO.StageVO learningStage(int stageNo, String stageTitle,
                                                         List<GenerateLearningPlanVO.ItemVO> items) {
         GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
@@ -1548,6 +1700,7 @@ public class AiServiceImpl implements AiService {
         item.setTaskType(taskType);
         item.setPriority(priority);
         item.setEstimatedHours(estimatedHours);
+        item.setEstimatedMinutes(estimatedHours * 60);
         item.setRelatedQuestionIds(List.of());
         item.setRelatedTags(tags);
         item.setResources(List.of());
@@ -2544,10 +2697,82 @@ public class AiServiceImpl implements AiService {
                 """;
     }
 
+    private String defaultTargetedStudyPlanPrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a gap-driven study plan for the target job.
+                learningPlanId: {{learningPlanId}}
+                userId: {{userId}}
+                targetJobId: {{targetJobId}}
+                skillProfileId: {{skillProfileId}}
+                matchReportId: {{matchReportId}}
+                requestedPlanTitle: {{planTitle}}
+                availableDays: {{availableDays}}
+                dailyMinutes: {{dailyMinutes}}
+                startDate: {{startDate}}
+                targetJob:
+                {{targetJobJson}}
+                skillProfile:
+                {{skillProfileJson}}
+                selectedSkillGaps:
+                {{skillGapsJson}}
+                existingStudyPlans:
+                {{existingStudyPlansJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                The plan must directly address the selected skill gaps and must not invent candidate experience.
+                Top-level fields must be planTitle, planSummary, durationDays, stages.
+                stages must be an array. Each stage must contain stageNo, stageTitle, items.
+                items must be an array. Each item must contain dayOffset, title or taskTitle, description or taskDescription,
+                skillName, sourceGapId, priority, estimatedMinutes, acceptance, relatedTags, and resources.
+                taskType must be one of KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE, RESUME_IMPROVEMENT.
+                priority must be one of HIGH, MEDIUM, LOW.
+                sourceGapId must use the original selected skill gap id as a string.
+                Example:
+                {"planTitle":"Java backend Redis gap repair plan","planSummary":"Repair Redis first, then consolidate MQ.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Redis repair","items":[{"dayOffset":1,"skillName":"Redis","sourceGapId":"12","taskTitle":"Redis cache penetration, breakdown and avalanche","taskDescription":"Summarize causes, protections, and project expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedMinutes":60,"acceptance":"Can explain at least two cache protection strategies with project examples.","relatedTags":["Redis"],"resources":[]}]}]}
+                """;
+    }
+
     private String defaultLearningPlanTitle(GenerateLearningPlanDTO dto) {
         String target = firstText(dto == null ? null : dto.getTargetPosition(), "Java backend");
         int duration = normalizeDuration(dto == null ? null : dto.getExpectedDurationDays());
         return target + " " + duration + "-day study plan";
+    }
+
+    private String defaultTargetedStudyPlanTitle(GenerateTargetedStudyPlanDTO dto) {
+        if (dto != null && StringUtils.hasText(dto.getPlanTitle())) {
+            return dto.getPlanTitle();
+        }
+        int duration = dto == null || dto.getAvailableDays() == null ? 14 : dto.getAvailableDays();
+        return "Gap-driven " + duration + "-day study plan";
+    }
+
+    private Long firstLong(Long... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Long value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private List<JsonNode> readArrayNodes(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(json);
+            if (!node.isArray()) {
+                return List.of();
+            }
+            List<JsonNode> values = new java.util.ArrayList<>();
+            node.forEach(values::add);
+            return values;
+        } catch (Exception ex) {
+            return List.of();
+        }
     }
 
     private String firstText(String... values) {

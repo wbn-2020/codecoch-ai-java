@@ -2,6 +2,8 @@ package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromGapDTO;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromMatchReportDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyTaskStatusUpdateDTO;
@@ -9,6 +11,8 @@ import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
+import com.codecoachai.interview.domain.vo.StudyPlanSkillRelationVO;
+import com.codecoachai.interview.domain.vo.StudyPlanSourceTypeVO;
 import com.codecoachai.interview.domain.vo.StudyTaskVO;
 import com.codecoachai.interview.service.StudyPlanService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -39,6 +43,22 @@ public class StudyPlanController {
         return Result.success(studyPlanService.generate(dto));
     }
 
+    @PostMapping("/study-plans/generate-from-gap")
+    public Result<StudyPlanGenerateVO> generateFromGap(@Valid @RequestBody StudyPlanGenerateFromGapDTO dto) {
+        return Result.success(studyPlanService.generateFromGap(dto));
+    }
+
+    @PostMapping("/study-plans/generate-from-match-report")
+    public Result<StudyPlanGenerateVO> generateFromMatchReport(
+            @Valid @RequestBody StudyPlanGenerateFromMatchReportDTO dto) {
+        return Result.success(studyPlanService.generateFromMatchReport(dto));
+    }
+
+    @GetMapping("/study-plans/source-types")
+    public Result<List<StudyPlanSourceTypeVO>> sourceTypes() {
+        return Result.success(studyPlanService.sourceTypes());
+    }
+
     @GetMapping("/study-plans")
     public Result<PageResult<StudyPlanListVO>> list(@ModelAttribute StudyPlanQueryDTO dto) {
         return Result.success(studyPlanService.list(dto));
@@ -52,6 +72,11 @@ public class StudyPlanController {
     @GetMapping("/study-plans/{id}/tasks")
     public Result<List<StudyTaskVO>> tasks(@PathVariable Long id) {
         return Result.success(studyPlanService.tasks(id));
+    }
+
+    @GetMapping("/study-plans/{id}/skill-relations")
+    public Result<List<StudyPlanSkillRelationVO>> skillRelations(@PathVariable Long id) {
+        return Result.success(studyPlanService.skillRelations(id));
     }
 
     @GetMapping("/study-plans/{planId}/daily-view")

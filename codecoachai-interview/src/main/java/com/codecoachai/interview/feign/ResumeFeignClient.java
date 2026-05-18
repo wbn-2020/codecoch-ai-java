@@ -1,6 +1,7 @@
 package com.codecoachai.interview.feign;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeOptimizeRecordVO;
 import org.springframework.cloud.openfeign.FeignClient;
@@ -18,4 +19,10 @@ public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/optimize-records/{recordId}")
     Result<InnerResumeOptimizeRecordVO> getOptimizeRecord(@PathVariable("recordId") Long recordId);
+
+    @GetMapping("/inner/skill-profiles/{profileId}")
+    Result<InnerSkillProfileVO> getSkillProfile(@PathVariable("profileId") Long profileId);
+
+    @GetMapping("/inner/skill-profiles/by-match-report/{matchReportId}")
+    Result<InnerSkillProfileVO> getSuccessSkillProfileByMatchReport(@PathVariable("matchReportId") Long matchReportId);
 }

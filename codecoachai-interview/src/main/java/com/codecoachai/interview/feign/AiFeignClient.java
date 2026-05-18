@@ -6,6 +6,7 @@ import com.codecoachai.interview.feign.dto.GenerateFollowUpDTO;
 import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.interview.feign.dto.GenerateLearningPlanDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
+import com.codecoachai.interview.feign.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
@@ -32,4 +33,7 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/learning-plans/generate")
     Result<GenerateLearningPlanVO> generateLearningPlan(@RequestBody GenerateLearningPlanDTO dto);
+
+    @PostMapping("/inner/ai/study-plans/generate-from-gap")
+    Result<GenerateLearningPlanVO> generateTargetedStudyPlan(@RequestBody GenerateTargetedStudyPlanDTO dto);
 }
