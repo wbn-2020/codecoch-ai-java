@@ -32,6 +32,10 @@ spring:
           uri: lb://codecoachai-question
           predicates:
             - Path=/questions/**
+        - id: codecoachai-question-recommendations
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/question-recommendations/**
         - id: codecoachai-question-practice
           uri: lb://codecoachai-question
           predicates:

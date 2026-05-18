@@ -9,6 +9,7 @@ import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
+import com.codecoachai.ai.domain.dto.GenerateQuestionRecommendationDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
@@ -24,12 +25,14 @@ import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
+import com.codecoachai.ai.domain.vo.GenerateQuestionRecommendationVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseJobDescriptionVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
 import com.codecoachai.ai.domain.vo.PracticeReviewVO;
 import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
+import com.codecoachai.ai.domain.vo.QuestionRecommendationItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.service.AiService;
@@ -73,6 +76,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
     private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
     private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
+    private static final String SCENE_TARGETED_QUESTION_RECOMMEND = "TARGETED_QUESTION_RECOMMEND";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -134,6 +138,35 @@ public class AiServiceImpl implements AiService {
                 throw businessException;
             }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "AI question generation failed"));
+        }
+    }
+
+    @Override
+    public GenerateQuestionRecommendationVO generateQuestionRecommendations(GenerateQuestionRecommendationDTO dto) {
+        validateQuestionRecommendationDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_TARGETED_QUESTION_RECOMMEND,
+                questionRecommendationPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateQuestionRecommendationVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockQuestionRecommendations(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                vo = parseQuestionRecommendations(rawResponse, dto);
+            }
+            Long logId = saveLog(promptResult, rawResponse, businessId(dto.getBatchId()),
+                    start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setBatchId(dto.getBatchId());
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(rawResponse);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getBatchId()),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
         }
     }
 
@@ -553,6 +586,25 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateQuestionRecommendationDTO(GenerateQuestionRecommendationDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getBatchId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        int count = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        if (count < 1 || count > 20) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionCount must be between 1 and 20");
+        }
+        if (!StringUtils.hasText(dto.getSkillGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+        }
+    }
+
     private void validateLearningPlanDTO(GenerateLearningPlanDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -692,6 +744,10 @@ public class AiServiceImpl implements AiService {
 
     private String targetedStudyPlanPromptContent() {
         return defaultTargetedStudyPlanPrompt();
+    }
+
+    private String questionRecommendationPromptContent() {
+        return defaultQuestionRecommendationPrompt();
     }
 
     private String industryContextBlock(String industryContext) {
@@ -904,6 +960,28 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(GenerateQuestionRecommendationDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("batchId", dto.getBatchId() == null ? "" : String.valueOf(dto.getBatchId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("sourceType", dto.getSourceType());
+        values.put("sourceId", dto.getSourceId() == null ? "" : String.valueOf(dto.getSourceId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("skillProfileId", dto.getSkillProfileId() == null ? "" : String.valueOf(dto.getSkillProfileId()));
+        values.put("studyPlanId", dto.getStudyPlanId() == null ? "" : String.valueOf(dto.getStudyPlanId()));
+        values.put("strategy", firstText(dto.getStrategy(), "GAP_PRIORITY"));
+        values.put("questionCount", String.valueOf(dto.getQuestionCount() == null ? 5 : dto.getQuestionCount()));
+        values.put("difficultyPreference", firstText(dto.getDifficultyPreference(), "MEDIUM"));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("matchReportJson", dto.getMatchReportJson());
+        values.put("skillProfileJson", dto.getSkillProfileJson());
+        values.put("skillGapsJson", dto.getSkillGapsJson());
+        values.put("studyPlanJson", dto.getStudyPlanJson());
+        values.put("studyTasksJson", dto.getStudyTasksJson());
+        return values;
+    }
+
     private Map<String, String> variables(PracticeReviewDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("recordId", dto.getRecordId() == null ? "" : String.valueOf(dto.getRecordId()));
@@ -1107,11 +1185,62 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private GenerateQuestionRecommendationVO parseQuestionRecommendations(String raw,
+                                                                          GenerateQuestionRecommendationDTO dto) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response must be a JSON object");
+        }
+        JsonNode questionsNode = json.path("questions");
+        if (!questionsNode.isArray() || questionsNode.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response missing questions array");
+        }
+        List<QuestionRecommendationItemVO> questions = new java.util.ArrayList<>();
+        int limit = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        for (JsonNode item : questionsNode) {
+            if (questions.size() >= limit) {
+                break;
+            }
+            QuestionRecommendationItemVO question = new QuestionRecommendationItemVO();
+            question.setTitle(requireRecommendationText(item, "title"));
+            question.setContent(requireRecommendationText(item, "content"));
+            question.setQuestionType(firstText(item.path("questionType").asText(null), "SHORT_ANSWER"));
+            question.setDifficulty(firstText(item.path("difficulty").asText(null),
+                    dto.getDifficultyPreference(), "MEDIUM"));
+            question.setSkillCode(item.path("skillCode").asText(null));
+            question.setSkillName(firstText(item.path("skillName").asText(null), item.path("knowledgePoint").asText(null)));
+            question.setGapSeverity(firstText(item.path("gapSeverity").asText(null), item.path("severity").asText(null)));
+            question.setRecommendReason(requireRecommendationText(item, "recommendReason"));
+            question.setAnswerHint(firstText(item.path("answerHint").asText(null), item.path("referenceAnswer").asText(null)));
+            question.setEvaluatePoints(firstText(item.path("evaluatePoints").asText(null), item.path("analysis").asText(null)));
+            questions.add(question);
+        }
+        if (questions.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response contains no valid questions");
+        }
+        GenerateQuestionRecommendationVO vo = new GenerateQuestionRecommendationVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
+        return vo;
+    }
+
     private String requireText(JsonNode json, String fieldName) {
         String value = json.path(fieldName).asText(null);
         if (!StringUtils.hasText(value)) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI question generation item missing field: " + fieldName);
+        }
+        return value;
+    }
+
+    private String requireRecommendationText(JsonNode json, String fieldName) {
+        String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation item missing field: " + fieldName);
         }
         return value;
     }
@@ -1551,6 +1680,46 @@ public class AiServiceImpl implements AiService {
         vo.setBatchId(dto.getBatchId());
         vo.setQuestions(questions);
         return vo;
+    }
+
+    private GenerateQuestionRecommendationVO mockQuestionRecommendations(GenerateQuestionRecommendationDTO dto) {
+        int count = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        String difficulty = firstText(dto.getDifficultyPreference(), "MEDIUM");
+        List<String> skills = extractSkillNames(dto.getSkillGapsJson());
+        if (skills.isEmpty()) {
+            skills = List.of("Redis", "Spring Boot", "MySQL");
+        }
+        List<QuestionRecommendationItemVO> questions = new java.util.ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            String skill = skills.get((i - 1) % skills.size());
+            QuestionRecommendationItemVO item = new QuestionRecommendationItemVO();
+            item.setTitle(skill + " targeted gap practice question " + i);
+            item.setContent("Explain a production scenario for " + skill
+                    + ", including core mechanism, failure cases, troubleshooting, and tradeoffs.");
+            item.setQuestionType("SHORT_ANSWER");
+            item.setDifficulty(difficulty);
+            item.setSkillName(skill);
+            item.setGapSeverity("HIGH");
+            item.setRecommendReason("Recommended because this skill is marked as a target-job gap.");
+            item.setAnswerHint("Cover principle, scenario, boundary condition, and one project example.");
+            item.setEvaluatePoints("Mechanism accuracy; production scenario; risk handling; project evidence.");
+            questions.add(item);
+        }
+        GenerateQuestionRecommendationVO vo = new GenerateQuestionRecommendationVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
+        return vo;
+    }
+
+    private List<String> extractSkillNames(String skillGapsJson) {
+        List<String> skills = new java.util.ArrayList<>();
+        for (JsonNode gap : readArrayNodes(skillGapsJson)) {
+            String skill = firstText(gap.path("skillName").asText(null), gap.path("name").asText(null));
+            if (StringUtils.hasText(skill) && !skills.contains(skill)) {
+                skills.add(skill);
+            }
+        }
+        return skills;
     }
 
     private EvaluateAnswerVO mockEvaluate(EvaluateAnswerDTO dto) {
@@ -2729,6 +2898,46 @@ public class AiServiceImpl implements AiService {
                 sourceGapId must use the original selected skill gap id as a string.
                 Example:
                 {"planTitle":"Java backend Redis gap repair plan","planSummary":"Repair Redis first, then consolidate MQ.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Redis repair","items":[{"dayOffset":1,"skillName":"Redis","sourceGapId":"12","taskTitle":"Redis cache penetration, breakdown and avalanche","taskDescription":"Summarize causes, protections, and project expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedMinutes":60,"acceptance":"Can explain at least two cache protection strategies with project examples.","relatedTags":["Redis"],"resources":[]}]}]}
+                """;
+    }
+
+    private String defaultQuestionRecommendationPrompt() {
+        return """
+                You are a senior Java backend interview training coach. Generate target-job question recommendations.
+                batchId: {{batchId}}
+                userId: {{userId}}
+                sourceType: {{sourceType}}
+                sourceId: {{sourceId}}
+                targetJobId: {{targetJobId}}
+                matchReportId: {{matchReportId}}
+                skillProfileId: {{skillProfileId}}
+                studyPlanId: {{studyPlanId}}
+                strategy: {{strategy}}
+                questionCount: {{questionCount}}
+                difficultyPreference: {{difficultyPreference}}
+                targetJob:
+                {{targetJobJson}}
+                matchReport:
+                {{matchReportJson}}
+                skillProfile:
+                {{skillProfileJson}}
+                skillGaps:
+                {{skillGapsJson}}
+                studyPlan:
+                {{studyPlanJson}}
+                studyTasks:
+                {{studyTasksJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Top-level field must be questions.
+                questions must be an array with exactly questionCount items when possible.
+                Each item must contain title, content, questionType, difficulty, skillName, gapSeverity,
+                recommendReason, answerHint, and evaluatePoints.
+                questionType should be SHORT_ANSWER unless a coding or scenario question is clearly better.
+                difficulty must follow difficultyPreference unless the gap severity requires adjustment.
+                Recommendations must directly map to skillGaps or studyTasks and must not invent candidate experience.
+                Example:
+                {"questions":[{"title":"Redis cache penetration production handling","content":"Explain how to prevent Redis cache penetration in a Java backend service and how you would verify the fix.","questionType":"SHORT_ANSWER","difficulty":"MEDIUM","skillName":"Redis","gapSeverity":"HIGH","recommendReason":"Redis is a high-severity target-job gap.","answerHint":"Cover Bloom filter, null cache, parameter validation, monitoring, and project tradeoffs.","evaluatePoints":"Mechanism accuracy; production scenario; boundary cases; monitoring and fallback."}]}
                 """;
     }
 

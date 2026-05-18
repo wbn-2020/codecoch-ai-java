@@ -7,6 +7,7 @@ import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyTaskStatusUpdateDTO;
 import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
+import com.codecoachai.interview.domain.vo.InnerStudyPlanVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
@@ -28,6 +29,8 @@ public interface StudyPlanService {
     PageResult<StudyPlanListVO> list(StudyPlanQueryDTO dto);
 
     StudyPlanDetailVO detail(Long id);
+
+    InnerStudyPlanVO getInnerPlan(Long id);
 
     List<StudyTaskVO> tasks(Long planId);
 

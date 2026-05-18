@@ -821,6 +821,65 @@ CREATE TABLE IF NOT EXISTS study_plan_skill_relation (
   KEY idx_spsr_plan_gap (study_plan_id, skill_gap_item_id, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS question_recommendation_batch (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  source_type VARCHAR(64) NOT NULL COMMENT 'recommendation source type',
+  source_id BIGINT DEFAULT NULL COMMENT 'source business id',
+  job_target_id BIGINT DEFAULT NULL COMMENT 'target_job id',
+  match_report_id BIGINT DEFAULT NULL COMMENT 'resume_job_match_report id',
+  skill_profile_id BIGINT DEFAULT NULL COMMENT 'skill_profile id',
+  study_plan_id BIGINT DEFAULT NULL COMMENT 'study_plan id',
+  strategy VARCHAR(64) NOT NULL DEFAULT 'GAP_PRIORITY' COMMENT 'recommendation strategy',
+  question_count INT NOT NULL DEFAULT 0 COMMENT 'recommended question count',
+  status VARCHAR(32) NOT NULL DEFAULT 'GENERATING' COMMENT 'batch status',
+  ai_call_log_id BIGINT DEFAULT NULL COMMENT 'ai_call_log id',
+  request_json LONGTEXT DEFAULT NULL COMMENT 'request snapshot JSON',
+  result_json LONGTEXT DEFAULT NULL COMMENT 'AI result JSON',
+  error_message VARCHAR(1000) DEFAULT NULL COMMENT 'error message',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_qrb_user (user_id, deleted),
+  KEY idx_qrb_source (source_type, source_id, deleted),
+  KEY idx_qrb_target_job (job_target_id, deleted),
+  KEY idx_qrb_match_report (match_report_id, deleted),
+  KEY idx_qrb_skill_profile (skill_profile_id, deleted),
+  KEY idx_qrb_study_plan (study_plan_id, deleted),
+  KEY idx_qrb_status (status, deleted),
+  KEY idx_qrb_ai_log (ai_call_log_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 question recommendation batch';
+
+CREATE TABLE IF NOT EXISTS question_recommendation_item (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  batch_id BIGINT NOT NULL COMMENT 'question_recommendation_batch id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  question_id BIGINT DEFAULT NULL COMMENT 'existing question id',
+  question_title VARCHAR(255) NOT NULL COMMENT 'question title',
+  question_content LONGTEXT DEFAULT NULL COMMENT 'question content',
+  question_type VARCHAR(64) DEFAULT NULL COMMENT 'question type',
+  difficulty VARCHAR(32) DEFAULT NULL COMMENT 'question difficulty',
+  skill_code VARCHAR(64) DEFAULT NULL COMMENT 'skill code',
+  skill_name VARCHAR(128) DEFAULT NULL COMMENT 'skill name',
+  gap_severity VARCHAR(32) DEFAULT NULL COMMENT 'gap severity',
+  recommend_reason VARCHAR(1000) DEFAULT NULL COMMENT 'recommend reason',
+  answer_hint LONGTEXT DEFAULT NULL COMMENT 'answer hint',
+  evaluate_points LONGTEXT DEFAULT NULL COMMENT 'evaluate points',
+  sort_order INT NOT NULL DEFAULT 0 COMMENT 'sort order',
+  practice_status VARCHAR(32) NOT NULL DEFAULT 'UNPRACTICED' COMMENT 'practice status',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_qri_batch (batch_id, deleted),
+  KEY idx_qri_user (user_id, deleted),
+  KEY idx_qri_question (question_id, deleted),
+  KEY idx_qri_skill (skill_name, deleted),
+  KEY idx_qri_practice_status (practice_status, deleted),
+  KEY idx_qri_batch_order (batch_id, sort_order, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 question recommendation item';
+
 CREATE TABLE IF NOT EXISTS system_config (
   id BIGINT NOT NULL AUTO_INCREMENT,
   config_key VARCHAR(128) NOT NULL,
@@ -944,6 +1003,10 @@ WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'SKILL_GAP_ANALYZE
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
 SELECT 'TARGETED_STUDY_PLAN_GENERATE', 'Targeted Study Plan Generate', 'Targeted Study Plan Generate', 'V3 gap-driven study plan generation prompt', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources.', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources. Do not output Markdown, code fences, explanations, or invented candidate experience.', 'learningPlanId,userId,targetJobId,skillProfileId,matchReportId,targetJobJson,skillProfileJson,skillGapsJson,availableDays,dailyMinutes,startDate,existingStudyPlansJson,planTitle', 'v3-be-4', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'TARGETED_STUDY_PLAN_GENERATE');
+
+INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
+SELECT 'TARGETED_QUESTION_RECOMMEND', 'Targeted Question Recommend', 'Targeted Question Recommend', 'V3 gap-driven question recommendation prompt', 'You are a senior Java backend interview training coach. Generate target-job question recommendations from targetJobJson, matchReportJson, skillProfileJson, skillGapsJson, studyPlanJson and studyTasksJson. Output only one JSON object with questions array. Each item must contain title, content, questionType, difficulty, skillName, gapSeverity, recommendReason, answerHint and evaluatePoints.', 'You are a senior Java backend interview training coach. Generate target-job question recommendations from targetJobJson, matchReportJson, skillProfileJson, skillGapsJson, studyPlanJson and studyTasksJson. Output only one JSON object with questions array. Each item must contain title, content, questionType, difficulty, skillName, gapSeverity, recommendReason, answerHint and evaluatePoints. Do not output Markdown, code fences, explanations, or invented candidate experience.', 'batchId,userId,sourceType,sourceId,targetJobId,matchReportId,skillProfileId,studyPlanId,strategy,questionCount,difficultyPreference,targetJobJson,matchReportJson,skillProfileJson,skillGapsJson,studyPlanJson,studyTasksJson', 'v3-be-5', 1, 1
+WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'TARGETED_QUESTION_RECOMMEND');
 
 INSERT IGNORE INTO prompt_template_version (
   template_id, scene, version_code, version_name, content, variables_json,

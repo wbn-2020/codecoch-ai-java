@@ -22,6 +22,9 @@ import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.enums.StudyPlanSourceType;
 import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
+import com.codecoachai.interview.domain.vo.InnerStudyPlanSkillRelationVO;
+import com.codecoachai.interview.domain.vo.InnerStudyPlanVO;
+import com.codecoachai.interview.domain.vo.InnerStudyTaskVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
@@ -166,6 +169,24 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlan plan = getOwnedPlan(id, requireCurrentUserId());
         StudyPlanDetailVO vo = toDetailVO(plan);
         vo.setTasks(taskEntities(plan.getId()).stream().map(this::toTaskVO).toList());
+        return vo;
+    }
+
+    @Override
+    public InnerStudyPlanVO getInnerPlan(Long id) {
+        Long userId = requireCurrentUserId();
+        StudyPlan plan = getOwnedPlan(id, userId);
+        InnerStudyPlanVO vo = toInnerPlanVO(plan);
+        vo.setTasks(taskEntities(plan.getId(), userId).stream().map(this::toInnerTaskVO).toList());
+        vo.setSkillRelations(relationMapper.selectList(new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                        .eq(StudyPlanSkillRelation::getStudyPlanId, plan.getId())
+                        .eq(StudyPlanSkillRelation::getUserId, userId)
+                        .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)
+                        .orderByAsc(StudyPlanSkillRelation::getPriority)
+                        .orderByAsc(StudyPlanSkillRelation::getId))
+                .stream()
+                .map(this::toInnerRelationVO)
+                .toList());
         return vo;
     }
 
@@ -873,6 +894,77 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         fillProgress(vo, plan.getId());
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyPlanVO toInnerPlanVO(StudyPlan plan) {
+        InnerStudyPlanVO vo = new InnerStudyPlanVO();
+        vo.setPlanId(plan.getId());
+        vo.setUserId(plan.getUserId());
+        vo.setSourceType(plan.getSourceType());
+        vo.setSourceId(plan.getSourceId());
+        vo.setTargetJobId(plan.getTargetJobId());
+        vo.setSkillProfileId(plan.getSkillProfileId());
+        vo.setMatchReportId(plan.getMatchReportId());
+        vo.setTargetPosition(plan.getTargetPosition());
+        vo.setIndustryDirection(plan.getIndustryDirection());
+        vo.setPlanTitle(plan.getPlanTitle());
+        vo.setPlanSummary(plan.getPlanSummary());
+        vo.setPlanStatus(plan.getPlanStatus());
+        vo.setDurationDays(plan.getDurationDays());
+        vo.setDailyMinutes(plan.getDailyMinutes());
+        vo.setStartDate(plan.getStartDate());
+        vo.setAiCallLogId(plan.getAiCallLogId());
+        vo.setResultJson(plan.getResultJson());
+        vo.setCreatedAt(plan.getCreatedAt());
+        vo.setUpdatedAt(plan.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyTaskVO toInnerTaskVO(StudyTask task) {
+        InnerStudyTaskVO vo = new InnerStudyTaskVO();
+        vo.setId(task.getId());
+        vo.setPlanId(task.getPlanId());
+        vo.setUserId(task.getUserId());
+        vo.setTargetJobId(task.getTargetJobId());
+        vo.setSkillProfileId(task.getSkillProfileId());
+        vo.setSkillGapItemId(task.getSkillGapItemId());
+        vo.setSourceType(task.getSourceType());
+        vo.setSourceBizId(task.getSourceBizId());
+        vo.setStageNo(task.getStageNo());
+        vo.setPlannedDate(task.getPlannedDate());
+        vo.setStageTitle(task.getStageTitle());
+        vo.setTaskOrder(task.getTaskOrder());
+        vo.setKnowledgePoint(task.getKnowledgePoint());
+        vo.setTaskTitle(task.getTaskTitle());
+        vo.setTaskDescription(task.getTaskDescription());
+        vo.setTaskType(task.getTaskType());
+        vo.setPriority(task.getPriority());
+        vo.setEstimatedMinutes(task.getEstimatedMinutes());
+        vo.setAcceptanceCriteria(task.getAcceptanceCriteria());
+        vo.setTaskStatus(task.getTaskStatus());
+        vo.setRelatedQuestionIdsJson(task.getRelatedQuestionIdsJson());
+        vo.setRelatedTagsJson(task.getRelatedTagsJson());
+        vo.setResourcesJson(task.getResourcesJson());
+        vo.setCreatedAt(task.getCreatedAt());
+        vo.setUpdatedAt(task.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyPlanSkillRelationVO toInnerRelationVO(StudyPlanSkillRelation relation) {
+        InnerStudyPlanSkillRelationVO vo = new InnerStudyPlanSkillRelationVO();
+        vo.setId(relation.getId());
+        vo.setUserId(relation.getUserId());
+        vo.setStudyPlanId(relation.getStudyPlanId());
+        vo.setStudyTaskId(relation.getStudyTaskId());
+        vo.setTargetJobId(relation.getTargetJobId());
+        vo.setSkillProfileId(relation.getSkillProfileId());
+        vo.setSkillGapItemId(relation.getSkillGapItemId());
+        vo.setSourceType(relation.getSourceType());
+        vo.setSourceBizId(relation.getSourceBizId());
+        vo.setPriority(relation.getPriority());
+        vo.setCreatedAt(relation.getCreatedAt());
+        vo.setUpdatedAt(relation.getUpdatedAt());
         return vo;
     }
 

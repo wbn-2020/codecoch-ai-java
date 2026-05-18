@@ -6,6 +6,7 @@ import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
+import com.codecoachai.ai.domain.dto.GenerateQuestionRecommendationDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
@@ -19,6 +20,7 @@ import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
+import com.codecoachai.ai.domain.vo.GenerateQuestionRecommendationVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
@@ -47,6 +49,8 @@ public interface AiService {
     GenerateLearningPlanVO generateLearningPlan(GenerateLearningPlanDTO dto);
 
     GenerateLearningPlanVO generateTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto);
+
+    GenerateQuestionRecommendationVO generateQuestionRecommendations(GenerateQuestionRecommendationDTO dto);
 
     ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto);
 
