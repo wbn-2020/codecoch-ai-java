@@ -25,7 +25,8 @@ public final class MqTopics {
     public static final String QUESTION_TAG_DUPLICATE_CHECK = "duplicate-check";
 
     // ========== 搜索索引同步 ==========
-    public static final String SEARCH_SYNC = "codecoachai-search";
+    public static final String SEARCH = "codecoachai-search";
+    public static final String SEARCH_SYNC = SEARCH; // 别名兼容
     public static final String SEARCH_TAG_QUESTION = "question";
     public static final String SEARCH_TAG_RESUME = "resume";
     public static final String SEARCH_TAG_INTERVIEW = "interview";

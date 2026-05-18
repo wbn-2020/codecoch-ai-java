@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev-v3]
+  pull_request:
+    branches: [main]
+
+env:
+  JAVA_VERSION: '21'
+  MAVEN_OPTS: '-Xmx1024m'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_password
+          MYSQL_DATABASE: codecoachai
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build & Test
+        run: mvn clean install -DskipTests=false -B -q
+        env:
+          MYSQL_PASSWORD: ci_password
+          DEEPSEEK_API_KEY: sk-test-placeholder
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jars
+          path: '**/target/*.jar'
+          retention-days: 3
+
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Checkstyle (compile only)
+        run: mvn compile -DskipTests -B -q
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: build
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev-v3'
+
+    strategy:
+      matrix:
+        service:
+          - codecoachai-gateway
+          - codecoachai-auth
+          - codecoachai-user
+          - codecoachai-ai
+          - codecoachai-resume
+          - codecoachai-interview
+          - codecoachai-question
+          - codecoachai-file
+          - codecoachai-system
+          - codecoachai-task
+          - codecoachai-search
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build JAR
+        run: mvn clean package -DskipTests -pl ${{ matrix.service }} -am -B -q
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg SERVICE=${{ matrix.service }} \
+            -t codecoachai/${{ matrix.service }}:${{ github.sha }} \
+            -t codecoachai/${{ matrix.service }}:latest \
+            .
+
+      # 推送到 registry（需要配置 secrets）
+      # - name: Push to registry
+      #   run: |
+      #     echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      #     docker push codecoachai/${{ matrix.service }}:${{ github.sha }}
+      #     docker push codecoachai/${{ matrix.service }}:latest

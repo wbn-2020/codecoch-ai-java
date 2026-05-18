@@ -34,6 +34,7 @@ public class AuthServiceImpl implements AuthService {
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
+    private final com.codecoachai.auth.log.LoginLogRecorder loginLogRecorder;
 
     @Override
     public RegisterVO register(RegisterDTO dto) {
@@ -56,11 +57,19 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginVO login(LoginDTO dto) {
-        InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByUsername(dto.getUsername()));
+        InnerUserAuthVO user;
+        try {
+            user = FeignResultUtils.unwrap(userFeignClient.getByUsername(dto.getUsername()));
+        } catch (BusinessException ex) {
+            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", ex.getMessage());
+            throw ex;
+        }
         if (!passwordEncoder.matches(dto.getPassword(), user.getPasswordHash())) {
+            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", "密码错误");
             throw new BusinessException(ErrorCode.PASSWORD_ERROR);
         }
         if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", "账号已禁用");
             throw new BusinessException(ErrorCode.USER_DISABLED);
         }
         StpUtil.login(user.getId());
@@ -69,6 +78,8 @@ public class AuthServiceImpl implements AuthService {
         StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
         StpUtil.getSession().set("roles", roles);
         String token = StpUtil.getTokenValue();
+
+        loginLogRecorder.recordSuccess(user.getId(), user.getUsername(), "PASSWORD");
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
                 user.getAvatarUrl(), user.getEmail(), roles);
@@ -84,7 +95,10 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public void logout() {
         if (StpUtil.isLogin()) {
+            Long userId = StpUtil.getLoginIdAsLong();
+            String username = (String) StpUtil.getSession().get("username");
             StpUtil.logout();
+            loginLogRecorder.recordLogout(userId, username);
         }
     }
 

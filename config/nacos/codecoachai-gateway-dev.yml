@@ -1,0 +1,108 @@
+# ============================================================
+# codecoachai-gateway 路由配置
+# 上传到 Nacos: dataId=codecoachai-gateway-dev.yml  group=DEFAULT_GROUP
+# ============================================================
+
+server:
+  port: 8080
+
+spring:
+  cloud:
+    gateway:
+      discovery:
+        locator:
+          enabled: false
+      routes:
+        # ========== 认证 ==========
+        - id: auth
+          uri: lb://codecoachai-auth
+          predicates:
+            - Path=/auth/**
+
+        # ========== 用户 ==========
+        - id: user
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/users/**,/admin/users/**
+
+        # ========== 题库 ==========
+        - id: question
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/questions/**,/admin/questions/**,/categories/**,/tags/**,/practice/**
+
+        # ========== 简历 ==========
+        - id: resume
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/resumes/**,/admin/resumes/**,/skill-profiles/**
+
+        # ========== 面试 ==========
+        - id: interview
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/interviews/**,/admin/interviews/**,/study-plans/**
+
+        # ========== AI ==========
+        - id: ai
+          uri: lb://codecoachai-ai
+          predicates:
+            - Path=/admin/ai/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
+                key-resolver: "#{@ipKeyResolver}"
+
+        # ========== 文件 ==========
+        - id: file
+          uri: lb://codecoachai-file
+          predicates:
+            - Path=/files/**,/admin/files/**
+
+        # ========== 异步任务中心（V3 新增） ==========
+        - id: task
+          uri: lb://codecoachai-task
+          predicates:
+            - Path=/admin/tasks/**,/notifications/**
+
+        # ========== 搜索（V3 新增） ==========
+        - id: search
+          uri: lb://codecoachai-search
+          predicates:
+            - Path=/search/**
+
+        # ========== 系统管理 ==========
+        - id: system
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/system/**,/admin/config/**
+
+      # 全局 CORS
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns: "*"
+            allowedMethods: "*"
+            allowedHeaders: "*"
+            allowCredentials: true
+            maxAge: 3600
+
+      # 全局过滤器
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+
+# ============================================================
+# Knife4j 聚合文档（Gateway 统一入口 /doc.html）
+# ============================================================
+knife4j:
+  gateway:
+    enabled: true
+    strategy: discover
+    discover:
+      enabled: true
+      version: openapi3
+      excluded-services:
+        - codecoachai-gateway
