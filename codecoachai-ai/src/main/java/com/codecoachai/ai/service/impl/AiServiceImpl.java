@@ -3,6 +3,7 @@ package com.codecoachai.ai.service.impl;
 import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
+import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
@@ -15,6 +16,7 @@ import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
@@ -65,6 +67,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
+    private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -350,6 +353,31 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public AnalyzeResumeJobMatchVO analyzeResumeJobMatch(AnalyzeResumeJobMatchDTO dto) {
+        validateAnalyzeResumeJobMatchDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_JOB_MATCH,
+                resumeJobMatchPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockResumeJobMatchJson()
+                    : parseResumeJobMatchJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
+            Long logId = saveLog(promptResult, resultJson,
+                    businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            AnalyzeResumeJobMatchVO vo = new AnalyzeResumeJobMatchVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getReportId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -380,6 +408,31 @@ public class AiServiceImpl implements AiService {
         }
         if (!StringUtils.hasText(dto.getJdText())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "jdText is required");
+        }
+    }
+
+    private void validateAnalyzeResumeJobMatchDTO(AnalyzeResumeJobMatchDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reportId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getResumeId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (!StringUtils.hasText(dto.getResumeAnalysisJson())
+                && !StringUtils.hasText(dto.getResumeSnapshotJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume analysis or snapshot is required");
+        }
+        if (!StringUtils.hasText(dto.getJobDescriptionAnalysisJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobDescriptionAnalysisJson is required");
         }
     }
 
@@ -557,6 +610,10 @@ public class AiServiceImpl implements AiService {
         return defaultJobDescriptionParsePrompt();
     }
 
+    private String resumeJobMatchPromptContent() {
+        return defaultResumeJobMatchPrompt();
+    }
+
     private String questionDraftPromptContent() {
         return defaultQuestionDraftPrompt();
     }
@@ -676,6 +733,21 @@ public class AiServiceImpl implements AiService {
         values.put("jdText", dto.getJdText());
         values.put("jdSource", dto.getJdSource());
         values.put("userTargetDirection", dto.getUserTargetDirection());
+        return values;
+    }
+
+    private Map<String, String> variables(AnalyzeResumeJobMatchDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("reportId", dto.getReportId() == null ? "" : String.valueOf(dto.getReportId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("jdAnalysisId", dto.getJdAnalysisId() == null ? "" : String.valueOf(dto.getJdAnalysisId()));
+        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
+        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
+        values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("userExperienceYears", dto.getUserExperienceYears());
         return values;
     }
 
@@ -1122,6 +1194,12 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
+    private String parseResumeJobMatchJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateResumeJobMatchJson(json);
+        return json.toString();
+    }
+
     private void validateResumeStructuredJson(JsonNode json) {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
@@ -1154,10 +1232,29 @@ public class AiServiceImpl implements AiService {
         requireJobDescriptionField(json, "summary");
     }
 
+    private void validateResumeJobMatchJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response must be a JSON object");
+        }
+        requireResumeJobMatchField(json, "overallScore");
+        requireResumeJobMatchField(json, "dimensionScores");
+        requireResumeJobMatchField(json, "strengths");
+        requireResumeJobMatchField(json, "gaps");
+        requireResumeJobMatchField(json, "summary");
+    }
+
     private void requireJobDescriptionField(JsonNode json, String fieldName) {
         if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI JD parse response missing field: " + fieldName);
+        }
+    }
+
+    private void requireResumeJobMatchField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response missing field: " + fieldName);
         }
     }
 
@@ -1463,6 +1560,45 @@ public class AiServiceImpl implements AiService {
         ));
         json.put("skillWeights", Map.of("Spring Boot", 90, "MySQL", 75, "Redis", 60));
         json.put("summary", "This role focuses on Java backend development, API design, database usage, and production reliability.");
+        return toJson(json);
+    }
+
+    private String mockResumeJobMatchJson() {
+        Map<String, Object> dimensionScores = new LinkedHashMap<>();
+        dimensionScores.put("techStack", 82);
+        dimensionScores.put("projectExperience", 75);
+        dimensionScores.put("businessFit", 68);
+        dimensionScores.put("communication", 80);
+
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("overallScore", 78);
+        json.put("dimensionScores", dimensionScores);
+        json.put("strengths", List.of(
+                Map.of("title", "Spring Boot project experience matches",
+                        "evidence", "Resume snapshot contains Java backend project experience",
+                        "relatedSkills", List.of("Spring Boot", "Java"))
+        ));
+        json.put("gaps", List.of(
+                Map.of("skillName", "Redis",
+                        "category", "Middleware",
+                        "severity", "HIGH",
+                        "targetLevel", 4,
+                        "currentLevel", 2,
+                        "description", "Resume evidence for cache consistency and distributed locks is weak",
+                        "evidence", "JD requires high-concurrency backend capability; resume lacks detailed Redis practice",
+                        "recommendedActions", List.of("Add Redis project evidence", "Practice Redis scenario questions"))
+        ));
+        json.put("resumeRisks", List.of(
+                Map.of("riskType", "PROJECT_DEPTH",
+                        "description", "Project descriptions need stronger technical depth and measurable results")
+        ));
+        json.put("optimizationSuggestions", List.of(
+                Map.of("section", "Project experience",
+                        "suggestion", "Add cache design, troubleshooting steps, and optimization outcomes")
+        ));
+        json.put("recommendedLearningTopics", List.of("Redis cache consistency", "MySQL index optimization"));
+        json.put("recommendedInterviewTopics", List.of("Distributed locks", "API idempotency"));
+        json.put("summary", "Overall fit is medium. Prioritize Redis and project-depth expression before interviews.");
         return toJson(json);
     }
 
@@ -2076,6 +2212,42 @@ public class AiServiceImpl implements AiService {
                 Do not invent company facts beyond the JD. If a field is not available, use an empty string, empty array, or empty object.
                 Example:
                 {"jobTitle":"Java Backend Engineer","companyName":"","jobLevel":"Mid-level","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"Framework","requiredLevel":4,"weight":90,"evidence":"JD requires Spring Boot experience"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
+                """;
+    }
+
+    private String defaultResumeJobMatchPrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a resume-to-target-job match report in JSON.
+                reportId: {{reportId}}
+                userId: {{userId}}
+                resumeId: {{resumeId}}
+                targetJobId: {{targetJobId}}
+                jdAnalysisId: {{jdAnalysisId}}
+                userExperienceYears: {{userExperienceYears}}
+                targetJob:
+                {{targetJobJson}}
+                resumeAnalysisJson:
+                {{resumeAnalysisJson}}
+                resumeSnapshotJson:
+                {{resumeSnapshotJson}}
+                jobDescriptionAnalysisJson:
+                {{jobDescriptionAnalysisJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Do not invent candidate experience beyond the resume. If evidence is weak, mark it as a gap or risk.
+                Scores must be integers from 0 to 100.
+                Top-level fields must be:
+                overallScore, dimensionScores, strengths, gaps, resumeRisks, optimizationSuggestions,
+                recommendedLearningTopics, recommendedInterviewTopics, summary.
+                dimensionScores must contain techStack, projectExperience, businessFit, communication.
+                strengths items should contain title, evidence, relatedSkills.
+                gaps items should contain skillName, category, severity, targetLevel, currentLevel, description,
+                evidence, recommendedActions.
+                resumeRisks items should contain riskType and description.
+                optimizationSuggestions items should contain section and suggestion.
+                recommendedLearningTopics and recommendedInterviewTopics must be arrays of strings.
+                Example:
+                {"overallScore":78,"dimensionScores":{"techStack":82,"projectExperience":75,"businessFit":68,"communication":80},"strengths":[{"title":"Spring Boot project experience matches","evidence":"Resume project includes Spring Boot backend development","relatedSkills":["Spring Boot"]}],"gaps":[{"skillName":"Redis","category":"Middleware","severity":"HIGH","targetLevel":4,"currentLevel":2,"description":"Resume lacks cache consistency or distributed lock evidence","evidence":"JD requires Redis; resume lacks related details","recommendedActions":["Add Redis project practice","Practice Redis questions"]}],"resumeRisks":[{"riskType":"PROJECT_DEPTH","description":"Project description lacks technical metrics"}],"optimizationSuggestions":[{"section":"Project experience","suggestion":"Add cache design and optimization outcomes"}],"recommendedLearningTopics":["Redis cache consistency"],"recommendedInterviewTopics":["Distributed locks"],"summary":"Overall fit is medium."}
                 """;
     }
 
