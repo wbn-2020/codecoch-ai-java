@@ -44,6 +44,10 @@ spring:
           uri: lb://codecoachai-question
           predicates:
             - Path=/admin/question-reviews/**
+        - id: codecoachai-question-admin-ai-generate
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/admin/ai/questions/generate
         - id: codecoachai-question-admin-sse
           uri: lb://codecoachai-question
           predicates:
@@ -76,6 +80,10 @@ spring:
           uri: lb://codecoachai-interview
           predicates:
             - Path=/interviews/**
+        - id: codecoachai-interview-industry-templates
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/industry-templates/**
         - id: codecoachai-study
           uri: lb://codecoachai-interview
           predicates:
