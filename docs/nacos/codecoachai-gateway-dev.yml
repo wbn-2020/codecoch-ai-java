@@ -76,6 +76,10 @@ spring:
           uri: lb://codecoachai-interview
           predicates:
             - Path=/interviews/**
+        - id: codecoachai-interview-industry-templates
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/industry-templates/**
         - id: codecoachai-study
           uri: lb://codecoachai-interview
           predicates:
