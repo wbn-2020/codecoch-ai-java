@@ -71,8 +71,9 @@ public class TokenAccountant {
         if (userId == null) {
             return;
         }
-        String inputKey = "codecoachai:ai:tokens:in:" + userId + ":" + LocalDate.now();
-        String outputKey = "codecoachai:ai:tokens:out:" + userId + ":" + LocalDate.now();
+        String today = LocalDate.now().toString();
+        String inputKey = RedisKeyConstants.aiTokensInKey(userId, today);
+        String outputKey = RedisKeyConstants.aiTokensOutKey(userId, today);
         if (inputTokens > 0) {
             redisTemplate.opsForValue().increment(inputKey, inputTokens);
             redisTemplate.expire(inputKey, Duration.ofDays(2));

@@ -21,6 +21,8 @@ public final class RedisKeyConstants {
     // ========== AI 配额 ==========
     public static final String AI_QUOTA_DAY_PREFIX = NS + "ai:quota:day:";
     public static final String AI_QUOTA_MINUTE_PREFIX = NS + "ai:quota:min:";
+    public static final String AI_TOKENS_IN_PREFIX = NS + "ai:tokens:in:";
+    public static final String AI_TOKENS_OUT_PREFIX = NS + "ai:tokens:out:";
 
     // ========== 分布式锁 ==========
     public static final String LOCK_REPORT_PREFIX = NS + "lock:report:";
@@ -60,6 +62,14 @@ public final class RedisKeyConstants {
 
     public static String aiQuotaMinuteKey(Object userId) {
         return AI_QUOTA_MINUTE_PREFIX + userId;
+    }
+
+    public static String aiTokensInKey(Object userId, String date) {
+        return AI_TOKENS_IN_PREFIX + userId + ":" + date;
+    }
+
+    public static String aiTokensOutKey(Object userId, String date) {
+        return AI_TOKENS_OUT_PREFIX + userId + ":" + date;
     }
 
     public static String lockReportKey(Object sessionId) {

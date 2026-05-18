@@ -149,4 +149,45 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <!-- Flyway Maven 插件：手动执行 mvn flyway:migrate 时使用 -->
+                <plugin>
+                    <groupId>org.flywaydb</groupId>
+                    <artifactId>flyway-maven-plugin</artifactId>
+                    <version>${flyway.version}</version>
+                    <configuration>
+                        <url>jdbc:mysql://127.0.0.1:3306/codecoachai?useUnicode=true&amp;characterEncoding=utf-8&amp;useSSL=false&amp;serverTimezone=Asia/Shanghai&amp;allowPublicKeyRetrieval=true</url>
+                        <user>root</user>
+                        <!-- 通过 -Dflyway.password=... 在命令行注入，避免提交明文 -->
+                        <password>${env.MYSQL_PASSWORD}</password>
+                        <locations>
+                            <location>filesystem:${project.basedir}/sql/migration</location>
+                        </locations>
+                        <baselineOnMigrate>true</baselineOnMigrate>
+                        <baselineVersion>2.999</baselineVersion>
+                        <table>flyway_schema_history</table>
+                        <encoding>UTF-8</encoding>
+                        <sqlMigrationPrefix>V</sqlMigrationPrefix>
+                        <sqlMigrationSeparator>__</sqlMigrationSeparator>
+                        <sqlMigrationSuffixes>.sql</sqlMigrationSuffixes>
+                    </configuration>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.flywaydb</groupId>
+                            <artifactId>flyway-mysql</artifactId>
+                            <version>${flyway.version}</version>
+                        </dependency>
+                        <dependency>
+                            <groupId>com.mysql</groupId>
+                            <artifactId>mysql-connector-j</artifactId>
+                            <version>8.3.0</version>
+                        </dependency>
+                    </dependencies>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
 </project>
