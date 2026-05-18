@@ -1,0 +1,27 @@
+server:
+  port: 8091
+
+spring:
+  application:
+    name: codecoachai-search
+  profiles:
+    active: dev
+  config:
+    import:
+      - optional:nacos:codecoachai-common-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-search-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+        file-extension: yml
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus

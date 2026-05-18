@@ -5,6 +5,9 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.oss.config.OssProperties;
+import com.codecoachai.common.oss.domain.OssUploadResult;
+import com.codecoachai.common.oss.service.OssFileService;
 import com.codecoachai.file.config.FileStorageProperties;
 import com.codecoachai.file.domain.dto.AdminFileQueryDTO;
 import com.codecoachai.file.domain.entity.FileInfo;
@@ -14,12 +17,11 @@ import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
 import java.io.IOException;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -28,6 +30,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -37,31 +40,34 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
+/**
+ * 阿里云 OSS 实现 FileStorageService。
+ * 仅在 codecoachai.file.storage.provider=ALIYUN_OSS 时启用，与 LocalFileStorageServiceImpl 互斥。
+ *
+ * 下载路径：使用 OSS 私有签名 URL 重定向（生产推荐）；当前 download() 简化为读取字节流再返回。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
-@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+@ConditionalOnProperty(
         prefix = "codecoachai.file.storage",
         name = "provider",
-        havingValue = "LOCAL",
-        matchIfMissing = true)
-public class LocalFileStorageServiceImpl implements FileStorageService {
+        havingValue = "ALIYUN_OSS")
+public class AliyunOssFileStorageServiceImpl implements FileStorageService {
 
     private static final String STATUS_AVAILABLE = "AVAILABLE";
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String PARSE_STATUS_SUCCESS = "SUCCESS";
     private static final String PARSE_STATUS_FAILED = "FAILED";
     private static final String PARSE_STATUS_WAIT_CONFIRM = "WAIT_CONFIRM";
-    private static final String PROVIDER_LOCAL = "LOCAL";
+    private static final String PROVIDER_OSS = "ALIYUN_OSS";
     private static final int NOT_DELETED = 0;
-    private static final String HEADER_ORIGINAL_FILENAME = "X-Original-Filename";
-    private static final String HEADER_FILE_EXT = "X-File-Ext";
-    private static final String HEADER_FILE_SIZE = "X-File-Size";
-    private static final String HEADER_MIME_TYPE = "X-Mime-Type";
-    private static final DateTimeFormatter DATE_PATH_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    private static final DateTimeFormatter DATE_PATH_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM");
 
     private final FileInfoMapper fileInfoMapper;
     private final FileStorageProperties properties;
+    private final OssFileService ossFileService;
+    private final OssProperties ossProperties;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -72,26 +78,46 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         validateExtension(fileExt);
         validateSize(file);
 
-        Path root = normalizeRoot();
-        String storedFilename = UUID.randomUUID() + "." + fileExt;
-        String relativePath = Path.of("resume", LocalDate.now().format(DATE_PATH_FORMATTER), storedFilename)
-                .toString()
-                .replace('\\', '/');
-        Path target = root.resolve(relativePath).normalize();
-        ensureInsideRoot(root, target);
+        // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
+        String storedFilename = UUID.randomUUID().toString().replace("-", "") + "." + fileExt;
+        String ossKey = bizType.toLowerCase(Locale.ROOT) + "/"
+                + userId + "/"
+                + LocalDate.now().format(DATE_PATH_FORMATTER) + "/"
+                + storedFilename;
 
         try {
-            Files.createDirectories(target.getParent());
-            file.transferTo(target);
-            FileInfo fileInfo = buildFileInfo(file, bizType, userId, originalFilename, storedFilename, fileExt,
-                    relativePath);
+            byte[] bytes = file.getBytes();
+            String md5 = md5Hex(bytes);
+
+            OssUploadResult uploaded = ossFileService.upload(ossKey, bytes,
+                    StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
+
+            FileInfo fileInfo = new FileInfo();
+            fileInfo.setUserId(userId);
+            fileInfo.setBizType(bizType);
+            fileInfo.setOriginalFilename(originalFilename);
+            fileInfo.setStoredFilename(storedFilename);
+            fileInfo.setFileExt(fileExt);
+            fileInfo.setMimeType(file.getContentType());
+            fileInfo.setFileSize((long) bytes.length);
+            fileInfo.setStoragePath(uploaded.getOssKey());   // 兼容老字段
+            fileInfo.setOssKey(uploaded.getOssKey());
+            fileInfo.setBucket(ossProperties.getBucket());
+            fileInfo.setEtag(uploaded.getEtag());
+            fileInfo.setMd5(md5);
+            fileInfo.setStorageProvider(PROVIDER_OSS);
+            fileInfo.setStatus(STATUS_AVAILABLE);
             fileInfoMapper.insert(fileInfo);
+
+            log.info("OSS 上传成功 fileId={} ossKey={} size={}", fileInfo.getId(), ossKey, bytes.length);
             return toVO(fileInfo);
+        } catch (IOException e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
+        } catch (BusinessException be) {
+            // OSS 上传失败 → 透传
+            throw be;
         } catch (Exception ex) {
-            deleteQuietly(target);
-            if (ex instanceof BusinessException businessException) {
-                throw businessException;
-            }
+            log.error("OSS 上传失败", ex);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
         }
     }
@@ -99,37 +125,30 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     @Override
     public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        if (!StringUtils.hasText(fileInfo.getStoragePath())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "storage path is empty");
+        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "oss key is empty");
         }
 
-        Path root = normalizeRoot();
-        Path target = root.resolve(fileInfo.getStoragePath()).normalize();
-        ensureInsideRoot(root, target);
-        if (!Files.isRegularFile(target)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
-        }
+        byte[] bytes = ossFileService.download(key);
+        MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .contentLength(bytes.length)
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(fileInfo.getOriginalFilename(), java.nio.charset.StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .body(bytes);
+    }
 
-        try {
-            byte[] bytes = Files.readAllBytes(target);
-            MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
-            return ResponseEntity.ok()
-                    .contentType(mediaType)
-                    .contentLength(bytes.length)
-                    .header(HEADER_ORIGINAL_FILENAME, encodeHeaderValue(fileInfo.getOriginalFilename()))
-                    .header(HEADER_FILE_EXT, fileInfo.getFileExt())
-                    .header(HEADER_FILE_SIZE, String.valueOf(fileInfo.getFileSize()))
-                    .header(HEADER_MIME_TYPE, StringUtils.hasText(fileInfo.getMimeType())
-                            ? fileInfo.getMimeType()
-                            : MediaType.APPLICATION_OCTET_STREAM_VALUE)
-                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                            .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
-                            .build()
-                            .toString())
-                    .body(bytes);
-        } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
-        }
+    /**
+     * 推荐方式：返回签名 URL 让前端直接访问 OSS。本接口被 InnerFileController 调用时可选。
+     */
+    public String signUrl(Long fileId, Long userId, String bizType, Duration expire) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        return ossFileService.signUrl(key, expire);
     }
 
     @Override
@@ -144,8 +163,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                         .orderByDesc(FileInfo::getCreatedAt));
         List<FileInfoVO> records = page.getRecords().stream().map(this::toFileInfoVO).toList();
         fillResumeAnalysisStatus(records);
-        return PageResult.of(records,
-                page.getTotal(), page.getCurrent(), page.getSize());
+        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
 
     @Override
@@ -163,23 +181,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         return vo;
     }
 
-    private MediaType resolveMediaType(String mimeType) {
-        if (!StringUtils.hasText(mimeType)) {
-            return MediaType.APPLICATION_OCTET_STREAM;
-        }
-        try {
-            return MediaType.parseMediaType(mimeType);
-        } catch (IllegalArgumentException ex) {
-            return MediaType.APPLICATION_OCTET_STREAM;
-        }
-    }
-
-    private String encodeHeaderValue(String value) {
-        if (!StringUtils.hasText(value)) {
-            return "";
-        }
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
+    // ============== 工具方法 ==============
 
     private FileInfo getAvailableFile(Long fileId, Long userId, String bizType) {
         if (fileId == null) {
@@ -253,34 +255,15 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         }
     }
 
-    private Path normalizeRoot() {
-        Path root = Path.of(properties.getRootPath()).toAbsolutePath().normalize();
-        if (!StringUtils.hasText(root.toString())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "storage root is required");
+    private MediaType resolveMediaType(String mimeType) {
+        if (!StringUtils.hasText(mimeType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
         }
-        return root;
-    }
-
-    private void ensureInsideRoot(Path root, Path target) {
-        if (!target.startsWith(root)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid storage path");
+        try {
+            return MediaType.parseMediaType(mimeType);
+        } catch (IllegalArgumentException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
         }
-    }
-
-    private FileInfo buildFileInfo(MultipartFile file, String bizType, Long userId, String originalFilename,
-                                   String storedFilename, String fileExt, String storagePath) {
-        FileInfo fileInfo = new FileInfo();
-        fileInfo.setUserId(userId);
-        fileInfo.setBizType(bizType);
-        fileInfo.setOriginalFilename(originalFilename);
-        fileInfo.setStoredFilename(storedFilename);
-        fileInfo.setFileExt(fileExt);
-        fileInfo.setMimeType(file.getContentType());
-        fileInfo.setFileSize(file.getSize());
-        fileInfo.setStoragePath(storagePath);
-        fileInfo.setStorageProvider(StringUtils.hasText(properties.getProvider()) ? properties.getProvider() : PROVIDER_LOCAL);
-        fileInfo.setStatus(STATUS_AVAILABLE);
-        return fileInfo;
     }
 
     private InnerFileUploadVO toVO(FileInfo fileInfo) {
@@ -332,7 +315,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             Map<Long, FileResumeAnalysisStatusVO> latestRecordMap = fileInfoMapper
                     .selectLatestResumeAnalysisByFileIds(resumeFileIds)
                     .stream()
-                    .collect(Collectors.toMap(FileResumeAnalysisStatusVO::getFileId, Function.identity(), (left, right) -> left));
+                    .collect(Collectors.toMap(FileResumeAnalysisStatusVO::getFileId, Function.identity(),
+                            (left, right) -> left));
             for (FileInfoVO record : records) {
                 fillResumeAnalysisStatus(record, latestRecordMap.get(record.getId()));
             }
@@ -373,13 +357,12 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         return pageSize == null ? 10L : pageSize;
     }
 
-    private void deleteQuietly(Path target) {
+    private String md5Hex(byte[] bytes) {
         try {
-            if (target != null) {
-                Files.deleteIfExists(target);
-            }
-        } catch (IOException ignored) {
-            // Best-effort cleanup after metadata persistence failure.
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            return HexFormat.of().formatHex(md.digest(bytes));
+        } catch (Exception ex) {
+            return "";
         }
     }
 }

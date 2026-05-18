@@ -1,0 +1,27 @@
+# ============================================================
+# codecoachai-task 服务专属配置
+# 上传到 Nacos: dataId=codecoachai-task-dev.yml  group=DEFAULT_GROUP
+# ============================================================
+
+rocketmq:
+  consumer:
+    group: codecoachai-task-consumer
+    # 最大重试次数（业务异常会自动按指数退避重试，超过则进死信）
+    max-reconsume-times: 16
+
+# 任务中心专属
+codecoachai:
+  task:
+    # 每类任务的并发线程数（防止 AI 长任务把消费线程占满）
+    concurrency:
+      resume-parse: 4
+      resume-optimize: 4
+      interview-report: 2
+      ai-question-generate: 2
+      search-sync: 8
+      default: 4
+    # 任务超时（秒），超时即视为失败
+    timeout-seconds:
+      resume-parse: 120
+      interview-report: 300
+      default: 60

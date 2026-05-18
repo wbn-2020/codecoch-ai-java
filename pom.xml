@@ -29,6 +29,8 @@
         <module>codecoachai-interview</module>
         <module>codecoachai-ai</module>
         <module>codecoachai-system</module>
+        <module>codecoachai-task</module>
+        <module>codecoachai-search</module>
     </modules>
 
     <properties>
@@ -40,6 +42,13 @@
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <sa-token.version>1.44.0</sa-token.version>
         <knife4j.version>4.5.0</knife4j.version>
+        <!-- V3 工程化新增依赖版本 -->
+        <aliyun-oss.version>3.17.4</aliyun-oss.version>
+        <aliyun-sts.version>3.1.2</aliyun-sts.version>
+        <rocketmq-spring.version>2.3.1</rocketmq-spring.version>
+        <redisson.version>3.27.2</redisson.version>
+        <flyway.version>10.10.0</flyway.version>
+        <elasticsearch-client.version>8.14.3</elasticsearch-client.version>
     </properties>
 
     <dependencyManagement>
@@ -92,6 +101,51 @@
                 <groupId>com.github.xiaoymin</groupId>
                 <artifactId>knife4j-openapi3-jakarta-spring-boot-starter</artifactId>
                 <version>${knife4j.version}</version>
+            </dependency>
+            <!-- V3：阿里云 OSS / STS -->
+            <dependency>
+                <groupId>com.aliyun.oss</groupId>
+                <artifactId>aliyun-sdk-oss</artifactId>
+                <version>${aliyun-oss.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aliyun</groupId>
+                <artifactId>aliyun-java-sdk-sts</artifactId>
+                <version>${aliyun-sts.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aliyun</groupId>
+                <artifactId>aliyun-java-sdk-core</artifactId>
+                <version>4.7.3</version>
+            </dependency>
+            <!-- V3：RocketMQ -->
+            <dependency>
+                <groupId>org.apache.rocketmq</groupId>
+                <artifactId>rocketmq-spring-boot-starter</artifactId>
+                <version>${rocketmq-spring.version}</version>
+            </dependency>
+            <!-- V3：Redisson 分布式锁 -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+            <!-- V3：Flyway 数据库迁移 -->
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-core</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-mysql</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <!-- V3：Elasticsearch Java Client -->
+            <dependency>
+                <groupId>co.elastic.clients</groupId>
+                <artifactId>elasticsearch-java</artifactId>
+                <version>${elasticsearch-client.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
