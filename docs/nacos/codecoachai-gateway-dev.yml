@@ -72,6 +72,10 @@ spring:
           uri: lb://codecoachai-resume
           predicates:
             - Path=/resumes/**
+        - id: codecoachai-resume-job-targets
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/job-targets,/job-targets/**
         - id: codecoachai-resume-sse
           uri: lb://codecoachai-resume
           predicates:
