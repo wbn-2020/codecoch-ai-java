@@ -1,5 +1,6 @@
 package com.codecoachai.interview.domain.vo;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Data;
@@ -10,6 +11,7 @@ public class StudyTaskVO {
     private Long id;
     private Long planId;
     private Integer stageNo;
+    private LocalDate plannedDate;
     private String stageTitle;
     private Integer taskOrder;
     private String knowledgePoint;

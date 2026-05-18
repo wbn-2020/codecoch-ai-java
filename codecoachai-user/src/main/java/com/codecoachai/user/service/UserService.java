@@ -12,6 +12,7 @@ import com.codecoachai.user.domain.vo.InnerUserAuthVO;
 import com.codecoachai.user.domain.vo.InnerUserBasicVO;
 import com.codecoachai.user.domain.vo.InnerUserRoleVO;
 import com.codecoachai.user.domain.vo.UserOverviewVO;
+import com.codecoachai.user.domain.vo.UserDashboardOverviewVO;
 import com.codecoachai.user.domain.vo.UserProfileVO;
 
 public interface UserService {
@@ -23,6 +24,8 @@ public interface UserService {
     void updateCurrentUserPassword(UpdatePasswordDTO dto);
 
     UserOverviewVO getOverview();
+
+    UserDashboardOverviewVO getDashboardOverview();
 
     PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query);
 

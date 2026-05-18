@@ -588,6 +588,7 @@ CREATE TABLE IF NOT EXISTS study_task (
   plan_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
   stage_no INT NOT NULL DEFAULT 1,
+  planned_date DATE DEFAULT NULL,
   stage_title VARCHAR(128) DEFAULT NULL,
   task_order INT NOT NULL DEFAULT 0,
   knowledge_point VARCHAR(128) DEFAULT NULL,
@@ -605,7 +606,9 @@ CREATE TABLE IF NOT EXISTS study_task (
   deleted TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   KEY idx_study_task_plan (plan_id, stage_no, task_order),
-  KEY idx_study_task_user_status (user_id, task_status)
+  KEY idx_study_task_user_status (user_id, task_status),
+  KEY idx_study_task_user_planned_date (user_id, planned_date, task_status),
+  KEY idx_study_task_plan_planned_date (plan_id, planned_date, task_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS system_config (

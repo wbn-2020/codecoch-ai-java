@@ -3,6 +3,7 @@ package com.codecoachai.system.controller;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
+import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
 import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.service.SystemConfigService;
@@ -52,5 +53,11 @@ public class SystemConfigController {
     public Result<AdminSystemOverviewVO> overview() {
         SecurityAssert.requireAdmin();
         return Result.success(systemConfigService.overview());
+    }
+
+    @GetMapping("/admin/dashboard/overview")
+    public Result<AdminDashboardOverviewVO> dashboardOverview() {
+        SecurityAssert.requireAdmin();
+        return Result.success(systemConfigService.dashboardOverview());
     }
 }

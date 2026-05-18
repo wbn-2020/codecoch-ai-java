@@ -21,14 +21,17 @@ import com.codecoachai.user.domain.vo.InnerCreateUserVO;
 import com.codecoachai.user.domain.vo.InnerUserAuthVO;
 import com.codecoachai.user.domain.vo.InnerUserBasicVO;
 import com.codecoachai.user.domain.vo.InnerUserRoleVO;
+import com.codecoachai.user.domain.vo.UserDashboardOverviewVO;
 import com.codecoachai.user.domain.vo.UserOverviewVO;
 import com.codecoachai.user.domain.vo.UserProfileVO;
 import com.codecoachai.user.mapper.SysUserMapper;
 import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.RoleService;
 import com.codecoachai.user.service.UserService;
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -42,6 +45,7 @@ public class UserServiceImpl implements UserService {
     private final SysUserRoleMapper sysUserRoleMapper;
     private final RoleService roleService;
     private final PasswordEncoder passwordEncoder;
+    private final JdbcTemplate jdbcTemplate;
 
     @Override
     public UserProfileVO getCurrentUserProfile() {
@@ -77,15 +81,38 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public UserOverviewVO getOverview() {
-        requireCurrentUserId();
+        Long userId = requireCurrentUserId();
         return UserOverviewVO.builder()
-                .resumeCount(0)
-                .interviewCount(0)
-                .completedInterviewCount(0)
-                .questionAnsweredCount(0)
-                .wrongQuestionCount(0)
-                .favoriteQuestionCount(0)
+                .resumeCount(toInt(count("resume", "deleted = 0 AND user_id = ?", userId)))
+                .interviewCount(toInt(count("interview_session", "deleted = 0 AND user_id = ?", userId)))
+                .completedInterviewCount(toInt(count("interview_session",
+                        "deleted = 0 AND user_id = ? AND status IN ('FINISHED','COMPLETED')", userId)))
+                .questionAnsweredCount(toInt(count("practice_record", "deleted = 0 AND user_id = ?", userId)))
+                .wrongQuestionCount(toInt(count("wrong_record", "deleted = 0 AND user_id = ?", userId)))
+                .favoriteQuestionCount(toInt(count("user_favorite", "deleted = 0 AND user_id = ?", userId)))
                 .build();
+    }
+
+    @Override
+    public UserDashboardOverviewVO getDashboardOverview() {
+        Long userId = requireCurrentUserId();
+        UserDashboardOverviewVO vo = new UserDashboardOverviewVO();
+        vo.setResumeCount(count("resume", "deleted = 0 AND user_id = ?", userId));
+        vo.setRecentResumeParse(recentResumeParse(userId));
+        vo.setRecentResumeOptimize(recentResumeOptimize(userId));
+        vo.setInterviewCount(count("interview_session", "deleted = 0 AND user_id = ?", userId));
+        vo.setRecentInterview(recentInterview(userId));
+        vo.setRecentReport(recentReport(userId));
+        vo.setStudyPlanCount(count("study_plan", "deleted = 0 AND user_id = ?", userId));
+        vo.setActiveStudyPlan(activeStudyPlan(userId));
+        vo.setTodayTaskCount(count("study_task",
+                "deleted = 0 AND user_id = ? AND planned_date = CURDATE()", userId));
+        vo.setTodayCompletedTaskCount(count("study_task",
+                "deleted = 0 AND user_id = ? AND planned_date = CURDATE() AND task_status IN ('DONE','COMPLETED')",
+                userId));
+        vo.setEntryStatuses(entryStatuses(vo));
+        vo.setGeneratedAt(LocalDateTime.now());
+        return vo;
     }
 
     @Override
@@ -194,5 +221,184 @@ public class UserServiceImpl implements UserService {
         if (!LoginUserContext.isAdmin()) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+    }
+
+    private UserDashboardOverviewVO.RecentResumeParseVO recentResumeParse(Long userId) {
+        if (!tableExists("resume_analysis_record")) {
+            return null;
+        }
+        String sql = """
+                SELECT r.id, r.resume_id, f.original_filename, r.parse_status, r.updated_at
+                FROM resume_analysis_record r
+                LEFT JOIN file_info f ON f.id = r.file_id AND f.deleted = 0
+                WHERE r.deleted = 0 AND r.user_id = ?
+                ORDER BY r.updated_at DESC, r.id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentResumeParseVO vo = new UserDashboardOverviewVO.RecentResumeParseVO();
+            vo.setAnalysisRecordId(rs.getLong("id"));
+            vo.setResumeId(nullableLong(rs, "resume_id"));
+            vo.setFileName(rs.getString("original_filename"));
+            vo.setParseStatus(rs.getString("parse_status"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentResumeOptimizeVO recentResumeOptimize(Long userId) {
+        if (!tableExists("resume_optimize_record")) {
+            return null;
+        }
+        String sql = """
+                SELECT id, resume_id, optimize_status, ai_call_log_id, updated_at
+                FROM resume_optimize_record
+                WHERE deleted = 0 AND user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentResumeOptimizeVO vo = new UserDashboardOverviewVO.RecentResumeOptimizeVO();
+            vo.setOptimizeRecordId(rs.getLong("id"));
+            vo.setResumeId(nullableLong(rs, "resume_id"));
+            vo.setOptimizeStatus(rs.getString("optimize_status"));
+            vo.setAiCallLogId(nullableLong(rs, "ai_call_log_id"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentInterviewVO recentInterview(Long userId) {
+        String sql = """
+                SELECT id, title, status, report_status, updated_at
+                FROM interview_session
+                WHERE deleted = 0 AND user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentInterviewVO vo = new UserDashboardOverviewVO.RecentInterviewVO();
+            vo.setInterviewId(rs.getLong("id"));
+            vo.setTitle(rs.getString("title"));
+            vo.setStatus(rs.getString("status"));
+            vo.setReportStatus(rs.getString("report_status"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentReportVO recentReport(Long userId) {
+        String sql = """
+                SELECT r.id, r.session_id, r.status, r.total_score, r.generated_at
+                FROM interview_report r
+                JOIN interview_session s ON s.id = r.session_id AND s.deleted = 0
+                WHERE r.deleted = 0 AND s.user_id = ?
+                ORDER BY COALESCE(r.generated_at, r.updated_at) DESC, r.id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentReportVO vo = new UserDashboardOverviewVO.RecentReportVO();
+            vo.setReportId(rs.getLong("id"));
+            vo.setInterviewId(rs.getLong("session_id"));
+            vo.setStatus(rs.getString("status"));
+            vo.setTotalScore(nullableInt(rs, "total_score"));
+            vo.setGeneratedAt(toLocalDateTime(rs.getTimestamp("generated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId) {
+        String sql = """
+                SELECT id, plan_title, plan_status, updated_at
+                FROM study_plan
+                WHERE deleted = 0 AND user_id = ? AND plan_status = 'ACTIVE'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            Long planId = rs.getLong("id");
+            long total = count("study_task", "deleted = 0 AND plan_id = ?", planId);
+            long done = count("study_task", "deleted = 0 AND plan_id = ? AND task_status IN ('DONE','COMPLETED')", planId);
+            UserDashboardOverviewVO.ActiveStudyPlanVO vo = new UserDashboardOverviewVO.ActiveStudyPlanVO();
+            vo.setPlanId(planId);
+            vo.setPlanTitle(rs.getString("plan_title"));
+            vo.setPlanStatus(rs.getString("plan_status"));
+            vo.setTotalTaskCount(toInt(total));
+            vo.setDoneTaskCount(toInt(done));
+            vo.setProgressPercent(total == 0 ? 0 : Math.toIntExact(done * 100 / total));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private List<UserDashboardOverviewVO.EntryStatusVO> entryStatuses(UserDashboardOverviewVO vo) {
+        return List.of(
+                entryStatus("resume", vo.getRecentResumeParse() == null ? "TODO" : "AVAILABLE",
+                        vo.getRecentResumeParse() == null ? "No resume parse record found." : "Resume parse record available.",
+                        vo.getRecentResumeParse() == null ? null : vo.getRecentResumeParse().getAnalysisRecordId()),
+                entryStatus("interview", vo.getRecentInterview() == null ? "TODO" : "AVAILABLE",
+                        vo.getRecentInterview() == null ? "No interview found." : "Recent interview available.",
+                        vo.getRecentInterview() == null ? null : vo.getRecentInterview().getInterviewId()),
+                entryStatus("studyPlan", vo.getActiveStudyPlan() == null ? "TODO" : "CONTINUE",
+                        vo.getActiveStudyPlan() == null ? "No active study plan found." : "Active study plan available.",
+                        vo.getActiveStudyPlan() == null ? null : vo.getActiveStudyPlan().getPlanId())
+        );
+    }
+
+    private UserDashboardOverviewVO.EntryStatusVO entryStatus(String key, String status, String reason, Long relatedId) {
+        UserDashboardOverviewVO.EntryStatusVO vo = new UserDashboardOverviewVO.EntryStatusVO();
+        vo.setKey(key);
+        vo.setStatus(status);
+        vo.setReason(reason);
+        vo.setRelatedId(relatedId);
+        return vo;
+    }
+
+    private long count(String tableName, String condition, Object... args) {
+        if (!tableExists(tableName)) {
+            return 0L;
+        }
+        Long count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition,
+                Long.class, args);
+        return count == null ? 0L : count;
+    }
+
+    private boolean tableExists(String tableName) {
+        String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
+        return count != null && count > 0;
+    }
+
+    private int toInt(long value) {
+        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
+    }
+
+    private Long nullableLong(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private Integer nullableInt(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private LocalDateTime toLocalDateTime(java.sql.Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toLocalDateTime();
     }
 }

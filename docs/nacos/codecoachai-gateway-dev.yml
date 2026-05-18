@@ -16,6 +16,10 @@ spring:
           uri: lb://codecoachai-user
           predicates:
             - Path=/users/**
+        - id: codecoachai-user-dashboard
+          uri: lb://codecoachai-user
+          predicates:
+            - Path=/dashboard/**
         - id: codecoachai-user-admin-users
           uri: lb://codecoachai-user
           predicates:
@@ -40,6 +44,10 @@ spring:
           uri: lb://codecoachai-question
           predicates:
             - Path=/admin/question-reviews/**
+        - id: codecoachai-question-admin-sse
+          uri: lb://codecoachai-question
+          predicates:
+            - Path=/ai/sse/admin/questions/**
         - id: codecoachai-question-admin-duplicate-reviews
           uri: lb://codecoachai-question
           predicates:
@@ -75,7 +83,7 @@ spring:
         - id: codecoachai-interview-sse
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/report,/ai/sse/study-plan
+            - Path=/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
         - id: codecoachai-ai-admin
           uri: lb://codecoachai-ai
           predicates:
@@ -88,6 +96,10 @@ spring:
           uri: lb://codecoachai-system
           predicates:
             - Path=/admin/system/**
+        - id: codecoachai-system-admin-dashboard
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/dashboard/**
         - id: codecoachai-system-configs
           uri: lb://codecoachai-system
           predicates:

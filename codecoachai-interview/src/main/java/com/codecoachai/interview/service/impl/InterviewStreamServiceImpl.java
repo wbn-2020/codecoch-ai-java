@@ -56,11 +56,12 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             }
             CurrentQuestionVO question = interviewService.currentQuestion(sessionId);
             String fullContent = question == null ? null : question.getQuestionContent();
+            sendQuestionProgress(emitter, active, requestId, sessionId, question);
             sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId,
                     question == null ? null : question.getMessageId(), questionMetadata(question));
-            sendDone(emitter, active, requestId, sessionId,
-                    question == null ? null : question.getMessageId(), fullContent);
+            sendQuestionResult(emitter, active, requestId, sessionId, question);
+            sendQuestionDone(emitter, active, requestId, sessionId, question, fullContent);
         }), sseStreamExecutor);
         return emitter;
     }
@@ -221,6 +222,40 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .build());
     }
 
+    private void sendQuestionProgress(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
+                                      CurrentQuestionVO question) {
+        SseEmitterUtils.send(emitter, active, "progress", SseEventVO.builder()
+                .type("progress")
+                .requestId(requestId)
+                .interviewId(sessionId)
+                .sessionId(sessionId)
+                .messageId(question == null ? null : question.getMessageId())
+                .stage("CURRENT_QUESTION")
+                .message("current question loaded")
+                .content(question == null ? null : question.getQuestionContent())
+                .metadata(questionMetadata(question))
+                .build());
+    }
+
+    private void sendQuestionResult(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
+                                    CurrentQuestionVO question) {
+        if (question == null) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "result", SseEventVO.builder()
+                .type("result")
+                .requestId(requestId)
+                .interviewId(sessionId)
+                .sessionId(sessionId)
+                .messageId(question.getMessageId())
+                .stage("CURRENT_QUESTION")
+                .message("current question ready")
+                .content(question.getQuestionContent())
+                .result(questionResult(question))
+                .metadata(questionMetadata(question))
+                .build());
+    }
+
     private void sendDone(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
                           Long messageId, String fullContent) {
         if (SseEmitterUtils.send(emitter, active, "done", SseEventVO.builder()
@@ -232,6 +267,25 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .message("stream completed")
                 .fullContent(fullContent)
                 .metadata(Map.of("status", "SUCCESS"))
+                .build())) {
+            SseEmitterUtils.complete(emitter, active);
+        }
+    }
+
+    private void sendQuestionDone(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId,
+                                  CurrentQuestionVO question, String fullContent) {
+        if (SseEmitterUtils.send(emitter, active, "done", SseEventVO.builder()
+                .type("done")
+                .requestId(requestId)
+                .interviewId(sessionId)
+                .sessionId(sessionId)
+                .messageId(question == null ? null : question.getMessageId())
+                .stage("CURRENT_QUESTION")
+                .message("current question stream completed")
+                .content(fullContent)
+                .fullContent(fullContent)
+                .result(question == null ? null : questionResult(question))
+                .metadata(questionDoneMetadata(question))
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }
@@ -495,6 +549,9 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (question == null) {
             return metadata;
         }
+        metadata.put("interviewId", question.getSessionId());
+        metadata.put("sessionId", question.getSessionId());
+        metadata.put("messageId", question.getMessageId());
         metadata.put("stageId", question.getStageId());
         metadata.put("stageName", question.getStageName());
         metadata.put("questionId", question.getQuestionId());
@@ -505,6 +562,32 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         metadata.put("stageProgress", question.getStageProgress());
         metadata.put("interviewStatus", question.getInterviewStatus());
         return metadata;
+    }
+
+    private Map<String, Object> questionDoneMetadata(CurrentQuestionVO question) {
+        Map<String, Object> metadata = questionMetadata(question);
+        metadata.put("status", "SUCCESS");
+        metadata.put("nextAction", "ANSWER_CURRENT_QUESTION");
+        return metadata;
+    }
+
+    private Map<String, Object> questionResult(CurrentQuestionVO question) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("interviewId", question.getSessionId());
+        result.put("sessionId", question.getSessionId());
+        result.put("messageId", question.getMessageId());
+        result.put("questionId", question.getQuestionId());
+        result.put("questionGroupId", question.getQuestionGroupId());
+        result.put("questionContent", question.getQuestionContent());
+        result.put("stageId", question.getStageId());
+        result.put("stageName", question.getStageName());
+        result.put("stageProgress", question.getStageProgress());
+        result.put("isFollowUp", question.getIsFollowUp());
+        result.put("parentMessageId", question.getParentMessageId());
+        result.put("followUpCount", question.getFollowUpCount());
+        result.put("interviewStatus", question.getInterviewStatus());
+        result.put("status", "SUCCESS");
+        return result;
     }
 
     private Map<String, Object> answerMetadata(SubmitInterviewAnswerVO answer) {

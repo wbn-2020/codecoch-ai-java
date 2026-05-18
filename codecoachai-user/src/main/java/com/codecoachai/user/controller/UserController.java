@@ -3,6 +3,7 @@ package com.codecoachai.user.controller;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
 import com.codecoachai.user.domain.dto.UpdateUserProfileDTO;
+import com.codecoachai.user.domain.vo.UserDashboardOverviewVO;
 import com.codecoachai.user.domain.vo.UserOverviewVO;
 import com.codecoachai.user.domain.vo.UserProfileVO;
 import com.codecoachai.user.service.UserService;
@@ -40,5 +41,10 @@ public class UserController {
     @GetMapping("/overview")
     public Result<UserOverviewVO> getOverview() {
         return Result.success(userService.getOverview());
+    }
+
+    @GetMapping("/dashboard/overview")
+    public Result<UserDashboardOverviewVO> getDashboardOverview() {
+        return Result.success(userService.getDashboardOverview());
     }
 }
