@@ -1,6 +1,7 @@
 package com.codecoachai.ai.service;
 
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
+import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
@@ -12,6 +13,7 @@ import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
+import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
@@ -46,4 +48,6 @@ public interface AiService {
     ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto);
 
     AnalyzeResumeJobMatchVO analyzeResumeJobMatch(AnalyzeResumeJobMatchDTO dto);
+
+    AnalyzeSkillGapVO analyzeSkillGap(AnalyzeSkillGapDTO dto);
 }

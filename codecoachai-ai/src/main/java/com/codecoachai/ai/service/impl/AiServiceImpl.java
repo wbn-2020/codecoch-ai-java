@@ -4,6 +4,7 @@ import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
+import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
@@ -17,6 +18,7 @@ import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
+import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
@@ -68,6 +70,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
+    private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -378,6 +381,31 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public AnalyzeSkillGapVO analyzeSkillGap(AnalyzeSkillGapDTO dto) {
+        validateAnalyzeSkillGapDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_SKILL_GAP_ANALYZE,
+                skillGapAnalyzePromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockSkillGapAnalyzeJson()
+                    : parseSkillGapAnalyzeJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
+            Long logId = saveLog(promptResult, resultJson,
+                    businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            AnalyzeSkillGapVO vo = new AnalyzeSkillGapVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getProfileId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -433,6 +461,30 @@ public class AiServiceImpl implements AiService {
         }
         if (!StringUtils.hasText(dto.getJobDescriptionAnalysisJson())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "jobDescriptionAnalysisJson is required");
+        }
+    }
+
+    private void validateAnalyzeSkillGapDTO(AnalyzeSkillGapDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+        }
+        if (dto.getMatchReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (!StringUtils.hasText(dto.getMatchReportJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportJson is required");
+        }
+        if (!StringUtils.hasText(dto.getGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "gapsJson is required");
         }
     }
 
@@ -614,6 +666,10 @@ public class AiServiceImpl implements AiService {
         return defaultResumeJobMatchPrompt();
     }
 
+    private String skillGapAnalyzePromptContent() {
+        return defaultSkillGapAnalyzePrompt();
+    }
+
     private String questionDraftPromptContent() {
         return defaultQuestionDraftPrompt();
     }
@@ -748,6 +804,26 @@ public class AiServiceImpl implements AiService {
         values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
         values.put("targetJobJson", dto.getTargetJobJson());
         values.put("userExperienceYears", dto.getUserExperienceYears());
+        return values;
+    }
+
+    private Map<String, String> variables(AnalyzeSkillGapDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("profileId", dto.getProfileId() == null ? "" : String.valueOf(dto.getProfileId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("jdAnalysisId", dto.getJdAnalysisId() == null ? "" : String.valueOf(dto.getJdAnalysisId()));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
+        values.put("matchReportJson", dto.getMatchReportJson());
+        values.put("matchDetailsJson", dto.getMatchDetailsJson());
+        values.put("gapsJson", dto.getGapsJson());
+        values.put("recommendedLearningTopicsJson", dto.getRecommendedLearningTopicsJson());
+        values.put("recommendedInterviewTopicsJson", dto.getRecommendedInterviewTopicsJson());
+        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
+        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
         return values;
     }
 
@@ -1200,6 +1276,12 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
+    private String parseSkillGapAnalyzeJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateSkillGapAnalyzeJson(json);
+        return json.toString();
+    }
+
     private void validateResumeStructuredJson(JsonNode json) {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
@@ -1244,6 +1326,22 @@ public class AiServiceImpl implements AiService {
         requireResumeJobMatchField(json, "summary");
     }
 
+    private void validateSkillGapAnalyzeJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response must be a JSON object");
+        }
+        requireSkillGapAnalyzeField(json, "profileSummary");
+        requireSkillGapAnalyzeField(json, "overallLevel");
+        requireSkillGapAnalyzeField(json, "overallScore");
+        requireSkillGapAnalyzeField(json, "skillGaps");
+        JsonNode gaps = json.path("skillGaps");
+        if (!gaps.isArray() || gaps.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response must contain skillGaps");
+        }
+    }
+
     private void requireJobDescriptionField(JsonNode json, String fieldName) {
         if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
@@ -1255,6 +1353,13 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI resume job match response missing field: " + fieldName);
+        }
+    }
+
+    private void requireSkillGapAnalyzeField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response missing field: " + fieldName);
         }
     }
 
@@ -1599,6 +1704,51 @@ public class AiServiceImpl implements AiService {
         json.put("recommendedLearningTopics", List.of("Redis cache consistency", "MySQL index optimization"));
         json.put("recommendedInterviewTopics", List.of("Distributed locks", "API idempotency"));
         json.put("summary", "Overall fit is medium. Prioritize Redis and project-depth expression before interviews.");
+        return toJson(json);
+    }
+
+    private String mockSkillGapAnalyzeJson() {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("profileSummary",
+                "The candidate has stable Java and Spring Boot fundamentals, with visible gaps in Redis and project-depth evidence.");
+        json.put("overallLevel", 2);
+        json.put("overallScore", 68);
+        List<Map<String, Object>> skillGaps = new java.util.ArrayList<>();
+        Map<String, Object> redisGap = new LinkedHashMap<>();
+        redisGap.put("skillName", "Redis");
+        redisGap.put("category", "Middleware");
+        redisGap.put("targetLevel", 4);
+        redisGap.put("currentLevel", 2);
+        redisGap.put("gapLevel", 2);
+        redisGap.put("confidence", 0.82);
+        redisGap.put("severity", "HIGH");
+        redisGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
+        redisGap.put("gapDescription", "Resume lacks cache consistency and distributed lock project evidence");
+        redisGap.put("recommendedActions", List.of("Study cache consistency patterns",
+                "Practice Redis scenario questions",
+                "Run a Redis-focused mock interview"));
+        redisGap.put("priority", 1);
+        skillGaps.add(redisGap);
+
+        Map<String, Object> projectDepthGap = new LinkedHashMap<>();
+        projectDepthGap.put("skillName", "Project Depth");
+        projectDepthGap.put("category", "Project Experience");
+        projectDepthGap.put("targetLevel", 4);
+        projectDepthGap.put("currentLevel", 3);
+        projectDepthGap.put("gapLevel", 1);
+        projectDepthGap.put("confidence", 0.76);
+        projectDepthGap.put("severity", "MEDIUM");
+        projectDepthGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
+        projectDepthGap.put("gapDescription", "Project descriptions need stronger metrics and troubleshooting evidence");
+        projectDepthGap.put("recommendedActions", List.of("Add measurable project outcomes",
+                "Prepare troubleshooting stories"));
+        projectDepthGap.put("priority", 2);
+        skillGaps.add(projectDepthGap);
+        json.put("skillGaps", skillGaps);
+        json.put("nextPrioritySkills", List.of("Redis", "Project Depth"));
+        json.put("nextActions", List.of("Complete Redis cache consistency study",
+                "Practice 5 Redis scenario questions",
+                "Improve project description with measurable outcomes"));
         return toJson(json);
     }
 
@@ -2248,6 +2398,51 @@ public class AiServiceImpl implements AiService {
                 recommendedLearningTopics and recommendedInterviewTopics must be arrays of strings.
                 Example:
                 {"overallScore":78,"dimensionScores":{"techStack":82,"projectExperience":75,"businessFit":68,"communication":80},"strengths":[{"title":"Spring Boot project experience matches","evidence":"Resume project includes Spring Boot backend development","relatedSkills":["Spring Boot"]}],"gaps":[{"skillName":"Redis","category":"Middleware","severity":"HIGH","targetLevel":4,"currentLevel":2,"description":"Resume lacks cache consistency or distributed lock evidence","evidence":"JD requires Redis; resume lacks related details","recommendedActions":["Add Redis project practice","Practice Redis questions"]}],"resumeRisks":[{"riskType":"PROJECT_DEPTH","description":"Project description lacks technical metrics"}],"optimizationSuggestions":[{"section":"Project experience","suggestion":"Add cache design and optimization outcomes"}],"recommendedLearningTopics":["Redis cache consistency"],"recommendedInterviewTopics":["Distributed locks"],"summary":"Overall fit is medium."}
+                """;
+    }
+
+    private String defaultSkillGapAnalyzePrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a target-job skill profile from the match report.
+                profileId: {{profileId}}
+                matchReportId: {{matchReportId}}
+                userId: {{userId}}
+                resumeId: {{resumeId}}
+                targetJobId: {{targetJobId}}
+                jdAnalysisId: {{jdAnalysisId}}
+                targetJob:
+                {{targetJobJson}}
+                jobDescriptionAnalysis:
+                {{jobDescriptionAnalysisJson}}
+                resumeAnalysis:
+                {{resumeAnalysisJson}}
+                resumeSnapshot:
+                {{resumeSnapshotJson}}
+                resumeJobMatchReport:
+                {{matchReportJson}}
+                resumeJobMatchDetails:
+                {{matchDetailsJson}}
+                matchGaps:
+                {{gapsJson}}
+                recommendedLearningTopics:
+                {{recommendedLearningTopicsJson}}
+                recommendedInterviewTopics:
+                {{recommendedInterviewTopicsJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Do not invent candidate experience beyond the resume and match report evidence.
+                Top-level fields must be:
+                profileSummary, overallLevel, overallScore, skillGaps, nextPrioritySkills, nextActions.
+                overallLevel must be an integer from 1 to 5. overallScore must be an integer from 0 to 100.
+                skillGaps must be a non-empty array. Each skillGaps item must contain:
+                skillName, category, targetLevel, currentLevel, gapLevel, confidence, severity,
+                evidenceSources, gapDescription, recommendedActions, priority.
+                severity must be one of HIGH, MEDIUM, LOW.
+                evidenceSources and recommendedActions must be arrays of strings.
+                Prefer evidence from RESUME_JOB_MATCH and keep recommended actions practical for learning,
+                question practice, resume improvement, and targeted mock interviews.
+                Example:
+                {"profileSummary":"Java and Spring Boot are stable; Redis has clear gaps.","overallLevel":2,"overallScore":68,"skillGaps":[{"skillName":"Redis","category":"Middleware","targetLevel":4,"currentLevel":2,"gapLevel":2,"confidence":0.82,"severity":"HIGH","evidenceSources":["RESUME_JOB_MATCH"],"gapDescription":"Resume lacks cache consistency evidence","recommendedActions":["Study cache consistency","Practice Redis scenario questions"],"priority":1}],"nextPrioritySkills":["Redis"],"nextActions":["Complete Redis cache consistency study"]}
                 """;
     }
 

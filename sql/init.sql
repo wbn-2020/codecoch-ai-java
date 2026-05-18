@@ -393,6 +393,118 @@ CREATE TABLE IF NOT EXISTS job_description_analysis (
   KEY idx_jd_analysis_ai_log (ai_call_log_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 JD analysis result';
 
+CREATE TABLE IF NOT EXISTS resume_job_match_report (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  resume_id BIGINT NOT NULL COMMENT 'resume id',
+  target_job_id BIGINT NOT NULL COMMENT 'target job id',
+  jd_analysis_id BIGINT NOT NULL COMMENT 'job description analysis id',
+  overall_score INT DEFAULT NULL COMMENT 'overall match score',
+  tech_stack_score INT DEFAULT NULL COMMENT 'tech stack score',
+  project_experience_score INT DEFAULT NULL COMMENT 'project experience score',
+  business_fit_score INT DEFAULT NULL COMMENT 'business fit score',
+  communication_score INT DEFAULT NULL COMMENT 'communication score',
+  strengths_json LONGTEXT DEFAULT NULL COMMENT 'strengths JSON',
+  gaps_json LONGTEXT DEFAULT NULL COMMENT 'gaps JSON',
+  resume_risks_json LONGTEXT DEFAULT NULL COMMENT 'resume risks JSON',
+  optimization_suggestions_json LONGTEXT DEFAULT NULL COMMENT 'optimization suggestions JSON',
+  recommended_learning_topics_json LONGTEXT DEFAULT NULL COMMENT 'recommended learning topics JSON',
+  recommended_interview_topics_json LONGTEXT DEFAULT NULL COMMENT 'recommended interview topics JSON',
+  summary TEXT DEFAULT NULL COMMENT 'match summary',
+  raw_result_json LONGTEXT DEFAULT NULL COMMENT 'raw AI result JSON',
+  status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING' COMMENT 'match report status',
+  error_message VARCHAR(1000) DEFAULT NULL COMMENT 'error message',
+  ai_call_log_id BIGINT DEFAULT NULL COMMENT 'ai_call_log id',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_resume_match_user (user_id),
+  KEY idx_resume_match_resume (resume_id, deleted),
+  KEY idx_resume_match_target_job (target_job_id, deleted),
+  KEY idx_resume_match_status (status, deleted),
+  KEY idx_resume_match_user_resume_job (user_id, resume_id, target_job_id, deleted),
+  KEY idx_resume_match_ai_log (ai_call_log_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 resume job match report';
+
+CREATE TABLE IF NOT EXISTS resume_job_match_detail (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  report_id BIGINT NOT NULL COMMENT 'resume_job_match_report id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  dimension VARCHAR(64) DEFAULT NULL COMMENT 'match dimension',
+  skill_name VARCHAR(128) DEFAULT NULL COMMENT 'skill name',
+  match_level VARCHAR(32) DEFAULT NULL COMMENT 'match level',
+  score INT DEFAULT NULL COMMENT 'detail score',
+  evidence TEXT DEFAULT NULL COMMENT 'resume or JD evidence',
+  gap_description TEXT DEFAULT NULL COMMENT 'gap description',
+  suggestion TEXT DEFAULT NULL COMMENT 'improvement suggestion',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_resume_match_detail_report (report_id, deleted),
+  KEY idx_resume_match_detail_user (user_id, deleted),
+  KEY idx_resume_match_detail_dimension (dimension, deleted),
+  KEY idx_resume_match_detail_skill (skill_name, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 resume job match detail';
+
+CREATE TABLE IF NOT EXISTS skill_profile (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  target_job_id BIGINT NOT NULL COMMENT 'target job id',
+  match_report_id BIGINT NOT NULL COMMENT 'resume_job_match_report id',
+  profile_name VARCHAR(128) DEFAULT NULL COMMENT 'profile name',
+  overall_level INT DEFAULT NULL COMMENT 'overall level 1-5',
+  overall_score INT DEFAULT NULL COMMENT 'overall score 0-100',
+  summary TEXT DEFAULT NULL COMMENT 'profile summary',
+  source_type VARCHAR(64) NOT NULL DEFAULT 'RESUME_JOB_MATCH' COMMENT 'source type',
+  source_biz_id BIGINT DEFAULT NULL COMMENT 'source business id',
+  status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING' COMMENT 'profile status',
+  raw_result_json LONGTEXT DEFAULT NULL COMMENT 'raw AI result JSON',
+  ai_call_log_id BIGINT DEFAULT NULL COMMENT 'ai_call_log id',
+  error_message VARCHAR(1000) DEFAULT NULL COMMENT 'error message',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_skill_profile_user (user_id),
+  KEY idx_skill_profile_target_job (target_job_id, deleted),
+  KEY idx_skill_profile_match_report (match_report_id, deleted),
+  KEY idx_skill_profile_status (status, deleted),
+  KEY idx_skill_profile_user_job_status (user_id, target_job_id, status, deleted),
+  KEY idx_skill_profile_ai_log (ai_call_log_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 skill profile';
+
+CREATE TABLE IF NOT EXISTS skill_gap_item (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  profile_id BIGINT NOT NULL COMMENT 'skill_profile id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  target_job_id BIGINT NOT NULL COMMENT 'target job id',
+  skill_name VARCHAR(128) NOT NULL COMMENT 'skill name',
+  category VARCHAR(64) DEFAULT NULL COMMENT 'skill category',
+  target_level INT DEFAULT NULL COMMENT 'target level',
+  current_level INT DEFAULT NULL COMMENT 'current level',
+  gap_level INT DEFAULT NULL COMMENT 'gap level',
+  confidence DECIMAL(5,4) DEFAULT NULL COMMENT 'confidence 0-1',
+  severity VARCHAR(32) DEFAULT NULL COMMENT 'gap severity',
+  evidence_sources_json LONGTEXT DEFAULT NULL COMMENT 'evidence sources JSON',
+  gap_description TEXT DEFAULT NULL COMMENT 'gap description',
+  recommended_actions_json LONGTEXT DEFAULT NULL COMMENT 'recommended actions JSON',
+  priority INT DEFAULT NULL COMMENT 'priority order',
+  source_type VARCHAR(64) NOT NULL DEFAULT 'RESUME_JOB_MATCH' COMMENT 'source type',
+  source_biz_id BIGINT DEFAULT NULL COMMENT 'source business id',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_skill_gap_profile (profile_id, deleted),
+  KEY idx_skill_gap_user (user_id, deleted),
+  KEY idx_skill_gap_target_job (target_job_id, deleted),
+  KEY idx_skill_gap_skill (skill_name, deleted),
+  KEY idx_skill_gap_severity (severity, deleted),
+  KEY idx_skill_gap_profile_priority (profile_id, priority, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 skill gap item';
+
 CREATE TABLE IF NOT EXISTS prompt_template (
   id BIGINT NOT NULL AUTO_INCREMENT,
   scene VARCHAR(64) NOT NULL,
@@ -775,6 +887,14 @@ WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'PRACTICE_ANSWER_R
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
 SELECT 'JOB_DESCRIPTION_PARSE', 'Job Description Parse', 'Job Description Parse', 'V3 target job JD structured parsing prompt', 'You are a senior Java backend career coach. Parse this job description into structured JSON. Input: jobTitle={{jobTitle}}, companyName={{companyName}}, jobLevel={{jobLevel}}, userTargetDirection={{userTargetDirection}}, jdText={{jdText}}. Output only one JSON object with jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement, interviewFocusPoints, skillWeights, and summary. requiredSkills items should contain name, category, requiredLevel, weight, and evidence.', 'You are a senior Java backend career coach. Parse this job description into structured JSON. Input: jobTitle={{jobTitle}}, companyName={{companyName}}, jobLevel={{jobLevel}}, userTargetDirection={{userTargetDirection}}, jdText={{jdText}}. Output only one JSON object with jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement, interviewFocusPoints, skillWeights, and summary. requiredSkills items should contain name, category, requiredLevel, weight, and evidence.', 'targetJobId,userId,jobTitle,companyName,jobLevel,jdText,jdSource,userTargetDirection', 'v3-be-1', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'JOB_DESCRIPTION_PARSE');
+
+INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
+SELECT 'RESUME_JOB_MATCH', 'Resume Job Match', 'Resume Job Match', 'V3 resume to target job match analysis prompt', 'You are a senior Java backend career coach. Generate a resume-to-target-job match report. Inputs include resumeAnalysisJson, resumeSnapshotJson, jobDescriptionAnalysisJson, targetJobJson, and userExperienceYears. Output only one JSON object with overallScore, dimensionScores, strengths, gaps, resumeRisks, optimizationSuggestions, recommendedLearningTopics, recommendedInterviewTopics, and summary.', 'You are a senior Java backend career coach. Generate a resume-to-target-job match report. Inputs include resumeAnalysisJson, resumeSnapshotJson, jobDescriptionAnalysisJson, targetJobJson, and userExperienceYears. Output only one JSON object with overallScore, dimensionScores, strengths, gaps, resumeRisks, optimizationSuggestions, recommendedLearningTopics, recommendedInterviewTopics, and summary.', 'reportId,userId,resumeId,targetJobId,jdAnalysisId,resumeAnalysisJson,resumeSnapshotJson,jobDescriptionAnalysisJson,targetJobJson,userExperienceYears', 'v3-be-2', 1, 1
+WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'RESUME_JOB_MATCH');
+
+INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
+SELECT 'SKILL_GAP_ANALYZE', 'Skill Gap Analyze', 'Skill Gap Analyze', 'V3 skill profile generation prompt', 'You are a senior Java backend career coach. Generate a target-job skill profile from resume-job match evidence. Output only one JSON object with profileSummary, overallLevel, overallScore, skillGaps, nextPrioritySkills, and nextActions. skillGaps items must contain skillName, category, targetLevel, currentLevel, gapLevel, confidence, severity, evidenceSources, gapDescription, recommendedActions, and priority.', 'You are a senior Java backend career coach. Generate a target-job skill profile from resume-job match evidence. Output only one JSON object with profileSummary, overallLevel, overallScore, skillGaps, nextPrioritySkills, and nextActions. skillGaps items must contain skillName, category, targetLevel, currentLevel, gapLevel, confidence, severity, evidenceSources, gapDescription, recommendedActions, and priority.', 'profileId,matchReportId,userId,resumeId,targetJobId,jdAnalysisId,targetJobJson,jobDescriptionAnalysisJson,matchReportJson,matchDetailsJson,gapsJson,recommendedLearningTopicsJson,recommendedInterviewTopicsJson,resumeAnalysisJson,resumeSnapshotJson', 'v3-be-3', 1, 1
+WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'SKILL_GAP_ANALYZE');
 
 INSERT IGNORE INTO prompt_template_version (
   template_id, scene, version_code, version_name, content, variables_json,
