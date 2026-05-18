@@ -340,6 +340,59 @@ CREATE TABLE IF NOT EXISTS resume_project (
   KEY idx_resume_project_resume (resume_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS target_job (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  job_title VARCHAR(128) NOT NULL COMMENT 'target job title',
+  company_name VARCHAR(128) DEFAULT NULL COMMENT 'target company name',
+  job_level VARCHAR(64) DEFAULT NULL COMMENT 'job level',
+  jd_text LONGTEXT DEFAULT NULL COMMENT 'job description text',
+  jd_source VARCHAR(64) DEFAULT NULL COMMENT 'JD source',
+  current_flag TINYINT NOT NULL DEFAULT 0 COMMENT '1 current target job',
+  status TINYINT NOT NULL DEFAULT 1 COMMENT '1 active, 0 disabled',
+  parse_status VARCHAR(32) NOT NULL DEFAULT 'NOT_PARSED' COMMENT 'JD parse status',
+  parse_error_message VARCHAR(1000) DEFAULT NULL COMMENT 'JD parse error message',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_target_job_user (user_id),
+  KEY idx_target_job_current (user_id, current_flag, deleted),
+  KEY idx_target_job_status (status, deleted),
+  KEY idx_target_job_parse_status (parse_status, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 target job';
+
+CREATE TABLE IF NOT EXISTS job_description_analysis (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
+  target_job_id BIGINT NOT NULL COMMENT 'target_job id',
+  user_id BIGINT NOT NULL COMMENT 'user id',
+  job_title VARCHAR(128) DEFAULT NULL COMMENT 'job title snapshot',
+  company_name VARCHAR(128) DEFAULT NULL COMMENT 'company name snapshot',
+  job_level VARCHAR(64) DEFAULT NULL COMMENT 'job level snapshot',
+  responsibilities_json LONGTEXT DEFAULT NULL COMMENT 'responsibilities JSON',
+  required_skills_json LONGTEXT DEFAULT NULL COMMENT 'required skills JSON',
+  bonus_skills_json LONGTEXT DEFAULT NULL COMMENT 'bonus skills JSON',
+  tech_keywords_json LONGTEXT DEFAULT NULL COMMENT 'technical keywords JSON',
+  business_keywords_json LONGTEXT DEFAULT NULL COMMENT 'business keywords JSON',
+  experience_requirement TEXT DEFAULT NULL COMMENT 'experience requirement',
+  project_experience_requirement TEXT DEFAULT NULL COMMENT 'project experience requirement',
+  interview_focus_json LONGTEXT DEFAULT NULL COMMENT 'interview focus JSON',
+  skill_weights_json LONGTEXT DEFAULT NULL COMMENT 'skill weights JSON',
+  summary TEXT DEFAULT NULL COMMENT 'analysis summary',
+  raw_result_json LONGTEXT DEFAULT NULL COMMENT 'raw AI result JSON',
+  ai_call_log_id BIGINT DEFAULT NULL COMMENT 'ai_call_log id',
+  parse_status VARCHAR(32) NOT NULL DEFAULT 'NOT_PARSED' COMMENT 'JD parse status',
+  parse_error_message VARCHAR(1000) DEFAULT NULL COMMENT 'JD parse error message',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+  deleted TINYINT NOT NULL DEFAULT 0 COMMENT '0 active, 1 deleted',
+  PRIMARY KEY (id),
+  KEY idx_jd_analysis_target_job (target_job_id, deleted),
+  KEY idx_jd_analysis_user (user_id, deleted),
+  KEY idx_jd_analysis_parse_status (parse_status, deleted),
+  KEY idx_jd_analysis_ai_log (ai_call_log_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 JD analysis result';
+
 CREATE TABLE IF NOT EXISTS prompt_template (
   id BIGINT NOT NULL AUTO_INCREMENT,
   scene VARCHAR(64) NOT NULL,
@@ -718,6 +771,10 @@ WHERE scene = 'LEARNING_PLAN_GENERATE';
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
 SELECT 'PRACTICE_ANSWER_REVIEW', 'Question Answer AI Review', 'Question Answer AI Review', 'P0-4 short-answer practice AI review prompt', 'You are a senior Java backend interview coach. Review the user short-answer practice response using questionTitle, questionContent, referenceAnswer, analysis, userAnswer, difficulty, knowledgePoint, and answerDurationSeconds. Output one JSON object only with score, level, summary, strengths, weaknesses, improvementSuggestions, referenceComparison, knowledgeGaps, and suggestedFollowUps.', 'You are a senior Java backend interview coach. Review the user short-answer practice response using questionTitle, questionContent, referenceAnswer, analysis, userAnswer, difficulty, knowledgePoint, and answerDurationSeconds. Output one JSON object only with score, level, summary, strengths, weaknesses, improvementSuggestions, referenceComparison, knowledgeGaps, and suggestedFollowUps.', 'recordId,userId,questionId,questionTitle,questionContent,questionType,difficulty,technologyStack,knowledgePoint,referenceAnswer,analysis,userAnswer,answerDurationSeconds,targetPosition,experienceLevel', 'v2-p0-4-practice-review', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'PRACTICE_ANSWER_REVIEW');
+
+INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
+SELECT 'JOB_DESCRIPTION_PARSE', 'Job Description Parse', 'Job Description Parse', 'V3 target job JD structured parsing prompt', 'You are a senior Java backend career coach. Parse this job description into structured JSON. Input: jobTitle={{jobTitle}}, companyName={{companyName}}, jobLevel={{jobLevel}}, userTargetDirection={{userTargetDirection}}, jdText={{jdText}}. Output only one JSON object with jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement, interviewFocusPoints, skillWeights, and summary. requiredSkills items should contain name, category, requiredLevel, weight, and evidence.', 'You are a senior Java backend career coach. Parse this job description into structured JSON. Input: jobTitle={{jobTitle}}, companyName={{companyName}}, jobLevel={{jobLevel}}, userTargetDirection={{userTargetDirection}}, jdText={{jdText}}. Output only one JSON object with jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement, interviewFocusPoints, skillWeights, and summary. requiredSkills items should contain name, category, requiredLevel, weight, and evidence.', 'targetJobId,userId,jobTitle,companyName,jobLevel,jdText,jdSource,userTargetDirection', 'v3-be-1', 1, 1
+WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'JOB_DESCRIPTION_PARSE');
 
 INSERT IGNORE INTO prompt_template_version (
   template_id, scene, version_code, version_name, content, variables_json,

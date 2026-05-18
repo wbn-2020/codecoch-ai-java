@@ -9,6 +9,7 @@ import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
+import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
@@ -20,6 +21,7 @@ import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
+import com.codecoachai.ai.domain.vo.ParseJobDescriptionVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
 import com.codecoachai.ai.domain.vo.PracticeReviewVO;
 import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
@@ -62,6 +64,7 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
+    private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
@@ -322,6 +325,31 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto) {
+        validateParseJobDescriptionDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_JOB_DESCRIPTION_PARSE,
+                jobDescriptionParsePromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockJobDescriptionParseJson(dto)
+                    : parseJobDescriptionJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
+            Long logId = saveLog(promptResult, resultJson,
+                    businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            ParseJobDescriptionVO vo = new ParseJobDescriptionVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getTargetJobId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toJobDescriptionParseBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -334,6 +362,24 @@ public class AiServiceImpl implements AiService {
         }
         if (!StringUtils.hasText(dto.getRawText())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "rawText is required");
+        }
+    }
+
+    private void validateParseJobDescriptionDTO(ParseJobDescriptionDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (!StringUtils.hasText(dto.getJobTitle())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobTitle is required");
+        }
+        if (!StringUtils.hasText(dto.getJdText())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jdText is required");
         }
     }
 
@@ -407,6 +453,16 @@ public class AiServiceImpl implements AiService {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
         return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume optimize failed"));
+    }
+
+    private BusinessException toJobDescriptionParseBusinessException(RuntimeException ex) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
+        }
+        if (ex instanceof AiProviderException aiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        }
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "JD parse failed"));
     }
 
     private boolean isProjectStage(String stageType) {
@@ -495,6 +551,10 @@ public class AiServiceImpl implements AiService {
 
     private String resumeOptimizePromptContent() {
         return defaultResumeOptimizePrompt();
+    }
+
+    private String jobDescriptionParsePromptContent() {
+        return defaultJobDescriptionParsePrompt();
     }
 
     private String questionDraftPromptContent() {
@@ -603,6 +663,19 @@ public class AiServiceImpl implements AiService {
         values.put("optimizeFocus", dto.getOptimizeFocus());
         values.put("resumeJson", toJson(dto.getResume()));
         values.put("projectsJson", toJson(dto.getProjects()));
+        return values;
+    }
+
+    private Map<String, String> variables(ParseJobDescriptionDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("jobTitle", dto.getJobTitle());
+        values.put("companyName", dto.getCompanyName());
+        values.put("jobLevel", dto.getJobLevel());
+        values.put("jdText", dto.getJdText());
+        values.put("jdSource", dto.getJdSource());
+        values.put("userTargetDirection", dto.getUserTargetDirection());
         return values;
     }
 
@@ -1043,6 +1116,12 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
+    private String parseJobDescriptionJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateJobDescriptionJson(json);
+        return json.toString();
+    }
+
     private void validateResumeStructuredJson(JsonNode json) {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
@@ -1063,6 +1142,22 @@ public class AiServiceImpl implements AiService {
                     requireJsonField(project, "achievements");
                 }
             }
+        }
+    }
+
+    private void validateJobDescriptionJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI JD parse response must be a JSON object");
+        }
+        requireJobDescriptionField(json, "responsibilities");
+        requireJobDescriptionField(json, "requiredSkills");
+        requireJobDescriptionField(json, "summary");
+    }
+
+    private void requireJobDescriptionField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI JD parse response missing field: " + fieldName);
         }
     }
 
@@ -1336,6 +1431,38 @@ public class AiServiceImpl implements AiService {
                 "明确个人负责模块。",
                 "补充真实可验证的技术难点。"
         ));
+        return toJson(json);
+    }
+
+    private String mockJobDescriptionParseJson(ParseJobDescriptionDTO dto) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("jobTitle", firstText(dto == null ? null : dto.getJobTitle(), "Java Backend Engineer"));
+        json.put("companyName", dto == null ? null : dto.getCompanyName());
+        json.put("jobLevel", firstText(dto == null ? null : dto.getJobLevel(), "Mid-level"));
+        json.put("responsibilities", List.of(
+                "Build and maintain Java backend services",
+                "Design APIs and improve service reliability"
+        ));
+        json.put("requiredSkills", List.of(
+                Map.of("name", "Spring Boot", "category", "Framework", "requiredLevel", 4, "weight", 90,
+                        "evidence", "JD expects Java backend service development"),
+                Map.of("name", "MySQL", "category", "Database", "requiredLevel", 3, "weight", 75,
+                        "evidence", "Backend roles usually require relational database design and SQL tuning")
+        ));
+        json.put("bonusSkills", List.of(
+                Map.of("name", "Redis", "category", "Cache", "requiredLevel", 3, "weight", 60,
+                        "evidence", "High-concurrency backend systems benefit from cache design")
+        ));
+        json.put("techStackKeywords", List.of("Java", "Spring Boot", "MySQL", "Redis"));
+        json.put("businessKeywords", List.of("Backend service", "API design", "Reliability"));
+        json.put("experienceRequirement", "Experience building Java backend applications.");
+        json.put("projectExperienceRequirement", "Show at least one production-like backend project with clear responsibilities.");
+        json.put("interviewFocusPoints", List.of(
+                Map.of("topic", "Spring Boot service design", "reason", "Core backend framework capability"),
+                Map.of("topic", "Database schema and SQL optimization", "reason", "Common Java backend interview focus")
+        ));
+        json.put("skillWeights", Map.of("Spring Boot", 90, "MySQL", 75, "Redis", 60));
+        json.put("summary", "This role focuses on Java backend development, API design, database usage, and production reliability.");
         return toJson(json);
     }
 
@@ -1921,6 +2048,34 @@ public class AiServiceImpl implements AiService {
 
                 JSON 格式：
                 {"questions":[{"title":"题目标题","content":"题目内容","referenceAnswer":"参考答案","analysis":"答案解析","difficulty":"MEDIUM","questionType":"SHORT_ANSWER","followUpQuestions":["追问题"],"tagSuggestions":["标签建议"],"categorySuggestion":"分类建议","groupSuggestion":"问题组建议"}]}
+                """;
+    }
+
+    private String defaultJobDescriptionParsePrompt() {
+        return """
+                You are a senior Java backend career coach. Parse the target job JD into structured JSON.
+                targetJobId: {{targetJobId}}
+                userId: {{userId}}
+                jobTitle: {{jobTitle}}
+                companyName: {{companyName}}
+                jobLevel: {{jobLevel}}
+                jdSource: {{jdSource}}
+                userTargetDirection: {{userTargetDirection}}
+                JD:
+                {{jdText}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Top-level fields must be:
+                jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills,
+                techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement,
+                interviewFocusPoints, skillWeights, summary.
+                responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, and interviewFocusPoints must be arrays.
+                requiredSkills and bonusSkills items should contain name, category, requiredLevel, weight, and evidence.
+                interviewFocusPoints items should contain topic and reason.
+                skillWeights should be an object keyed by skill name.
+                Do not invent company facts beyond the JD. If a field is not available, use an empty string, empty array, or empty object.
+                Example:
+                {"jobTitle":"Java Backend Engineer","companyName":"","jobLevel":"Mid-level","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"Framework","requiredLevel":4,"weight":90,"evidence":"JD requires Spring Boot experience"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
                 """;
     }
 
