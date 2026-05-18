@@ -165,13 +165,15 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         QuestionRecommendationQueryDTO request = query == null ? new QuestionRecommendationQueryDTO() : query;
         long pageNo = normalizePageNo(request.getPageNo());
         long pageSize = normalizePageSize(request.getPageSize());
+        String sourceType = StringUtils.hasText(request.getSourceType())
+                ? normalizeSourceType(request.getSourceType()) : null;
+        String status = StringUtils.hasText(request.getStatus())
+                ? normalizeBatchStatus(request.getStatus()) : null;
         LambdaQueryWrapper<QuestionRecommendationBatch> wrapper = new LambdaQueryWrapper<QuestionRecommendationBatch>()
                 .eq(QuestionRecommendationBatch::getUserId, userId)
                 .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
-                .eq(StringUtils.hasText(request.getSourceType()),
-                        QuestionRecommendationBatch::getSourceType, normalizeSourceType(request.getSourceType()))
-                .eq(StringUtils.hasText(request.getStatus()),
-                        QuestionRecommendationBatch::getStatus, normalizeBatchStatus(request.getStatus()))
+                .eq(sourceType != null, QuestionRecommendationBatch::getSourceType, sourceType)
+                .eq(status != null, QuestionRecommendationBatch::getStatus, status)
                 .eq(request.getJobTargetId() != null, QuestionRecommendationBatch::getJobTargetId, request.getJobTargetId())
                 .eq(request.getMatchReportId() != null, QuestionRecommendationBatch::getMatchReportId, request.getMatchReportId())
                 .eq(request.getSkillProfileId() != null, QuestionRecommendationBatch::getSkillProfileId, request.getSkillProfileId())
@@ -222,8 +224,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             batchMapper.updateById(batch);
             return toGenerateVO(batchMapper.selectById(batch.getId()));
         } catch (RuntimeException ex) {
+            String failureMessage = userFacingGenerationError(ex);
             batch.setStatus(QuestionRecommendationBatchStatus.FAILED.getCode());
-            batch.setErrorMessage(truncateErrorMessage(ex.getMessage()));
+            batch.setErrorMessage(truncateErrorMessage(failureMessage));
             batchMapper.updateById(batch);
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Question recommendation generation failed: " + batch.getErrorMessage());
@@ -650,6 +653,25 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private String truncateErrorMessage(String message) {
         String value = StringUtils.hasText(message) ? message : "Question recommendation generation failed";
         return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    }
+
+    private String userFacingGenerationError(RuntimeException ex) {
+        String message = ex.getMessage();
+        String lowerMessage = StringUtils.hasText(message) ? message.toLowerCase(Locale.ROOT) : "";
+        if (lowerMessage.contains("json") || lowerMessage.contains("parse")) {
+            return "AI question recommendation response is not valid JSON";
+        }
+        if (lowerMessage.contains("load balancer")
+                || lowerMessage.contains("codecoachai-ai")
+                || lowerMessage.contains("feign")
+                || lowerMessage.contains("connection")
+                || lowerMessage.contains("503")) {
+            return "AI question recommendation service is unavailable";
+        }
+        if (ex instanceof BusinessException && StringUtils.hasText(message)) {
+            return message;
+        }
+        return "AI question recommendation service failed";
     }
 
     private String firstText(String... values) {
