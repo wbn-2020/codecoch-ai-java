@@ -45,6 +45,8 @@ import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
+import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
+import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -94,6 +96,9 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
         session.setResumeId(dto.getResumeId());
+        session.setTargetJobId(dto.getTargetJobId());
+        session.setSkillProfileId(dto.getSkillProfileId());
+        session.setMatchReportId(dto.getMatchReportId());
         session.setMode(mode);
         session.setTitle(StringUtils.hasText(dto.getTitle()) ? dto.getTitle() : "CodeCoachAI V1 模拟面试");
         session.setTargetPosition(dto.getTargetPosition());
@@ -115,6 +120,9 @@ public class InterviewServiceImpl implements InterviewService {
         List<InterviewStage> stages = createStages(session);
         CreateInterviewVO vo = new CreateInterviewVO();
         vo.setId(session.getId());
+        vo.setTargetJobId(session.getTargetJobId());
+        vo.setSkillProfileId(session.getSkillProfileId());
+        vo.setMatchReportId(session.getMatchReportId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
@@ -395,6 +403,9 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         InterviewDetailVO vo = new InterviewDetailVO();
         vo.setId(session.getId());
+        vo.setTargetJobId(session.getTargetJobId());
+        vo.setSkillProfileId(session.getSkillProfileId());
+        vo.setMatchReportId(session.getMatchReportId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
@@ -508,6 +519,10 @@ public class InterviewServiceImpl implements InterviewService {
         GenerateReportDTO reportDTO = new GenerateReportDTO();
         reportDTO.setInterviewId(session.getId());
         reportDTO.setUserId(session.getUserId());
+        reportDTO.setTargetJobId(session.getTargetJobId());
+        reportDTO.setSkillProfileId(session.getSkillProfileId());
+        reportDTO.setMatchReportId(session.getMatchReportId());
+        reportDTO.setSkillGapContext(skillGapContext(session));
         reportDTO.setMode(session.getMode());
         reportDTO.setTargetPosition(session.getTargetPosition());
         reportDTO.setExperienceLevel(session.getExperienceLevel());
@@ -641,6 +656,10 @@ public class InterviewServiceImpl implements InterviewService {
         InnerResumeDetailVO resume = loadResume(session);
         GenerateInterviewQuestionDTO aiDTO = new GenerateInterviewQuestionDTO();
         aiDTO.setMode(session.getMode());
+        aiDTO.setTargetJobId(session.getTargetJobId());
+        aiDTO.setSkillProfileId(session.getSkillProfileId());
+        aiDTO.setMatchReportId(session.getMatchReportId());
+        aiDTO.setSkillGapContext(skillGapContext(session));
         aiDTO.setStageType(stage.getStageType());
         aiDTO.setCurrentStage(stage.getStageName());
         aiDTO.setFocusPoints(stage.getFocusPoints());
@@ -1098,6 +1117,38 @@ public class InterviewServiceImpl implements InterviewService {
             return null;
         }
         return FeignResultUtils.unwrap(resumeFeignClient.getResume(session.getResumeId()));
+    }
+
+    private String skillGapContext(InterviewSession session) {
+        InnerSkillProfileVO profile = null;
+        try {
+            if (session.getSkillProfileId() != null) {
+                profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(session.getSkillProfileId()));
+            } else if (session.getMatchReportId() != null) {
+                profile = FeignResultUtils.unwrap(resumeFeignClient.getSuccessSkillProfileByMatchReport(session.getMatchReportId()));
+            }
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        if (profile == null || profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        appendLine(builder, "目标岗位ID", profile.getTargetJobId() == null ? null : profile.getTargetJobId().toString());
+        appendLine(builder, "匹配报告ID", profile.getMatchReportId() == null ? null : profile.getMatchReportId().toString());
+        appendLine(builder, "能力画像", profile.getSummary());
+        for (InnerSkillGapItemVO gap : profile.getGapItems().stream().limit(8).toList()) {
+            if (gap == null) {
+                continue;
+            }
+            builder.append("- ")
+                    .append(firstText(gap.getSkillName(), gap.getCategory(), "未命名短板"))
+                    .append(" | severity=").append(firstText(gap.getSeverity(), "UNKNOWN"))
+                    .append(" | gapLevel=").append(gap.getGapLevel() == null ? "" : gap.getGapLevel())
+                    .append(" | ").append(firstText(gap.getGapDescription(), ""))
+                    .append('\n');
+        }
+        return builder.toString().trim();
     }
 
     private String buildProjectContent(InnerResumeDetailVO resume) {

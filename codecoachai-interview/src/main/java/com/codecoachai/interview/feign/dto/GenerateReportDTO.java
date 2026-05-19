@@ -8,6 +8,10 @@ public class GenerateReportDTO {
 
     private Long interviewId;
     private Long userId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
+    private String skillGapContext;
     private String mode;
     private String targetPosition;
     private String experienceLevel;

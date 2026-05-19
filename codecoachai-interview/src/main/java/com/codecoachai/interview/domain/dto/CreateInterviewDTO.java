@@ -9,6 +9,9 @@ public class CreateInterviewDTO {
     private String interviewMode;
 
     private Long resumeId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private String title;
     private Integer maxQuestionCount;
     private String targetPosition;

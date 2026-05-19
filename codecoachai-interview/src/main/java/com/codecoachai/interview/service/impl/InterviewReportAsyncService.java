@@ -11,6 +11,7 @@ import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.QuestionFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
+import com.codecoachai.interview.feign.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.interview.feign.dto.RecommendQuestionDTO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
@@ -96,6 +97,10 @@ public class InterviewReportAsyncService {
         GenerateReportDTO dto = new GenerateReportDTO();
         dto.setInterviewId(session.getId());
         dto.setUserId(session.getUserId());
+        dto.setTargetJobId(session.getTargetJobId());
+        dto.setSkillProfileId(session.getSkillProfileId());
+        dto.setMatchReportId(session.getMatchReportId());
+        dto.setSkillGapContext(skillGapContext(session));
         dto.setMode(session.getMode());
         dto.setTargetPosition(session.getTargetPosition());
         dto.setExperienceLevel(session.getExperienceLevel());
@@ -199,6 +204,43 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(toJson(suggestions));
         report.setSuggestions(toJson(suggestions));
         report.setReportContent(enhanceReportContent(report.getReportContent(), weakPoints, recommendedQuestions, suggestions));
+        feedbackSkillProfile(report, weakPoints);
+    }
+
+    private void feedbackSkillProfile(InterviewReport report, List<String> weakPoints) {
+        if (report == null || weakPoints == null || weakPoints.isEmpty()) {
+            return;
+        }
+        InterviewSession session = sessionMapper.selectById(report.getSessionId());
+        if (session == null || session.getTargetJobId() == null) {
+            return;
+        }
+        try {
+            InterviewWeakPointFeedbackDTO dto = new InterviewWeakPointFeedbackDTO();
+            dto.setUserId(session.getUserId());
+            dto.setTargetJobId(session.getTargetJobId());
+            dto.setSkillProfileId(session.getSkillProfileId());
+            dto.setMatchReportId(session.getMatchReportId());
+            dto.setInterviewId(session.getId());
+            dto.setReportId(report.getId());
+            dto.setWeakPoints(weakPoints);
+            resumeFeignClient.feedbackInterviewWeakPoints(dto);
+        } catch (RuntimeException ignored) {
+            // Report generation must not fail only because downstream profile feedback is temporarily unavailable.
+        }
+    }
+
+    private String skillGapContext(InterviewSession session) {
+        if (session.getTargetJobId() == null && session.getSkillProfileId() == null && session.getMatchReportId() == null) {
+            return null;
+        }
+        return "targetJobId=" + nullToBlank(session.getTargetJobId())
+                + ", skillProfileId=" + nullToBlank(session.getSkillProfileId())
+                + ", matchReportId=" + nullToBlank(session.getMatchReportId());
+    }
+
+    private String nullToBlank(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private List<String> extractWeakPoints(InterviewReport report, List<InterviewMessage> messages) {

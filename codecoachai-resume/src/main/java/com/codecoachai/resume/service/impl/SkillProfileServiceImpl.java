@@ -9,6 +9,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.SkillProfileGenerateDTO;
+import com.codecoachai.resume.domain.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileQueryDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileRefreshDTO;
 import com.codecoachai.resume.domain.entity.JobDescriptionAnalysis;
@@ -168,6 +169,94 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 .orderByDesc(SkillProfile::getUpdatedAt)
                 .last("limit 1"));
         return profile == null ? null : toInnerProfileVO(profile);
+    }
+
+    @Override
+    public void feedbackInterviewWeakPoints(InterviewWeakPointFeedbackDTO dto) {
+        if (dto == null || dto.getUserId() == null || dto.getTargetJobId() == null
+                || dto.getInterviewId() == null || dto.getWeakPoints() == null || dto.getWeakPoints().isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview weak point feedback is incomplete");
+        }
+        TargetJob targetJob = targetJobMapper.selectById(dto.getTargetJobId());
+        if (targetJob == null || !dto.getUserId().equals(targetJob.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "target job not found");
+        }
+        SkillProfile profile = resolveFeedbackProfile(dto);
+        int nextPriority = nextGapPriority(profile.getId(), dto.getUserId());
+        for (String weakPoint : dto.getWeakPoints().stream().filter(StringUtils::hasText).limit(8).toList()) {
+            SkillGapItem item = new SkillGapItem();
+            item.setProfileId(profile.getId());
+            item.setUserId(dto.getUserId());
+            item.setTargetJobId(dto.getTargetJobId());
+            item.setSkillName(summarize(weakPoint, 64));
+            item.setCategory("INTERVIEW_FEEDBACK");
+            item.setTargetLevel(4);
+            item.setCurrentLevel(2);
+            item.setGapLevel(2);
+            item.setConfidence(new BigDecimal("0.70"));
+            item.setSeverity("MEDIUM");
+            item.setEvidenceSourcesJson(toJson(List.of("INTERVIEW_REPORT:" + dto.getReportId())));
+            item.setGapDescription(weakPoint);
+            item.setRecommendedActionsJson(toJson(List.of("结合面试报告复盘该弱项", "补充相关项目案例和原理细节", "完成针对性题目训练")));
+            item.setPriority(nextPriority++);
+            item.setSourceType("INTERVIEW_REPORT");
+            item.setSourceBizId(dto.getInterviewId());
+            gapItemMapper.insert(item);
+        }
+    }
+
+    private SkillProfile resolveFeedbackProfile(InterviewWeakPointFeedbackDTO dto) {
+        SkillProfile profile = null;
+        if (dto.getSkillProfileId() != null) {
+            profile = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+                    .eq(SkillProfile::getId, dto.getSkillProfileId())
+                    .eq(SkillProfile::getUserId, dto.getUserId())
+                    .eq(SkillProfile::getDeleted, CommonConstants.NO)
+                    .last("limit 1"));
+        }
+        if (profile == null && dto.getMatchReportId() != null) {
+            profile = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+                    .eq(SkillProfile::getMatchReportId, dto.getMatchReportId())
+                    .eq(SkillProfile::getUserId, dto.getUserId())
+                    .eq(SkillProfile::getDeleted, CommonConstants.NO)
+                    .orderByDesc(SkillProfile::getUpdatedAt)
+                    .last("limit 1"));
+        }
+        if (profile == null) {
+            profile = latestSuccessProfile(dto.getTargetJobId(), dto.getUserId());
+        }
+        if (profile != null) {
+            return profile;
+        }
+        SkillProfile created = new SkillProfile();
+        created.setUserId(dto.getUserId());
+        created.setTargetJobId(dto.getTargetJobId());
+        created.setMatchReportId(dto.getMatchReportId());
+        created.setProfileName("Interview feedback profile " + dto.getInterviewId());
+        created.setSourceType("INTERVIEW_REPORT");
+        created.setSourceBizId(dto.getInterviewId());
+        created.setStatus(SkillProfileStatus.SUCCESS.getCode());
+        created.setSummary("Generated from interview report weak-point feedback.");
+        created.setOverallLevel(2);
+        created.setOverallScore(60);
+        profileMapper.insert(created);
+        return created;
+    }
+
+    private int nextGapPriority(Long profileId, Long userId) {
+        Long count = gapItemMapper.selectCount(new LambdaQueryWrapper<SkillGapItem>()
+                .eq(SkillGapItem::getProfileId, profileId)
+                .eq(SkillGapItem::getUserId, userId)
+                .eq(SkillGapItem::getDeleted, CommonConstants.NO));
+        return count == null ? 1 : count.intValue() + 1;
+    }
+
+    private String summarize(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return "Interview weak point";
+        }
+        String normalized = value.trim().replaceAll("\\s+", " ");
+        return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength);
     }
 
     private SkillProfileGenerateVO generateFromMatchReport(Long matchReportId, Long userId) {
