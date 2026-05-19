@@ -51,17 +51,17 @@ rocketmq:
 # ============================================================
 codecoachai:
   oss:
-    enabled: false
-    endpoint: oss-cn-hangzhou.aliyuncs.com
-    bucket: codecoachai
+    enabled: true
+    endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+    bucket: ${OSS_BUCKET:codecoachai}
     access-key-id: ${OSS_AK:}
     access-key-secret: ${OSS_SK:}
-    domain:
+    domain: ${OSS_DOMAIN:}
     sign-url-expire-seconds: 900
-    key-prefix: dev
+    key-prefix: ${OSS_KEY_PREFIX:dev}
     sts:
-      endpoint: sts.cn-hangzhou.aliyuncs.com
-      region-id: cn-hangzhou
+      endpoint: ${OSS_STS_ENDPOINT:sts.cn-hangzhou.aliyuncs.com}
+      region-id: ${OSS_STS_REGION_ID:cn-hangzhou}
       role-arn: ${OSS_STS_ROLE_ARN:}
       role-session-name: codecoachai
       duration-seconds: 3600

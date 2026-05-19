@@ -112,7 +112,7 @@ V3 route:
 | V3-D | Resume-JD match backend | Implement after V3-B is accepted |
 | V3-E | Resume-JD match frontend | Frontend stage |
 | V3-F | Skill profile and study-plan linkage | Backend/frontend integration stage |
-| V3-G | Task center, notification, MQ, MinIO, ES, search center | Engineering enhancement tied to real workflows |
+| V3-G | Task center, notification, RocketMQ, Aliyun OSS, ES, search center | Engineering enhancement tied to real workflows |
 | V3-H | Dashboard, Docker Compose, full-chain testing, seal | Final integration and acceptance |
 
 ## V3-B Backend Direction
@@ -177,7 +177,7 @@ codecoachai-ai
 codecoachai-system
 ```
 
-Do not introduce MQ, MinIO, Elasticsearch, Docker Compose, a new service module, or other new infrastructure merely to satisfy a future V3 stage. Add new infrastructure only when the current V3 stage and user task explicitly require it and the implementation has a real business landing point.
+Do not introduce RocketMQ, Aliyun OSS, Elasticsearch, Docker Compose, a new service module, or other new infrastructure merely to satisfy a future V3 stage. Add new infrastructure only when the current V3 stage and user task explicitly require it and the implementation has a real business landing point.
 
 ## Stable V1 And V2 Capabilities
 
@@ -302,7 +302,7 @@ Never commit real secrets:
 
 - Real database passwords.
 - AI API keys.
-- MinIO access keys or secret keys.
+- Aliyun OSS access keys or secret keys.
 - MQ passwords.
 - Tokens, session keys, or private credentials.
 

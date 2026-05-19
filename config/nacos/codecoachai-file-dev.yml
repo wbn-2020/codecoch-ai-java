@@ -8,8 +8,8 @@ codecoachai:
     # 文件存储策略：LOCAL（本地）/ ALIYUN_OSS（阿里云）
     # 切换时只改这里，无需重启代码
     storage:
-      provider: LOCAL
-      root-path: ./data/uploads
+      provider: ALIYUN_OSS
+      root-path: ${CODECOACHAI_FILE_STORAGE_ROOT:./data/uploads}
       max-size-mb: 50
       allowed-extensions:
         - pdf
@@ -23,4 +23,4 @@ codecoachai:
 
   # OSS：file 服务可独立覆盖 common 里的默认值
   oss:
-    enabled: false   # 改为 true 时即启用 OSS 上传
+    enabled: true

@@ -31,7 +31,7 @@ Frontend implementation is outside this repository.
 Start infrastructure first:
 
 ```text
-MySQL -> Redis -> Nacos
+MySQL -> Redis -> Nacos -> RocketMQ
 ```
 
 Then import Nacos configs:
@@ -167,7 +167,7 @@ B0-1 smoke endpoints:
 ## Boundaries
 
 - Do not modify the frontend repository from this backend workflow.
-- Do not introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, or embedding unless the official V2 PRD requires them.
+- V3 infrastructure uses RocketMQ for messaging and Aliyun OSS for file storage; do not add MinIO or another MQ/storage stack unless explicitly requested.
 - Keep `/inner/**` protected by existing internal-call authentication.
 - Keep admin APIs under `/admin/**` and guarded by admin permissions.
 - Preserve existing synchronous APIs when adding SSE-compatible endpoints.

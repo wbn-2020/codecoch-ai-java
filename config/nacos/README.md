@@ -28,7 +28,7 @@
 - **datasource**：MySQL 已写好（`localhost:3306/codecoachai`，用户名 `root`，密码通过 `${MYSQL_PASSWORD:}` 注入）。**首次启动前请先在 MySQL 里执行 `sql/init.sql` 建库建表**。
 - **redis**：默认无密码，端口 6379
 - **rocketmq**：默认 `127.0.0.1:9876`
-- **codecoachai.oss.enabled**：默认 `false`（先用本地存储），等申请到 OSS 后改 `true` 并填三项凭证
+- **codecoachai.oss.enabled**：V3 默认 `true`，文件上传使用阿里云 OSS；凭证通过 `${OSS_AK}` / `${OSS_SK}` / 私有 Nacos 配置注入
 - **codecoachai.ai.api-key**：通过环境变量 `${DEEPSEEK_API_KEY:}` 注入；或直接在配置里填明文（不推荐生产）
 - **codecoachai.elasticsearch.uris**：默认 `http://127.0.0.1:9200`
 
@@ -40,7 +40,7 @@
 # 用户级环境变量（持久）
 [Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-xxxxxxxx", "User")
 [Environment]::SetEnvironmentVariable("MYSQL_PASSWORD", "your-local-password", "User")
-[Environment]::SetEnvironmentVariable("OSS_AK", "LTAI...", "User")
+[Environment]::SetEnvironmentVariable("OSS_AK", "your-oss-access-key-id", "User")
 [Environment]::SetEnvironmentVariable("OSS_SK", "xxx", "User")
 [Environment]::SetEnvironmentVariable("OSS_STS_ROLE_ARN", "acs:ram::xxx:role/yyy", "User")
 ```
