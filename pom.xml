@@ -45,7 +45,7 @@
         <!-- V3 工程化新增依赖版本 -->
         <aliyun-oss.version>3.17.4</aliyun-oss.version>
         <aliyun-sts.version>3.1.2</aliyun-sts.version>
-        <rocketmq-spring.version>2.3.1</rocketmq-spring.version>
+        <rocketmq-spring.version>2.3.0</rocketmq-spring.version>
         <redisson.version>3.27.2</redisson.version>
         <easyexcel.version>4.0.3</easyexcel.version>
         <poi.version>5.2.5</poi.version>

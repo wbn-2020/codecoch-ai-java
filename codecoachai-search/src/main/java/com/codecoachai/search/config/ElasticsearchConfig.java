@@ -34,7 +34,7 @@ public class ElasticsearchConfig {
     /** 密码（可空） */
     private String password = "";
 
-    @Bean(destroyMethod = "close")
+    @Bean
     public ElasticsearchClient elasticsearchClient() {
         HttpHost[] hosts = parseHosts(uris);
         org.elasticsearch.client.RestClientBuilder builder = RestClient.builder(hosts);
