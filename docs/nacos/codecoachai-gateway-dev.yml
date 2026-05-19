@@ -27,7 +27,7 @@ spring:
         - id: codecoachai-user-admin-roles
           uri: lb://codecoachai-user
           predicates:
-            - Path=/admin/roles
+            - Path=/admin/roles/**
         - id: codecoachai-question-users
           uri: lb://codecoachai-question
           predicates:
@@ -103,7 +103,7 @@ spring:
         - id: codecoachai-study
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/study-plans/**,/study-tasks/**
+            - Path=/study-plans/**,/study-tasks/**,/study-checkins/**
         - id: codecoachai-interview-sse
           uri: lb://codecoachai-interview
           predicates:
@@ -116,6 +116,18 @@ spring:
           uri: lb://codecoachai-file
           predicates:
             - Path=/admin/files/**
+        - id: codecoachai-file-users
+          uri: lb://codecoachai-file
+          predicates:
+            - Path=/files/**
+        - id: codecoachai-task
+          uri: lb://codecoachai-task
+          predicates:
+            - Path=/admin/tasks/**,/admin/notifications/**,/notifications/**
+        - id: codecoachai-search
+          uri: lb://codecoachai-search
+          predicates:
+            - Path=/search/**,/admin/search/**
         - id: codecoachai-system-admin
           uri: lb://codecoachai-system
           predicates:
@@ -127,7 +139,7 @@ spring:
         - id: codecoachai-system-configs
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/configs/**
+            - Path=/admin/configs/**,/admin/config/**,/admin/login-logs/**,/admin/operation-logs/**,/admin/announcements/**,/admin/stats/**,/announcements/**
 
 codecoachai:
   gateway:

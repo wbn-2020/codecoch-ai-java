@@ -35,6 +35,9 @@ import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
 import com.codecoachai.ai.domain.vo.QuestionRecommendationItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.AiService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
@@ -80,6 +83,7 @@ public class AiServiceImpl implements AiService {
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
+    private final AiCallLogService aiCallLogService;
     private final AiProperties aiProperties;
     private final AiClient aiClient;
     private final ObjectMapper objectMapper;
@@ -403,11 +407,22 @@ public class AiServiceImpl implements AiService {
                 jobDescriptionParsePromptContent(), variables(dto));
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockJobDescriptionParseJson(dto)
-                    : parseJobDescriptionJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockJobDescriptionParseJson(dto);
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                AiCallContext ctx = new AiCallContext();
+                ctx.setScene(SCENE_JOB_DESCRIPTION_PARSE);
+                ctx.setPrompt(promptResult.getRenderedPrompt());
+                ctx.setUserId(dto.getUserId());
+                RouteResult routeResult = aiCallLogService.callAndLog(ctx);
+                rawResponse = routeResult.getContent();
+                resultJson = parseJobDescriptionJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             ParseJobDescriptionVO vo = new ParseJobDescriptionVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);

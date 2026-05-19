@@ -23,25 +23,25 @@ spring:
         - id: user
           uri: lb://codecoachai-user
           predicates:
-            - Path=/users/**,/admin/users/**
+            - Path=/users/**,/admin/users/**,/admin/roles/**,/dashboard/**
 
         # ========== 题库 ==========
         - id: question
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions/**,/admin/questions/**,/categories/**,/tags/**,/practice/**
+            - Path=/questions/**,/admin/questions/**,/admin/question-categories/**,/admin/question-tags/**,/admin/question-groups/**,/admin/question-reviews/**,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories/**,/tags/**,/practice/**,/question-recommendations/**,/ai/sse/admin/questions/**
 
         # ========== 简历 ==========
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes/**,/admin/resumes/**,/skill-profiles/**
+            - Path=/resumes/**,/admin/resumes/**,/skill-profiles/**,/job-targets/**,/resume-job-match/**,/ai/sse/resume/**
 
         # ========== 面试 ==========
         - id: interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews/**,/admin/interviews/**,/study-plans/**
+            - Path=/interviews/**,/admin/interviews/**,/admin/industry-templates/**,/study-plans/**,/study-tasks/**,/study-checkins/**,/industry-templates/**,/ai/sse/interviews/**
 
         # ========== AI ==========
         - id: ai
@@ -66,19 +66,19 @@ spring:
         - id: task
           uri: lb://codecoachai-task
           predicates:
-            - Path=/admin/tasks/**,/notifications/**
+            - Path=/admin/tasks/**,/admin/notifications/**,/notifications/**
 
         # ========== 搜索（V3 新增） ==========
         - id: search
           uri: lb://codecoachai-search
           predicates:
-            - Path=/search/**
+            - Path=/search/**,/admin/search/**
 
         # ========== 系统管理 ==========
         - id: system
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/system/**,/admin/config/**
+            - Path=/admin/system/**,/admin/config/**,/admin/configs/**,/admin/dashboard/**,/admin/login-logs/**,/admin/operation-logs/**,/admin/announcements/**,/admin/stats/**,/announcements/**
 
       # 全局 CORS
       globalcors:

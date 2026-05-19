@@ -75,6 +75,9 @@ public class AiCallLogService {
             logEntry.setElapsedMs(elapsed);
             logEntry.setCostMillis(elapsed);
             aiCallLogMapper.insert(logEntry);
+            if (result != null) {
+                result.setAiCallLogId(logEntry.getId());
+            }
         } catch (Exception ex) {
             log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);
         }

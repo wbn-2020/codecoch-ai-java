@@ -21,4 +21,12 @@ public class Question extends BaseEntity {
     private String experienceLevel;
     private Integer isHighFrequency;
     private Integer status;
+    /** 归一化标题（用于去重检测） */
+    private String normalizedTitle;
+    /** 审核状态：PENDING / APPROVED / REJECTED */
+    private String auditStatus;
+    /** 来源类型：MANUAL / AI_GENERATED / IMPORT */
+    private String sourceType;
+    /** 是否推荐 */
+    private Integer isRecommended;
 }

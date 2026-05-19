@@ -47,6 +47,9 @@
         <aliyun-sts.version>3.1.2</aliyun-sts.version>
         <rocketmq-spring.version>2.3.1</rocketmq-spring.version>
         <redisson.version>3.27.2</redisson.version>
+        <easyexcel.version>4.0.3</easyexcel.version>
+        <poi.version>5.2.5</poi.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
         <flyway.version>10.10.0</flyway.version>
         <elasticsearch-client.version>8.14.3</elasticsearch-client.version>
     </properties>
@@ -106,6 +109,22 @@
                 <groupId>com.github.xiaoymin</groupId>
                 <artifactId>knife4j-gateway-spring-boot-starter</artifactId>
                 <version>${knife4j.version}</version>
+            </dependency>
+            <!-- V3：文件解析（题目导入） -->
+            <dependency>
+                <groupId>com.alibaba</groupId>
+                <artifactId>easyexcel</artifactId>
+                <version>${easyexcel.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-ooxml</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
             </dependency>
             <!-- V3：阿里云 OSS / STS -->
             <dependency>

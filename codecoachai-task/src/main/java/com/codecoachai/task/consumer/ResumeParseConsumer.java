@@ -52,6 +52,7 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
     private final AsyncTaskService asyncTaskService;
     private final AiFeignClient aiFeignClient;
     private final ResumeFeignClient resumeFeignClient;
+    private final com.codecoachai.task.service.NotificationService notificationService;
 
     @Override
     public void onMessage(MqMessage<ResumeParsePayload> envelope) {
@@ -114,11 +115,19 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             // 4. 标记成功
             asyncTaskService.markSuccess(envelope.getMessageId(), structured);
             log.info("简历解析任务完成 analysisId={}", analysisRecordId);
+            // 5. 通知用户
+            notificationService.notifyTaskDone(payload.getUserId(), "RESUME_PARSE",
+                    String.valueOf(analysisRecordId), "简历解析完成", "您的简历已解析完成，请查看解析结果");
         } catch (NonRetryableMqException nrEx) {
             log.error("简历解析任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
             asyncTaskService.markDead(envelope, nrEx.getMessage());
             // 失败回写 resume 侧 FAILED
             tryMarkResumeFailed(envelope, nrEx.getMessage());
+            // 通知用户失败
+            if (envelope.getPayload() != null) {
+                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "RESUME_PARSE",
+                        String.valueOf(envelope.getPayload().getResumeId()), "简历解析失败", nrEx.getMessage());
+            }
             // 不抛出，避免 MQ 无意义重试
         } catch (Exception ex) {
             log.error("简历解析任务失败 messageId={}", envelope.getMessageId(), ex);

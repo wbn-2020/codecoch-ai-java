@@ -80,6 +80,22 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public void updateAvatar(String avatarUrl) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setAvatarUrl(avatarUrl);
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public void updatePhone(String phone) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setPhone(phone);
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
     public UserOverviewVO getOverview() {
         Long userId = requireCurrentUserId();
         return UserOverviewVO.builder()
@@ -149,6 +165,16 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(id);
         user.setStatus(dto.getStatus());
         sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public String resetPassword(Long id) {
+        requireAdmin();
+        SysUser user = getUserOrThrow(id);
+        String newPassword = "Cc@" + System.currentTimeMillis() % 100000;
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        sysUserMapper.updateById(user);
+        return newPassword;
     }
 
     @Override

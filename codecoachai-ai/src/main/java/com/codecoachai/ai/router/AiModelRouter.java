@@ -133,6 +133,7 @@ public class AiModelRouter {
         private Integer totalTokens;
         private Double estimatedCost;
         private Long elapsedMs;
+        private Long aiCallLogId;
         /** 路由轨迹，例：deepseek 或 deepseek -> dashscope */
         private String routeTrace;
     }

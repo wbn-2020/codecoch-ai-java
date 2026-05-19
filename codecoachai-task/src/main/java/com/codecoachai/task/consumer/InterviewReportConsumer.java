@@ -46,6 +46,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
     private final AsyncTaskService asyncTaskService;
     private final AiFeignClient aiFeignClient;
     private final InterviewFeignClient interviewFeignClient;
+    private final com.codecoachai.task.service.NotificationService notificationService;
 
     @Override
     public void onMessage(MqMessage<InterviewReportPayload> envelope) {
@@ -100,10 +101,18 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
 
             asyncTaskService.markSuccess(envelope.getMessageId(), aiResp.getData().getReportJson());
             log.info("面试报告生成完成 sessionId={}", payload.getSessionId());
+            // 通知用户
+            notificationService.notifyTaskDone(payload.getUserId(), "INTERVIEW_REPORT",
+                    String.valueOf(payload.getSessionId()), "面试报告已生成", "您的模拟面试报告已生成完毕，请查看");
         } catch (NonRetryableMqException nrEx) {
             log.error("面试报告任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
             asyncTaskService.markDead(envelope, nrEx.getMessage());
             tryMarkInterviewFailed(envelope, nrEx.getMessage());
+            // 通知用户失败
+            if (envelope.getPayload() != null) {
+                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "INTERVIEW_REPORT",
+                        String.valueOf(envelope.getPayload().getSessionId()), "面试报告生成失败", nrEx.getMessage());
+            }
         } catch (Exception ex) {
             log.error("面试报告任务失败 messageId={}", envelope.getMessageId(), ex);
             asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());

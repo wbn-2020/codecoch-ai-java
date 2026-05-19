@@ -23,6 +23,7 @@ public final class UserConvert {
         vo.setNickname(user.getNickname());
         vo.setAvatarUrl(user.getAvatarUrl());
         vo.setEmail(user.getEmail());
+        vo.setPhone(user.getPhone());
         vo.setStatus(user.getStatus());
         vo.setRoles(roles);
         vo.setCreatedAt(user.getCreatedAt());

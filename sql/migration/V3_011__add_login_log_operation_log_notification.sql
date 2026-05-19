@@ -1,79 +1,100 @@
 -- ============================================================
--- V3_011: 补齐 V3 新增表和字段
--- 涉及：login_log / operation_log / notification / async_task 补字段 / ai_call_log 补字段
+-- V3_011: 补齐 V3 新增字段
+-- 说明：V3_008/V3_009 已负责创建 login_log / operation_log / notification。
+-- 本迁移只做兼容增量，避免重复 CREATE TABLE 导致新旧库结构分叉。
 -- ============================================================
 
--- ---------- 1. login_log ----------
-CREATE TABLE IF NOT EXISTS `login_log` (
-    `id` BIGINT NOT NULL AUTO_INCREMENT,
-    `user_id` BIGINT DEFAULT NULL COMMENT '用户ID（登录失败时可能为空）',
-    `username` VARCHAR(64) DEFAULT NULL,
-    `login_type` VARCHAR(32) NOT NULL DEFAULT 'PASSWORD' COMMENT 'PASSWORD / OAUTH / LOGOUT',
-    `login_status` VARCHAR(16) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS / FAILED',
-    `ip` VARCHAR(64) DEFAULT NULL,
-    `user_agent` VARCHAR(512) DEFAULT NULL,
-    `fail_reason` VARCHAR(255) DEFAULT NULL,
-    `trace_id` VARCHAR(64) DEFAULT NULL,
-    `login_time` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`),
-    KEY `idx_login_log_user_id` (`user_id`),
-    KEY `idx_login_log_time` (`login_time`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='登录日志';
+DROP PROCEDURE IF EXISTS add_column_if_not_exists;
+DROP PROCEDURE IF EXISTS add_index_if_not_exists;
 
--- ---------- 2. operation_log ----------
-CREATE TABLE IF NOT EXISTS `operation_log` (
-    `id` BIGINT NOT NULL AUTO_INCREMENT,
-    `trace_id` VARCHAR(64) DEFAULT NULL,
-    `user_id` BIGINT DEFAULT NULL,
-    `username` VARCHAR(64) DEFAULT NULL,
-    `module` VARCHAR(64) NOT NULL COMMENT '业务模块',
-    `action` VARCHAR(32) NOT NULL COMMENT 'CREATE/UPDATE/DELETE/APPROVE/EXPORT',
-    `target_type` VARCHAR(64) DEFAULT NULL COMMENT '操作对象类型',
-    `target_id` VARCHAR(64) DEFAULT NULL COMMENT '操作对象ID',
-    `method` VARCHAR(128) DEFAULT NULL COMMENT 'Controller#method',
-    `request_uri` VARCHAR(255) DEFAULT NULL,
-    `request_args` TEXT DEFAULT NULL,
-    `response` TEXT DEFAULT NULL,
-    `status` VARCHAR(16) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS / FAILED',
-    `error_msg` VARCHAR(2000) DEFAULT NULL,
-    `ip` VARCHAR(64) DEFAULT NULL,
-    `user_agent` VARCHAR(512) DEFAULT NULL,
-    `cost_ms` BIGINT DEFAULT NULL COMMENT '耗时毫秒',
-    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`),
-    KEY `idx_oplog_user_id` (`user_id`),
-    KEY `idx_oplog_module_action` (`module`, `action`),
-    KEY `idx_oplog_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作日志';
+DELIMITER //
 
--- ---------- 3. notification ----------
-CREATE TABLE IF NOT EXISTS `notification` (
-    `id` BIGINT NOT NULL AUTO_INCREMENT,
-    `user_id` BIGINT NOT NULL COMMENT '接收用户ID（0=系统公告）',
-    `type` VARCHAR(32) NOT NULL COMMENT 'SYSTEM/TASK_DONE/TASK_FAILED/REVIEW_RESULT/SECURITY',
-    `title` VARCHAR(128) NOT NULL,
-    `content` VARCHAR(1000) DEFAULT NULL,
-    `biz_type` VARCHAR(64) DEFAULT NULL,
-    `biz_id` VARCHAR(64) DEFAULT NULL,
-    `read_status` TINYINT NOT NULL DEFAULT 0 COMMENT '0=未读 1=已读',
-    `read_at` DATETIME DEFAULT NULL,
-    `deleted` TINYINT NOT NULL DEFAULT 0,
-    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (`id`),
-    KEY `idx_notification_user_read` (`user_id`, `read_status`),
-    KEY `idx_notification_created_at` (`created_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='站内通知';
+CREATE PROCEDURE add_column_if_not_exists(
+  IN table_name_value VARCHAR(64),
+  IN column_name_value VARCHAR(64),
+  IN column_definition_value TEXT,
+  IN after_column_value VARCHAR(64)
+)
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = DATABASE()
+      AND table_name = table_name_value
+      AND column_name = column_name_value
+  ) THEN
+    SET @alter_sql = CONCAT(
+      'ALTER TABLE `', table_name_value, '` ADD COLUMN `', column_name_value, '` ',
+      column_definition_value,
+      IF(after_column_value IS NULL OR after_column_value = '', '', CONCAT(' AFTER `', after_column_value, '`'))
+    );
+    PREPARE alter_stmt FROM @alter_sql;
+    EXECUTE alter_stmt;
+    DEALLOCATE PREPARE alter_stmt;
+  END IF;
+END//
 
--- ---------- 4. ai_call_log 补字段 ----------
-ALTER TABLE `ai_call_log`
-    ADD COLUMN IF NOT EXISTS `route_trace` VARCHAR(128) DEFAULT NULL COMMENT '路由轨迹' AFTER `error_message`,
-    ADD COLUMN IF NOT EXISTS `estimated_cost` DECIMAL(10,6) DEFAULT NULL COMMENT '预估费用（元）' AFTER `route_trace`;
+CREATE PROCEDURE add_index_if_not_exists(
+  IN table_name_value VARCHAR(64),
+  IN index_name_value VARCHAR(64),
+  IN index_definition_value TEXT
+)
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = table_name_value
+      AND index_name = index_name_value
+  ) THEN
+    SET @alter_sql = CONCAT('ALTER TABLE `', table_name_value, '` ADD ', index_definition_value);
+    PREPARE alter_stmt FROM @alter_sql;
+    EXECUTE alter_stmt;
+    DEALLOCATE PREPARE alter_stmt;
+  END IF;
+END//
 
--- ---------- 5. file_info 补字段（V3_006 可能已加，这里做幂等） ----------
-ALTER TABLE `file_info`
-    ADD COLUMN IF NOT EXISTS `oss_key` VARCHAR(512) DEFAULT NULL COMMENT 'OSS Key' AFTER `storage_path`,
-    ADD COLUMN IF NOT EXISTS `bucket` VARCHAR(128) DEFAULT NULL COMMENT 'OSS Bucket' AFTER `oss_key`,
-    ADD COLUMN IF NOT EXISTS `etag` VARCHAR(128) DEFAULT NULL COMMENT 'OSS ETag' AFTER `bucket`,
-    ADD COLUMN IF NOT EXISTS `md5` VARCHAR(64) DEFAULT NULL COMMENT '文件MD5' AFTER `etag`;
+DELIMITER ;
+
+-- login_log: 对齐 system-service LoginLog 实体，同时兼容 V3_008 旧字段。
+CALL add_column_if_not_exists('login_log', 'login_status',
+  'VARCHAR(16) NOT NULL DEFAULT ''SUCCESS'' COMMENT ''SUCCESS / FAILED''', 'login_type');
+CALL add_column_if_not_exists('login_log', 'fail_reason',
+  'VARCHAR(255) DEFAULT NULL', 'user_agent');
+CALL add_column_if_not_exists('login_log', 'trace_id',
+  'VARCHAR(64) DEFAULT NULL', 'fail_reason');
+CALL add_column_if_not_exists('login_log', 'login_time',
+  'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP', 'trace_id');
+CALL add_index_if_not_exists('login_log', 'idx_login_log_user_id',
+  'INDEX `idx_login_log_user_id` (`user_id`)');
+CALL add_index_if_not_exists('login_log', 'idx_login_log_time',
+  'INDEX `idx_login_log_time` (`login_time`)');
+
+-- operation_log: V3_008 已有主体字段，这里补齐常用时间索引。
+CALL add_index_if_not_exists('operation_log', 'idx_oplog_user_id',
+  'INDEX `idx_oplog_user_id` (`user_id`)');
+CALL add_index_if_not_exists('operation_log', 'idx_oplog_created_at',
+  'INDEX `idx_oplog_created_at` (`created_at`)');
+
+-- notification: V3_009 已有主体字段，这里补 updated_at 与创建时间索引。
+CALL add_column_if_not_exists('notification', 'updated_at',
+  'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP', 'created_at');
+CALL add_index_if_not_exists('notification', 'idx_notification_created_at',
+  'INDEX `idx_notification_created_at` (`created_at`)');
+
+-- ai_call_log 增强字段。
+CALL add_column_if_not_exists('ai_call_log', 'route_trace',
+  'VARCHAR(128) DEFAULT NULL COMMENT ''路由轨迹''', 'error_message');
+CALL add_column_if_not_exists('ai_call_log', 'estimated_cost',
+  'DECIMAL(10,6) DEFAULT NULL COMMENT ''预估费用（元）''', 'route_trace');
+
+-- file_info OSS 字段（V3_006 已加时本迁移为空操作）。
+CALL add_column_if_not_exists('file_info', 'oss_key',
+  'VARCHAR(512) DEFAULT NULL COMMENT ''OSS Key''', 'storage_path');
+CALL add_column_if_not_exists('file_info', 'bucket',
+  'VARCHAR(128) DEFAULT NULL COMMENT ''OSS Bucket''', 'oss_key');
+CALL add_column_if_not_exists('file_info', 'etag',
+  'VARCHAR(128) DEFAULT NULL COMMENT ''OSS ETag''', 'bucket');
+CALL add_column_if_not_exists('file_info', 'md5',
+  'VARCHAR(64) DEFAULT NULL COMMENT ''文件MD5''', 'etag');
+
+DROP PROCEDURE IF EXISTS add_column_if_not_exists;
+DROP PROCEDURE IF EXISTS add_index_if_not_exists;

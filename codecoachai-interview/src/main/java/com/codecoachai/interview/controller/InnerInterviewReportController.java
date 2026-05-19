@@ -152,4 +152,25 @@ public class InnerInterviewReportController {
         private String reportStatus;
         private String errorMessage;
     }
+
+    @GetMapping("/{id}/search-doc")
+    public Result<java.util.Map<String, Object>> getSearchDoc(@PathVariable Long id) {
+        InterviewSession s = sessionMapper.selectById(id);
+        if (s == null) {
+            return Result.success(null);
+        }
+        java.util.Map<String, Object> doc = new java.util.HashMap<>();
+        doc.put("id", s.getId());
+        doc.put("userId", s.getUserId());
+        doc.put("mode", s.getMode());
+        doc.put("title", s.getTitle());
+        doc.put("targetPosition", s.getTargetPosition());
+        doc.put("experienceLevel", s.getExperienceLevel());
+        doc.put("industryDirection", s.getIndustryDirection());
+        doc.put("difficulty", s.getDifficulty());
+        doc.put("status", s.getStatus());
+        doc.put("reportStatus", s.getReportStatus());
+        doc.put("interviewerStyle", s.getInterviewerStyle());
+        return Result.success(doc);
+    }
 }

@@ -3,12 +3,18 @@ package com.codecoachai.search.consumer;
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.DeleteRequest;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
+import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.domain.MqMessage;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
+import com.codecoachai.search.constant.IndexNames;
+import com.codecoachai.search.feign.InterviewFeignClient;
+import com.codecoachai.search.feign.QuestionFeignClient;
+import com.codecoachai.search.feign.ResumeFeignClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.StringReader;
 import java.time.Duration;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.ConsumeMode;
@@ -30,8 +36,8 @@ import org.springframework.util.StringUtils;
  *   - op=UPSERT → 从对应服务拉取最新数据写入 ES
  *   - op=DELETE → 从 ES 删除文档
  *
- * 当前简化实现：UPSERT 时直接用 payload 中的 docId 做 ES 文档 ID，
- * 实际数据需通过 Feign 拉取（TODO 第 5 周补全）。
+ * UPSERT 时通过内部 Feign 拉取完整文档数据；拉取失败不写占位文档，
+ * 让消息进入重试/死信以保持索引内容和业务数据一致。
  */
 @Slf4j
 @Component
@@ -51,6 +57,9 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
     private final ElasticsearchClient esClient;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final QuestionFeignClient questionFeignClient;
+    private final ResumeFeignClient resumeFeignClient;
+    private final InterviewFeignClient interviewFeignClient;
 
     @Override
     public void onMessage(MqMessage<SearchSyncPayload> envelope) {
@@ -92,21 +101,49 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
     }
 
     private void handleUpsert(SearchSyncPayload payload) throws Exception {
-        // TODO 第 5 周：通过 Feign 拉取完整文档数据，构建 ES 文档 JSON
-        // 当前先写一个占位文档，证明链路通
-        String docJson = objectMapper.writeValueAsString(
-                java.util.Map.of(
-                        "docId", payload.getDocId(),
-                        "indexName", payload.getIndexName(),
-                        "syncedAt", java.time.LocalDateTime.now().toString()
-                ));
+        // 通过 Feign 拉取完整文档数据
+        Map<String, Object> doc = fetchDocument(payload.getIndexName(), payload.getDocId());
+        if (doc == null || doc.isEmpty()) {
+            throw new IllegalStateException("搜索同步文档为空: index=" + payload.getIndexName()
+                    + ", docId=" + payload.getDocId());
+        }
 
+        String docJson = objectMapper.writeValueAsString(doc);
         esClient.index(IndexRequest.of(i -> i
                 .index(payload.getIndexName())
                 .id(payload.getDocId())
                 .withJson(new StringReader(docJson))
         ));
         log.info("ES UPSERT index={} docId={}", payload.getIndexName(), payload.getDocId());
+    }
+
+    private Map<String, Object> fetchDocument(String indexName, String docId) {
+        try {
+            Long id = Long.parseLong(docId);
+            Result<Map<String, Object>> result;
+            if (IndexNames.QUESTION.equals(indexName)) {
+                result = questionFeignClient.getSearchDoc(id);
+            } else if (IndexNames.RESUME.equals(indexName)) {
+                result = resumeFeignClient.getSearchDoc(id);
+            } else if (IndexNames.INTERVIEW.equals(indexName)) {
+                result = interviewFeignClient.getSearchDoc(id);
+            } else {
+                log.warn("未知索引类型 index={}", indexName);
+                return null;
+            }
+            if (result != null && result.isSuccess()) {
+                return result.getData();
+            }
+            log.warn("Feign 拉取文档失败 index={} docId={} msg={}", indexName, docId,
+                    result != null ? result.getMessage() : "null");
+            return null;
+        } catch (NumberFormatException e) {
+            log.warn("docId 非数字 index={} docId={}", indexName, docId);
+            return null;
+        } catch (Exception e) {
+            log.warn("Feign 调用异常 index={} docId={}", indexName, docId, e);
+            return null;
+        }
     }
 
     private void handleDelete(SearchSyncPayload payload) throws Exception {

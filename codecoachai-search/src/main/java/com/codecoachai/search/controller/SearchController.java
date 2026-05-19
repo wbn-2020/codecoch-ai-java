@@ -8,6 +8,7 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.search.constant.IndexNames;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.swagger.v3.oas.annotations.Operation;
@@ -48,13 +49,14 @@ public class SearchController {
                 buildQuestionFilters(difficulty, categoryId));
     }
 
-    @Operation(summary = "简历搜索（管理端）")
+    @Operation(summary = "当前用户简历搜索")
     @GetMapping("/resumes")
     public Result<PageResult<JsonNode>> searchResumes(
             @RequestParam String keyword,
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize) throws IOException {
-        return doSearch(IndexNames.RESUME, keyword, pageNo, pageSize, List.of());
+        Long userId = SecurityAssert.requireLoginUserId();
+        return doSearch(IndexNames.RESUME, keyword, pageNo, pageSize, userScopedFilters(userId));
     }
 
     @Operation(summary = "面试历史搜索")
@@ -62,13 +64,9 @@ public class SearchController {
     public Result<PageResult<JsonNode>> searchInterviews(
             @RequestParam String keyword,
             @RequestParam(defaultValue = "1") Integer pageNo,
-            @RequestParam(defaultValue = "10") Integer pageSize,
-            @RequestParam(required = false) Long userId) throws IOException {
-        List<Query> filters = new ArrayList<>();
-        if (userId != null) {
-            filters.add(Query.of(q -> q.term(t -> t.field("userId").value(userId))));
-        }
-        return doSearch(IndexNames.INTERVIEW, keyword, pageNo, pageSize, filters);
+            @RequestParam(defaultValue = "10") Integer pageSize) throws IOException {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return doSearch(IndexNames.INTERVIEW, keyword, pageNo, pageSize, userScopedFilters(userId));
     }
 
     @Operation(summary = "健康检查")
@@ -126,5 +124,9 @@ public class SearchController {
             filters.add(Query.of(q -> q.term(t -> t.field("categoryId").value(categoryId))));
         }
         return filters;
+    }
+
+    private List<Query> userScopedFilters(Long userId) {
+        return List.of(Query.of(q -> q.term(t -> t.field("userId").value(userId))));
     }
 }

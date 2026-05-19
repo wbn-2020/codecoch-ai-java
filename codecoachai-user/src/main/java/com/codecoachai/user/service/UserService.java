@@ -23,6 +23,10 @@ public interface UserService {
 
     void updateCurrentUserPassword(UpdatePasswordDTO dto);
 
+    void updateAvatar(String avatarUrl);
+
+    void updatePhone(String phone);
+
     UserOverviewVO getOverview();
 
     UserDashboardOverviewVO getDashboardOverview();
@@ -30,6 +34,8 @@ public interface UserService {
     PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query);
 
     void updateUserStatus(Long id, UpdateUserStatusDTO dto);
+
+    String resetPassword(Long id);
 
     InnerUserAuthVO getInnerUserByUsername(String username);
 
