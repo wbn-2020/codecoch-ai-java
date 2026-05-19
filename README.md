@@ -75,7 +75,9 @@ sql/migration/V2_008__practice_answer_review.sql
 Use Windows-safe MySQL commands:
 
 ```powershell
-mysql --host=127.0.0.1 --user=root --password=wbn123.. --default-character-set=utf8mb4 --database=codecoachai_v1 -e "source sql/migration/V2_008__practice_answer_review.sql"
+$env:MYSQL_PWD="your-local-password"
+mysql --host=127.0.0.1 --user=root --default-character-set=utf8mb4 --database=codecoachai_v1 -e "source sql/migration/V2_008__practice_answer_review.sql"
+Remove-Item Env:\MYSQL_PWD
 ```
 
 ## AI Mock Mode
