@@ -7,6 +7,8 @@
 # ---------- Stage 1: Build ----------
 FROM maven:3.9-eclipse-temurin-21-alpine AS builder
 
+ARG SERVICE
+
 WORKDIR /build
 COPY pom.xml .
 COPY codecoachai-common ./codecoachai-common
@@ -26,7 +28,7 @@ COPY codecoachai-search ./codecoachai-search
 RUN mvn dependency:go-offline -DskipTests -q || true
 
 # 构建
-RUN mvn clean package -DskipTests -pl ${SERVICE} -am -q
+RUN test -n "$SERVICE" && mvn clean package -DskipTests -pl "$SERVICE" -am -q
 
 # ---------- Stage 2: Runtime ----------
 FROM eclipse-temurin:21-jre-alpine
