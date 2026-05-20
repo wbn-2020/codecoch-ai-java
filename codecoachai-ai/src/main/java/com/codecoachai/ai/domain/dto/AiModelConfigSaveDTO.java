@@ -10,6 +10,10 @@ public class AiModelConfigSaveDTO {
     private String modelName;
     private String displayName;
     private String capabilityTags;
+    private String apiBaseUrl;
+    private String apiKey;
+    private Double temperature;
+    private Integer maxTokens;
     private Integer defaultModel;
     private Integer isDefault;
     private Integer enabled;

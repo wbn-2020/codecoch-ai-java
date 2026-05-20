@@ -38,16 +38,26 @@ public class AdminLogController {
     public Result<PageResult<LoginLog>> pageLoginLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String username,
             @RequestParam(required = false) String loginStatus,
+            @RequestParam(required = false) String status,
             @RequestParam(required = false) String loginType,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
+        String resolvedStatus = StringUtils.hasText(loginStatus) ? loginStatus : normalizeStatus(status);
         Page<LoginLog> page = loginLogMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<LoginLog>()
+                        .eq(userId != null, LoginLog::getUserId, userId)
+                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                .like(LoginLog::getUsername, keyword)
+                                .or().like(LoginLog::getIp, keyword)
+                                .or().like(LoginLog::getUserAgent, keyword)
+                                .or().like(LoginLog::getFailReason, keyword))
                         .like(StringUtils.hasText(username), LoginLog::getUsername, username)
-                        .eq(StringUtils.hasText(loginStatus), LoginLog::getLoginStatus, loginStatus)
+                        .eq(StringUtils.hasText(resolvedStatus), LoginLog::getLoginStatus, resolvedStatus)
                         .eq(StringUtils.hasText(loginType), LoginLog::getLoginType, loginType)
                         .ge(startTime != null, LoginLog::getLoginTime, startTime)
                         .le(endTime != null, LoginLog::getLoginTime, endTime)
@@ -62,6 +72,8 @@ public class AdminLogController {
     public Result<PageResult<OperationLog>> pageOperationLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String username,
             @RequestParam(required = false) String module,
             @RequestParam(required = false) String action,
@@ -71,6 +83,14 @@ public class AdminLogController {
         Page<OperationLog> page = operationLogMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<OperationLog>()
+                        .eq(userId != null, OperationLog::getUserId, userId)
+                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                .like(OperationLog::getUsername, keyword)
+                                .or().like(OperationLog::getModule, keyword)
+                                .or().like(OperationLog::getAction, keyword)
+                                .or().like(OperationLog::getRequestUri, keyword)
+                                .or().like(OperationLog::getIp, keyword)
+                                .or().like(OperationLog::getErrorMsg, keyword))
                         .like(StringUtils.hasText(username), OperationLog::getUsername, username)
                         .eq(StringUtils.hasText(module), OperationLog::getModule, module)
                         .eq(StringUtils.hasText(action), OperationLog::getAction, action)
@@ -79,5 +99,19 @@ public class AdminLogController {
                         .le(endTime != null, OperationLog::getCreatedAt, endTime)
                         .orderByDesc(OperationLog::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+    }
+
+    private String normalizeStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return status;
+        }
+        String value = status.trim();
+        if ("1".equals(value)) {
+            return "SUCCESS";
+        }
+        if ("0".equals(value)) {
+            return "FAILED";
+        }
+        return value;
     }
 }

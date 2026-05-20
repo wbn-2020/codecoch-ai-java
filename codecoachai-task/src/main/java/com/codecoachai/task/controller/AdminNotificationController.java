@@ -43,16 +43,25 @@ public class AdminNotificationController {
     public Result<PageResult<Notification>> page(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
+            @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String type,
+            @RequestParam(required = false) Integer status,
             @RequestParam(required = false) Integer readStatus) {
         SecurityAssert.requireAdmin();
+        Integer resolvedReadStatus = readStatus != null ? readStatus : status;
         Page<Notification> page = notificationMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<Notification>()
+                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                .like(Notification::getTitle, keyword)
+                                .or().like(Notification::getContent, keyword)
+                                .or().like(Notification::getType, keyword)
+                                .or().like(Notification::getBizType, keyword)
+                                .or().like(Notification::getBizId, keyword))
                         .eq(userId != null, Notification::getUserId, userId)
                         .eq(StringUtils.hasText(type), Notification::getType, type)
-                        .eq(readStatus != null, Notification::getReadStatus, readStatus)
+                        .eq(resolvedReadStatus != null, Notification::getReadStatus, resolvedReadStatus)
                         .orderByDesc(Notification::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
     }

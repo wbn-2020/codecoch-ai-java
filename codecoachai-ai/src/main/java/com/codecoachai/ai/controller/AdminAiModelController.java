@@ -28,21 +28,31 @@ public class AdminAiModelController {
     private final AiModelConfigMapper mapper;
 
     @GetMapping("/admin/ai/models")
-    public Result<List<AiModelConfig>> list(@RequestParam(required = false) String provider,
-                                            @RequestParam(required = false) Integer enabled) {
+    public Result<List<AiModelConfig>> list(@RequestParam(required = false) String keyword,
+                                            @RequestParam(required = false) String provider,
+                                            @RequestParam(required = false) Integer enabled,
+                                            @RequestParam(required = false) Integer status) {
         SecurityAssert.requireAdmin();
-        return Result.success(mapper.selectList(new LambdaQueryWrapper<AiModelConfig>()
+        Integer resolvedEnabled = enabled != null ? enabled : status;
+        List<AiModelConfig> rows = mapper.selectList(new LambdaQueryWrapper<AiModelConfig>()
+                .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                        .like(AiModelConfig::getProvider, keyword)
+                        .or().like(AiModelConfig::getModelCode, keyword)
+                        .or().like(AiModelConfig::getModelName, keyword)
+                        .or().like(AiModelConfig::getRemark, keyword))
                 .eq(StringUtils.hasText(provider), AiModelConfig::getProvider, provider)
-                .eq(enabled != null, AiModelConfig::getEnabled, enabled)
+                .eq(resolvedEnabled != null, AiModelConfig::getEnabled, resolvedEnabled)
                 .orderByDesc(AiModelConfig::getDefaultModel)
                 .orderByAsc(AiModelConfig::getSortOrder)
-                .orderByDesc(AiModelConfig::getUpdatedAt)));
+                .orderByDesc(AiModelConfig::getUpdatedAt));
+        rows.forEach(this::maskApiKey);
+        return Result.success(rows);
     }
 
     @GetMapping("/admin/ai/models/{id}")
     public Result<AiModelConfig> detail(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
-        return Result.success(get(id));
+        return Result.success(maskApiKey(get(id)));
     }
 
     @PostMapping("/admin/ai/models")
@@ -54,7 +64,7 @@ public class AdminAiModelController {
             clearDefault(entity.getProvider(), null);
         }
         mapper.insert(entity);
-        return Result.success(entity);
+        return Result.success(maskApiKey(entity));
     }
 
     @PutMapping("/admin/ai/models/{id}")
@@ -66,7 +76,7 @@ public class AdminAiModelController {
             clearDefault(entity.getProvider(), id);
         }
         mapper.updateById(entity);
-        return Result.success(entity);
+        return Result.success(maskApiKey(entity));
     }
 
     @PostMapping("/admin/ai/models/{id}/set-default")
@@ -77,7 +87,7 @@ public class AdminAiModelController {
         entity.setDefaultModel(1);
         entity.setEnabled(1);
         mapper.updateById(entity);
-        return Result.success(entity);
+        return Result.success(maskApiKey(entity));
     }
 
     @PutMapping("/admin/ai/models/{id}/default")
@@ -92,7 +102,7 @@ public class AdminAiModelController {
         Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
         entity.setEnabled(enabled == null ? 1 : enabled);
         mapper.updateById(entity);
-        return Result.success(entity);
+        return Result.success(maskApiKey(entity));
     }
 
     @DeleteMapping("/admin/ai/models/{id}")
@@ -112,6 +122,12 @@ public class AdminAiModelController {
         entity.setModelName(StringUtils.hasText(dto.getDisplayName()) ? dto.getDisplayName().trim()
                 : StringUtils.hasText(dto.getModelName()) ? dto.getModelName().trim() : entity.getModelCode());
         entity.setCapabilityTags(dto.getCapabilityTags());
+        entity.setApiBaseUrl(StringUtils.hasText(dto.getApiBaseUrl()) ? dto.getApiBaseUrl().trim() : null);
+        if (StringUtils.hasText(dto.getApiKey())) {
+            entity.setApiKey(dto.getApiKey().trim());
+        }
+        entity.setTemperature(dto.getTemperature());
+        entity.setMaxTokens(dto.getMaxTokens());
         entity.setDefaultModel(dto.getDefaultModel() != null ? dto.getDefaultModel()
                 : dto.getIsDefault() == null ? 0 : dto.getIsDefault());
         entity.setEnabled(dto.getEnabled() != null ? dto.getEnabled()
@@ -133,6 +149,24 @@ public class AdminAiModelController {
                 .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    private AiModelConfig maskApiKey(AiModelConfig entity) {
+        if (entity != null) {
+            entity.setApiKeyMasked(mask(entity.getApiKey()));
+        }
+        return entity;
+    }
+
+    private String mask(String apiKey) {
+        if (!StringUtils.hasText(apiKey)) {
+            return "";
+        }
+        String value = apiKey.trim();
+        if (value.length() <= 8) {
+            return "******";
+        }
+        return value.substring(0, 4) + "****" + value.substring(value.length() - 4);
     }
 
     @lombok.Data
