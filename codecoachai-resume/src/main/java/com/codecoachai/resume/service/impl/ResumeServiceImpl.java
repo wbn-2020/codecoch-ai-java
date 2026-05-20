@@ -37,10 +37,12 @@ import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
+import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
+import com.codecoachai.resume.mq.ResumeMqDispatcher;
 import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,6 +51,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -77,6 +80,7 @@ public class ResumeServiceImpl implements ResumeService {
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final Optional<ResumeMqDispatcher> resumeMqDispatcher;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -120,6 +124,7 @@ public class ResumeServiceImpl implements ResumeService {
         record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
         record.setParseStatus(ResumeParseStatus.PENDING.getCode());
         analysisRecordMapper.insert(record);
+        boolean dispatched = dispatchResumeParse(record, uploadedFile);
 
         ResumeUploadVO vo = new ResumeUploadVO();
         vo.setFileId(uploadedFile.getFileId());
@@ -129,13 +134,30 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setOriginalFilename(uploadedFile.getOriginalFilename());
         vo.setFileSize(uploadedFile.getFileSize());
         vo.setFileExt(uploadedFile.getFileExt());
-        vo.setMessage("上传成功，等待解析");
+        vo.setMessage(dispatched ? "上传成功，已提交解析" : "上传成功，等待解析补偿");
         return vo;
     }
 
     @Override
     public ResumeParseStatusVO getParseStatus(Long analysisRecordId) {
         return toParseStatusVO(getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId()));
+    }
+
+    private boolean dispatchResumeParse(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+        ResumeParsePayload payload = ResumeParsePayload.builder()
+                .resumeId(record.getId())
+                .fileId(record.getFileId())
+                .ossKey(uploadedFile.getStoragePath())
+                .mimeType(uploadedFile.getMimeType())
+                .userId(record.getUserId())
+                .mode("deep")
+                .build();
+        boolean dispatched = resumeMqDispatcher.map(dispatcher -> dispatcher.dispatchParse(payload)).orElse(false);
+        if (!dispatched) {
+            record.setErrorMessage("MQ dispatch unavailable; scheduled compensation will retry");
+            analysisRecordMapper.updateById(record);
+        }
+        return dispatched;
     }
 
     @Override

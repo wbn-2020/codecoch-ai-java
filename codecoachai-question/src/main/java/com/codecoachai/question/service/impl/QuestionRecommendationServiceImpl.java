@@ -643,12 +643,20 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private String normalizeSourceType(String sourceType) {
         String value = sourceType.trim().toUpperCase(Locale.ROOT);
+        // Deprecated compatibility aliases for old clients. Keep the persisted/primary enum values unchanged.
+        if ("GAP".equals(value)) {
+            return QuestionRecommendationSourceType.JD_GAP.getCode();
+        }
+        if ("MATCH_REPORT".equals(value)) {
+            return QuestionRecommendationSourceType.RESUME_JOB_MATCH.getCode();
+        }
         for (QuestionRecommendationSourceType type : QuestionRecommendationSourceType.values()) {
             if (type.getCode().equals(value)) {
                 return value;
             }
         }
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported sourceType");
+        throw new BusinessException(ErrorCode.PARAM_ERROR,
+                "Unsupported sourceType: " + sourceType + ". Supported sourceType values: JD_GAP, RESUME_JOB_MATCH, STUDY_PLAN");
     }
 
     private String normalizeBatchStatus(String status) {

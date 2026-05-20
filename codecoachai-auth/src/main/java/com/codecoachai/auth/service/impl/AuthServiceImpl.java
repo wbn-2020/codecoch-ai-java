@@ -22,31 +22,33 @@ import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.redis.util.RedisCacheHelper;
 import com.codecoachai.common.security.context.LoginUserContext;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final long RESET_TOKEN_TTL_SECONDS = 15 * 60L;
+    private static final String RESET_TOKEN_KEY_PREFIX = "auth:password-reset:";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
-    private static final Map<String, PasswordResetToken> RESET_TOKENS = new ConcurrentHashMap<>();
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
+    private final RedisCacheHelper redisCacheHelper;
     private final com.codecoachai.auth.log.LoginLogRecorder loginLogRecorder;
 
     @Override
@@ -106,12 +108,12 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.USER_DISABLED);
         }
         String token = newResetToken();
-        RESET_TOKENS.put(token, new PasswordResetToken(user.getId(), normalizeEmail(dto.getEmail()),
-                LocalDateTime.now().plusSeconds(RESET_TOKEN_TTL_SECONDS)));
+        redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
+        // TODO Integrate email/SMS delivery. The plaintext credential must not be returned in the API response.
+        log.info("Password reset request accepted userId={} ttlSeconds={}", user.getId(), RESET_TOKEN_TTL_SECONDS);
 
         ForgotPasswordVO vo = new ForgotPasswordVO();
-        vo.setMessage("Password reset token issued. Use resetToken with POST /auth/reset-password.");
-        vo.setResetToken(token);
+        vo.setMessage("Password reset request accepted. If the account exists, follow the instructions sent through the configured notification channel.");
         vo.setExpiresInSeconds(RESET_TOKEN_TTL_SECONDS);
         return vo;
     }
@@ -121,13 +123,25 @@ public class AuthServiceImpl implements AuthService {
         if (StringUtils.hasText(dto.getConfirmPassword()) && !dto.getNewPassword().equals(dto.getConfirmPassword())) {
             throw new BusinessException(ErrorCode.PASSWORD_CONFIRM_NOT_MATCH);
         }
-        PasswordResetToken token = RESET_TOKENS.remove(dto.getToken());
-        if (token == null || token.expiresAt().isBefore(LocalDateTime.now())) {
+        if (!StringUtils.hasText(dto.getToken())) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        String tokenKey = resetTokenKey(dto.getToken());
+        String userId = redisCacheHelper.get(tokenKey);
+        if (!StringUtils.hasText(userId)) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        Long resetUserId;
+        try {
+            resetUserId = Long.valueOf(userId);
+        } catch (NumberFormatException ex) {
+            redisCacheHelper.delete(tokenKey);
             throw new BusinessException(ErrorCode.TOKEN_INVALID);
         }
         InnerResetPasswordDTO innerDto = new InnerResetPasswordDTO();
         innerDto.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
-        FeignResultUtils.unwrap(userFeignClient.resetPassword(token.userId(), innerDto));
+        FeignResultUtils.unwrap(userFeignClient.resetPassword(resetUserId, innerDto));
+        redisCacheHelper.delete(tokenKey);
 
         ResetPasswordVO vo = new ResetPasswordVO();
         vo.setMessage("Password has been reset.");
@@ -223,10 +237,8 @@ public class AuthServiceImpl implements AuthService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private String normalizeEmail(String email) {
-        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
+    private String resetTokenKey(String token) {
+        return RESET_TOKEN_KEY_PREFIX + token;
     }
 
-    private record PasswordResetToken(Long userId, String email, LocalDateTime expiresAt) {
-    }
 }

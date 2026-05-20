@@ -29,7 +29,7 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
-    private static final List<String> WHITE_PATHS = List.of("/auth/login", "/auth/register");
+    private static final List<String> WHITE_PATHS = List.of("/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuthTokenClient authTokenClient;
@@ -42,10 +42,16 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
             return writeError(exchange, ErrorCode.FORBIDDEN);
         }
         if (HttpMethod.OPTIONS.equals(request.getMethod())) {
-            return chain.filter(exchange);
+            ServerHttpRequest mutated = request.mutate()
+                    .headers(this::removeUserHeaders)
+                    .build();
+            return chain.filter(exchange.mutate().request(mutated).build());
         }
         if (isWhitePath(path)) {
-            return chain.filter(exchange);
+            ServerHttpRequest mutated = request.mutate()
+                    .headers(this::removeUserHeaders)
+                    .build();
+            return chain.filter(exchange.mutate().request(mutated).build());
         }
         String authorization = request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
         if (!StringUtils.hasText(authorization) || !authorization.startsWith(SecurityConstants.BEARER_PREFIX)) {
@@ -82,13 +88,26 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
     }
 
     private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo) {
+        removeUserHeaders(headers);
         headers.set(HeaderConstants.AUTHORIZATION, authorization);
         headers.set(HeaderConstants.USER_ID, String.valueOf(tokenInfo.getUserId()));
-        headers.set(HeaderConstants.USERNAME, tokenInfo.getUsername());
+        headers.set(HeaderConstants.USERNAME, StringUtils.hasText(tokenInfo.getUsername()) ? tokenInfo.getUsername() : "");
         List<String> roles = tokenInfo.getRoles();
         if (roles != null && !roles.isEmpty()) {
             headers.set(HeaderConstants.ROLES, String.join(",", roles));
         }
+    }
+
+    private void removeUserHeaders(HttpHeaders headers) {
+        // Do not trust externally supplied identity/internal-call headers; gateway owns these values.
+        headers.remove(HeaderConstants.USER_ID);
+        headers.remove(HeaderConstants.USERNAME);
+        headers.remove(HeaderConstants.ROLES);
+        headers.remove(HeaderConstants.INTERNAL_CALL);
+        headers.remove(HeaderConstants.SERVICE_NAME);
+        headers.remove(HeaderConstants.INTERNAL_TIMESTAMP);
+        headers.remove(HeaderConstants.INTERNAL_NONCE);
+        headers.remove(HeaderConstants.INTERNAL_SIGNATURE);
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, ErrorCode errorCode) {

@@ -1,5 +1,6 @@
 package com.codecoachai.ai.domain.entity;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
 import lombok.Data;
@@ -39,4 +40,10 @@ public class AiCallLog extends BaseEntity {
     private String routeTrace;
     /** V3 新增：预估费用（元） */
     private Double estimatedCost;
+    /** V3_010 兼容字段：旧迁移使用 token_cost 保存成本。 */
+    @TableField("token_cost")
+    private Double tokenCost;
+    /** V3_010 兼容字段：旧迁移使用 model 保存模型标识。 */
+    @TableField("model")
+    private String model;
 }

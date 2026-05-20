@@ -8,16 +8,22 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mq.constant.MqTopics;
+import com.codecoachai.common.mq.payload.ResumeParsePayload;
+import com.codecoachai.common.mq.producer.MqProducer;
+import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.task.domain.entity.AsyncTask;
 import com.codecoachai.task.domain.entity.MessageDeadLetter;
 import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.codecoachai.task.mapper.MessageDeadLetterMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,6 +41,8 @@ public class AdminTaskController {
 
     private final AsyncTaskMapper asyncTaskMapper;
     private final MessageDeadLetterMapper deadLetterMapper;
+    private final Optional<MqProducer> mqProducer;
+    private final ObjectMapper objectMapper;
 
     @Operation(summary = "Page async tasks")
     @GetMapping
@@ -152,6 +160,8 @@ public class AdminTaskController {
     public Result<Void> recoverDeadLetter(@PathVariable Long id,
                                           @RequestParam(required = false) String note) {
         SecurityAssert.requireAdmin();
+        MessageDeadLetter dl = getRecoverableDeadLetter(id);
+        replayDeadLetter(dl);
         updateDeadLetterStatus(id, "RECOVERED", note);
         return Result.success();
     }
@@ -170,6 +180,8 @@ public class AdminTaskController {
     public Result<Void> recoverDeadLetterCompat(@PathVariable Long id,
                                                 @RequestParam(required = false) String note) {
         SecurityAssert.requireAdmin();
+        MessageDeadLetter dl = getRecoverableDeadLetter(id);
+        replayDeadLetter(dl);
         updateDeadLetterStatus(id, "RECOVERED", note);
         return Result.success();
     }
@@ -180,16 +192,59 @@ public class AdminTaskController {
         return Result.success("task-service ok");
     }
 
+    private MessageDeadLetter getRecoverableDeadLetter(Long id) {
+        MessageDeadLetter dl = deadLetterMapper.selectById(id);
+        if (dl == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
+        }
+        if (!"UNHANDLED".equals(dl.getHandleStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only UNHANDLED dead letters can be recovered");
+        }
+        return dl;
+    }
+
+    private void replayDeadLetter(MessageDeadLetter dl) {
+        MqProducer producer = mqProducer.orElseThrow(() -> new BusinessException(ErrorCode.SYSTEM_ERROR, "MQ producer is not available"));
+        // Current dead-letter table stores bizType/bizId/payload but not original topic/tag;
+        // use the established bizType routing table and fail closed for unsupported types.
+        if ("resume.parse".equals(dl.getBizType())) {
+            ResumeParsePayload payload = readPayload(dl.getPayload(), ResumeParsePayload.class);
+            if (payload == null || payload.getResumeId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter resume payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
+                    dl.getBizType(), StringUtils.hasText(dl.getBizId()) ? dl.getBizId() : String.valueOf(payload.getResumeId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported dead letter bizType: " + dl.getBizType());
+    }
+
+    private <T> T readPayload(String payload, Class<T> type) {
+        if (!StringUtils.hasText(payload)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter payload is empty");
+        }
+        try {
+            return objectMapper.readValue(payload, type);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter payload cannot be parsed");
+        }
+    }
+
     private void updateDeadLetterStatus(Long id, String status, String note) {
         MessageDeadLetter dl = deadLetterMapper.selectById(id);
         if (dl == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
         }
-        deadLetterMapper.update(null,
-                new LambdaUpdateWrapper<MessageDeadLetter>()
-                        .eq(MessageDeadLetter::getId, id)
-                        .set(MessageDeadLetter::getHandleStatus, status)
-                        .set(StringUtils.hasText(note), MessageDeadLetter::getHandleNote, note)
-                        .set(MessageDeadLetter::getUpdatedAt, LocalDateTime.now()));
+        LambdaUpdateWrapper<MessageDeadLetter> wrapper = new LambdaUpdateWrapper<MessageDeadLetter>()
+                .eq(MessageDeadLetter::getId, id)
+                .set(MessageDeadLetter::getHandleStatus, status)
+                .set(StringUtils.hasText(note), MessageDeadLetter::getHandleNote, note)
+                .set(MessageDeadLetter::getUpdatedAt, LocalDateTime.now());
+        Long handlerUserId = LoginUserContext.getUserId();
+        if (handlerUserId != null) {
+            wrapper.set(MessageDeadLetter::getHandlerUserId, handlerUserId);
+        }
+        deadLetterMapper.update(null, wrapper);
     }
 }

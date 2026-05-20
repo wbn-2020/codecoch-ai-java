@@ -15,6 +15,8 @@ public class AiCallLogVO {
     private String promptVersion;
     private String requestId;
     private String traceId;
+    private String routeTrace;
+    private Double estimatedCost;
     private String inputVariablesJson;
     private String modelParamsJson;
     private String promptHash;

@@ -4,10 +4,14 @@ import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.router.AiModelRouter;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * AI 调用日志增强服务。
@@ -19,6 +23,8 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AiCallLogService {
+
+    private static final String MDC_TRACE_ID = "traceId";
 
     private final AiModelRouter aiModelRouter;
     private final AiCallLogMapper aiCallLogMapper;
@@ -52,13 +58,15 @@ public class AiCallLogService {
 
             if (result != null) {
                 logEntry.setModelName(result.getModel());
+                logEntry.setModel(result.getModel());
                 logEntry.setResponseContent(truncate(result.getContent(), 10000));
                 logEntry.setPromptTokens(result.getPromptTokens());
                 logEntry.setCompletionTokens(result.getCompletionTokens());
                 logEntry.setTotalTokens(result.getTotalTokens());
-                logEntry.setTraceId(result.getRouteTrace());
+                logEntry.setTraceId(currentTraceId());
                 logEntry.setRouteTrace(result.getRouteTrace());
                 logEntry.setEstimatedCost(result.getEstimatedCost());
+                logEntry.setTokenCost(result.getEstimatedCost());
                 logEntry.setSuccess(1);
                 logEntry.setStatus(1);
             } else {
@@ -81,6 +89,17 @@ public class AiCallLogService {
         } catch (Exception ex) {
             log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);
         }
+    }
+
+    private String currentTraceId() {
+        String traceId = MDC.get(MDC_TRACE_ID);
+        if (traceId != null) {
+            return traceId;
+        }
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
+            return attributes.getRequest().getHeader(HeaderConstants.TRACE_ID);
+        }
+        return null;
     }
 
     private String truncate(String text, int max) {
