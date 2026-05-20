@@ -3,7 +3,6 @@ package com.codecoachai.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.convert.AiConvert;
 import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
@@ -26,6 +25,9 @@ import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.mapper.PromptTemplateVersionMapper;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
@@ -51,8 +53,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private final PromptTemplateMapper promptTemplateMapper;
     private final PromptTemplateVersionMapper promptTemplateVersionMapper;
     private final AiCallLogMapper aiCallLogMapper;
+    private final AiCallLogService aiCallLogService;
     private final AiProperties aiProperties;
-    private final AiClient aiClient;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -247,8 +249,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 : dto.getInputVariables();
         String renderedPrompt = render(version.getContent(), variables);
         boolean callAi = dto == null || !Boolean.FALSE.equals(dto.getCallAi());
-        String response = callAi ? testAiResponse(renderedPrompt) : "PROMPT_RENDER_ONLY";
-        Long logId = savePromptTestLog(template, version, renderedPrompt, variables, response);
+        PromptTestResult testResult = testAiResponse(template, version, renderedPrompt, variables, callAi);
 
         PromptVersionTestVO vo = new PromptVersionTestVO();
         vo.setVersionId(version.getId());
@@ -257,8 +258,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         vo.setVersionCode(version.getVersionCode());
         vo.setRenderedPrompt(renderedPrompt);
         vo.setInputVariables(variables);
-        vo.setAiResponse(response);
-        vo.setAiCallLogId(logId);
+        vo.setAiResponse(testResult.response());
+        vo.setAiCallLogId(testResult.logId());
         vo.setMockMode(Boolean.TRUE.equals(aiProperties.getMockEnabled()));
         return vo;
     }
@@ -336,12 +337,35 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         return rendered;
     }
 
-    private String testAiResponse(String renderedPrompt) {
+    private PromptTestResult testAiResponse(PromptTemplate template, PromptTemplateVersion version,
+                                            String renderedPrompt, Map<String, String> variables, boolean callAi) {
+        if (!callAi) {
+            String response = "PROMPT_RENDER_ONLY";
+            return new PromptTestResult(response,
+                    savePromptTestLog(template, version, renderedPrompt, variables, response));
+        }
         if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
-            return "PROMPT_VERSION_TEST_MOCK_RESPONSE";
+            String response = "PROMPT_VERSION_TEST_MOCK_RESPONSE";
+            return new PromptTestResult(response,
+                    savePromptTestLog(template, version, renderedPrompt, variables, response));
         }
         try {
-            return aiClient.chat(renderedPrompt);
+            AiCallContext ctx = new AiCallContext();
+            ctx.setScene("PROMPT_VERSION_TEST");
+            ctx.setPrompt(renderedPrompt);
+            ctx.setUserId(LoginUserContext.getUserId());
+            ctx.setBusinessId(String.valueOf(version.getId()));
+            ctx.setPromptTemplateId(template.getId());
+            ctx.setPromptTemplateVersionId(version.getId());
+            ctx.setPromptVersion(version.getVersionCode());
+            ctx.setInputVariablesJson(toJson(variables));
+            ctx.setModelParamsJson(version.getModelParamsJson());
+            ctx.setPromptHash(sha256(renderedPrompt));
+            ctx.setResponseFormat("TEXT");
+            ctx.setRequestBody("promptVersionTest=true");
+            ctx.setCheckQuota(false);
+            RouteResult result = aiCallLogService.callAndLog(ctx);
+            return new PromptTestResult(result.getContent(), result.getAiCallLogId());
         } catch (RuntimeException ex) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Prompt version test failed"));
         }
@@ -489,5 +513,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private String firstText(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private record PromptTestResult(String response, Long logId) {
     }
 }

@@ -13,6 +13,8 @@ public interface FileStorageService {
 
     ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType);
 
+    ResponseEntity<byte[]> adminDownload(Long fileId);
+
     PageResult<FileInfoVO> pageAdminFiles(AdminFileQueryDTO query);
 
     FileInfoVO getAdminFile(Long fileId);

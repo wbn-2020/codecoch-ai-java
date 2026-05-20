@@ -19,6 +19,7 @@ import com.codecoachai.auth.domain.vo.ResetPasswordVO;
 import com.codecoachai.auth.feign.UserFeignClient;
 import com.codecoachai.auth.log.LoginLogRecorder;
 import com.codecoachai.auth.log.PasswordResetSecurityLogRecorder;
+import com.codecoachai.auth.service.AuthPermissionResolver;
 import com.codecoachai.auth.service.AuthService;
 import com.codecoachai.auth.service.PasswordResetDeliveryService;
 import com.codecoachai.common.core.constant.SecurityConstants;
@@ -57,6 +58,7 @@ public class AuthServiceImpl implements AuthService {
     private final LoginLogRecorder loginLogRecorder;
     private final PasswordResetDeliveryService passwordResetDeliveryService;
     private final PasswordResetSecurityLogRecorder passwordResetSecurityLogRecorder;
+    private final AuthPermissionResolver authPermissionResolver;
 
     @Override
     public RegisterVO register(RegisterDTO dto) {
@@ -96,16 +98,18 @@ public class AuthServiceImpl implements AuthService {
         }
         StpUtil.login(user.getId());
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        List<String> permissions = resolvePermissions(roles);
         StpUtil.getSession().set("username", user.getUsername());
         StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
         StpUtil.getSession().set("roles", roles);
+        StpUtil.getSession().set("permissions", permissions);
         String token = StpUtil.getTokenValue();
 
         loginLogRecorder.recordSuccess(user.getId(), user.getUsername(), "PASSWORD");
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), roles);
-        return buildLoginVO(token, currentUser, roles);
+                user.getAvatarUrl(), user.getEmail(), roles, permissions);
+        return buildLoginVO(token, currentUser, roles, permissions);
     }
 
     @Override
@@ -195,8 +199,10 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         InnerUserBasicVO user = FeignResultUtils.unwrap(userFeignClient.getInnerUser(userId));
+        List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        List<String> permissions = resolvePermissions(roles);
         return toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), user.getRoles());
+                user.getAvatarUrl(), user.getEmail(), roles, permissions);
     }
 
     @Override
@@ -208,12 +214,14 @@ public class AuthServiceImpl implements AuthService {
                 throw new BusinessException(ErrorCode.USER_DISABLED);
             }
             List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+            List<String> permissions = resolvePermissions(roles);
             StpUtil.getSession().set("username", user.getUsername());
             StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
             StpUtil.getSession().set("roles", roles);
+            StpUtil.getSession().set("permissions", permissions);
             CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                    user.getAvatarUrl(), user.getEmail(), roles);
-            return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles);
+                    user.getAvatarUrl(), user.getEmail(), roles, permissions);
+            return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles, permissions);
         }
         throw new BusinessException(ErrorCode.TOKEN_INVALID);
     }
@@ -232,12 +240,14 @@ public class AuthServiceImpl implements AuthService {
         vo.setUserId(user.getId());
         vo.setUsername(user.getUsername());
         vo.setNickname(StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
-        vo.setRoles(user.getRoles() == null ? List.of() : user.getRoles());
+        List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        vo.setRoles(roles);
+        vo.setPermissions(resolvePermissions(roles));
         return vo;
     }
 
     private CurrentUserVO toCurrentUser(Long id, String username, String nickname, String avatarUrl,
-                                        String email, List<String> roles) {
+                                        String email, List<String> roles, List<String> permissions) {
         CurrentUserVO vo = new CurrentUserVO();
         vo.setId(id);
         vo.setUsername(username);
@@ -245,17 +255,23 @@ public class AuthServiceImpl implements AuthService {
         vo.setAvatarUrl(avatarUrl);
         vo.setEmail(email);
         vo.setRoles(roles == null ? List.of() : roles);
+        vo.setPermissions(permissions == null ? List.of() : permissions);
         return vo;
     }
 
-    private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles) {
+    private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles, List<String> permissions) {
         LoginVO vo = new LoginVO();
         vo.setToken(token);
         vo.setTokenName("Authorization");
         vo.setExpireTime(LocalDateTime.now().plusDays(1).format(DATE_TIME_FORMATTER));
         vo.setUserInfo(currentUser);
         vo.setRoles(roles == null ? List.of() : roles);
+        vo.setPermissions(permissions == null ? List.of() : permissions);
         return vo;
+    }
+
+    private List<String> resolvePermissions(List<String> roles) {
+        return authPermissionResolver.resolvePermissions(roles == null ? List.of() : roles);
     }
 
     private String newResetToken() {

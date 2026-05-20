@@ -37,6 +37,7 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
+import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionReviewService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -52,6 +53,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
@@ -72,6 +75,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private final QuestionDuplicateService questionDuplicateService;
     private final ObjectMapper objectMapper;
     private final PlatformTransactionManager transactionManager;
+    private final QuestionMqDispatcher questionMqDispatcher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -173,6 +177,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         } catch (Exception ignored) {
             // Duplicate hints must not break the A7 approve flow.
         }
+        syncQuestionSearchAfterCommit(question.getId(), reviewerId, CommonConstants.YES.equals(question.getStatus()));
         return getReview(id);
     }
 
@@ -264,6 +269,26 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private void finishBatchResult(BatchQuestionReviewResultVO result) {
         result.setSuccessCount(result.getSuccessIds().size());
         result.setFailureCount(result.getFailures().size());
+    }
+
+    private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId);
+            } else {
+                questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private GenerateQuestionDraftDTO toAiRequest(String batchId, Long adminUserId, AiQuestionGenerateRequestDTO dto) {

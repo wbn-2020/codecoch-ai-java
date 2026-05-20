@@ -99,6 +99,16 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     @Override
     public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        return downloadFile(fileInfo);
+    }
+
+    @Override
+    public ResponseEntity<byte[]> adminDownload(Long fileId) {
+        FileInfo fileInfo = getAvailableAdminFile(fileId);
+        return downloadFile(fileInfo);
+    }
+
+    private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
         if (!StringUtils.hasText(fileInfo.getStoragePath())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "storage path is empty");
         }
@@ -200,6 +210,21 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                 .last("limit 1"));
         if (fileInfo == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+        }
+        return fileInfo;
+    }
+
+    private FileInfo getAvailableAdminFile(Long fileId) {
+        if (fileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+        }
+        FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
+                .eq(FileInfo::getId, fileId)
+                .eq(FileInfo::getStatus, STATUS_AVAILABLE)
+                .eq(FileInfo::getDeleted, NOT_DELETED)
+                .last("limit 1"));
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found or not downloadable");
         }
         return fileInfo;
     }

@@ -6,10 +6,12 @@ import com.codecoachai.ai.router.AiModelRouter;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -55,16 +57,26 @@ public class AiCallLogService {
             logEntry.setUserId(ctx.getUserId());
             logEntry.setScene(ctx.getScene());
             logEntry.setBusinessId(ctx.getBusinessId());
+            logEntry.setRequestId(StringUtils.hasText(ctx.getRequestId()) ? ctx.getRequestId() : UUID.randomUUID().toString());
+            logEntry.setTraceId(currentTraceId());
+            logEntry.setPromptTemplateId(ctx.getPromptTemplateId());
+            logEntry.setPromptTemplateVersionId(ctx.getPromptTemplateVersionId());
+            logEntry.setPromptVersion(ctx.getPromptVersion());
+            logEntry.setInputVariablesJson(ctx.getInputVariablesJson());
+            logEntry.setModelParamsJson(ctx.getModelParamsJson());
+            logEntry.setPromptHash(ctx.getPromptHash());
+            logEntry.setResponseFormat(StringUtils.hasText(ctx.getResponseFormat()) ? ctx.getResponseFormat() : "TEXT");
             logEntry.setRequestPrompt(truncate(ctx.getPrompt(), 10000));
+            logEntry.setRequestBody(truncate(ctx.getRequestBody(), 10000));
 
             if (result != null) {
                 logEntry.setModelName(result.getModel());
                 logEntry.setModel(result.getModel());
                 logEntry.setResponseContent(truncate(result.getContent(), 10000));
+                logEntry.setResponseBody(truncate(result.getContent(), 10000));
                 logEntry.setPromptTokens(result.getPromptTokens());
                 logEntry.setCompletionTokens(result.getCompletionTokens());
                 logEntry.setTotalTokens(result.getTotalTokens());
-                logEntry.setTraceId(currentTraceId());
                 logEntry.setRouteTrace(result.getRouteTrace());
                 logEntry.setEstimatedCost(result.getEstimatedCost());
                 logEntry.setTokenCost(result.getEstimatedCost());

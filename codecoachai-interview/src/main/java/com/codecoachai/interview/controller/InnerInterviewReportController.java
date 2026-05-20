@@ -11,6 +11,7 @@ import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
+import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Data;
@@ -36,6 +37,7 @@ public class InnerInterviewReportController {
     private final InterviewSessionMapper sessionMapper;
     private final InterviewMessageMapper messageMapper;
     private final InterviewReportMapper reportMapper;
+    private final InterviewMqDispatcher interviewMqDispatcher;
 
     /**
      * 获取面试报告生成所需的上下文（session + messages）。
@@ -119,6 +121,9 @@ public class InnerInterviewReportController {
         }
 
         log.info("Interview report completed sessionId={} status={}", sessionId, status);
+        if (success) {
+            interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, session.getUserId());
+        }
         return Result.success();
     }
 

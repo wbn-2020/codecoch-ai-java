@@ -117,6 +117,24 @@ public class AiModelRouter {
         private Long userId;
         /** Optional business id for ai_call_log correlation. */
         private String businessId;
+        /** Optional request id for cross-service trace correlation. */
+        private String requestId;
+        /** Prompt template id, when the prompt came from template management. */
+        private Long promptTemplateId;
+        /** Prompt template version id, when a version was rendered. */
+        private Long promptTemplateVersionId;
+        /** Prompt version code, for example v3-be-5. */
+        private String promptVersion;
+        /** Render input variables JSON snapshot. */
+        private String inputVariablesJson;
+        /** Model params JSON snapshot. */
+        private String modelParamsJson;
+        /** Rendered prompt hash. */
+        private String promptHash;
+        /** Expected response format, for example JSON or TEXT. */
+        private String responseFormat = "TEXT";
+        /** Structured request metadata stored in ai_call_log.request_body. */
+        private String requestBody;
         /** chat / reasoner */
         private String modelType = "chat";
         /** 强制使用某 provider（管理员测试用）；null 走默认 */

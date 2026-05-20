@@ -51,6 +51,7 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewStageMapper;
+import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import java.time.LocalDateTime;
@@ -85,6 +86,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final AiFeignClient aiFeignClient;
     private final InterviewReportAsyncService reportAsyncService;
     private final IndustryTemplateService industryTemplateService;
+    private final InterviewMqDispatcher interviewMqDispatcher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -501,6 +503,7 @@ public class InterviewServiceImpl implements InterviewService {
             session.setEndTime(LocalDateTime.now());
             session.setFailureReason(null);
             sessionMapper.updateById(session);
+            syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
             return buildReportGenerateResult(session.getId(), aiCallLogId, report);
         } catch (RuntimeException ex) {
             report.setStatus(ReportStatusEnum.FAILED.name());
@@ -593,6 +596,20 @@ public class InterviewServiceImpl implements InterviewService {
         });
     }
 
+    private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
+        Runnable action = () -> interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
     private FinishInterviewVO finishAndGenerateReport(InterviewSession session) {
         session.setReportStatus(ReportStatusEnum.GENERATING.name());
         session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
@@ -635,6 +652,9 @@ public class InterviewServiceImpl implements InterviewService {
         }
         saveReport(report);
         sessionMapper.updateById(session);
+        if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+            syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
+        }
 
         FinishInterviewVO vo = new FinishInterviewVO();
         vo.setId(session.getId());

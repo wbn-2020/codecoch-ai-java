@@ -9,7 +9,10 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.constant.MqTopics;
+import com.codecoachai.common.mq.payload.InterviewReportPayload;
+import com.codecoachai.common.mq.payload.QuestionGeneratePayload;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
+import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.util.SecurityAssert;
@@ -38,6 +41,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/admin/tasks")
 @RequiredArgsConstructor
 public class AdminTaskController {
+
+    private static final String BIZ_RESUME_PARSE = "resume.parse";
+    private static final String BIZ_QUESTION_GENERATE = "question.generate";
+    private static final String BIZ_QUESTION_AI_GENERATE = "question.ai-generate";
+    private static final String BIZ_INTERVIEW_REPORT = "interview.report";
+    private static final String BIZ_SEARCH_SYNC = "search.sync";
+    private static final String INDEX_QUESTION = "cc_question";
+    private static final String INDEX_RESUME = "cc_resume";
+    private static final String INDEX_INTERVIEW = "cc_interview";
 
     private final AsyncTaskMapper asyncTaskMapper;
     private final MessageDeadLetterMapper deadLetterMapper;
@@ -205,19 +217,64 @@ public class AdminTaskController {
 
     private void replayDeadLetter(MessageDeadLetter dl) {
         MqProducer producer = mqProducer.orElseThrow(() -> new BusinessException(ErrorCode.SYSTEM_ERROR, "MQ producer is not available"));
-        // Current dead-letter table stores bizType/bizId/payload but not original topic/tag;
-        // use the established bizType routing table and fail closed for unsupported types.
-        if ("resume.parse".equals(dl.getBizType())) {
+        if (BIZ_RESUME_PARSE.equals(dl.getBizType())) {
             ResumeParsePayload payload = readPayload(dl.getPayload(), ResumeParsePayload.class);
             if (payload == null || payload.getResumeId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter resume payload is invalid");
             }
             producer.sendSync(MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
-                    dl.getBizType(), StringUtils.hasText(dl.getBizId()) ? dl.getBizId() : String.valueOf(payload.getResumeId()),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getResumeId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_QUESTION_GENERATE.equals(dl.getBizType()) || BIZ_QUESTION_AI_GENERATE.equals(dl.getBizType())) {
+            QuestionGeneratePayload payload = readPayload(dl.getPayload(), QuestionGeneratePayload.class);
+            if (payload == null || payload.getBatchId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter question payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
+                    BIZ_QUESTION_AI_GENERATE, resolveBizId(dl.getBizId(), payload.getBatchId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_INTERVIEW_REPORT.equals(dl.getBizType())) {
+            InterviewReportPayload payload = readPayload(dl.getPayload(), InterviewReportPayload.class);
+            if (payload == null || payload.getSessionId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter interview payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.INTERVIEW, MqTopics.INTERVIEW_TAG_REPORT),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getSessionId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_SEARCH_SYNC.equals(dl.getBizType())) {
+            SearchSyncPayload payload = readPayload(dl.getPayload(), SearchSyncPayload.class);
+            if (payload == null || !StringUtils.hasText(payload.getIndexName()) || !StringUtils.hasText(payload.getDocId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter search payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.SEARCH, resolveSearchTag(payload.getIndexName())),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getDocId()),
                     dl.getUserId(), payload);
             return;
         }
         throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported dead letter bizType: " + dl.getBizType());
+    }
+
+    private String resolveBizId(String deadLetterBizId, Object payloadBizId) {
+        return StringUtils.hasText(deadLetterBizId) ? deadLetterBizId : String.valueOf(payloadBizId);
+    }
+
+    private String resolveSearchTag(String indexName) {
+        if (INDEX_QUESTION.equals(indexName)) {
+            return MqTopics.SEARCH_TAG_QUESTION;
+        }
+        if (INDEX_RESUME.equals(indexName)) {
+            return MqTopics.SEARCH_TAG_RESUME;
+        }
+        if (INDEX_INTERVIEW.equals(indexName)) {
+            return MqTopics.SEARCH_TAG_INTERVIEW;
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported search index: " + indexName);
     }
 
     private <T> T readPayload(String payload, Class<T> type) {

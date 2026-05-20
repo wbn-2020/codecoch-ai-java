@@ -59,6 +59,8 @@ import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -112,6 +114,7 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setIsDefault(count == null || count == 0 ? CommonConstants.YES : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
+        syncResumeSearchAfterCommit(resume.getId(), userId, true);
         return toDetailVO(resume);
     }
 
@@ -274,6 +277,7 @@ public class ResumeServiceImpl implements ResumeService {
         if (affectedRows != 1) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume analysis confirmation failed");
         }
+        syncResumeSearchAfterCommit(resume.getId(), userId, true);
         return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
     }
 
@@ -338,6 +342,7 @@ public class ResumeServiceImpl implements ResumeService {
         StructuredApplyResult applyResult = applyStructuredPatches(draft, sourceResume, resultJson, dto);
         resumeMapper.insert(draft);
         copyProjects(sourceResume.getId(), draft.getId());
+        syncResumeSearchAfterCommit(draft.getId(), userId, true);
 
         ApplyResumeOptimizeResultVO vo = new ApplyResumeOptimizeResultVO();
         vo.setSourceResumeId(sourceResume.getId());
@@ -366,14 +371,17 @@ public class ResumeServiceImpl implements ResumeService {
         Resume resume = getOwnedResume(id);
         applyResume(resume, dto);
         resumeMapper.updateById(resume);
+        syncResumeSearchAfterCommit(resume.getId(), resume.getUserId(), true);
         return toDetailVO(resume);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteResume(Long id) {
         Resume resume = getOwnedResume(id);
         projectMapper.delete(new LambdaQueryWrapper<ResumeProject>().eq(ResumeProject::getResumeId, id));
         resumeMapper.deleteById(resume.getId());
+        syncResumeSearchAfterCommit(resume.getId(), resume.getUserId(), false);
     }
 
     @Override
@@ -397,6 +405,7 @@ public class ResumeServiceImpl implements ResumeService {
         project.setResumeId(resumeId);
         applyProject(project, dto);
         projectMapper.insert(project);
+        syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
         return ResumeConvert.toProjectVO(project);
     }
 
@@ -406,6 +415,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
         return ResumeConvert.toProjectVO(project);
     }
 
@@ -414,6 +424,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getOwnedProject(projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
         return ResumeConvert.toProjectVO(project);
     }
 
@@ -422,12 +433,14 @@ public class ResumeServiceImpl implements ResumeService {
         getOwnedResume(resumeId);
         ResumeProject project = getProject(resumeId, projectId);
         projectMapper.deleteById(project.getId());
+        syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
     }
 
     @Override
     public void deleteProject(Long projectId) {
         ResumeProject project = getOwnedProject(projectId);
         projectMapper.deleteById(project.getId());
+        syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
     }
 
     @Override
@@ -568,6 +581,26 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setParseStatus(parseStatus);
         vo.setResume(resume);
         return vo;
+    }
+
+    private void syncResumeSearchAfterCommit(Long resumeId, Long userId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                resumeMqDispatcher.ifPresent(dispatcher -> dispatcher.dispatchResumeSearchUpsert(resumeId, userId));
+            } else {
+                resumeMqDispatcher.ifPresent(dispatcher -> dispatcher.dispatchResumeSearchDelete(resumeId, userId));
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private ParsedResumeStructuredDTO parseStructuredResume(String structuredJson) {
