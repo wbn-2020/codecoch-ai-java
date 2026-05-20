@@ -46,11 +46,14 @@ import com.codecoachai.resume.mq.ResumeMqDispatcher;
 import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -68,9 +71,13 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
     private static final String DEFAULT_AI_RESUME_TITLE = "AI Parsed Resume";
     private static final String APPLY_MODE_CREATE_DRAFT = "CREATE_DRAFT";
+    private static final String APPLY_MODE_STRUCTURED_PATCH = "STRUCTURED_PATCH";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
+    private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
+            "title", "resumeName", "realName", "email", "phone", "targetPosition",
+            "skillStack", "workExperience", "educationExperience", "summary");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
@@ -314,8 +321,8 @@ public class ResumeServiceImpl implements ResumeService {
         Long userId = requireCurrentUserId();
         String applyMode = dto == null || !StringUtils.hasText(dto.getApplyMode())
                 ? APPLY_MODE_CREATE_DRAFT : dto.getApplyMode();
-        if (!APPLY_MODE_CREATE_DRAFT.equals(applyMode)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only CREATE_DRAFT applyMode is supported");
+        if (!APPLY_MODE_CREATE_DRAFT.equals(applyMode) && !APPLY_MODE_STRUCTURED_PATCH.equals(applyMode)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported applyMode");
         }
         ResumeOptimizeRecord record = getOwnedOptimizeRecord(recordId, userId);
         if (!ResumeOptimizeStatus.SUCCESS.getCode().equals(record.getOptimizeStatus())) {
@@ -324,10 +331,11 @@ public class ResumeServiceImpl implements ResumeService {
         if (record.getResumeId() == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Optimize record source resume is missing");
         }
-        parseResultJson(record.getResultJson());
+        JsonNode resultJson = parseResultJson(record.getResultJson());
         Resume sourceResume = getOwnedResume(record.getResumeId(), userId);
         LocalDateTime appliedAt = LocalDateTime.now();
         Resume draft = copyResumeDraft(sourceResume, record.getId(), appliedAt);
+        StructuredApplyResult applyResult = applyStructuredPatches(draft, sourceResume, resultJson, dto);
         resumeMapper.insert(draft);
         copyProjects(sourceResume.getId(), draft.getId());
 
@@ -336,9 +344,14 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setSourceOptimizeRecordId(record.getId());
         vo.setNewResumeId(draft.getId());
         vo.setAppliedAt(appliedAt);
-        vo.setApplyMode(APPLY_MODE_CREATE_DRAFT);
-        vo.setMessage("AI optimization suggestions are linked to a new draft copy. Please edit and confirm manually.");
-        vo.setWarnings(List.of("Optimization result is suggestion JSON, not a stable resume patch; resume fields were copied from the original resume."));
+        vo.setApplyMode(applyMode);
+        vo.setAppliedFields(applyResult.appliedFields());
+        vo.setSkippedFields(applyResult.skippedFields());
+        vo.setFieldDiff(applyResult.fieldDiff());
+        vo.setMessage(applyResult.appliedFields().isEmpty()
+                ? "AI optimization suggestions are linked to a new draft copy. Please edit and confirm manually."
+                : "Selected AI optimization fields were applied to a new draft copy.");
+        vo.setWarnings(applyResult.warnings());
         vo.setResumeDetail(toDetailVO(draft));
         return vo;
     }
@@ -854,17 +867,256 @@ public class ResumeServiceImpl implements ResumeService {
 
     private ResumeOptimizeDetailVO toOptimizeDetailVO(ResumeOptimizeRecord record) {
         ResumeOptimizeDetailVO vo = new ResumeOptimizeDetailVO();
+        JsonNode resultJson = parseNullableJson(record.getResultJson());
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
         vo.setTargetPosition(record.getTargetPosition());
         vo.setExperienceYears(record.getExperienceYears());
         vo.setIndustryDirection(record.getIndustryDirection());
         vo.setOptimizeStatus(record.getOptimizeStatus());
-        vo.setResultJson(parseNullableJson(record.getResultJson()));
+        vo.setResultJson(resultJson);
+        vo.setFieldPatches(extractFieldPatches(resultJson, null));
         vo.setErrorMessage(record.getErrorMessage());
         vo.setCreatedAt(record.getCreatedAt());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
+    }
+
+    private StructuredApplyResult applyStructuredPatches(Resume draft, Resume source, JsonNode resultJson,
+                                                        ApplyResumeOptimizeResultDTO dto) {
+        ObjectNode patches = extractFieldPatches(resultJson,
+                dto == null ? null : dto.getFieldPatches(),
+                dto == null ? null : dto.getSelectedSuggestionIndexes());
+        Set<String> selectedFields = normalizeSelectedFields(dto, patches);
+        ObjectNode diff = objectMapper.createObjectNode();
+        List<String> appliedFields = new ArrayList<>();
+        List<String> skippedFields = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        if (patches.isEmpty() || selectedFields.isEmpty()) {
+            warnings.add("No structured field patch was applied; the new draft keeps original resume fields.");
+            return new StructuredApplyResult(appliedFields, skippedFields, diff, warnings);
+        }
+        for (String field : selectedFields) {
+            String normalizedField = normalizePatchField(field);
+            if (!PATCHABLE_RESUME_FIELDS.contains(normalizedField)) {
+                skippedFields.add(field);
+                warnings.add("Unsupported resume patch field skipped: " + field);
+                continue;
+            }
+            JsonNode patch = patches.get(normalizedField);
+            if (patch == null && "title".equals(normalizedField)) {
+                patch = patches.get("resumeName");
+            }
+            if (patch == null && "resumeName".equals(normalizedField)) {
+                patch = patches.get("title");
+                normalizedField = "title";
+            }
+            String oldValue = resumeFieldValue(source, normalizedField);
+            String newValue = patchValue(patch, oldValue);
+            if (newValue == null) {
+                skippedFields.add(field);
+                continue;
+            }
+            applyResumeField(draft, normalizedField, newValue);
+            ObjectNode fieldDiff = objectMapper.createObjectNode();
+            fieldDiff.put("before", oldValue);
+            fieldDiff.put("after", newValue);
+            diff.set(normalizedField, fieldDiff);
+            appliedFields.add(normalizedField);
+        }
+        if (appliedFields.isEmpty()) {
+            warnings.add("Structured patch was present but no selected supported field could be applied.");
+        }
+        return new StructuredApplyResult(appliedFields, skippedFields, diff, warnings);
+    }
+
+    private ObjectNode extractFieldPatches(JsonNode resultJson, JsonNode requestPatches) {
+        return extractFieldPatches(resultJson, requestPatches, null);
+    }
+
+    private ObjectNode extractFieldPatches(JsonNode resultJson, JsonNode requestPatches,
+                                           List<Integer> selectedSuggestionIndexes) {
+        ObjectNode patches = objectMapper.createObjectNode();
+        mergePatchNode(patches, resultJson == null ? null : firstExisting(resultJson,
+                "fieldPatches", "fieldDiff", "resumePatch", "patches", "structuredPatches"));
+        JsonNode rewriteSuggestions = resultJson == null ? null : firstExisting(resultJson, "rewriteSuggestions");
+        if (selectedSuggestionIndexes != null && !selectedSuggestionIndexes.isEmpty()) {
+            mergeSelectedRewriteSuggestions(patches, rewriteSuggestions, selectedSuggestionIndexes);
+        } else {
+            mergePatchNode(patches, rewriteSuggestions);
+        }
+        mergePatchNode(patches, requestPatches);
+        return patches;
+    }
+
+    private JsonNode firstExisting(JsonNode root, String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            JsonNode value = root.path(fieldName);
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private void mergePatchNode(ObjectNode target, JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
+        }
+        if (node.isArray()) {
+            for (JsonNode item : node) {
+                String field = patchFieldName(item);
+                if (StringUtils.hasText(field)) {
+                    target.set(field, item);
+                }
+            }
+            return;
+        }
+        if (node.isObject()) {
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> entry = fields.next();
+                String field = normalizePatchField(entry.getKey());
+                if (StringUtils.hasText(field)) {
+                    target.set(field, entry.getValue());
+                }
+            }
+        }
+    }
+
+    private void mergeSelectedRewriteSuggestions(ObjectNode target, JsonNode suggestions, List<Integer> indexes) {
+        if (suggestions == null || !suggestions.isArray()) {
+            return;
+        }
+        for (Integer index : indexes) {
+            if (index == null || index < 0 || index >= suggestions.size()) {
+                continue;
+            }
+            JsonNode item = suggestions.get(index);
+            String field = patchFieldName(item);
+            if (StringUtils.hasText(field)) {
+                target.set(field, item);
+            }
+        }
+    }
+
+    private String patchFieldName(JsonNode item) {
+        return normalizePatchField(firstText(
+                textField(item, "field"),
+                textField(item, "fieldKey"),
+                textField(item, "section"),
+                textField(item, "fieldName")));
+    }
+
+    private Set<String> normalizeSelectedFields(ApplyResumeOptimizeResultDTO dto, ObjectNode patches) {
+        Set<String> selected = new LinkedHashSet<>();
+        if (dto != null && dto.getSelectedSuggestionIndexes() != null && !dto.getSelectedSuggestionIndexes().isEmpty()) {
+            Iterator<String> names = patches.fieldNames();
+            while (names.hasNext()) {
+                selected.add(names.next());
+            }
+            if (!selected.isEmpty()) {
+                return selected;
+            }
+        }
+        if (dto != null && dto.getSelectedFields() != null && !dto.getSelectedFields().isEmpty()) {
+            dto.getSelectedFields().stream()
+                    .map(this::normalizePatchField)
+                    .filter(StringUtils::hasText)
+                    .forEach(selected::add);
+            return selected;
+        }
+        boolean applyAll = dto != null && Boolean.TRUE.equals(dto.getApplyAll());
+        boolean structuredMode = dto != null && APPLY_MODE_STRUCTURED_PATCH.equals(dto.getApplyMode());
+        if (applyAll || structuredMode || (dto != null && dto.getFieldPatches() != null)) {
+            Iterator<String> names = patches.fieldNames();
+            while (names.hasNext()) {
+                selected.add(names.next());
+            }
+        }
+        return selected;
+    }
+
+    private String normalizePatchField(String field) {
+        if (!StringUtils.hasText(field)) {
+            return null;
+        }
+        String value = field.trim();
+        String token = value.toLowerCase(Locale.ROOT)
+                .replace("_", "")
+                .replace("-", "")
+                .replace(" ", "");
+        return switch (token) {
+            case "title", "resumename", "简历名称", "标题" -> "title";
+            case "realname", "name", "姓名", "真实姓名" -> "realName";
+            case "email", "邮箱" -> "email";
+            case "phone", "mobile", "手机号", "电话", "联系方式" -> "phone";
+            case "targetposition", "targetjob", "position", "求职意向", "目标岗位" -> "targetPosition";
+            case "skill", "skills", "skillstack", "techstack", "技术栈", "技能", "技能栈" -> "skillStack";
+            case "project", "projectexperience", "projects", "work", "workexperience",
+                    "experience", "项目", "项目经历", "项目经验", "工作经历", "工作经验" -> "workExperience";
+            case "education", "educationexperience", "教育", "教育经历", "学历" -> "educationExperience";
+            case "summary", "profile", "selfintroduction", "个人总结", "自我介绍", "个人简介" -> "summary";
+            default -> value;
+        };
+    }
+
+    private String patchValue(JsonNode patch, String oldValue) {
+        if (patch == null || patch.isMissingNode() || patch.isNull()) {
+            return null;
+        }
+        if (patch.isTextual() || patch.isNumber() || patch.isBoolean()) {
+            return patch.asText();
+        }
+        String value = firstText(
+                textField(patch, "after"),
+                textField(patch, "newValue"),
+                textField(patch, "value"),
+                textField(patch, "optimized"),
+                textField(patch, "suggested"));
+        if (StringUtils.hasText(value)) {
+            String before = textField(patch, "before");
+            if (StringUtils.hasText(before)
+                    && StringUtils.hasText(oldValue)
+                    && oldValue.contains(before)
+                    && !before.equals(value)) {
+                return oldValue.replace(before, value);
+            }
+            return value;
+        }
+        JsonNode after = firstExisting(patch, "after", "newValue", "value", "optimized", "suggested");
+        return after == null || after.isMissingNode() || after.isNull() ? null : after.toString();
+    }
+
+    private String resumeFieldValue(Resume resume, String field) {
+        return switch (field) {
+            case "title", "resumeName" -> resume.getTitle();
+            case "realName" -> resume.getRealName();
+            case "email" -> resume.getEmail();
+            case "phone" -> resume.getPhone();
+            case "targetPosition" -> resume.getTargetPosition();
+            case "skillStack" -> resume.getSkillStack();
+            case "workExperience" -> resume.getWorkExperience();
+            case "educationExperience" -> resume.getEducationExperience();
+            case "summary" -> resume.getSummary();
+            default -> null;
+        };
+    }
+
+    private void applyResumeField(Resume resume, String field, String value) {
+        switch (field) {
+            case "title", "resumeName" -> resume.setTitle(value);
+            case "realName" -> resume.setRealName(value);
+            case "email" -> resume.setEmail(value);
+            case "phone" -> resume.setPhone(value);
+            case "targetPosition" -> resume.setTargetPosition(value);
+            case "skillStack" -> resume.setSkillStack(value);
+            case "workExperience" -> resume.setWorkExperience(value);
+            case "educationExperience" -> resume.setEducationExperience(value);
+            case "summary" -> resume.setSummary(value);
+            default -> {
+            }
+        }
     }
 
     private JsonNode parseResultJson(String resultJson) {
@@ -1065,5 +1317,9 @@ public class ResumeServiceImpl implements ResumeService {
 
     private record OptimizeContext(Resume resume, List<ResumeProject> projects, ResumeOptimizeRecord record,
                                    ResumeOptimizeAiRequestDTO aiRequest) {
+    }
+
+    private record StructuredApplyResult(List<String> appliedFields, List<String> skippedFields,
+                                         JsonNode fieldDiff, List<String> warnings) {
     }
 }

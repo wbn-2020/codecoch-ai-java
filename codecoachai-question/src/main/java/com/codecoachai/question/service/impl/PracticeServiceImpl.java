@@ -12,13 +12,19 @@ import com.codecoachai.question.domain.dto.PracticeRecordQueryDTO;
 import com.codecoachai.question.domain.dto.PracticeSubmitDTO;
 import com.codecoachai.question.domain.entity.PracticeRecord;
 import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionRecommendationBatch;
+import com.codecoachai.question.domain.entity.QuestionRecommendationItem;
 import com.codecoachai.question.domain.enums.PracticeReviewStatus;
+import com.codecoachai.question.domain.enums.QuestionRecommendationMatchStatus;
+import com.codecoachai.question.domain.enums.QuestionRecommendationPracticeStatus;
 import com.codecoachai.question.domain.vo.PracticeRecordVO;
 import com.codecoachai.question.feign.AiPracticeFeignClient;
 import com.codecoachai.question.feign.dto.PracticeReviewDTO;
 import com.codecoachai.question.feign.vo.PracticeReviewVO;
 import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
+import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.codecoachai.question.service.PracticeService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,6 +44,8 @@ public class PracticeServiceImpl implements PracticeService {
 
     private final PracticeRecordMapper practiceRecordMapper;
     private final QuestionMapper questionMapper;
+    private final QuestionRecommendationItemMapper recommendationItemMapper;
+    private final QuestionRecommendationBatchMapper recommendationBatchMapper;
     private final AiPracticeFeignClient aiPracticeFeignClient;
     private final ObjectMapper objectMapper;
 
@@ -45,13 +53,21 @@ public class PracticeServiceImpl implements PracticeService {
     @Transactional(rollbackFor = Exception.class)
     public PracticeRecordVO submit(Long questionId, PracticeSubmitDTO dto) {
         Long userId = requireCurrentUserId();
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Practice submit body is required");
+        }
+        if (dto != null && dto.getQuestionId() != null && !dto.getQuestionId().equals(questionId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionId is inconsistent");
+        }
         Question question = getQuestionOrThrow(questionId);
+        RecommendationContext recommendationContext = resolveRecommendationContext(userId, question.getId(), dto);
         PracticeRecord record = new PracticeRecord();
         record.setUserId(userId);
         record.setQuestionId(question.getId());
         record.setAnswerContent(dto.getAnswerContent().trim());
         record.setAnswerDurationSeconds(dto.getAnswerDurationSeconds());
         record.setSource(defaultSource(dto.getSource()));
+        applyRecommendationContext(record, recommendationContext, dto);
         record.setReferenceAnswerSnapshot(question.getReferenceAnswer());
         record.setQuestionSnapshotJson(questionSnapshot(question));
         record.setReviewStatus(PracticeReviewStatus.PENDING.name());
@@ -68,6 +84,7 @@ public class PracticeServiceImpl implements PracticeService {
             markFailed(record, ex.getMessage());
         }
         practiceRecordMapper.updateById(record);
+        markRecommendationCompleted(recommendationContext);
         return toVO(record, question);
     }
 
@@ -157,6 +174,12 @@ public class PracticeServiceImpl implements PracticeService {
         vo.setUserAnswer(record.getAnswerContent());
         vo.setAnswerDurationSeconds(record.getAnswerDurationSeconds());
         vo.setSource(record.getSource());
+        vo.setRecommendationItemId(record.getRecommendationItemId());
+        vo.setBatchId(record.getBatchId());
+        vo.setSourceType(record.getSourceType());
+        vo.setSourceId(record.getSourceId());
+        vo.setSkillProfileId(record.getSkillProfileId());
+        vo.setStudyPlanId(record.getStudyPlanId());
         vo.setReviewStatus(record.getReviewStatus());
         vo.setScore(record.getScore());
         vo.setLevel(record.getLevel());
@@ -188,6 +211,72 @@ public class PracticeServiceImpl implements PracticeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question not found");
         }
         return question;
+    }
+
+    private RecommendationContext resolveRecommendationContext(Long userId, Long questionId, PracticeSubmitDTO dto) {
+        if (dto == null || dto.getRecommendationItemId() == null) {
+            return null;
+        }
+        QuestionRecommendationItem item = recommendationItemMapper.selectOne(
+                new LambdaQueryWrapper<QuestionRecommendationItem>()
+                        .eq(QuestionRecommendationItem::getId, dto.getRecommendationItemId())
+                        .eq(QuestionRecommendationItem::getUserId, userId)
+                        .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (item == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item not found");
+        }
+        if (item.getQuestionId() == null
+                || QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode().equals(item.getPracticeStatus())
+                || QuestionRecommendationMatchStatus.UNMATCHED_DRAFT.getCode().equals(item.getMatchStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item has no official question to practice");
+        }
+        if (!questionId.equals(item.getQuestionId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item does not match questionId");
+        }
+        QuestionRecommendationBatch batch = recommendationBatchMapper.selectOne(
+                new LambdaQueryWrapper<QuestionRecommendationBatch>()
+                        .eq(QuestionRecommendationBatch::getId, item.getBatchId())
+                        .eq(QuestionRecommendationBatch::getUserId, userId)
+                        .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (batch == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation batch not found");
+        }
+        if (dto.getBatchId() != null && !dto.getBatchId().equals(batch.getId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is inconsistent");
+        }
+        return new RecommendationContext(item, batch);
+    }
+
+    private void applyRecommendationContext(PracticeRecord record, RecommendationContext context,
+                                            PracticeSubmitDTO dto) {
+        if (context != null) {
+            QuestionRecommendationItem item = context.item();
+            QuestionRecommendationBatch batch = context.batch();
+            record.setRecommendationItemId(item.getId());
+            record.setBatchId(batch.getId());
+            record.setSourceType(batch.getSourceType());
+            record.setSourceId(batch.getSourceId());
+            record.setSkillProfileId(batch.getSkillProfileId());
+            record.setStudyPlanId(batch.getStudyPlanId());
+            return;
+        }
+        record.setRecommendationItemId(dto.getRecommendationItemId());
+        record.setBatchId(dto.getBatchId());
+        record.setSourceType(dto.getSourceType());
+        record.setSourceId(dto.getSourceId());
+        record.setSkillProfileId(dto.getSkillProfileId());
+        record.setStudyPlanId(dto.getStudyPlanId());
+    }
+
+    private void markRecommendationCompleted(RecommendationContext context) {
+        if (context == null) {
+            return;
+        }
+        QuestionRecommendationItem item = context.item();
+        item.setPracticeStatus(QuestionRecommendationPracticeStatus.COMPLETED.getCode());
+        recommendationItemMapper.updateById(item);
     }
 
     private Long requireCurrentUserId() {
@@ -269,5 +358,8 @@ public class PracticeServiceImpl implements PracticeService {
             }
         }
         return null;
+    }
+
+    private record RecommendationContext(QuestionRecommendationItem item, QuestionRecommendationBatch batch) {
     }
 }

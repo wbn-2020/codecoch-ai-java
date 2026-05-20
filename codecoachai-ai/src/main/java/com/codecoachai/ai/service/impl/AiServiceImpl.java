@@ -458,11 +458,18 @@ public class AiServiceImpl implements AiService {
                 resumeJobMatchPromptContent(), variables(dto));
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockResumeJobMatchJson()
-                    : parseResumeJobMatchJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockResumeJobMatchJson();
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getReportId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseResumeJobMatchJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             AnalyzeResumeJobMatchVO vo = new AnalyzeResumeJobMatchVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
@@ -483,11 +490,18 @@ public class AiServiceImpl implements AiService {
                 skillGapAnalyzePromptContent(), variables(dto));
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockSkillGapAnalyzeJson()
-                    : parseSkillGapAnalyzeJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockSkillGapAnalyzeJson();
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getProfileId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseSkillGapAnalyzeJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             AnalyzeSkillGapVO vo = new AnalyzeSkillGapVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
@@ -2232,6 +2246,15 @@ public class AiServiceImpl implements AiService {
         } catch (RuntimeException ignored) {
             return null;
         }
+    }
+
+    private RouteResult callAndLog(PromptRenderResult promptResult, Long userId, String businessId) {
+        AiCallContext ctx = new AiCallContext();
+        ctx.setScene(promptResult.getScene());
+        ctx.setPrompt(promptResult.getRenderedPrompt());
+        ctx.setUserId(userId);
+        ctx.setBusinessId(businessId);
+        return aiCallLogService.callAndLog(ctx);
     }
 
     private String buildRequestMetadata(PromptRenderResult promptResult, AiFailureType failureType,

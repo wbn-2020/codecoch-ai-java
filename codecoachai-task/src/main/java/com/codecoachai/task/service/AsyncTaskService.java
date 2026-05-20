@@ -1,5 +1,6 @@
 package com.codecoachai.task.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.mq.domain.MqMessage;
 import com.codecoachai.common.redis.constant.RedisKeyConstants;
@@ -46,6 +47,21 @@ public class AsyncTaskService {
         }
 
         // 落库 PENDING
+        AsyncTask existing = asyncTaskMapper.selectOne(
+                new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getMessageId, envelope.getMessageId())
+                        .last("limit 1"));
+        if (existing != null) {
+            asyncTaskMapper.update(null,
+                    new LambdaUpdateWrapper<AsyncTask>()
+                            .eq(AsyncTask::getId, existing.getId())
+                            .set(AsyncTask::getStatus, "RUNNING")
+                            .set(AsyncTask::getFailureReason, null)
+                            .set(AsyncTask::getCompletedAt, null)
+                            .set(AsyncTask::getStartedAt, LocalDateTime.now()));
+            return true;
+        }
+
         AsyncTask task = new AsyncTask();
         task.setMessageId(envelope.getMessageId());
         task.setBizType(envelope.getBizType());
@@ -78,6 +94,7 @@ public class AsyncTaskService {
                         .set(AsyncTask::getFailureReason, truncate(reason, 2000))
                         .set(AsyncTask::getCompletedAt, LocalDateTime.now())
                         .setSql("retry_count = retry_count + 1"));
+        redisTemplate.delete(RedisKeyConstants.mqConsumedKey(messageId));
     }
 
     public void markDead(MqMessage<?> envelope, String reason) {

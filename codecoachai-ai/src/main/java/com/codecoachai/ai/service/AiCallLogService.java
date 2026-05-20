@@ -54,6 +54,7 @@ public class AiCallLogService {
             AiCallLog logEntry = new AiCallLog();
             logEntry.setUserId(ctx.getUserId());
             logEntry.setScene(ctx.getScene());
+            logEntry.setBusinessId(ctx.getBusinessId());
             logEntry.setRequestPrompt(truncate(ctx.getPrompt(), 10000));
 
             if (result != null) {

@@ -17,7 +17,10 @@ import com.codecoachai.auth.domain.vo.LoginVO;
 import com.codecoachai.auth.domain.vo.RegisterVO;
 import com.codecoachai.auth.domain.vo.ResetPasswordVO;
 import com.codecoachai.auth.feign.UserFeignClient;
+import com.codecoachai.auth.log.LoginLogRecorder;
+import com.codecoachai.auth.log.PasswordResetSecurityLogRecorder;
 import com.codecoachai.auth.service.AuthService;
+import com.codecoachai.auth.service.PasswordResetDeliveryService;
 import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -43,13 +46,17 @@ public class AuthServiceImpl implements AuthService {
 
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final long RESET_TOKEN_TTL_SECONDS = 15 * 60L;
+    private static final long RESET_REQUEST_LIMIT_TTL_SECONDS = 60L;
     private static final String RESET_TOKEN_KEY_PREFIX = "auth:password-reset:";
+    private static final String RESET_REQUEST_LIMIT_KEY_PREFIX = "auth:password-reset-limit:";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
     private final RedisCacheHelper redisCacheHelper;
-    private final com.codecoachai.auth.log.LoginLogRecorder loginLogRecorder;
+    private final LoginLogRecorder loginLogRecorder;
+    private final PasswordResetDeliveryService passwordResetDeliveryService;
+    private final PasswordResetSecurityLogRecorder passwordResetSecurityLogRecorder;
 
     @Override
     public RegisterVO register(RegisterDTO dto) {
@@ -103,18 +110,37 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public ForgotPasswordVO forgotPassword(ForgotPasswordDTO dto) {
-        InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(dto.getEmail()));
-        if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_DISABLED);
+        String email = dto.getEmail() == null ? "" : dto.getEmail().trim().toLowerCase();
+        String limitKey = resetRequestLimitKey(email);
+        if (StringUtils.hasText(redisCacheHelper.get(limitKey))) {
+            passwordResetSecurityLogRecorder.recordRejected("RATE_LIMIT");
+            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Password reset requests are too frequent");
         }
-        String token = newResetToken();
-        redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
-        // TODO Integrate email/SMS delivery. The plaintext credential must not be returned in the API response.
-        log.info("Password reset request accepted userId={} ttlSeconds={}", user.getId(), RESET_TOKEN_TTL_SECONDS);
+        redisCacheHelper.set(limitKey, "1", Duration.ofSeconds(RESET_REQUEST_LIMIT_TTL_SECONDS));
 
         ForgotPasswordVO vo = new ForgotPasswordVO();
         vo.setMessage("Password reset request accepted. If the account exists, follow the instructions sent through the configured notification channel.");
         vo.setExpiresInSeconds(RESET_TOKEN_TTL_SECONDS);
+        try {
+            InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(email));
+            if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+                passwordResetSecurityLogRecorder.recordRequested(email, "ACCOUNT_DISABLED");
+                log.info("Password reset request ignored for disabled account email={}", maskEmail(email));
+                return vo;
+            }
+            String token = newResetToken();
+            redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
+            passwordResetDeliveryService.sendResetToken(user.getId(), email, token, RESET_TOKEN_TTL_SECONDS);
+            passwordResetSecurityLogRecorder.recordRequested(email, "TOKEN_ISSUED");
+            log.info("Password reset request accepted userId={} email={} ttlSeconds={}", user.getId(), maskEmail(email), RESET_TOKEN_TTL_SECONDS);
+        } catch (BusinessException ex) {
+            if (ex.getCode() == null || ex.getCode() != ErrorCode.USER_NOT_FOUND.getCode()) {
+                passwordResetSecurityLogRecorder.recordRequested(email, "LOOKUP_FAILED");
+                throw ex;
+            }
+            passwordResetSecurityLogRecorder.recordRequested(email, "ACCOUNT_NOT_FOUND");
+            log.info("Password reset request accepted for non-existing email={}", maskEmail(email));
+        }
         return vo;
     }
 
@@ -142,6 +168,7 @@ public class AuthServiceImpl implements AuthService {
         innerDto.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
         FeignResultUtils.unwrap(userFeignClient.resetPassword(resetUserId, innerDto));
         redisCacheHelper.delete(tokenKey);
+        passwordResetSecurityLogRecorder.recordCompleted(resetUserId);
 
         ResetPasswordVO vo = new ResetPasswordVO();
         vo.setMessage("Password has been reset.");
@@ -239,6 +266,21 @@ public class AuthServiceImpl implements AuthService {
 
     private String resetTokenKey(String token) {
         return RESET_TOKEN_KEY_PREFIX + token;
+    }
+
+    private String resetRequestLimitKey(String email) {
+        return RESET_REQUEST_LIMIT_KEY_PREFIX + email;
+    }
+
+    private String maskEmail(String email) {
+        if (!StringUtils.hasText(email)) {
+            return "";
+        }
+        int at = email.indexOf('@');
+        if (at <= 1) {
+            return "***" + (at >= 0 ? email.substring(at) : "");
+        }
+        return email.charAt(0) + "***" + email.substring(at);
     }
 
 }

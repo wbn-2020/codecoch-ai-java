@@ -39,6 +39,8 @@ public class V3DashboardController {
             vo.setSkillProfile(skillProfile(userId, targetJobId));
             vo.setStudyProgress(studyProgress(userId, targetJobId));
             vo.setRecommendedQuestions(recommendedQuestions(userId, targetJobId));
+            vo.setRecentInterview(recentInterview(userId, targetJobId));
+            vo.setRecentReport(recentReport(userId, targetJobId));
             vo.setTrainingTrend(trainingTrend(userId));
             vo.setNextActions(nextActions(vo));
             vo.setDegraded(!governanceTips.get().isEmpty());
@@ -251,6 +253,75 @@ public class V3DashboardController {
                 """.formatted(titleColumn, targetFilter), args.toArray());
     }
 
+    private V3DashboardVO.RecentInterviewVO recentInterview(Long userId, Long targetJobId) {
+        if (!tableExists("interview_session")) {
+            return null;
+        }
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        String targetFilter = "";
+        if (targetJobId != null && columnExists("interview_session", "target_job_id")) {
+            targetFilter = " AND target_job_id = ?";
+            args.add(targetJobId);
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id, title, status, report_status, updated_at
+                FROM interview_session
+                WHERE deleted = 0 AND user_id = ?%s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """.formatted(targetFilter), args.toArray());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        V3DashboardVO.RecentInterviewVO vo = new V3DashboardVO.RecentInterviewVO();
+        vo.setInterviewId(longValue(row.get("id")));
+        vo.setTitle(stringValue(row.get("title")));
+        vo.setStatus(stringValue(row.get("status")));
+        vo.setReportStatus(stringValue(row.get("report_status")));
+        vo.setUpdatedAt(dateTime(row.get("updated_at")));
+        return vo;
+    }
+
+    private V3DashboardVO.RecentReportVO recentReport(Long userId, Long targetJobId) {
+        if (!tableExists("interview_report") || !tableExists("interview_session")) {
+            return null;
+        }
+        String weakPointsExpr = columnExists("interview_report", "weak_points") ? "r.weak_points" : "NULL";
+        String suggestionsExpr = columnExists("interview_report", "suggestions")
+                ? "r.suggestions"
+                : (columnExists("interview_report", "review_suggestions") ? "r.review_suggestions" : "NULL");
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        String targetFilter = "";
+        if (targetJobId != null && columnExists("interview_session", "target_job_id")) {
+            targetFilter = " AND s.target_job_id = ?";
+            args.add(targetJobId);
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT r.id, r.session_id, r.status, r.total_score, %s AS weak_points, %s AS suggestions, r.generated_at, r.updated_at
+                FROM interview_report r
+                JOIN interview_session s ON s.id = r.session_id AND s.deleted = 0
+                WHERE r.deleted = 0 AND s.user_id = ?%s
+                ORDER BY COALESCE(r.generated_at, r.updated_at) DESC, r.id DESC
+                LIMIT 1
+                """.formatted(weakPointsExpr, suggestionsExpr, targetFilter), args.toArray());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        V3DashboardVO.RecentReportVO vo = new V3DashboardVO.RecentReportVO();
+        vo.setReportId(longValue(row.get("id")));
+        vo.setInterviewId(longValue(row.get("session_id")));
+        vo.setStatus(stringValue(row.get("status")));
+        vo.setTotalScore(intValue(row.get("total_score")));
+        vo.setWeakPoints(splitLines(stringValue(row.get("weak_points"))));
+        vo.setSuggestions(splitLines(stringValue(row.get("suggestions"))));
+        vo.setGeneratedAt(dateTime(row.get("generated_at")) == null ? dateTime(row.get("updated_at")) : dateTime(row.get("generated_at")));
+        return vo;
+    }
+
     private List<V3DashboardVO.TrendItemVO> trainingTrend(Long userId) {
         Map<LocalDate, V3DashboardVO.TrendItemVO> map = new LinkedHashMap<>();
         LocalDate start = LocalDate.now().minusDays(6);
@@ -370,5 +441,16 @@ public class V3DashboardController {
 
     private LocalDateTime dateTime(Object value) {
         return value instanceof Timestamp ts ? ts.toLocalDateTime() : null;
+    }
+
+    private List<String> splitLines(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        return value.lines()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .limit(8)
+                .toList();
     }
 }

@@ -20,7 +20,10 @@ public class QuestionRecommendationItemVO {
     private String answerHint;
     private String evaluatePoints;
     private Integer sortOrder;
+    private String matchStatus;
     private String practiceStatus;
+    private Boolean canPractice;
+    private Long practiceQuestionId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

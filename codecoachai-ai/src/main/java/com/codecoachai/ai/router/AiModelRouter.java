@@ -115,6 +115,8 @@ public class AiModelRouter {
         private String prompt;
         /** 用户 ID（用于配额） */
         private Long userId;
+        /** Optional business id for ai_call_log correlation. */
+        private String businessId;
         /** chat / reasoner */
         private String modelType = "chat";
         /** 强制使用某 provider（管理员测试用）；null 走默认 */

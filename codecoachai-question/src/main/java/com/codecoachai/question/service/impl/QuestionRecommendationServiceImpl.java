@@ -16,6 +16,7 @@ import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionRecommendationBatch;
 import com.codecoachai.question.domain.entity.QuestionRecommendationItem;
 import com.codecoachai.question.domain.enums.QuestionRecommendationBatchStatus;
+import com.codecoachai.question.domain.enums.QuestionRecommendationMatchStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationPracticeStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationSourceType;
 import com.codecoachai.question.domain.vo.QuestionRecommendationBatchDetailVO;
@@ -346,7 +347,8 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             QuestionRecommendationItem item = new QuestionRecommendationItem();
             item.setBatchId(batch.getId());
             item.setUserId(batch.getUserId());
-            item.setQuestionId(matchExistingQuestion(draft));
+            Long matchedQuestionId = matchExistingQuestion(draft);
+            item.setQuestionId(matchedQuestionId);
             item.setQuestionTitle(draft.getTitle().trim());
             item.setQuestionContent(draft.getContent().trim());
             item.setQuestionType(firstText(draft.getQuestionType(), "SHORT_ANSWER"));
@@ -358,7 +360,13 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             item.setAnswerHint(draft.getAnswerHint());
             item.setEvaluatePoints(draft.getEvaluatePoints());
             item.setSortOrder(order++);
-            item.setPracticeStatus(QuestionRecommendationPracticeStatus.UNPRACTICED.getCode());
+            boolean matched = matchedQuestionId != null;
+            item.setMatchStatus(matched
+                    ? QuestionRecommendationMatchStatus.MATCHED.getCode()
+                    : QuestionRecommendationMatchStatus.UNMATCHED_DRAFT.getCode());
+            item.setPracticeStatus(matched
+                    ? QuestionRecommendationPracticeStatus.UNPRACTICED.getCode()
+                    : QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode());
             itemMapper.insert(item);
         }
         if (order == 1) {
@@ -536,10 +544,33 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setAnswerHint(item.getAnswerHint());
         vo.setEvaluatePoints(item.getEvaluatePoints());
         vo.setSortOrder(item.getSortOrder());
-        vo.setPracticeStatus(item.getPracticeStatus());
+        boolean canPractice = item.getQuestionId() != null
+                && QuestionRecommendationMatchStatus.MATCHED.getCode().equals(defaultMatchStatus(item));
+        vo.setMatchStatus(defaultMatchStatus(item));
+        vo.setPracticeStatus(defaultPracticeStatus(item, canPractice));
+        vo.setCanPractice(canPractice);
+        vo.setPracticeQuestionId(canPractice ? item.getQuestionId() : null);
         vo.setCreatedAt(item.getCreatedAt());
         vo.setUpdatedAt(item.getUpdatedAt());
         return vo;
+    }
+
+    private String defaultMatchStatus(QuestionRecommendationItem item) {
+        if (StringUtils.hasText(item.getMatchStatus())) {
+            return item.getMatchStatus();
+        }
+        return item.getQuestionId() == null
+                ? QuestionRecommendationMatchStatus.UNMATCHED_DRAFT.getCode()
+                : QuestionRecommendationMatchStatus.MATCHED.getCode();
+    }
+
+    private String defaultPracticeStatus(QuestionRecommendationItem item, boolean canPractice) {
+        if (!canPractice) {
+            return QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode();
+        }
+        return StringUtils.hasText(item.getPracticeStatus())
+                ? item.getPracticeStatus()
+                : QuestionRecommendationPracticeStatus.UNPRACTICED.getCode();
     }
 
     private Map<String, Object> requestSnapshot(RecommendationRequest request) {
