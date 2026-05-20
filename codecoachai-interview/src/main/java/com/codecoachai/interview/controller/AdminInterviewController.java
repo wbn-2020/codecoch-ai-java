@@ -54,16 +54,30 @@ public class AdminInterviewController {
     public Result<PageResult<Map<String, Object>>> reports(@RequestParam(required = false) Long pageNo,
                                                            @RequestParam(required = false) Long pageSize,
                                                            @RequestParam(required = false) Long userId,
-                                                           @RequestParam(required = false) String status) {
+                                                           @RequestParam(required = false) String status,
+                                                           @RequestParam(required = false) String keyword) {
         SecurityAssert.requireAdmin();
         long pn = pageNo == null || pageNo < 1 ? 1 : pageNo;
         long ps = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
-        QueryParts parts = reportWhere(userId, status);
-        Long total = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM interview_report r WHERE " + parts.where(), Long.class, parts.args());
+        QueryParts parts = reportWhere(userId, status, keyword);
+        Long total = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1)
+                FROM interview_report r
+                LEFT JOIN interview_session s ON s.id = r.session_id
+                WHERE %s
+                """.formatted(parts.where()), Long.class, parts.args());
         Object[] args = append(parts.args(), ps, (pn - 1) * ps);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT r.id, r.session_id, r.user_id, s.target_job_id, s.skill_profile_id, s.match_report_id,
-                       r.status, r.total_score, r.summary, r.generated_at, r.created_at, r.updated_at, r.failure_reason
+                SELECT r.id, r.id AS reportId, r.session_id, r.session_id AS sessionId,
+                       r.session_id AS interviewId, r.user_id, r.user_id AS userId,
+                       s.title AS interviewName, s.target_position, s.target_position AS targetPosition,
+                       s.target_job_id, s.target_job_id AS targetJobId,
+                       s.skill_profile_id, s.skill_profile_id AS skillProfileId,
+                       s.match_report_id, s.match_report_id AS matchReportId,
+                       r.status, r.status AS reportStatus, r.total_score, r.total_score AS totalScore,
+                       r.summary, r.generated_at, r.generated_at AS generatedAt,
+                       r.created_at, r.created_at AS createdAt, r.updated_at, r.updated_at AS updatedAt,
+                       r.failure_reason, r.failure_reason AS failureReason
                 FROM interview_report r
                 LEFT JOIN interview_session s ON s.id = r.session_id
                 WHERE %s
@@ -77,7 +91,15 @@ public class AdminInterviewController {
     public Result<Map<String, Object>> reportDetail(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT r.*, s.target_job_id, s.skill_profile_id, s.match_report_id, s.title interview_title
+                SELECT r.*, r.id AS reportId, r.session_id AS sessionId, r.session_id AS interviewId,
+                       r.user_id AS userId, r.status AS reportStatus, r.total_score AS totalScore,
+                       r.generated_at AS generatedAt, r.created_at AS createdAt, r.updated_at AS updatedAt,
+                       r.failure_reason AS failureReason,
+                       s.target_job_id, s.target_job_id AS targetJobId,
+                       s.skill_profile_id, s.skill_profile_id AS skillProfileId,
+                       s.match_report_id, s.match_report_id AS matchReportId,
+                       s.title AS interview_title, s.title AS interviewName,
+                       s.target_position, s.target_position AS targetPosition
                 FROM interview_report r
                 LEFT JOIN interview_session s ON s.id = r.session_id
                 WHERE r.deleted = 0 AND r.id = ?
@@ -108,7 +130,7 @@ public class AdminInterviewController {
         return new QueryParts(where.toString(), args.toArray());
     }
 
-    private QueryParts reportWhere(Long userId, String status) {
+    private QueryParts reportWhere(Long userId, String status, String keyword) {
         StringBuilder where = new StringBuilder("r.deleted = 0");
         java.util.ArrayList<Object> args = new java.util.ArrayList<>();
         if (userId != null) {
@@ -118,6 +140,13 @@ public class AdminInterviewController {
         if (StringUtils.hasText(status)) {
             where.append(" AND r.status = ?");
             args.add(status);
+        }
+        if (StringUtils.hasText(keyword)) {
+            where.append(" AND (r.summary LIKE ? OR r.failure_reason LIKE ? OR s.title LIKE ? OR s.target_position LIKE ?)");
+            args.add("%" + keyword + "%");
+            args.add("%" + keyword + "%");
+            args.add("%" + keyword + "%");
+            args.add("%" + keyword + "%");
         }
         return new QueryParts(where.toString(), args.toArray());
     }

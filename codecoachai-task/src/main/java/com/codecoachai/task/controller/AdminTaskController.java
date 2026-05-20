@@ -41,14 +41,23 @@ public class AdminTaskController {
     public Result<PageResult<AsyncTask>> pageTasks(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String type,
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId) {
         SecurityAssert.requireAdmin();
+        String resolvedBizType = StringUtils.hasText(bizType) ? bizType : type;
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<AsyncTask>()
-                        .eq(StringUtils.hasText(bizType), AsyncTask::getBizType, bizType)
+                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                .like(AsyncTask::getMessageId, keyword)
+                                .or().like(AsyncTask::getBizType, keyword)
+                                .or().like(AsyncTask::getBizId, keyword)
+                                .or().like(AsyncTask::getStatus, keyword)
+                                .or().like(AsyncTask::getFailureReason, keyword))
+                        .eq(StringUtils.hasText(resolvedBizType), AsyncTask::getBizType, resolvedBizType)
                         .eq(StringUtils.hasText(status), AsyncTask::getStatus, status)
                         .eq(userId != null, AsyncTask::getUserId, userId)
                         .orderByDesc(AsyncTask::getCreatedAt));
