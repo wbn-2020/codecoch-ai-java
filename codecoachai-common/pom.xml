@@ -24,5 +24,7 @@
         <module>common-feign</module>
         <module>common-log</module>
         <module>common-ai</module>
+        <module>common-oss</module>
+        <module>common-mq</module>
     </modules>
 </project>

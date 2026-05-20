@@ -6,6 +6,10 @@ import lombok.Data;
 public class GenerateInterviewQuestionDTO {
 
     private String mode;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
+    private String skillGapContext;
     private String stageType;
     private String currentStage;
     private String focusPoints;

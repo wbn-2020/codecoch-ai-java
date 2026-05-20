@@ -1,0 +1,22 @@
+# ============================================================
+# codecoachai-search 服务专属配置
+# 上传到 Nacos: dataId=codecoachai-search-dev.yml  group=DEFAULT_GROUP
+# ============================================================
+
+codecoachai:
+  search:
+    # 索引刷新间隔（写入后多久可被搜索到）
+    refresh-interval: 1s
+    # 默认分页大小
+    default-page-size: 10
+    # 同步异常时是否回退到 search_index_record 兜底表
+    fallback-to-record: true
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+    username:
+    password:
+
+# 消费者
+rocketmq:
+  consumer:
+    group: codecoachai-search-consumer

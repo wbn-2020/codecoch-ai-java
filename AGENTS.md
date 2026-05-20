@@ -2,7 +2,7 @@
 
 ## Project Identity
 
-This repository is the Java backend of CodeCoachAI, an AI interview training platform.
+This repository is the Java backend of CodeCoachAI, an AI interview and job-search training platform.
 
 Related repositories:
 
@@ -10,47 +10,143 @@ Related repositories:
 - Backend: <https://github.com/wbn-2020/codecoch-ai-java.git>
 - Docs: <https://github.com/wbn-2020/codecoch-ai-doc.git>
 
-Current execution strategy:
+Backend repository local path:
 
-1. Complete the V2 backend first.
-2. Complete the V2 frontend after backend contracts are stable.
-3. Run full integration and E2E testing at the end.
+```text
+C:\my-claude\CodeCoachAI-java
+```
 
-V1 has been completed and must remain stable. Do not treat previous V2 technical baseline work as the full official V2.
+Act as a senior Java architect when working in this repository. Preserve the current microservice and module boundaries. Do not collapse services into a monolith unless the user explicitly requests it.
 
-## Official V2 Scope Source
+## Branch And Stage Rules
 
-The only authoritative source for the official V2 scope is:
+Current backend V3 development branch:
 
-`codecoch-ai-doc/PRD/CodeCoachAI_PRD_V2_AI能力增强版.md`
+```text
+dev-v3
+```
 
-If any of the following conflict with the official V2 PRD, the official V2 PRD wins:
+All subsequent V3 backend development tasks should run on `dev-v3`. After a backend task passes verification, commit and push to:
 
-- Old chat history.
-- Codex historical output.
-- `V2_ROADMAP_DRAFT.md`.
-- `PROJECT_STATE.md`.
-- Old backend `AGENTS.md` content.
-- Previous temporary V2 roadmaps.
-- Any local memory or summary that has not been reconciled with the official V2 PRD.
+```text
+origin/dev-v3
+```
 
-Before planning or implementing a V2 backend task, read the official V2 PRD and align the task scope with it.
+V2 sealed backend baseline:
 
-## Completed Baseline Work
+```text
+dev / 29dc14d fix: stabilize AI question generation flow
+```
 
-The following completed items are classified as V2 technical baseline and AI interview enhancement prerequisites. They are useful foundations, but they are not the full official V2:
+The documentation repository continues to use:
 
-- Service-side `ADMIN` secondary checks for `/admin/**`.
-- HMAC signature protection for `/inner/**` internal calls.
-- AI call stability enhancements.
-- Resume project deep-dive capability enhancements.
-- Early learning feedback in interview reports.
+```text
+main
+```
 
-Do not confuse these prerequisite capabilities with completion of the official V2 PRD.
+Current project stage:
+
+```text
+V3
+```
+
+V3-A planning freeze and consistency correction is complete in the documentation repository. The next backend implementation stage is:
+
+```text
+V3-B: Target Job / JD backend foundation
+```
+
+Do not treat earlier V2 technical baseline work as the full V3 scope. V1 and V2 completed capabilities must remain stable while V3 is implemented.
+
+## V3 Documentation Baseline
+
+Before planning or implementing a V3 backend task, read the V3 baseline documents from the documentation repository `main` branch.
+
+Primary V3 PRD:
+
+```text
+C:\my-claude\CodeCoachAI-doc\V3\CodeCoachAI_PRD_V3_Enhanced.md
+```
+
+V3-A supporting planning documents:
+
+```text
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_开发路线图.md
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_数据库设计草案.md
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_API契约草案.md
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_AI_Prompt类型清单.md
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_验收清单.md
+```
+
+The frontend page list is also part of the V3-A baseline and should be used when a backend contract affects frontend integration:
+
+```text
+C:\my-claude\CodeCoachAI-doc\MD\V3\V3_前端页面清单.md
+```
+
+Latest known V3 documentation baseline commit:
+
+```text
+916f386c8185e3036db24aa1607e288787c85dcd
+```
+
+If local memory, old chat history, previous temporary roadmaps, backend comments, or older `AGENTS.md` content conflict with the V3 documentation baseline, the V3 documentation baseline wins. If the V3 documentation draft conflicts with the real backend module, package, controller, DTO, VO, mapper, SQL migration, or gateway route structure, report the conflict first and implement against the real backend structure unless the user explicitly asks to change the architecture.
+
+## V3 Development Mainline
+
+V3 mainline:
+
+```text
+岗位目标 / JD -> 简历-JD 匹配 -> 能力差距画像 -> 学习计划 -> 题目训练 -> 模拟面试 -> 报告回流 -> 求职驾驶舱
+```
+
+All new V3 capabilities should serve this job-target-driven closed loop. Do not add technology-only features or empty services that are not tied to a real V3 business workflow.
+
+V3 route:
+
+| Stage | Goal | Backend Rule |
+|---|---|---|
+| V3-A | Planning freeze and contract split | Completed in docs, no backend code |
+| V3-B | Target Job / JD backend foundation | Current next backend stage |
+| V3-C | Target Job / JD frontend pages | Frontend stage, backend only fixes contract defects if needed |
+| V3-D | Resume-JD match backend | Implement after V3-B is accepted |
+| V3-E | Resume-JD match frontend | Frontend stage |
+| V3-F | Skill profile and study-plan linkage | Backend/frontend integration stage |
+| V3-G | Task center, notification, RocketMQ, Aliyun OSS, ES, search center | Engineering enhancement tied to real workflows |
+| V3-H | Dashboard, Docker Compose, full-chain testing, seal | Final integration and acceptance |
+
+## V3-B Backend Direction
+
+V3-B should prioritize:
+
+1. `target_job` table.
+2. `job_description_analysis` table.
+3. `V3_001__xxx.sql` as the first V3 migration.
+4. Target job CRUD.
+5. Setting the current main target job.
+6. JD parsing API.
+7. Prompt type `JOB_DESCRIPTION_PARSE`.
+8. AI call log integration.
+9. Implementation based on real `dev-v3` backend modules, packages, Controller style, DTO/VO style, mapper style, and gateway routes.
+
+Do not add empty shell services, unused controllers, fake APIs, or unregistered modules for V3-B. If the docs suggest a new subdomain but the current backend has a suitable existing service, prefer the existing service unless the user explicitly approves a new module.
+
+V3-B draft API direction from the docs includes:
+
+```text
+GET  /job-targets
+POST /job-targets
+GET  /job-targets/{id}
+PUT  /job-targets/{id}
+POST /job-targets/{id}/set-current
+POST /job-targets/{id}/parse
+GET  /job-targets/{id}/analysis
+GET  /job-targets/current
+```
+
+These paths are draft contracts. Before implementing, scan the real Gateway routes, existing user-side controller mappings, auth conventions, response wrappers, and service ownership.
 
 ## Backend Architecture Expectations
-
-Act as a senior Java architect when working in this repository.
 
 Expected stack:
 
@@ -61,269 +157,166 @@ Expected stack:
 - Nacos.
 - OpenFeign.
 - MyBatis-Plus.
-- MySQL.
+- MySQL 8.
 - Redis.
 - Sa-Token.
 - Knife4j / OpenAPI.
 
-Preserve the current microservice and module boundaries. Do not collapse services into a monolith unless the user explicitly requests it.
+Existing Maven modules:
 
-## Stable V1 Capabilities
+```text
+codecoachai-common
+codecoachai-gateway
+codecoachai-auth
+codecoachai-user
+codecoachai-question
+codecoachai-resume
+codecoachai-file
+codecoachai-interview
+codecoachai-ai
+codecoachai-system
+```
 
-V1 completed the core closed loop and must remain stable while V2 is implemented.
+Do not introduce RocketMQ, Aliyun OSS, Elasticsearch, Docker Compose, a new service module, or other new infrastructure merely to satisfy a future V3 stage. Add new infrastructure only when the current V3 stage and user task explicitly require it and the implementation has a real business landing point.
 
-User-side V1 capabilities:
+## Stable V1 And V2 Capabilities
 
-- User registration, login, and logout.
-- User profile and password management.
-- Question browsing and answering.
-- Favorites and wrong records.
+V1 and V2 completed capabilities must remain stable.
+
+User-side stable capabilities include:
+
+- User registration, login, logout, profile, and password management.
+- Question browsing, answering, favorites, wrong records, and practice review.
 - Manual resume and project experience management.
-- Interview creation.
-- Interview room flow.
-- AI scoring, follow-up questions, and summary generation.
-- Interview report generation and history.
+- Resume upload, parsing, confirmation, optimization, optimization records, and apply-as-draft flow.
+- Industry templates and scenario interviews.
+- Interview creation, room flow, AI scoring, follow-up questions, SSE review, report generation, and report history.
+- Learning plan generation, daily view, planned date, task status updates, and study-plan SSE.
+- User dashboard/status data.
 
-Admin-side V1 capabilities:
+Admin-side stable capabilities include:
 
 - Dashboard.
 - User and role management.
 - Question, category, tag, and group management.
-- Prompt template management.
+- AI question generation, review pool, batch review, duplicate review, and question relations.
+- Prompt template management, prompt versioning, prompt testing, rollback alias, and prompt call logs.
 - AI call log management.
 - System configuration.
+- Admin file governance.
 
-Do not break existing V1 login, question, resume, interview, report, admin, or AI-log flows while implementing V2.
+Do not break existing V1 or V2 login, question, resume, interview, report, study-plan, dashboard, admin, prompt, file, or AI-log flows while implementing V3.
 
-## V2 Backend Route
-
-| Stage | Priority | Goal | Status |
-|---|---|---|---|
-| A0 | P0 | PRD alignment and backend gap list | Completed |
-| A1 | P0 | Resume file upload minimal loop | Completed |
-| A2 | P0 | Resume parse status and retry state machine | Completed |
-| A3 | P0 | Resume text extraction and AI structured parsing | Completed |
-| A4 | P0 | Resume analysis result viewing and confirmation | Completed |
-| A5 | P0 | AI resume optimization | Completed |
-| A6 | P0 | Industry templates and scenario interviews | Completed |
-| A7 | P0 | AI question generation and review pool | Completed |
-| A8 | P1 | Initial question-bank deduplication | Completed |
-| A9 | P1 | Learning plan backend loop | Completed |
-| A10 | P1 | SSE streaming output | Current |
-| A11 | P1 | Prompt template versioning and AI log enhancement | Pending |
+## Required Pre-Implementation Statement
 
 Each backend development task must state the following before implementation:
 
-1. Corresponding PRD scope.
+1. Corresponding V3 PRD and V3-A planning scope.
 2. Priority: P0 / P1 / P2.
-3. Affected backend services.
-4. Affected database tables.
-5. Affected API paths.
-6. Whether the task affects frontend contracts.
-7. Whether the task adds a new module.
-8. Whether SQL migration is required.
-9. Compile and verification method.
+3. Current V3 stage, such as V3-B.
+4. Affected backend services/modules.
+5. Affected database tables.
+6. Affected API paths.
+7. Whether frontend contracts are affected.
+8. Whether a new module is required; default answer should be no unless justified by the real codebase and approved scope.
+9. Whether SQL migration is required.
+10. Compile, SQL, API, and verification method.
 
-## Current V2 Backend Progress
+## Implementation Rules
 
-### A0: V2 PRD Alignment And Backend Gap List - Completed
+Before each backend implementation, statically scan the real code first:
 
-### A1: Resume File Upload Minimal Loop - Completed
+- Controller mappings and response wrapper style.
+- Service interfaces and implementation style.
+- Mapper and XML or MyBatis-Plus conventions.
+- DTO, VO, entity, enum, and validation conventions.
+- Feign client and `/inner/**` usage.
+- Gateway route and auth filter behavior when paths change.
+- Existing SQL migration helper procedures and idempotency style.
 
-Key points:
+Use existing patterns before introducing abstractions. Controller methods should stay thin. Business rules belong in services. DTO and VO boundaries should remain explicit.
 
-- `POST /resumes/upload`.
-- Save file information.
-- Create `resume_analysis_record` with status `PENDING`.
-- Do not perform AI parsing in A1.
+Do not:
 
-### A2: Resume Parse Status, Retry, And State Machine - Completed
+- Skip tests or verification and claim the task is complete.
+- Use mock data or mock responses to pretend a real backend interface is complete.
+- Add empty services, empty controllers, empty interfaces, or unregistered modules for V3.
+- Silently change existing Controller paths.
+- Delete existing APIs.
+- Expose `/inner/**` APIs to frontend usage.
+- Mix frontend implementation into backend tasks unless the user explicitly enters a frontend phase.
+- Generate result documents or extra documentation files unless explicitly requested.
+- Run full runtime integration or E2E testing unless explicitly requested.
 
-Key points:
-
-- `GET /resumes/{id}/parse-status`.
-- `POST /resumes/{id}/reparse`.
-- `{id}` is `resume_analysis_record.id`.
-- Statuses include `PENDING`, `PARSING`, `SUCCESS`, `FAILED`, and `WAIT_CONFIRM`.
-- `reparse` only allows `FAILED -> PENDING`.
-
-### A3: Resume Text Extraction And AI Structured Parsing - Completed
-
-Key points:
-
-- `file-service` internal file download.
-- `resume-service` text extraction.
-- `ai-service` resume structured parsing.
-- State flow: `PENDING -> PARSING -> WAIT_CONFIRM`.
-- Failure enters `FAILED`.
-- Successful parsing terminal state is `WAIT_CONFIRM`, not `SUCCESS`.
-
-### A4: Resume Analysis Result Viewing And Confirmation - Completed
-
-Key points:
-
-- `GET /resumes/{id}/analysis-result`.
-- `POST /resumes/{id}/confirm-analysis`.
-- `{id}` is still `resume_analysis_record.id`.
-- Only `WAIT_CONFIRM` can be confirmed.
-- `structured_json` is converted into formal `resume` / `resume_project` data.
-- After confirmation, `parse_status = SUCCESS`.
-- Backfill `resume_id`.
-
-### A5: AI Resume Optimization - Completed
-
-Key points:
-
-- `POST /resumes/{id}/optimize`.
-- `GET /resumes/{id}/optimize-records`.
-- `GET /resumes/optimize-records/{recordId}`.
-- `{id}` is formal `resume.id`.
-- Adds `resume_optimize_record`.
-- `ai-service` adds `/inner/ai/resume/optimize`.
-- AI output must be a JSON object.
-- Record `ai_call_log`.
-- Do not fabricate experience, companies, education, years, responsibilities, or achievements.
-
-### A6: Industry Templates And Scenario Interviews - Completed
-
-Key points:
-
-- Adds `industry_template`.
-- `interview_session` adds `industry_template_id` / `industry_context`.
-- Admin industry template CRUD.
-- User-side industry template read-only APIs.
-- Interview creation supports `industryTemplateId`.
-- `generateQuestion`, `generateFollowUp`, `evaluate`, and `generateReport` prompts inject `industryContext`.
-- Industry templates are scenario references only and must not fabricate candidate experience.
-
-### A7: AI Question Generation And Review - Completed
-
-Key points:
-
-- Admin starts AI question generation.
-- `ai-service` adds `/inner/ai/questions/generate`.
-- AI generated questions enter the `question_review` review pool first.
-- Only approved questions are written into formal `question`.
-- Rejected questions are not written into formal `question`.
-- `approve` supports edit-before-approve.
-- `approve` uses `id + review_status=PENDING` concurrency protection.
-- Question-bank deduplication is not part of A7; it belongs to A8.
-
-### A8: Initial Question-Bank Deduplication - Completed
-
-Key points:
-
-- Adds `question_duplicate_review`.
-- Adds `question_relation`.
-- Supports rule-based duplicate candidate detection.
-- Supports candidate list, detail, `merge`, and `ignore`.
-- Supports question relation query, creation, and logical delete.
-- A7 `approve` may trigger duplicate detection non-blockingly.
-- `createQuestion` may trigger duplicate detection non-blockingly.
-- Does not call `ai-service`.
-- Does not use ES, vector databases, or embedding.
-- `merge` is not physical question merging.
-- Does not delete formal `question` records.
-- Does not automatically modify `question` content.
-
-### A9: Learning Plan Backend Loop - Completed
-
-Key points:
-
-- Adds `study_plan`.
-- Adds `study_task`.
-- Users can generate a study plan from an interview report.
-- Supports study plan list, detail, and task list.
-- Supports regenerate after `FAILED`.
-- Supports study task status updates.
-- `ai-service` adds `POST /inner/ai/learning-plans/generate`.
-- `mockEnabled=true` returns stable mock JSON.
-- `mockEnabled=false` reuses `AiClient.chat(prompt)`.
-- Records `ai_call_log`.
-- Does not implement frontend.
-- Does not implement SSE.
-- Does not implement a complex recommendation system.
-
-### Current Stage: A10 SSE Streaming Output - Ready To Plan / Implement
-
-A10 boundaries:
-
-- Only implement backend SSE streaming output.
-- Do not implement frontend.
-- Do not use WebSocket.
-- Do not replace existing synchronous APIs.
-- Do not break A1-A9 completed flows.
-- Do not implement A11 Prompt template version management.
-- Do not introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, or embedding.
-- Prefer adding stream-version APIs instead of changing old APIs.
-- Must evaluate Gateway, authentication filters, global response wrapping, and whether `AiClient` supports real streaming.
-
-### A11: Prompt Template Version Management And AI Log Enhancement - Pending
-
-## A10 SSE Streaming Guardrails
-
-1. A10 only implements SSE. Do not use WebSocket.
-2. Do not replace existing synchronous APIs. Prefer adding stream-version APIs.
-3. Confirm whether `AiClient` supports real streaming before implementation.
-4. If `AiClient` does not support real streaming, only implement a synchronous-result chunked SSE fallback and clearly mark it as not strict real streaming.
-5. Check whether Gateway supports `text/event-stream`.
-6. Check whether global response wrapping breaks SSE.
-7. Check whether authentication filters and token propagation support long-lived connections.
-8. Recommended SSE event names:
-   - `start`
-   - `delta`
-   - `metadata`
-   - `done`
-   - `error`
-   - `heartbeat` optional
-9. A10 minimal loop should prioritize one interview-module AI output interface.
-10. Do not convert report and study-plan flows to SSE all at once.
-11. Do not implement A11 Prompt template version management.
-12. Do not implement frontend.
-13. Do not run full runtime integration or E2E testing unless explicitly requested.
-
-## V2 Scope Guardrails
-
-Follow these boundaries unless the user explicitly changes the scope:
-
-- Do not invent API paths. Use actual controller mappings and the official PRD as the source of truth.
-- Do not casually change existing Controller paths.
-- Do not delete existing APIs.
-- Do not expose `/inner/**` APIs to frontend usage.
-- Keep admin APIs under `/admin/**` and user APIs under their existing user-side paths.
-- Do not break service-side `/admin/**` permission checks.
-- Do not break `/inner/**` HMAC internal-call protection.
-- Do not mix frontend implementation into backend tasks unless the user explicitly enters the frontend phase.
-- Do not run full runtime testing unless the user explicitly asks for it.
-- Do not silently change database schema.
-- If schema changes are required, add compatible SQL migration or patch SQL and explain the compatibility impact.
-- If frontend integration is involved, verify request and response DTOs against frontend API files.
-- For AI-related changes, clearly distinguish mock mode and real model mode.
-- Do not casually introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, embedding, or other new infrastructure unless the official V2 PRD explicitly requires it.
-
-## Security Rules
+## API And Security Rules
 
 Preserve permission isolation:
 
 - Normal users cannot access admin APIs.
-- Normal users cannot read or modify another user's resumes, interviews, reports, favorites, wrong records, files, parse records, optimization records, or learning plans.
+- Normal users cannot read or modify another user's resumes, interviews, reports, favorites, wrong records, files, parse records, optimization records, learning plans, target jobs, JD analyses, match reports, skill profiles, tasks, or notifications.
 - `/admin/**` must continue to require the `ADMIN` role at the Gateway and service level.
 - `/inner/**` must continue to require internal-call protection and must not be used by frontend code.
-- Internal security changes must not degrade the existing HMAC signature, timestamp, nonce, and replay-protection behavior.
+- Internal security changes must not degrade existing HMAC signature, timestamp, nonce, and replay-protection behavior.
 
-## Database and Migration Rules
+Keep API ownership clear:
+
+- User APIs should stay on user-facing business routes.
+- Admin APIs must stay under `/admin/**`.
+- Internal service APIs must stay under `/inner/**`.
+- AI SSE APIs, when explicitly required, should follow existing `/ai/sse/**` conventions and preserve synchronous fallback paths unless the user asks for a breaking change.
+
+## SQL And Migration Rules
 
 Do not silently modify schema.
 
-When a backend task requires schema changes:
+V3 SQL rules:
 
-- Prefer compatible additions over destructive changes.
-- Preserve old data.
-- Add or update migration / patch SQL.
-- Keep `init.sql` and development data strategy aligned when relevant.
-- Explain affected tables and rollback considerations.
+1. V3 migrations start at:
 
-## Build and Verification Rules
+```text
+sql/migration/V3_001__xxx.sql
+```
+
+2. All SQL migrations must be idempotent.
+3. Use `information_schema` or the project's existing helper procedures to check whether tables, columns, indexes, and seed rows already exist.
+4. Prefer compatible additions over destructive changes.
+5. Preserve old data.
+6. Do not require developers to manually drop tables or columns.
+7. Keep `sql/init.sql` and development data strategy aligned when relevant.
+8. Explain affected tables and rollback considerations.
+9. Tasks involving SQL must execute database verification.
+10. Tasks involving SQL must execute migration repeat-run verification.
+11. Database account and password may only be temporarily provided by the user in the current conversation window.
+12. Do not hardcode database passwords in code, SQL, docs, logs, scripts, or memory.
+
+For SQL tasks, verify at minimum:
+
+- Migration applies successfully.
+- Re-running the migration succeeds without duplicate table, column, index, or data errors.
+- Expected tables, columns, indexes, and seed data exist after execution.
+- Existing V1/V2 tables and critical flows are not destructively changed.
+
+## Sensitive Configuration And Runtime Files
+
+Never commit real secrets:
+
+- Real database passwords.
+- AI API keys.
+- Aliyun OSS access keys or secret keys.
+- MQ passwords.
+- Tokens, session keys, or private credentials.
+
+Use example configuration files or private local/Nacos configuration for secrets. If a command must print sensitive values, redact them before reporting.
+
+Runtime upload/storage directories must not be committed. In this repository, treat the following as runtime data:
+
+```text
+codecoachai-file/data/
+```
+
+If `.gitignore` does not cover a runtime directory, remind the user. Do not modify `.gitignore` in a scoped task unless the user explicitly asks for it.
+
+## Build And Verification Rules
 
 Use actual project scripts or commands if they exist. Otherwise prefer:
 
@@ -339,9 +332,23 @@ mvn clean compile
 git diff --check
 ```
 
-For documentation-only changes, `git diff --check` is sufficient unless the user asks for compilation.
+For documentation-only backend repository changes, `git diff --check` is sufficient unless the user asks for compilation. If the user explicitly requests compilation for a documentation-only change, run it.
 
-For service-level checks, only run runtime verification when requested. When runtime verification is requested, confirm:
+For SQL changes, also run database verification and migration repeat-run verification.
+
+Before committing:
+
+1. Run `git status --short`.
+2. Confirm no runtime files are staged.
+3. Confirm no sensitive configuration is staged.
+4. Run `git diff --check`.
+5. Run `mvn clean compile` for backend tasks or when requested.
+6. If SQL changed, run database verification and repeat migration verification.
+7. Stage only intended files.
+8. Commit with a clear message.
+9. Push to `origin/dev-v3`.
+
+For service-level runtime checks, only run runtime verification when requested. When runtime verification is requested, confirm:
 
 - Nacos service registration.
 - Gateway routing.
@@ -350,26 +357,46 @@ For service-level checks, only run runtime verification when requested. When run
 - `/admin/**` authorization.
 - `/inner/**` HMAC behavior.
 
-## Documentation and Contract Rules
+## Documentation And Contract Rules
 
 When code changes affect backend behavior or API contracts:
 
-- Update the backend repository documentation when the document lives in this repo.
+- Update backend repository documentation only when the document lives in this repo and the task scope allows it.
 - If the durable project-level document lives in `codecoch-ai-doc`, tell the user which docs should be updated there.
 - Keep user APIs, admin APIs, and `/inner/**` internal APIs clearly separated.
 - Do not document unsupported public frontend access to `/inner/**`.
+- Do not generate new result documents unless explicitly requested.
+
+If API contracts, table structure, module ownership, or implementation feasibility differ from the V3-A draft documents, stop and report the exact conflict before coding beyond the safe portion.
+
+## Codex Behavior Rules
+
+Codex must:
+
+1. Respect the user's scope fences such as backend-only, docs-only, SQL-only, or no-business-code.
+2. Stop and report if the worktree has unrelated user changes that could be overwritten.
+3. Avoid reverting user changes unless explicitly requested.
+4. Read the official V3 docs before V3 planning or implementation.
+5. Read the real backend code before proposing paths, services, tables, or DTO names.
+6. Prefer real API data, explicit empty states, or clear unsupported status over fake data.
+7. Clearly distinguish mock mode from real model mode for AI-related changes.
+8. Clearly report anything not verified.
+9. Never claim browser, runtime, DB, or integration verification happened unless it actually happened.
 
 ## Required Response Format
 
 When completing a backend task, report:
 
 1. Task conclusion.
-2. Modified files.
-3. What changed in each file.
-4. API impact.
-5. Database impact.
-6. Frontend impact.
-7. Verification performed.
-8. Commit ID, if a commit was created.
-9. Remaining risks.
-10. Next recommended step.
+2. Current directory.
+3. Current branch.
+4. Modified files.
+5. What changed in each file.
+6. API impact.
+7. Database impact.
+8. Frontend impact.
+9. Verification performed.
+10. Commit ID, if a commit was created.
+11. Push result, if pushed.
+12. Remaining risks.
+13. Next recommended step.

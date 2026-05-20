@@ -40,6 +40,11 @@ import org.springframework.web.multipart.MultipartFile;
 @Service
 @RequiredArgsConstructor
 @Slf4j
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        prefix = "codecoachai.file.storage",
+        name = "provider",
+        havingValue = "LOCAL",
+        matchIfMissing = true)
 public class LocalFileStorageServiceImpl implements FileStorageService {
 
     private static final String STATUS_AVAILABLE = "AVAILABLE";

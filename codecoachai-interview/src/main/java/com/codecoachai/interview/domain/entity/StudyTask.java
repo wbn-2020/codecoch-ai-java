@@ -13,6 +13,11 @@ public class StudyTask extends BaseEntity {
 
     private Long planId;
     private Long userId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long skillGapItemId;
+    private String sourceType;
+    private Long sourceBizId;
     private Integer stageNo;
     private LocalDate plannedDate;
     private String stageTitle;
@@ -23,6 +28,8 @@ public class StudyTask extends BaseEntity {
     private String taskType;
     private String priority;
     private Integer estimatedHours;
+    private Integer estimatedMinutes;
+    private String acceptanceCriteria;
     private String taskStatus;
     private String relatedQuestionIdsJson;
     private String relatedTagsJson;

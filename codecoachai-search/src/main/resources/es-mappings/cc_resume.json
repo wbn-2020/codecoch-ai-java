@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "docId": { "type": "keyword" },
+      "userId": { "type": "keyword" },
+      "name": { "type": "text", "analyzer": "ik_smart", "fields": { "keyword": { "type": "keyword" } } },
+      "summary": { "type": "text", "analyzer": "ik_smart" },
+      "skills": { "type": "keyword" },
+      "targetPosition": { "type": "text", "analyzer": "ik_smart", "fields": { "keyword": { "type": "keyword" } } },
+      "experienceLevel": { "type": "keyword" },
+      "education": { "type": "text", "analyzer": "ik_smart" },
+      "workExperience": { "type": "text", "analyzer": "ik_smart" },
+      "projectHighlights": { "type": "text", "analyzer": "ik_smart" },
+      "status": { "type": "keyword" },
+      "createdAt": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "updatedAt": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "syncedAt": { "type": "date" }
+    }
+  }
+}

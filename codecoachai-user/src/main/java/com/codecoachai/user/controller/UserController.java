@@ -8,8 +8,11 @@ import com.codecoachai.user.domain.vo.UserOverviewVO;
 import com.codecoachai.user.domain.vo.UserProfileVO;
 import com.codecoachai.user.service.UserService;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -38,6 +41,22 @@ public class UserController {
         return Result.success();
     }
 
+    @PutMapping("/avatar")
+    public Result<UserProfileVO> updateAvatar(@Valid @RequestBody UpdateAvatarDTO dto) {
+        return Result.success(userService.updateAvatar(dto.getAvatarUrl()));
+    }
+
+    @PostMapping("/avatar")
+    public Result<UserProfileVO> updateAvatarCompat(@Valid @RequestBody UpdateAvatarDTO dto) {
+        return Result.success(userService.updateAvatar(dto.getAvatarUrl()));
+    }
+
+    @PutMapping("/phone")
+    public Result<Void> updatePhone(@Valid @RequestBody UpdatePhoneDTO dto) {
+        userService.updatePhone(dto.getPhone());
+        return Result.success();
+    }
+
     @GetMapping("/overview")
     public Result<UserOverviewVO> getOverview() {
         return Result.success(userService.getOverview());
@@ -46,5 +65,17 @@ public class UserController {
     @GetMapping("/dashboard/overview")
     public Result<UserDashboardOverviewVO> getDashboardOverview() {
         return Result.success(userService.getDashboardOverview());
+    }
+
+    @Data
+    public static class UpdateAvatarDTO {
+        @NotBlank(message = "头像URL不能为空")
+        private String avatarUrl;
+    }
+
+    @Data
+    public static class UpdatePhoneDTO {
+        @NotBlank(message = "手机号不能为空")
+        private String phone;
     }
 }

@@ -23,5 +23,7 @@ public class SysUser extends BaseEntity {
 
     private String email;
 
+    private String phone;
+
     private Integer status;
 }

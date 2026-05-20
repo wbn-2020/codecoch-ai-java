@@ -1,0 +1,28 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "docId": { "type": "keyword" },
+      "userId": { "type": "keyword" },
+      "sessionId": { "type": "keyword" },
+      "title": { "type": "text", "analyzer": "ik_smart", "fields": { "keyword": { "type": "keyword" } } },
+      "targetPosition": { "type": "text", "analyzer": "ik_smart", "fields": { "keyword": { "type": "keyword" } } },
+      "experienceLevel": { "type": "keyword" },
+      "difficulty": { "type": "keyword" },
+      "mode": { "type": "keyword" },
+      "status": { "type": "keyword" },
+      "reportStatus": { "type": "keyword" },
+      "totalScore": { "type": "integer" },
+      "industryDirection": { "type": "keyword" },
+      "summary": { "type": "text", "analyzer": "ik_smart" },
+      "weakPoints": { "type": "text", "analyzer": "ik_smart" },
+      "startTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "endTime": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "createdAt": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "syncedAt": { "type": "date" }
+    }
+  }
+}

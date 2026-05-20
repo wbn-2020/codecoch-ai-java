@@ -1,0 +1,166 @@
+# ============================================================
+# CodeCoachAI 公共配置 - dev profile
+# 上传到 Nacos: dataId=codecoachai-common-dev.yml  group=DEFAULT_GROUP
+# 本文件包含所有服务都需要的连接配置
+# ============================================================
+
+spring:
+  # 数据源（每个服务覆盖各自的 schema 或共用 codecoachai 库）
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://127.0.0.1:3306/codecoachai?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: ${MYSQL_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+  data:
+    redis:
+      host: 127.0.0.1
+      port: 6379
+      password:
+      database: 0
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+  # Flyway（默认关闭，由专门服务执行迁移；也可在 system 服务里开启）
+  flyway:
+    enabled: false
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 2_999
+    table: flyway_schema_history
+
+# ============================================================
+# RocketMQ
+# ============================================================
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: codecoachai-producer
+    send-message-timeout: 5000
+    retry-times-when-send-failed: 2
+    retry-times-when-send-async-failed: 2
+
+# ============================================================
+# 阿里云 OSS（默认禁用，需要时改 enabled=true 并填凭证）
+# ============================================================
+codecoachai:
+  oss:
+    enabled: true
+    endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+    bucket: ${OSS_BUCKET:codecoachai}
+    access-key-id: ${OSS_AK:}
+    access-key-secret: ${OSS_SK:}
+    domain: ${OSS_DOMAIN:}
+    sign-url-expire-seconds: 900
+    key-prefix: ${OSS_KEY_PREFIX:dev}
+    sts:
+      endpoint: ${OSS_STS_ENDPOINT:sts.cn-hangzhou.aliyuncs.com}
+      region-id: ${OSS_STS_REGION_ID:cn-hangzhou}
+      role-arn: ${OSS_STS_ROLE_ARN:}
+      role-session-name: codecoachai
+      duration-seconds: 3600
+
+  # ============================================================
+  # AI（DeepSeek 主力 + 通义降级；OpenAI 兼容协议）
+  # ============================================================
+  ai:
+    enabled: true
+    mock-enabled: false
+    provider: openai-compatible
+    base-url: https://api.deepseek.com
+    api-key: ${DEEPSEEK_API_KEY:}
+    model: deepseek-chat
+    temperature: 0.3
+    max-tokens: 2048
+    timeout-seconds: 60
+    # 路由器（后续 AiModelRouter 使用）
+    router:
+      default-provider: deepseek
+      fallback-provider: dashscope
+    providers:
+      deepseek:
+        base-url: https://api.deepseek.com
+        api-key: ${DEEPSEEK_API_KEY:}
+        chat-model: deepseek-chat
+        reasoner-model: deepseek-reasoner
+      dashscope:
+        base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+        api-key: ${DASHSCOPE_API_KEY:}
+        chat-model: qwen-plus
+        reasoner-model: qwen-max
+    quota:
+      per-user-day: 200
+      per-user-minute: 20
+
+  # ============================================================
+  # Elasticsearch
+  # ============================================================
+  elasticsearch:
+    uris: http://127.0.0.1:9200
+    username:
+    password:
+
+# ============================================================
+# MyBatis-Plus（标准配置）
+# ============================================================
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-not-delete-value: 0
+      logic-delete-value: 1
+  mapper-locations: classpath*:mapper/**/*.xml
+
+# ============================================================
+# SA-Token
+# ============================================================
+sa-token:
+  token-name: Authorization
+  timeout: 2592000
+  active-timeout: -1
+  is-concurrent: true
+  is-share: true
+  is-log: false
+  is-read-cookie: false
+  is-read-header: true
+
+# ============================================================
+# Knife4j
+# ============================================================
+knife4j:
+  enable: true
+  setting:
+    language: zh-CN
+    enable-version: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+  metrics:
+    tags:
+      application: ${spring.application.name:codecoachai-service}
+
+# ============================================================
+# 日志
+# ============================================================
+logging:
+  level:
+    root: INFO
+    com.codecoachai: DEBUG
+    org.springframework: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"

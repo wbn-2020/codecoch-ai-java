@@ -13,6 +13,9 @@ public class InterviewSession extends BaseEntity {
 
     private Long userId;
     private Long resumeId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private String mode;
     private String title;
     private String targetPosition;

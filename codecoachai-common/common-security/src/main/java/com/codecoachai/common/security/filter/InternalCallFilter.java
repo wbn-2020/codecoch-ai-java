@@ -33,7 +33,9 @@ public class InternalCallFilter extends OncePerRequestFilter {
             "codecoachai-file",
             "codecoachai-interview",
             "codecoachai-ai",
-            "codecoachai-system"
+            "codecoachai-system",
+            "codecoachai-task",
+            "codecoachai-search"
     );
 
     private static final String INTERNAL_NONCE_KEY_PREFIX = "codecoachai:internal:nonce:";

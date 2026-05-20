@@ -3,28 +3,41 @@ package com.codecoachai.ai.service.impl;
 import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
+import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
+import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
+import com.codecoachai.ai.domain.dto.GenerateQuestionRecommendationDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateReportDTO;
+import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
+import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.ParseResumeDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
+import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
+import com.codecoachai.ai.domain.vo.GenerateQuestionRecommendationVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateReportVO;
+import com.codecoachai.ai.domain.vo.ParseJobDescriptionVO;
 import com.codecoachai.ai.domain.vo.ParseResumeVO;
 import com.codecoachai.ai.domain.vo.PracticeReviewVO;
 import com.codecoachai.ai.domain.vo.QuestionDraftItemVO;
+import com.codecoachai.ai.domain.vo.QuestionRecommendationItemVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.AiService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
@@ -62,9 +75,15 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
+    private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
+    private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
+    private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
+    private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
+    private static final String SCENE_TARGETED_QUESTION_RECOMMEND = "TARGETED_QUESTION_RECOMMEND";
 
     private final AiCallLogMapper aiCallLogMapper;
     private final PromptRenderService promptRenderService;
+    private final AiCallLogService aiCallLogService;
     private final AiProperties aiProperties;
     private final AiClient aiClient;
     private final ObjectMapper objectMapper;
@@ -86,6 +105,9 @@ public class AiServiceImpl implements AiService {
                     null, null, AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateInterviewQuestionVO fallback = mockQuestion(dto, scene);
             saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
@@ -127,6 +149,35 @@ public class AiServiceImpl implements AiService {
     }
 
     @Override
+    public GenerateQuestionRecommendationVO generateQuestionRecommendations(GenerateQuestionRecommendationDTO dto) {
+        validateQuestionRecommendationDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_TARGETED_QUESTION_RECOMMEND,
+                questionRecommendationPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateQuestionRecommendationVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockQuestionRecommendations(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                vo = parseQuestionRecommendations(rawResponse, dto);
+            }
+            Long logId = saveLog(promptResult, rawResponse, businessId(dto.getBatchId()),
+                    start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setBatchId(dto.getBatchId());
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(rawResponse);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getBatchId()),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
     public PracticeReviewVO reviewPractice(PracticeReviewDTO dto) {
         validatePracticeReviewDTO(dto);
         long start = System.currentTimeMillis();
@@ -148,6 +199,9 @@ public class AiServiceImpl implements AiService {
             vo.setRawResponse(rawResponse);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             PracticeReviewVO fallback = mockPracticeReview(dto);
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getRecordId()),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
@@ -179,6 +233,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             EvaluateAnswerVO fallback = mockEvaluate(dto);
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
@@ -209,6 +266,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateFollowUpVO fallback = new GenerateFollowUpVO();
             fallback.setFollowUpQuestion(buildFallbackFollowUp(dto));
             fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
@@ -237,6 +297,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateReportVO fallback = mockReport(dto);
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
@@ -322,6 +385,121 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public GenerateLearningPlanVO generateTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto) {
+        validateTargetedStudyPlanDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_TARGETED_STUDY_PLAN_GENERATE,
+                targetedStudyPlanPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            GenerateLearningPlanVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockTargetedStudyPlan(dto);
+                rawResponse = toJson(vo);
+            } else {
+                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                vo = parseTargetedStudyPlan(rawResponse, dto);
+            }
+            Long logId = saveLog(promptResult, rawResponse,
+                    businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
+                    start, null, dto.getUserId(), AiFailureType.NONE);
+            vo.setAiCallLogId(logId);
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public ParseJobDescriptionVO parseJobDescription(ParseJobDescriptionDTO dto) {
+        validateParseJobDescriptionDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_JOB_DESCRIPTION_PARSE,
+                jobDescriptionParsePromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockJobDescriptionParseJson(dto);
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                AiCallContext ctx = new AiCallContext();
+                ctx.setScene(SCENE_JOB_DESCRIPTION_PARSE);
+                ctx.setPrompt(promptResult.getRenderedPrompt());
+                ctx.setUserId(dto.getUserId());
+                RouteResult routeResult = aiCallLogService.callAndLog(ctx);
+                rawResponse = routeResult.getContent();
+                resultJson = parseJobDescriptionJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
+            ParseJobDescriptionVO vo = new ParseJobDescriptionVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getTargetJobId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toJobDescriptionParseBusinessException(ex);
+        }
+    }
+
+    @Override
+    public AnalyzeResumeJobMatchVO analyzeResumeJobMatch(AnalyzeResumeJobMatchDTO dto) {
+        validateAnalyzeResumeJobMatchDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_JOB_MATCH,
+                resumeJobMatchPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockResumeJobMatchJson()
+                    : parseResumeJobMatchJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
+            Long logId = saveLog(promptResult, resultJson,
+                    businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            AnalyzeResumeJobMatchVO vo = new AnalyzeResumeJobMatchVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getReportId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public AnalyzeSkillGapVO analyzeSkillGap(AnalyzeSkillGapDTO dto) {
+        validateAnalyzeSkillGapDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_SKILL_GAP_ANALYZE,
+                skillGapAnalyzePromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
+                    ? mockSkillGapAnalyzeJson()
+                    : parseSkillGapAnalyzeJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
+            Long logId = saveLog(promptResult, resultJson,
+                    businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            AnalyzeSkillGapVO vo = new AnalyzeSkillGapVO();
+            vo.setResultJson(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getProfileId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -334,6 +512,73 @@ public class AiServiceImpl implements AiService {
         }
         if (!StringUtils.hasText(dto.getRawText())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "rawText is required");
+        }
+    }
+
+    private void validateParseJobDescriptionDTO(ParseJobDescriptionDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (!StringUtils.hasText(dto.getJobTitle())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobTitle is required");
+        }
+        if (!StringUtils.hasText(dto.getJdText())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jdText is required");
+        }
+    }
+
+    private void validateAnalyzeResumeJobMatchDTO(AnalyzeResumeJobMatchDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "reportId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getResumeId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (!StringUtils.hasText(dto.getResumeAnalysisJson())
+                && !StringUtils.hasText(dto.getResumeSnapshotJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume analysis or snapshot is required");
+        }
+        if (!StringUtils.hasText(dto.getJobDescriptionAnalysisJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobDescriptionAnalysisJson is required");
+        }
+    }
+
+    private void validateAnalyzeSkillGapDTO(AnalyzeSkillGapDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+        }
+        if (dto.getMatchReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        if (!StringUtils.hasText(dto.getMatchReportJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportJson is required");
+        }
+        if (!StringUtils.hasText(dto.getGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "gapsJson is required");
         }
     }
 
@@ -371,6 +616,25 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateQuestionRecommendationDTO(GenerateQuestionRecommendationDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getBatchId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        int count = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        if (count < 1 || count > 20) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionCount must be between 1 and 20");
+        }
+        if (!StringUtils.hasText(dto.getSkillGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+        }
+    }
+
     private void validateLearningPlanDTO(GenerateLearningPlanDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
@@ -389,6 +653,30 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    private void validateTargetedStudyPlanDTO(GenerateTargetedStudyPlanDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+        }
+        if (dto.getLearningPlanId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "learningPlanId is required");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        if (dto.getSkillProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillProfileId is required");
+        }
+        if (!StringUtils.hasText(dto.getSkillGapsJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+        }
+        if (dto.getAvailableDays() == null || dto.getAvailableDays() < 1 || dto.getAvailableDays() > 60) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "availableDays must be between 1 and 60");
+        }
+        if (dto.getDailyMinutes() == null || dto.getDailyMinutes() < 15 || dto.getDailyMinutes() > 480) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dailyMinutes must be between 15 and 480");
+        }
+    }
+
     private BusinessException toBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
@@ -399,6 +687,10 @@ public class AiServiceImpl implements AiService {
         return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume parse failed"));
     }
 
+    private boolean mockEnabled() {
+        return Boolean.TRUE.equals(aiProperties.getMockEnabled());
+    }
+
     private BusinessException toResumeOptimizeBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
@@ -407,6 +699,16 @@ public class AiServiceImpl implements AiService {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
         return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume optimize failed"));
+    }
+
+    private BusinessException toJobDescriptionParseBusinessException(RuntimeException ex) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
+        }
+        if (ex instanceof AiProviderException aiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        }
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "JD parse failed"));
     }
 
     private boolean isProjectStage(String stageType) {
@@ -474,6 +776,14 @@ public class AiServiceImpl implements AiService {
         return defaultLearningPlanPrompt();
     }
 
+    private String targetedStudyPlanPromptContent() {
+        return defaultTargetedStudyPlanPrompt();
+    }
+
+    private String questionRecommendationPromptContent() {
+        return defaultQuestionRecommendationPrompt();
+    }
+
     private String industryContextBlock(String industryContext) {
         if (!StringUtils.hasText(industryContext)) {
             return "";
@@ -495,6 +805,18 @@ public class AiServiceImpl implements AiService {
 
     private String resumeOptimizePromptContent() {
         return defaultResumeOptimizePrompt();
+    }
+
+    private String jobDescriptionParsePromptContent() {
+        return defaultJobDescriptionParsePrompt();
+    }
+
+    private String resumeJobMatchPromptContent() {
+        return defaultResumeJobMatchPrompt();
+    }
+
+    private String skillGapAnalyzePromptContent() {
+        return defaultSkillGapAnalyzePrompt();
     }
 
     private String questionDraftPromptContent() {
@@ -606,6 +928,54 @@ public class AiServiceImpl implements AiService {
         return values;
     }
 
+    private Map<String, String> variables(ParseJobDescriptionDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("jobTitle", dto.getJobTitle());
+        values.put("companyName", dto.getCompanyName());
+        values.put("jobLevel", dto.getJobLevel());
+        values.put("jdText", dto.getJdText());
+        values.put("jdSource", dto.getJdSource());
+        values.put("userTargetDirection", dto.getUserTargetDirection());
+        return values;
+    }
+
+    private Map<String, String> variables(AnalyzeResumeJobMatchDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("reportId", dto.getReportId() == null ? "" : String.valueOf(dto.getReportId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("jdAnalysisId", dto.getJdAnalysisId() == null ? "" : String.valueOf(dto.getJdAnalysisId()));
+        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
+        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
+        values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("userExperienceYears", dto.getUserExperienceYears());
+        return values;
+    }
+
+    private Map<String, String> variables(AnalyzeSkillGapDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("profileId", dto.getProfileId() == null ? "" : String.valueOf(dto.getProfileId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("jdAnalysisId", dto.getJdAnalysisId() == null ? "" : String.valueOf(dto.getJdAnalysisId()));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
+        values.put("matchReportJson", dto.getMatchReportJson());
+        values.put("matchDetailsJson", dto.getMatchDetailsJson());
+        values.put("gapsJson", dto.getGapsJson());
+        values.put("recommendedLearningTopicsJson", dto.getRecommendedLearningTopicsJson());
+        values.put("recommendedInterviewTopicsJson", dto.getRecommendedInterviewTopicsJson());
+        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
+        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
+        return values;
+    }
+
     private Map<String, String> variables(GenerateQuestionDraftDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("batchId", dto.getBatchId());
@@ -621,6 +991,28 @@ public class AiServiceImpl implements AiService {
         values.put("generateTagSuggestions", String.valueOf(Boolean.TRUE.equals(dto.getGenerateTagSuggestions())));
         values.put("generateCategorySuggestion", String.valueOf(Boolean.TRUE.equals(dto.getGenerateCategorySuggestion())));
         values.put("extraRequirements", dto.getExtraRequirements());
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateQuestionRecommendationDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("batchId", dto.getBatchId() == null ? "" : String.valueOf(dto.getBatchId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("sourceType", dto.getSourceType());
+        values.put("sourceId", dto.getSourceId() == null ? "" : String.valueOf(dto.getSourceId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("skillProfileId", dto.getSkillProfileId() == null ? "" : String.valueOf(dto.getSkillProfileId()));
+        values.put("studyPlanId", dto.getStudyPlanId() == null ? "" : String.valueOf(dto.getStudyPlanId()));
+        values.put("strategy", firstText(dto.getStrategy(), "GAP_PRIORITY"));
+        values.put("questionCount", String.valueOf(dto.getQuestionCount() == null ? 5 : dto.getQuestionCount()));
+        values.put("difficultyPreference", firstText(dto.getDifficultyPreference(), "MEDIUM"));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("matchReportJson", dto.getMatchReportJson());
+        values.put("skillProfileJson", dto.getSkillProfileJson());
+        values.put("skillGapsJson", dto.getSkillGapsJson());
+        values.put("studyPlanJson", dto.getStudyPlanJson());
+        values.put("studyTasksJson", dto.getStudyTasksJson());
         return values;
     }
 
@@ -660,6 +1052,24 @@ public class AiServiceImpl implements AiService {
         values.put("resumeWeaknessSummary", dto.getResumeWeaknessSummary());
         values.put("expectedDurationDays", dto.getExpectedDurationDays() == null ? "14" : String.valueOf(dto.getExpectedDurationDays()));
         values.put("extraRequirements", dto.getExtraRequirements());
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateTargetedStudyPlanDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("learningPlanId", dto.getLearningPlanId() == null ? "" : String.valueOf(dto.getLearningPlanId()));
+        values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("skillProfileId", dto.getSkillProfileId() == null ? "" : String.valueOf(dto.getSkillProfileId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("targetJobJson", dto.getTargetJobJson());
+        values.put("skillProfileJson", dto.getSkillProfileJson());
+        values.put("skillGapsJson", dto.getSkillGapsJson());
+        values.put("availableDays", dto.getAvailableDays() == null ? "14" : String.valueOf(dto.getAvailableDays()));
+        values.put("dailyMinutes", dto.getDailyMinutes() == null ? "60" : String.valueOf(dto.getDailyMinutes()));
+        values.put("startDate", dto.getStartDate() == null ? "" : dto.getStartDate().toString());
+        values.put("existingStudyPlansJson", dto.getExistingStudyPlansJson());
+        values.put("planTitle", dto.getPlanTitle());
         return values;
     }
 
@@ -809,6 +1219,48 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private GenerateQuestionRecommendationVO parseQuestionRecommendations(String raw,
+                                                                          GenerateQuestionRecommendationDTO dto) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response must be a JSON object");
+        }
+        JsonNode questionsNode = json.path("questions");
+        if (!questionsNode.isArray() || questionsNode.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response missing questions array");
+        }
+        List<QuestionRecommendationItemVO> questions = new java.util.ArrayList<>();
+        int limit = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        for (JsonNode item : questionsNode) {
+            if (questions.size() >= limit) {
+                break;
+            }
+            QuestionRecommendationItemVO question = new QuestionRecommendationItemVO();
+            question.setTitle(requireRecommendationText(item, "title"));
+            question.setContent(requireRecommendationText(item, "content"));
+            question.setQuestionType(firstText(item.path("questionType").asText(null), "SHORT_ANSWER"));
+            question.setDifficulty(firstText(item.path("difficulty").asText(null),
+                    dto.getDifficultyPreference(), "MEDIUM"));
+            question.setSkillCode(item.path("skillCode").asText(null));
+            question.setSkillName(firstText(item.path("skillName").asText(null), item.path("knowledgePoint").asText(null)));
+            question.setGapSeverity(firstText(item.path("gapSeverity").asText(null), item.path("severity").asText(null)));
+            question.setRecommendReason(requireRecommendationText(item, "recommendReason"));
+            question.setAnswerHint(firstText(item.path("answerHint").asText(null), item.path("referenceAnswer").asText(null)));
+            question.setEvaluatePoints(firstText(item.path("evaluatePoints").asText(null), item.path("analysis").asText(null)));
+            questions.add(question);
+        }
+        if (questions.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation response contains no valid questions");
+        }
+        GenerateQuestionRecommendationVO vo = new GenerateQuestionRecommendationVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
+        return vo;
+    }
+
     private String requireText(JsonNode json, String fieldName) {
         String value = json.path(fieldName).asText(null);
         if (!StringUtils.hasText(value)) {
@@ -818,8 +1270,26 @@ public class AiServiceImpl implements AiService {
         return value;
     }
 
+    private String requireRecommendationText(JsonNode json, String fieldName) {
+        String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI question recommendation item missing field: " + fieldName);
+        }
+        return value;
+    }
+
     private String requireLearningText(JsonNode json, String fieldName) {
         String value = json.path(fieldName).asText(null);
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI learning plan item missing field: " + fieldName);
+        }
+        return value;
+    }
+
+    private String requireLearningText(JsonNode json, String fieldName, String aliasFieldName) {
+        String value = firstText(json.path(fieldName).asText(null), json.path(aliasFieldName).asText(null));
         if (!StringUtils.hasText(value)) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI learning plan item missing field: " + fieldName);
@@ -948,31 +1418,23 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateReportVO parseReport(String raw) {
-        JsonNode json;
-        try {
-            json = parseJson(raw);
-        } catch (BusinessException ex) {
-            GenerateReportVO fallback = mockReport();
-            fallback.setSummary(firstText(raw, fallback.getSummary()));
-            fallback.setReportContent(firstText(raw, fallback.getReportContent()));
-            return fallback;
-        }
-        GenerateReportVO vo = mockReport();
+        JsonNode json = parseJson(raw);
+        GenerateReportVO vo = new GenerateReportVO();
         if (json.path("totalScore").isNumber()) {
             vo.setTotalScore(json.path("totalScore").asInt());
         }
-        vo.setSummary(firstText(json.path("summary").asText(null), vo.getSummary()));
-        vo.setStageScores(jsonOrDefault(json.path("stageScores"), vo.getStageScores()));
-        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), vo.getWeakPoints()));
-        vo.setStrengths(jsonOrDefault(json.path("strengths"), vo.getStrengths()));
-        vo.setWeaknesses(firstText(json.path("weaknesses").asText(null), vo.getWeaknesses()));
-        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), vo.getMainProblems()));
-        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), vo.getProjectProblems()));
-        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), vo.getSuggestions()));
-        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), vo.getReviewSuggestions()));
-        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), vo.getRecommendedQuestions()));
-        vo.setQaReview(jsonOrDefault(json.path("qaReview"), vo.getQaReview()));
-        vo.setReportContent(firstText(json.path("reportContent").asText(null), vo.getSummary()));
+        vo.setSummary(json.path("summary").asText(null));
+        vo.setStageScores(jsonOrDefault(json.path("stageScores"), null));
+        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), null));
+        vo.setStrengths(jsonOrDefault(json.path("strengths"), null));
+        vo.setWeaknesses(json.path("weaknesses").asText(null));
+        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), null));
+        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), null));
+        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), null));
+        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), null));
+        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), null));
+        vo.setQaReview(jsonOrDefault(json.path("qaReview"), null));
+        vo.setReportContent(json.path("reportContent").asText(null));
         return vo;
     }
 
@@ -1009,14 +1471,21 @@ public class AiServiceImpl implements AiService {
                     throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan item must be object");
                 }
                 GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+                item.setDayOffset(itemNode.path("dayOffset").isNumber() ? itemNode.path("dayOffset").asInt() : null);
                 item.setKnowledgePoint(itemNode.path("knowledgePoint").asText(null));
-                item.setTaskTitle(requireLearningText(itemNode, "taskTitle"));
-                item.setTaskDescription(requireLearningText(itemNode, "taskDescription"));
+                item.setSkillName(itemNode.path("skillName").asText(null));
+                item.setSourceGapId(itemNode.path("sourceGapId").asText(null));
+                item.setTaskTitle(requireLearningText(itemNode, "taskTitle", "title"));
+                item.setTaskDescription(requireLearningText(itemNode, "taskDescription", "description"));
                 item.setTaskType(normalizeTaskType(itemNode.path("taskType").asText(null)));
                 item.setPriority(normalizePriority(itemNode.path("priority").asText(null)));
                 item.setEstimatedHours(itemNode.path("estimatedHours").isNumber()
                         ? Math.max(1, itemNode.path("estimatedHours").asInt())
                         : 1);
+                item.setEstimatedMinutes(itemNode.path("estimatedMinutes").isNumber()
+                        ? Math.max(1, itemNode.path("estimatedMinutes").asInt())
+                        : null);
+                item.setAcceptance(itemNode.path("acceptance").asText(null));
                 item.setRelatedQuestionIds(longArray(itemNode.path("relatedQuestionIds")));
                 item.setRelatedTags(textArray(itemNode.path("relatedTags")));
                 item.setResources(textArray(itemNode.path("resources")));
@@ -1026,6 +1495,19 @@ public class AiServiceImpl implements AiService {
             stages.add(stage);
         }
         vo.setStages(stages);
+        return vo;
+    }
+
+    private GenerateLearningPlanVO parseTargetedStudyPlan(String raw, GenerateTargetedStudyPlanDTO dto) {
+        GenerateLearningPlanDTO fallback = new GenerateLearningPlanDTO();
+        fallback.setLearningPlanId(dto.getLearningPlanId());
+        fallback.setUserId(dto.getUserId());
+        fallback.setReportId(firstLong(dto.getMatchReportId(), dto.getSkillProfileId()));
+        fallback.setTargetPosition(dto.getPlanTitle());
+        fallback.setExpectedDurationDays(dto.getAvailableDays());
+        GenerateLearningPlanVO vo = parseLearningPlan(raw, fallback);
+        vo.setPlanTitle(firstText(vo.getPlanTitle(), dto.getPlanTitle(), defaultTargetedStudyPlanTitle(dto)));
+        vo.setDurationDays(dto.getAvailableDays());
         return vo;
     }
 
@@ -1040,6 +1522,24 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume optimize response must be a JSON object");
         }
+        return json.toString();
+    }
+
+    private String parseJobDescriptionJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateJobDescriptionJson(json);
+        return json.toString();
+    }
+
+    private String parseResumeJobMatchJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateResumeJobMatchJson(json);
+        return json.toString();
+    }
+
+    private String parseSkillGapAnalyzeJson(String raw) {
+        JsonNode json = parseJson(raw);
+        validateSkillGapAnalyzeJson(json);
         return json.toString();
     }
 
@@ -1063,6 +1563,64 @@ public class AiServiceImpl implements AiService {
                     requireJsonField(project, "achievements");
                 }
             }
+        }
+    }
+
+    private void validateJobDescriptionJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI JD parse response must be a JSON object");
+        }
+        requireJobDescriptionField(json, "responsibilities");
+        requireJobDescriptionField(json, "requiredSkills");
+        requireJobDescriptionField(json, "summary");
+    }
+
+    private void validateResumeJobMatchJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response must be a JSON object");
+        }
+        requireResumeJobMatchField(json, "overallScore");
+        requireResumeJobMatchField(json, "dimensionScores");
+        requireResumeJobMatchField(json, "strengths");
+        requireResumeJobMatchField(json, "gaps");
+        requireResumeJobMatchField(json, "summary");
+    }
+
+    private void validateSkillGapAnalyzeJson(JsonNode json) {
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response must be a JSON object");
+        }
+        requireSkillGapAnalyzeField(json, "profileSummary");
+        requireSkillGapAnalyzeField(json, "overallLevel");
+        requireSkillGapAnalyzeField(json, "overallScore");
+        requireSkillGapAnalyzeField(json, "skillGaps");
+        JsonNode gaps = json.path("skillGaps");
+        if (!gaps.isArray() || gaps.isEmpty()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response must contain skillGaps");
+        }
+    }
+
+    private void requireJobDescriptionField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI JD parse response missing field: " + fieldName);
+        }
+    }
+
+    private void requireResumeJobMatchField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response missing field: " + fieldName);
+        }
+    }
+
+    private void requireSkillGapAnalyzeField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI skill gap analyze response missing field: " + fieldName);
         }
     }
 
@@ -1150,6 +1708,46 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private GenerateQuestionRecommendationVO mockQuestionRecommendations(GenerateQuestionRecommendationDTO dto) {
+        int count = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
+        String difficulty = firstText(dto.getDifficultyPreference(), "MEDIUM");
+        List<String> skills = extractSkillNames(dto.getSkillGapsJson());
+        if (skills.isEmpty()) {
+            skills = List.of("Redis", "Spring Boot", "MySQL");
+        }
+        List<QuestionRecommendationItemVO> questions = new java.util.ArrayList<>();
+        for (int i = 1; i <= count; i++) {
+            String skill = skills.get((i - 1) % skills.size());
+            QuestionRecommendationItemVO item = new QuestionRecommendationItemVO();
+            item.setTitle(skill + " targeted gap practice question " + i);
+            item.setContent("Explain a production scenario for " + skill
+                    + ", including core mechanism, failure cases, troubleshooting, and tradeoffs.");
+            item.setQuestionType("SHORT_ANSWER");
+            item.setDifficulty(difficulty);
+            item.setSkillName(skill);
+            item.setGapSeverity("HIGH");
+            item.setRecommendReason("Recommended because this skill is marked as a target-job gap.");
+            item.setAnswerHint("Cover principle, scenario, boundary condition, and one project example.");
+            item.setEvaluatePoints("Mechanism accuracy; production scenario; risk handling; project evidence.");
+            questions.add(item);
+        }
+        GenerateQuestionRecommendationVO vo = new GenerateQuestionRecommendationVO();
+        vo.setBatchId(dto.getBatchId());
+        vo.setQuestions(questions);
+        return vo;
+    }
+
+    private List<String> extractSkillNames(String skillGapsJson) {
+        List<String> skills = new java.util.ArrayList<>();
+        for (JsonNode gap : readArrayNodes(skillGapsJson)) {
+            String skill = firstText(gap.path("skillName").asText(null), gap.path("name").asText(null));
+            if (StringUtils.hasText(skill) && !skills.contains(skill)) {
+                skills.add(skill);
+            }
+        }
+        return skills;
+    }
+
     private EvaluateAnswerVO mockEvaluate(EvaluateAnswerDTO dto) {
         int score = scoreByLength(dto.getAnswerContent());
         EvaluateAnswerVO vo = new EvaluateAnswerVO();
@@ -1231,6 +1829,52 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private GenerateLearningPlanVO mockTargetedStudyPlan(GenerateTargetedStudyPlanDTO dto) {
+        GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
+        int duration = dto == null || dto.getAvailableDays() == null ? 14 : dto.getAvailableDays();
+        int minutes = dto == null || dto.getDailyMinutes() == null ? 60 : dto.getDailyMinutes();
+        vo.setPlanTitle(defaultTargetedStudyPlanTitle(dto));
+        vo.setPlanSummary("A targeted " + duration + "-day plan generated from selected skill gaps.");
+        vo.setDurationDays(duration);
+
+        List<JsonNode> gaps = readArrayNodes(dto == null ? null : dto.getSkillGapsJson());
+        if (gaps.isEmpty()) {
+            GenerateLearningPlanVO.ItemVO item = learningItem("Redis",
+                    "Review Redis cache penetration, breakdown, and avalanche",
+                    "Summarize causes, protection strategies, and project-ready examples.",
+                    "KNOWLEDGE_REVIEW", "HIGH", Math.max(1, minutes / 60), List.of("Redis"));
+            item.setDayOffset(1);
+            item.setSkillName("Redis");
+            item.setSourceGapId(null);
+            item.setEstimatedMinutes(minutes);
+            item.setAcceptance("Explain at least two cache protection strategies with project examples.");
+            vo.setStages(List.of(learningStage(1, "Targeted gap repair", List.of(item))));
+            return vo;
+        }
+
+        List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
+        int day = 1;
+        for (JsonNode gap : gaps.stream().limit(5).toList()) {
+            String skillName = firstText(gap.path("skillName").asText(null), "Java backend skill");
+            GenerateLearningPlanVO.ItemVO item = learningItem(skillName,
+                    "Strengthen " + skillName + " interview expression",
+                    firstText(gap.path("gapDescription").asText(null),
+                            "Review weak concepts, summarize scenarios, and prepare project evidence."),
+                    "KNOWLEDGE_REVIEW",
+                    firstText(gap.path("severity").asText(null), "HIGH"),
+                    Math.max(1, minutes / 60),
+                    List.of(skillName));
+            item.setDayOffset(day++);
+            item.setSkillName(skillName);
+            item.setSourceGapId(gap.path("id").asText(null));
+            item.setEstimatedMinutes(minutes);
+            item.setAcceptance("Can explain " + skillName + " with one concrete project or troubleshooting example.");
+            items.add(item);
+        }
+        vo.setStages(List.of(learningStage(1, "Targeted gap repair", items)));
+        return vo;
+    }
+
     private GenerateLearningPlanVO.StageVO learningStage(int stageNo, String stageTitle,
                                                         List<GenerateLearningPlanVO.ItemVO> items) {
         GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
@@ -1251,6 +1895,7 @@ public class AiServiceImpl implements AiService {
         item.setTaskType(taskType);
         item.setPriority(priority);
         item.setEstimatedHours(estimatedHours);
+        item.setEstimatedMinutes(estimatedHours * 60);
         item.setRelatedQuestionIds(List.of());
         item.setRelatedTags(tags);
         item.setResources(List.of());
@@ -1336,6 +1981,122 @@ public class AiServiceImpl implements AiService {
                 "明确个人负责模块。",
                 "补充真实可验证的技术难点。"
         ));
+        return toJson(json);
+    }
+
+    private String mockJobDescriptionParseJson(ParseJobDescriptionDTO dto) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("jobTitle", firstText(dto == null ? null : dto.getJobTitle(), "Java Backend Engineer"));
+        json.put("companyName", dto == null ? null : dto.getCompanyName());
+        json.put("jobLevel", firstText(dto == null ? null : dto.getJobLevel(), "Mid-level"));
+        json.put("responsibilities", List.of(
+                "Build and maintain Java backend services",
+                "Design APIs and improve service reliability"
+        ));
+        json.put("requiredSkills", List.of(
+                Map.of("name", "Spring Boot", "category", "Framework", "requiredLevel", 4, "weight", 90,
+                        "evidence", "JD expects Java backend service development"),
+                Map.of("name", "MySQL", "category", "Database", "requiredLevel", 3, "weight", 75,
+                        "evidence", "Backend roles usually require relational database design and SQL tuning")
+        ));
+        json.put("bonusSkills", List.of(
+                Map.of("name", "Redis", "category", "Cache", "requiredLevel", 3, "weight", 60,
+                        "evidence", "High-concurrency backend systems benefit from cache design")
+        ));
+        json.put("techStackKeywords", List.of("Java", "Spring Boot", "MySQL", "Redis"));
+        json.put("businessKeywords", List.of("Backend service", "API design", "Reliability"));
+        json.put("experienceRequirement", "Experience building Java backend applications.");
+        json.put("projectExperienceRequirement", "Show at least one production-like backend project with clear responsibilities.");
+        json.put("interviewFocusPoints", List.of(
+                Map.of("topic", "Spring Boot service design", "reason", "Core backend framework capability"),
+                Map.of("topic", "Database schema and SQL optimization", "reason", "Common Java backend interview focus")
+        ));
+        json.put("skillWeights", Map.of("Spring Boot", 90, "MySQL", 75, "Redis", 60));
+        json.put("summary", "This role focuses on Java backend development, API design, database usage, and production reliability.");
+        return toJson(json);
+    }
+
+    private String mockResumeJobMatchJson() {
+        Map<String, Object> dimensionScores = new LinkedHashMap<>();
+        dimensionScores.put("techStack", 82);
+        dimensionScores.put("projectExperience", 75);
+        dimensionScores.put("businessFit", 68);
+        dimensionScores.put("communication", 80);
+
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("overallScore", 78);
+        json.put("dimensionScores", dimensionScores);
+        json.put("strengths", List.of(
+                Map.of("title", "Spring Boot project experience matches",
+                        "evidence", "Resume snapshot contains Java backend project experience",
+                        "relatedSkills", List.of("Spring Boot", "Java"))
+        ));
+        json.put("gaps", List.of(
+                Map.of("skillName", "Redis",
+                        "category", "Middleware",
+                        "severity", "HIGH",
+                        "targetLevel", 4,
+                        "currentLevel", 2,
+                        "description", "Resume evidence for cache consistency and distributed locks is weak",
+                        "evidence", "JD requires high-concurrency backend capability; resume lacks detailed Redis practice",
+                        "recommendedActions", List.of("Add Redis project evidence", "Practice Redis scenario questions"))
+        ));
+        json.put("resumeRisks", List.of(
+                Map.of("riskType", "PROJECT_DEPTH",
+                        "description", "Project descriptions need stronger technical depth and measurable results")
+        ));
+        json.put("optimizationSuggestions", List.of(
+                Map.of("section", "Project experience",
+                        "suggestion", "Add cache design, troubleshooting steps, and optimization outcomes")
+        ));
+        json.put("recommendedLearningTopics", List.of("Redis cache consistency", "MySQL index optimization"));
+        json.put("recommendedInterviewTopics", List.of("Distributed locks", "API idempotency"));
+        json.put("summary", "Overall fit is medium. Prioritize Redis and project-depth expression before interviews.");
+        return toJson(json);
+    }
+
+    private String mockSkillGapAnalyzeJson() {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("profileSummary",
+                "The candidate has stable Java and Spring Boot fundamentals, with visible gaps in Redis and project-depth evidence.");
+        json.put("overallLevel", 2);
+        json.put("overallScore", 68);
+        List<Map<String, Object>> skillGaps = new java.util.ArrayList<>();
+        Map<String, Object> redisGap = new LinkedHashMap<>();
+        redisGap.put("skillName", "Redis");
+        redisGap.put("category", "Middleware");
+        redisGap.put("targetLevel", 4);
+        redisGap.put("currentLevel", 2);
+        redisGap.put("gapLevel", 2);
+        redisGap.put("confidence", 0.82);
+        redisGap.put("severity", "HIGH");
+        redisGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
+        redisGap.put("gapDescription", "Resume lacks cache consistency and distributed lock project evidence");
+        redisGap.put("recommendedActions", List.of("Study cache consistency patterns",
+                "Practice Redis scenario questions",
+                "Run a Redis-focused mock interview"));
+        redisGap.put("priority", 1);
+        skillGaps.add(redisGap);
+
+        Map<String, Object> projectDepthGap = new LinkedHashMap<>();
+        projectDepthGap.put("skillName", "Project Depth");
+        projectDepthGap.put("category", "Project Experience");
+        projectDepthGap.put("targetLevel", 4);
+        projectDepthGap.put("currentLevel", 3);
+        projectDepthGap.put("gapLevel", 1);
+        projectDepthGap.put("confidence", 0.76);
+        projectDepthGap.put("severity", "MEDIUM");
+        projectDepthGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
+        projectDepthGap.put("gapDescription", "Project descriptions need stronger metrics and troubleshooting evidence");
+        projectDepthGap.put("recommendedActions", List.of("Add measurable project outcomes",
+                "Prepare troubleshooting stories"));
+        projectDepthGap.put("priority", 2);
+        skillGaps.add(projectDepthGap);
+        json.put("skillGaps", skillGaps);
+        json.put("nextPrioritySkills", List.of("Redis", "Project Depth"));
+        json.put("nextActions", List.of("Complete Redis cache consistency study",
+                "Practice 5 Redis scenario questions",
+                "Improve project description with measurable outcomes"));
         return toJson(json);
     }
 
@@ -1924,6 +2685,115 @@ public class AiServiceImpl implements AiService {
                 """;
     }
 
+    private String defaultJobDescriptionParsePrompt() {
+        return """
+                You are a senior Java backend career coach. Parse the target job JD into structured JSON.
+                targetJobId: {{targetJobId}}
+                userId: {{userId}}
+                jobTitle: {{jobTitle}}
+                companyName: {{companyName}}
+                jobLevel: {{jobLevel}}
+                jdSource: {{jdSource}}
+                userTargetDirection: {{userTargetDirection}}
+                JD:
+                {{jdText}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Top-level fields must be:
+                jobTitle, companyName, jobLevel, responsibilities, requiredSkills, bonusSkills,
+                techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement,
+                interviewFocusPoints, skillWeights, summary.
+                responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, and interviewFocusPoints must be arrays.
+                requiredSkills and bonusSkills items should contain name, category, requiredLevel, weight, and evidence.
+                interviewFocusPoints items should contain topic and reason.
+                skillWeights should be an object keyed by skill name.
+                Do not invent company facts beyond the JD. If a field is not available, use an empty string, empty array, or empty object.
+                Example:
+                {"jobTitle":"Java Backend Engineer","companyName":"","jobLevel":"Mid-level","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"Framework","requiredLevel":4,"weight":90,"evidence":"JD requires Spring Boot experience"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
+                """;
+    }
+
+    private String defaultResumeJobMatchPrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a resume-to-target-job match report in JSON.
+                reportId: {{reportId}}
+                userId: {{userId}}
+                resumeId: {{resumeId}}
+                targetJobId: {{targetJobId}}
+                jdAnalysisId: {{jdAnalysisId}}
+                userExperienceYears: {{userExperienceYears}}
+                targetJob:
+                {{targetJobJson}}
+                resumeAnalysisJson:
+                {{resumeAnalysisJson}}
+                resumeSnapshotJson:
+                {{resumeSnapshotJson}}
+                jobDescriptionAnalysisJson:
+                {{jobDescriptionAnalysisJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Do not invent candidate experience beyond the resume. If evidence is weak, mark it as a gap or risk.
+                Scores must be integers from 0 to 100.
+                Top-level fields must be:
+                overallScore, dimensionScores, strengths, gaps, resumeRisks, optimizationSuggestions,
+                recommendedLearningTopics, recommendedInterviewTopics, summary.
+                dimensionScores must contain techStack, projectExperience, businessFit, communication.
+                strengths items should contain title, evidence, relatedSkills.
+                gaps items should contain skillName, category, severity, targetLevel, currentLevel, description,
+                evidence, recommendedActions.
+                resumeRisks items should contain riskType and description.
+                optimizationSuggestions items should contain section and suggestion.
+                recommendedLearningTopics and recommendedInterviewTopics must be arrays of strings.
+                Example:
+                {"overallScore":78,"dimensionScores":{"techStack":82,"projectExperience":75,"businessFit":68,"communication":80},"strengths":[{"title":"Spring Boot project experience matches","evidence":"Resume project includes Spring Boot backend development","relatedSkills":["Spring Boot"]}],"gaps":[{"skillName":"Redis","category":"Middleware","severity":"HIGH","targetLevel":4,"currentLevel":2,"description":"Resume lacks cache consistency or distributed lock evidence","evidence":"JD requires Redis; resume lacks related details","recommendedActions":["Add Redis project practice","Practice Redis questions"]}],"resumeRisks":[{"riskType":"PROJECT_DEPTH","description":"Project description lacks technical metrics"}],"optimizationSuggestions":[{"section":"Project experience","suggestion":"Add cache design and optimization outcomes"}],"recommendedLearningTopics":["Redis cache consistency"],"recommendedInterviewTopics":["Distributed locks"],"summary":"Overall fit is medium."}
+                """;
+    }
+
+    private String defaultSkillGapAnalyzePrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a target-job skill profile from the match report.
+                profileId: {{profileId}}
+                matchReportId: {{matchReportId}}
+                userId: {{userId}}
+                resumeId: {{resumeId}}
+                targetJobId: {{targetJobId}}
+                jdAnalysisId: {{jdAnalysisId}}
+                targetJob:
+                {{targetJobJson}}
+                jobDescriptionAnalysis:
+                {{jobDescriptionAnalysisJson}}
+                resumeAnalysis:
+                {{resumeAnalysisJson}}
+                resumeSnapshot:
+                {{resumeSnapshotJson}}
+                resumeJobMatchReport:
+                {{matchReportJson}}
+                resumeJobMatchDetails:
+                {{matchDetailsJson}}
+                matchGaps:
+                {{gapsJson}}
+                recommendedLearningTopics:
+                {{recommendedLearningTopicsJson}}
+                recommendedInterviewTopics:
+                {{recommendedInterviewTopicsJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Do not invent candidate experience beyond the resume and match report evidence.
+                Top-level fields must be:
+                profileSummary, overallLevel, overallScore, skillGaps, nextPrioritySkills, nextActions.
+                overallLevel must be an integer from 1 to 5. overallScore must be an integer from 0 to 100.
+                skillGaps must be a non-empty array. Each skillGaps item must contain:
+                skillName, category, targetLevel, currentLevel, gapLevel, confidence, severity,
+                evidenceSources, gapDescription, recommendedActions, priority.
+                severity must be one of HIGH, MEDIUM, LOW.
+                evidenceSources and recommendedActions must be arrays of strings.
+                Prefer evidence from RESUME_JOB_MATCH and keep recommended actions practical for learning,
+                question practice, resume improvement, and targeted mock interviews.
+                Example:
+                {"profileSummary":"Java and Spring Boot are stable; Redis has clear gaps.","overallLevel":2,"overallScore":68,"skillGaps":[{"skillName":"Redis","category":"Middleware","targetLevel":4,"currentLevel":2,"gapLevel":2,"confidence":0.82,"severity":"HIGH","evidenceSources":["RESUME_JOB_MATCH"],"gapDescription":"Resume lacks cache consistency evidence","recommendedActions":["Study cache consistency","Practice Redis scenario questions"],"priority":1}],"nextPrioritySkills":["Redis"],"nextActions":["Complete Redis cache consistency study"]}
+                """;
+    }
+
     private String defaultPracticeReviewPrompt() {
         return """
                 你是资深 Java 后端面试刷题教练。请基于题目、参考答案、答案解析和用户答案生成简答题 AI 点评。
@@ -2022,10 +2892,122 @@ public class AiServiceImpl implements AiService {
                 """;
     }
 
+    private String defaultTargetedStudyPlanPrompt() {
+        return """
+                You are a senior Java backend career coach. Generate a gap-driven study plan for the target job.
+                learningPlanId: {{learningPlanId}}
+                userId: {{userId}}
+                targetJobId: {{targetJobId}}
+                skillProfileId: {{skillProfileId}}
+                matchReportId: {{matchReportId}}
+                requestedPlanTitle: {{planTitle}}
+                availableDays: {{availableDays}}
+                dailyMinutes: {{dailyMinutes}}
+                startDate: {{startDate}}
+                targetJob:
+                {{targetJobJson}}
+                skillProfile:
+                {{skillProfileJson}}
+                selectedSkillGaps:
+                {{skillGapsJson}}
+                existingStudyPlans:
+                {{existingStudyPlansJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                The plan must directly address the selected skill gaps and must not invent candidate experience.
+                Top-level fields must be planTitle, planSummary, durationDays, stages.
+                stages must be an array. Each stage must contain stageNo, stageTitle, items.
+                items must be an array. Each item must contain dayOffset, title or taskTitle, description or taskDescription,
+                skillName, sourceGapId, priority, estimatedMinutes, acceptance, relatedTags, and resources.
+                taskType must be one of KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE, RESUME_IMPROVEMENT.
+                priority must be one of HIGH, MEDIUM, LOW.
+                sourceGapId must use the original selected skill gap id as a string.
+                Example:
+                {"planTitle":"Java backend Redis gap repair plan","planSummary":"Repair Redis first, then consolidate MQ.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Redis repair","items":[{"dayOffset":1,"skillName":"Redis","sourceGapId":"12","taskTitle":"Redis cache penetration, breakdown and avalanche","taskDescription":"Summarize causes, protections, and project expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedMinutes":60,"acceptance":"Can explain at least two cache protection strategies with project examples.","relatedTags":["Redis"],"resources":[]}]}]}
+                """;
+    }
+
+    private String defaultQuestionRecommendationPrompt() {
+        return """
+                You are a senior Java backend interview training coach. Generate target-job question recommendations.
+                batchId: {{batchId}}
+                userId: {{userId}}
+                sourceType: {{sourceType}}
+                sourceId: {{sourceId}}
+                targetJobId: {{targetJobId}}
+                matchReportId: {{matchReportId}}
+                skillProfileId: {{skillProfileId}}
+                studyPlanId: {{studyPlanId}}
+                strategy: {{strategy}}
+                questionCount: {{questionCount}}
+                difficultyPreference: {{difficultyPreference}}
+                targetJob:
+                {{targetJobJson}}
+                matchReport:
+                {{matchReportJson}}
+                skillProfile:
+                {{skillProfileJson}}
+                skillGaps:
+                {{skillGapsJson}}
+                studyPlan:
+                {{studyPlanJson}}
+                studyTasks:
+                {{studyTasksJson}}
+
+                Output only one JSON object. Do not output Markdown, code fences, or explanations.
+                Top-level field must be questions.
+                questions must be an array with exactly questionCount items when possible.
+                Each item must contain title, content, questionType, difficulty, skillName, gapSeverity,
+                recommendReason, answerHint, and evaluatePoints.
+                questionType should be SHORT_ANSWER unless a coding or scenario question is clearly better.
+                difficulty must follow difficultyPreference unless the gap severity requires adjustment.
+                Recommendations must directly map to skillGaps or studyTasks and must not invent candidate experience.
+                Example:
+                {"questions":[{"title":"Redis cache penetration production handling","content":"Explain how to prevent Redis cache penetration in a Java backend service and how you would verify the fix.","questionType":"SHORT_ANSWER","difficulty":"MEDIUM","skillName":"Redis","gapSeverity":"HIGH","recommendReason":"Redis is a high-severity target-job gap.","answerHint":"Cover Bloom filter, null cache, parameter validation, monitoring, and project tradeoffs.","evaluatePoints":"Mechanism accuracy; production scenario; boundary cases; monitoring and fallback."}]}
+                """;
+    }
+
     private String defaultLearningPlanTitle(GenerateLearningPlanDTO dto) {
         String target = firstText(dto == null ? null : dto.getTargetPosition(), "Java backend");
         int duration = normalizeDuration(dto == null ? null : dto.getExpectedDurationDays());
         return target + " " + duration + "-day study plan";
+    }
+
+    private String defaultTargetedStudyPlanTitle(GenerateTargetedStudyPlanDTO dto) {
+        if (dto != null && StringUtils.hasText(dto.getPlanTitle())) {
+            return dto.getPlanTitle();
+        }
+        int duration = dto == null || dto.getAvailableDays() == null ? 14 : dto.getAvailableDays();
+        return "Gap-driven " + duration + "-day study plan";
+    }
+
+    private Long firstLong(Long... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Long value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private List<JsonNode> readArrayNodes(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(json);
+            if (!node.isArray()) {
+                return List.of();
+            }
+            List<JsonNode> values = new java.util.ArrayList<>();
+            node.forEach(values::add);
+            return values;
+        } catch (Exception ex) {
+            return List.of();
+        }
     }
 
     private String firstText(String... values) {

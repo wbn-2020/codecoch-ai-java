@@ -154,9 +154,21 @@ public class ResumeController {
         return Result.success(resumeService.updateProject(resumeId, projectId, dto));
     }
 
+    @PutMapping("/projects/{projectId}")
+    public Result<ResumeProjectVO> updateProjectByDocumentPath(@PathVariable Long projectId,
+                                                               @Valid @RequestBody ResumeProjectSaveDTO dto) {
+        return Result.success(resumeService.updateProject(projectId, dto));
+    }
+
     @DeleteMapping("/{resumeId}/projects/{projectId}")
     public Result<Void> deleteProject(@PathVariable Long resumeId, @PathVariable Long projectId) {
         resumeService.deleteProject(resumeId, projectId);
+        return Result.success();
+    }
+
+    @DeleteMapping("/projects/{projectId}")
+    public Result<Void> deleteProjectByDocumentPath(@PathVariable Long projectId) {
+        resumeService.deleteProject(projectId);
         return Result.success();
     }
 }

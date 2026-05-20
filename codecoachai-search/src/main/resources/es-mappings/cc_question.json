@@ -1,0 +1,36 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "analyzer": {
+        "ik_smart_pinyin": {
+          "type": "custom",
+          "tokenizer": "ik_smart",
+          "filter": ["lowercase"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "docId": { "type": "keyword" },
+      "title": { "type": "text", "analyzer": "ik_smart", "fields": { "keyword": { "type": "keyword" } } },
+      "content": { "type": "text", "analyzer": "ik_smart" },
+      "referenceAnswer": { "type": "text", "analyzer": "ik_smart" },
+      "analysis": { "type": "text", "analyzer": "ik_smart" },
+      "difficulty": { "type": "keyword" },
+      "categoryId": { "type": "keyword" },
+      "categoryName": { "type": "keyword" },
+      "tags": { "type": "keyword" },
+      "targetPosition": { "type": "keyword" },
+      "experienceLevel": { "type": "keyword" },
+      "status": { "type": "keyword" },
+      "viewCount": { "type": "integer" },
+      "likeCount": { "type": "integer" },
+      "createdAt": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "updatedAt": { "type": "date", "format": "yyyy-MM-dd HH:mm:ss||yyyy-MM-dd||epoch_millis" },
+      "syncedAt": { "type": "date" }
+    }
+  }
+}

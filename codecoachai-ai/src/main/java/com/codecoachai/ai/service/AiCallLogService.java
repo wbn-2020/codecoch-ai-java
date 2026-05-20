@@ -1,0 +1,90 @@
+package com.codecoachai.ai.service;
+
+import com.codecoachai.ai.domain.entity.AiCallLog;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
+import com.codecoachai.ai.router.AiModelRouter;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+/**
+ * AI 调用日志增强服务。
+ * 封装 AiModelRouter 调用 + 自动写入 ai_call_log（含 route_trace / token_cost）。
+ *
+ * 推荐新业务代码使用此类代替直接调用 AiModelRouter，以获得完整的日志记录。
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class AiCallLogService {
+
+    private final AiModelRouter aiModelRouter;
+    private final AiCallLogMapper aiCallLogMapper;
+
+    /**
+     * 调用 AI 并自动记录日志。
+     */
+    public RouteResult callAndLog(AiCallContext ctx) {
+        long start = System.currentTimeMillis();
+        RouteResult result = null;
+        Exception error = null;
+
+        try {
+            result = aiModelRouter.chat(ctx);
+            return result;
+        } catch (Exception ex) {
+            error = ex;
+            throw ex;
+        } finally {
+            long elapsed = System.currentTimeMillis() - start;
+            saveLog(ctx, result, error, elapsed);
+        }
+    }
+
+    private void saveLog(AiCallContext ctx, RouteResult result, Exception error, long elapsed) {
+        try {
+            AiCallLog logEntry = new AiCallLog();
+            logEntry.setUserId(ctx.getUserId());
+            logEntry.setScene(ctx.getScene());
+            logEntry.setRequestPrompt(truncate(ctx.getPrompt(), 10000));
+
+            if (result != null) {
+                logEntry.setModelName(result.getModel());
+                logEntry.setResponseContent(truncate(result.getContent(), 10000));
+                logEntry.setPromptTokens(result.getPromptTokens());
+                logEntry.setCompletionTokens(result.getCompletionTokens());
+                logEntry.setTotalTokens(result.getTotalTokens());
+                logEntry.setTraceId(result.getRouteTrace());
+                logEntry.setRouteTrace(result.getRouteTrace());
+                logEntry.setEstimatedCost(result.getEstimatedCost());
+                logEntry.setSuccess(1);
+                logEntry.setStatus(1);
+            } else {
+                logEntry.setSuccess(0);
+                logEntry.setStatus(0);
+            }
+
+            if (error != null) {
+                logEntry.setSuccess(0);
+                logEntry.setStatus(0);
+                logEntry.setErrorMessage(truncate(error.getMessage(), 2000));
+            }
+
+            logEntry.setElapsedMs(elapsed);
+            logEntry.setCostMillis(elapsed);
+            aiCallLogMapper.insert(logEntry);
+            if (result != null) {
+                result.setAiCallLogId(logEntry.getId());
+            }
+        } catch (Exception ex) {
+            log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);
+        }
+    }
+
+    private String truncate(String text, int max) {
+        if (text == null) return null;
+        return text.length() > max ? text.substring(0, max) : text;
+    }
+}

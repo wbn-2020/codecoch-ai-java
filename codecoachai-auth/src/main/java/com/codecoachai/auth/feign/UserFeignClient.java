@@ -1,6 +1,7 @@
 package com.codecoachai.auth.feign;
 
 import com.codecoachai.auth.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.auth.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.auth.domain.vo.InnerCreateUserVO;
 import com.codecoachai.auth.domain.vo.InnerUserAuthVO;
 import com.codecoachai.auth.domain.vo.InnerUserBasicVO;
@@ -20,6 +21,9 @@ public interface UserFeignClient {
     @GetMapping("/inner/users/by-username")
     Result<InnerUserAuthVO> getByUsername(@RequestParam("username") String username);
 
+    @GetMapping("/inner/users/by-email")
+    Result<InnerUserAuthVO> getByEmail(@RequestParam("email") String email);
+
     @PostMapping("/inner/users")
     Result<InnerCreateUserVO> createUser(@RequestBody InnerCreateUserDTO dto);
 
@@ -28,4 +32,7 @@ public interface UserFeignClient {
 
     @GetMapping("/inner/users/{id}")
     Result<InnerUserBasicVO> getInnerUser(@PathVariable("id") Long id);
+
+    @PostMapping("/inner/users/{id}/reset-password")
+    Result<Void> resetPassword(@PathVariable("id") Long id, @RequestBody InnerResetPasswordDTO dto);
 }

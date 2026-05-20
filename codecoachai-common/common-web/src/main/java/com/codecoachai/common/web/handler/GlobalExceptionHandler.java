@@ -8,6 +8,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import jakarta.validation.ConstraintViolationException;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -21,7 +22,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BusinessException.class)
     public Result<Void> handleBusinessException(BusinessException ex) {
-        return Result.fail(ex.getCode(), ex.getMessage());
+        return withTrace(Result.fail(ex.getCode(), ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -29,7 +30,7 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
                 .map(this::formatFieldError)
                 .collect(Collectors.joining("; "));
-        return Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message);
+        return withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message));
     }
 
     @ExceptionHandler(BindException.class)
@@ -37,7 +38,7 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
                 .map(this::formatFieldError)
                 .collect(Collectors.joining("; "));
-        return Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message);
+        return withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
@@ -45,28 +46,39 @@ public class GlobalExceptionHandler {
         String message = ex.getConstraintViolations().stream()
                 .map(violation -> violation.getPropertyPath() + " " + violation.getMessage())
                 .collect(Collectors.joining("; "));
-        return Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message);
+        return withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message));
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public Result<Void> handleMissingParameter(MissingServletRequestParameterException ex) {
-        return Result.fail(ErrorCode.PARAM_ERROR.getCode(), ex.getParameterName() + "不能为空");
+        return withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), ex.getParameterName() + "不能为空"));
     }
 
     @ExceptionHandler(NotLoginException.class)
     public Result<Void> handleNotLogin(NotLoginException ex) {
-        return Result.fail(ErrorCode.UNAUTHORIZED);
+        return withTrace(Result.fail(ErrorCode.UNAUTHORIZED));
     }
 
     @ExceptionHandler(NotPermissionException.class)
     public Result<Void> handleNotPermission(NotPermissionException ex) {
-        return Result.fail(ErrorCode.FORBIDDEN);
+        return withTrace(Result.fail(ErrorCode.FORBIDDEN));
     }
 
     @ExceptionHandler(Exception.class)
     public Result<Void> handleException(Exception ex) {
         log.error("Unhandled system exception: {}", sanitize(ex.getMessage()), ex);
-        return Result.fail(ErrorCode.SYSTEM_ERROR);
+        return withTrace(Result.fail(ErrorCode.SYSTEM_ERROR));
+    }
+
+    /**
+     * 将 traceId 注入到 Result 中，方便前端排查问题。
+     */
+    private <T> Result<T> withTrace(Result<T> result) {
+        String traceId = MDC.get("traceId");
+        if (traceId != null && !traceId.isBlank()) {
+            result.setTraceId(traceId);
+        }
+        return result;
     }
 
     private String formatFieldError(FieldError error) {

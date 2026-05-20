@@ -6,6 +6,7 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.system.convert.SystemConfigConvert;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
+import com.codecoachai.system.domain.dto.SystemConfigStatusDTO;
 import com.codecoachai.system.domain.entity.SystemConfig;
 import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
 import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
@@ -41,23 +42,44 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     @Override
     public SystemConfigVO createConfig(SystemConfigSaveDTO dto) {
+        assertConfigKeyUnique(dto.getConfigKey(), null);
         SystemConfig config = new SystemConfig();
-        apply(config, dto);
+        apply(config, dto, dto.getConfigKey());
         systemConfigMapper.insert(config);
         return SystemConfigConvert.toVO(config);
     }
 
     @Override
-    public SystemConfigVO updateConfig(Long id, SystemConfigSaveDTO dto) {
-        SystemConfig config = getConfig(id);
-        apply(config, dto);
+    public SystemConfigVO getConfig(String keyOrId) {
+        return SystemConfigConvert.toVO(getConfigEntity(keyOrId));
+    }
+
+    @Override
+    public SystemConfigVO updateConfig(String keyOrId, SystemConfigSaveDTO dto) {
+        SystemConfig config = getConfigEntity(keyOrId);
+        String configKey = org.springframework.util.StringUtils.hasText(dto.getConfigKey())
+                ? dto.getConfigKey().trim()
+                : config.getConfigKey();
+        assertConfigKeyUnique(configKey, config.getId());
+        apply(config, dto, configKey);
         systemConfigMapper.updateById(config);
         return SystemConfigConvert.toVO(config);
     }
 
     @Override
-    public void deleteConfig(Long id) {
-        systemConfigMapper.deleteById(id);
+    public SystemConfigVO updateConfigStatus(String keyOrId, SystemConfigStatusDTO dto) {
+        SystemConfig config = getConfigEntity(keyOrId);
+        if (!CommonConstants.YES.equals(dto.getStatus()) && !CommonConstants.NO.equals(dto.getStatus())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "status must be 0 or 1");
+        }
+        config.setStatus(dto.getStatus());
+        systemConfigMapper.updateById(config);
+        return SystemConfigConvert.toVO(config);
+    }
+
+    @Override
+    public void deleteConfig(String keyOrId) {
+        systemConfigMapper.deleteById(getConfigEntity(keyOrId).getId());
     }
 
     @Override
@@ -84,20 +106,49 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         return vo;
     }
 
-    private void apply(SystemConfig config, SystemConfigSaveDTO dto) {
-        config.setConfigKey(dto.getConfigKey());
-        config.setConfigValue(dto.getConfigValue());
-        config.setValueType(dto.getValueType() == null ? "STRING" : dto.getValueType());
-        config.setDescription(dto.getDescription());
-        config.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
+    private void apply(SystemConfig config, SystemConfigSaveDTO dto, String configKey) {
+        config.setConfigKey(configKey);
+        if (dto.getConfigValue() != null) {
+            config.setConfigValue(dto.getConfigValue());
+        }
+        if (dto.getValueType() != null) {
+            config.setValueType(dto.getValueType());
+        } else if (config.getValueType() == null) {
+            config.setValueType("STRING");
+        }
+        if (dto.getDescription() != null) {
+            config.setDescription(dto.getDescription());
+        }
+        if (dto.getStatus() != null) {
+            config.setStatus(dto.getStatus());
+        } else if (config.getStatus() == null) {
+            config.setStatus(CommonConstants.YES);
+        }
     }
 
-    private SystemConfig getConfig(Long id) {
-        SystemConfig config = systemConfigMapper.selectById(id);
+    private SystemConfig getConfigEntity(String keyOrId) {
+        SystemConfig config = isNumeric(keyOrId)
+                ? systemConfigMapper.selectById(Long.valueOf(keyOrId))
+                : systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
+                        .eq(SystemConfig::getConfigKey, keyOrId)
+                        .last("limit 1"));
         if (config == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "System config not found");
         }
         return config;
+    }
+
+    private void assertConfigKeyUnique(String configKey, Long excludeId) {
+        SystemConfig existing = systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
+                .eq(SystemConfig::getConfigKey, configKey)
+                .last("limit 1"));
+        if (existing != null && (excludeId == null || !excludeId.equals(existing.getId()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "System config key already exists");
+        }
+    }
+
+    private boolean isNumeric(String value) {
+        return value != null && value.matches("\\d+");
     }
 
     private List<AdminDashboardOverviewVO.SummaryCardVO> summaryCards() {

@@ -54,7 +54,7 @@ public class AdminRoleFilter extends OncePerRequestFilter {
         }
         return Arrays.stream(roles.split(","))
                 .map(String::trim)
-                .anyMatch(SecurityConstants.ROLE_ADMIN::equals);
+                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
     }
 
     private void writeForbidden(HttpServletResponse response) throws IOException {

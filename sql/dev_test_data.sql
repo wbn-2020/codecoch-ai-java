@@ -230,6 +230,94 @@ ON DUPLICATE KEY UPDATE
   sort = VALUES(sort),
   deleted = 0;
 
+INSERT INTO target_job (id, user_id, job_title, company_name, job_level, jd_text, jd_source, current_flag, status, parse_status, parse_error_message, deleted)
+VALUES
+  (100000, @E2E_USER_ID, 'E2E_TEST_Java Backend Engineer', 'CodeCoachAI Test Company', 'Mid-Level',
+   'Responsibilities: build Spring Boot services, design MySQL schemas, use Redis cache, maintain async messaging and observability. Requirements: Java, Spring Cloud, MyBatis, MySQL, Redis, RocketMQ, REST API design.',
+   'E2E_TEST', 1, 1, 'SUCCESS', NULL, 0)
+ON DUPLICATE KEY UPDATE
+  user_id = VALUES(user_id),
+  job_title = VALUES(job_title),
+  company_name = VALUES(company_name),
+  job_level = VALUES(job_level),
+  jd_text = VALUES(jd_text),
+  jd_source = VALUES(jd_source),
+  current_flag = VALUES(current_flag),
+  status = VALUES(status),
+  parse_status = VALUES(parse_status),
+  parse_error_message = VALUES(parse_error_message),
+  deleted = 0;
+
+INSERT INTO job_description_analysis (id, target_job_id, user_id, job_title, company_name, job_level, responsibilities_json, required_skills_json, bonus_skills_json, tech_keywords_json, business_keywords_json, experience_requirement, project_experience_requirement, interview_focus_json, skill_weights_json, summary, raw_result_json, parse_status, parse_error_message, deleted)
+VALUES
+  (100000, 100000, @E2E_USER_ID, 'E2E_TEST_Java Backend Engineer', 'CodeCoachAI Test Company', 'Mid-Level',
+   '["Build Spring Boot microservices","Design MySQL tables and indexes","Use Redis for cache governance","Operate async tasks with RocketMQ"]',
+   '["Java","Spring Boot","Spring Cloud","MyBatis","MySQL","Redis","REST API"]',
+   '["RocketMQ","Nacos","Gateway","observability"]',
+   '["Java","Spring Boot","MySQL","Redis","RocketMQ"]',
+   '["resume analysis","interview training","admin governance"]',
+   '3 years backend development experience.',
+   'At least one production-like project with cache, database and async messaging.',
+   '["Spring Boot service design","MySQL index tuning","Redis cache consistency","Project trade-off explanation"]',
+   '{"Java":30,"MySQL":25,"Redis":20,"Project":25}',
+   'E2E_TEST_JD analysis is ready and backed by persistent data.',
+   '{"source":"dev_test_data","status":"SUCCESS"}',
+   'SUCCESS', NULL, 0)
+ON DUPLICATE KEY UPDATE
+  target_job_id = VALUES(target_job_id),
+  user_id = VALUES(user_id),
+  job_title = VALUES(job_title),
+  company_name = VALUES(company_name),
+  job_level = VALUES(job_level),
+  responsibilities_json = VALUES(responsibilities_json),
+  required_skills_json = VALUES(required_skills_json),
+  bonus_skills_json = VALUES(bonus_skills_json),
+  tech_keywords_json = VALUES(tech_keywords_json),
+  business_keywords_json = VALUES(business_keywords_json),
+  experience_requirement = VALUES(experience_requirement),
+  project_experience_requirement = VALUES(project_experience_requirement),
+  interview_focus_json = VALUES(interview_focus_json),
+  skill_weights_json = VALUES(skill_weights_json),
+  summary = VALUES(summary),
+  raw_result_json = VALUES(raw_result_json),
+  parse_status = VALUES(parse_status),
+  parse_error_message = VALUES(parse_error_message),
+  deleted = 0;
+
+INSERT INTO resume_job_match_report (id, user_id, resume_id, target_job_id, jd_analysis_id, overall_score, tech_stack_score, project_experience_score, business_fit_score, communication_score, strengths_json, gaps_json, resume_risks_json, optimization_suggestions_json, recommended_learning_topics_json, recommended_interview_topics_json, summary, raw_result_json, status, error_message, deleted)
+VALUES
+  (100000, @E2E_USER_ID, 100000, 100000, 100000, 86, 88, 84, 85, 86,
+   '["Spring Boot and MyBatis project experience matches the JD","Redis cache design appears in project experience","Interview system project maps to platform business"]',
+   '["Add measurable performance data","Prepare RocketMQ reliability examples","Clarify cache consistency rollback plan"]',
+   '["Some project outcomes are qualitative and need metrics"]',
+   '["Add before/after latency and QPS numbers","Describe cache hit-rate monitoring","Add a RocketMQ retry/dead-letter story"]',
+   '["MySQL EXPLAIN","Redis hot key governance","RocketMQ retry and dead letter handling"]',
+   '["Spring Boot service boundaries","Database index tuning","Cache consistency","Async task reliability"]',
+   'E2E_TEST_Resume and JD match report is generated from persistent test data.',
+   '{"source":"dev_test_data","status":"SUCCESS"}',
+   'SUCCESS', NULL, 0)
+ON DUPLICATE KEY UPDATE
+  user_id = VALUES(user_id),
+  resume_id = VALUES(resume_id),
+  target_job_id = VALUES(target_job_id),
+  jd_analysis_id = VALUES(jd_analysis_id),
+  overall_score = VALUES(overall_score),
+  tech_stack_score = VALUES(tech_stack_score),
+  project_experience_score = VALUES(project_experience_score),
+  business_fit_score = VALUES(business_fit_score),
+  communication_score = VALUES(communication_score),
+  strengths_json = VALUES(strengths_json),
+  gaps_json = VALUES(gaps_json),
+  resume_risks_json = VALUES(resume_risks_json),
+  optimization_suggestions_json = VALUES(optimization_suggestions_json),
+  recommended_learning_topics_json = VALUES(recommended_learning_topics_json),
+  recommended_interview_topics_json = VALUES(recommended_interview_topics_json),
+  summary = VALUES(summary),
+  raw_result_json = VALUES(raw_result_json),
+  status = VALUES(status),
+  error_message = VALUES(error_message),
+  deleted = 0;
+
 INSERT INTO prompt_template (id, scene, name, content, status, deleted)
 VALUES
   (100000, 'INTERVIEW_QUESTION_GENERATE', 'E2E_TEST_八股文提问模板', '请根据 stageName、stageType、focusPoints、historySummary 和题库题目，生成一个清晰的 Java 技术面试问题。只输出 JSON：{"questionContent":"问题内容"}。', 1, 0),

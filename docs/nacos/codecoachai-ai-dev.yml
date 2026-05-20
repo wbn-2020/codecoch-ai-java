@@ -6,16 +6,16 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: wbn123..
+    password: ${MYSQL_PASSWORD:}
 
 codecoachai:
   ai:
     enabled: true
-    mock-enabled: true
+    mock-enabled: false
     provider: openai-compatible
     model: ${AI_MODEL:deepseek-chat}
-    base-url: ${AI_BASE_URL:}
+    base-url: ${AI_BASE_URL:https://api.deepseek.com}
     api-key: ${AI_API_KEY:}
     temperature: 0.3
     max-tokens: 2048
-    timeout-seconds: 30
+    timeout-seconds: 60

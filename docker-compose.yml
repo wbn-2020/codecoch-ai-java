@@ -1,0 +1,119 @@
+version: '3.8'
+
+# ============================================================
+# CodeCoachAI V3 本地开发环境 docker-compose
+# 启动基础设施：MySQL + Redis + Nacos + RocketMQ + Elasticsearch
+# 业务服务建议在 IDE 中启动（方便调试）
+# ============================================================
+
+services:
+  # ---------- MySQL ----------
+  mysql:
+    image: mysql:8.0
+    container_name: codecoachai-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-codecoachai123}
+      MYSQL_DATABASE: codecoachai
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./sql/migration:/docker-entrypoint-initdb.d:ro
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-time-zone=+08:00
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------- Redis ----------
+  redis:
+    image: redis:7-alpine
+    container_name: codecoachai-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------- Nacos ----------
+  nacos:
+    image: nacos/nacos-server:v2.3.1
+    container_name: codecoachai-nacos
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    environment:
+      MODE: standalone
+      SPRING_DATASOURCE_PLATFORM: ""
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------- RocketMQ NameServer ----------
+  rocketmq-namesrv:
+    image: apache/rocketmq:5.1.4
+    container_name: codecoachai-rocketmq-namesrv
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx256m"
+
+  # ---------- RocketMQ Broker ----------
+  rocketmq-broker:
+    image: apache/rocketmq:5.1.4
+    container_name: codecoachai-rocketmq-broker
+    ports:
+      - "10911:10911"
+      - "10909:10909"
+    depends_on:
+      - rocketmq-namesrv
+    command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
+    environment:
+      JAVA_OPT_EXT: "-Xms256m -Xmx512m"
+      NAMESRV_ADDR: rocketmq-namesrv:9876
+
+  # ---------- RocketMQ Dashboard（可选） ----------
+  rocketmq-dashboard:
+    image: apacherocketmq/rocketmq-dashboard:latest
+    container_name: codecoachai-rocketmq-dashboard
+    ports:
+      - "18080:8080"
+    depends_on:
+      - rocketmq-namesrv
+    environment:
+      JAVA_OPTS: "-Drocketmq.namesrv.addr=rocketmq-namesrv:9876"
+
+  # ---------- Elasticsearch ----------
+  elasticsearch:
+    image: elasticsearch:8.14.3
+    container_name: codecoachai-elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms256m -Xmx512m"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:

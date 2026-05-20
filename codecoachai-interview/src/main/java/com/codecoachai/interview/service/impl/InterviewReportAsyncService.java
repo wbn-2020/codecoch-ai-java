@@ -11,6 +11,7 @@ import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.QuestionFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
+import com.codecoachai.interview.feign.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.interview.feign.dto.RecommendQuestionDTO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
@@ -36,6 +37,7 @@ import org.springframework.util.StringUtils;
 public class InterviewReportAsyncService {
 
     private static final int DEFAULT_REPORT_SCORE = 82;
+    private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。";
     private static final String DEFAULT_REPORT_STRENGTHS = "[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]";
     private static final String DEFAULT_REPORT_WEAKNESSES = "部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。";
@@ -96,6 +98,10 @@ public class InterviewReportAsyncService {
         GenerateReportDTO dto = new GenerateReportDTO();
         dto.setInterviewId(session.getId());
         dto.setUserId(session.getUserId());
+        dto.setTargetJobId(session.getTargetJobId());
+        dto.setSkillProfileId(session.getSkillProfileId());
+        dto.setMatchReportId(session.getMatchReportId());
+        dto.setSkillGapContext(skillGapContext(session));
         dto.setMode(session.getMode());
         dto.setTargetPosition(session.getTargetPosition());
         dto.setExperienceLevel(session.getExperienceLevel());
@@ -164,9 +170,9 @@ public class InterviewReportAsyncService {
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
         if (aiReport == null) {
-            applyDefaultReportContent(report);
-            return;
+            throw new IllegalStateException(REPORT_AI_EMPTY_MESSAGE);
         }
+        validateAiReport(aiReport);
         report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
         report.setSummary(firstText(aiReport.getSummary(), DEFAULT_REPORT_SUMMARY));
         report.setStageScores(aiReport.getStageScores());
@@ -199,6 +205,43 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(toJson(suggestions));
         report.setSuggestions(toJson(suggestions));
         report.setReportContent(enhanceReportContent(report.getReportContent(), weakPoints, recommendedQuestions, suggestions));
+        feedbackSkillProfile(report, weakPoints);
+    }
+
+    private void feedbackSkillProfile(InterviewReport report, List<String> weakPoints) {
+        if (report == null || weakPoints == null || weakPoints.isEmpty()) {
+            return;
+        }
+        InterviewSession session = sessionMapper.selectById(report.getSessionId());
+        if (session == null || session.getTargetJobId() == null) {
+            return;
+        }
+        try {
+            InterviewWeakPointFeedbackDTO dto = new InterviewWeakPointFeedbackDTO();
+            dto.setUserId(session.getUserId());
+            dto.setTargetJobId(session.getTargetJobId());
+            dto.setSkillProfileId(session.getSkillProfileId());
+            dto.setMatchReportId(session.getMatchReportId());
+            dto.setInterviewId(session.getId());
+            dto.setReportId(report.getId());
+            dto.setWeakPoints(weakPoints);
+            resumeFeignClient.feedbackInterviewWeakPoints(dto);
+        } catch (RuntimeException ignored) {
+            // Report generation must not fail only because downstream profile feedback is temporarily unavailable.
+        }
+    }
+
+    private String skillGapContext(InterviewSession session) {
+        if (session.getTargetJobId() == null && session.getSkillProfileId() == null && session.getMatchReportId() == null) {
+            return null;
+        }
+        return "targetJobId=" + nullToBlank(session.getTargetJobId())
+                + ", skillProfileId=" + nullToBlank(session.getSkillProfileId())
+                + ", matchReportId=" + nullToBlank(session.getMatchReportId());
+    }
+
+    private String nullToBlank(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     private List<String> extractWeakPoints(InterviewReport report, List<InterviewMessage> messages) {
@@ -364,6 +407,14 @@ public class InterviewReportAsyncService {
             reportMapper.insert(report);
         } else {
             reportMapper.updateById(report);
+        }
+    }
+
+    private void validateAiReport(GenerateReportVO aiReport) {
+        if (aiReport.getTotalScore() == null
+                || !StringUtils.hasText(aiReport.getSummary())
+                || !StringUtils.hasText(aiReport.getReportContent())) {
+            throw new IllegalStateException(REPORT_AI_EMPTY_MESSAGE);
         }
     }
 

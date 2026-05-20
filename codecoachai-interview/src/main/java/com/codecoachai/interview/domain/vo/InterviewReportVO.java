@@ -11,6 +11,9 @@ public class InterviewReportVO {
     private Long id;
     private Long sessionId;
     private Long userId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private String status;
     private Integer totalScore;
     private String summary;

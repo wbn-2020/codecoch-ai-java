@@ -13,6 +13,7 @@ public class UserProfileVO {
     private String nickname;
     private String avatarUrl;
     private String email;
+    private String phone;
     private Integer status;
     private List<String> roles;
 

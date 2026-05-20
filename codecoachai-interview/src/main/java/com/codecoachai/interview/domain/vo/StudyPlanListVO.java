@@ -8,6 +8,9 @@ public class StudyPlanListVO {
 
     private Long id;
     private Long reportId;
+    private Long targetJobId;
+    private Long skillProfileId;
+    private Long matchReportId;
     private Long sessionId;
     private String sourceType;
     private String targetPosition;
@@ -16,6 +19,8 @@ public class StudyPlanListVO {
     private String planSummary;
     private String planStatus;
     private Integer durationDays;
+    private Integer dailyMinutes;
+    private java.time.LocalDate startDate;
     private Integer totalTaskCount;
     private Integer doneTaskCount;
     private Integer progressPercent;

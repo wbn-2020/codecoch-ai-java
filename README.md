@@ -31,7 +31,7 @@ Frontend implementation is outside this repository.
 Start infrastructure first:
 
 ```text
-MySQL -> Redis -> Nacos
+MySQL -> Redis -> Nacos -> RocketMQ
 ```
 
 Then import Nacos configs:
@@ -75,7 +75,9 @@ sql/migration/V2_008__practice_answer_review.sql
 Use Windows-safe MySQL commands:
 
 ```powershell
-mysql --host=127.0.0.1 --user=root --password=wbn123.. --default-character-set=utf8mb4 --database=codecoachai_v1 -e "source sql/migration/V2_008__practice_answer_review.sql"
+$env:MYSQL_PWD="your-local-password"
+mysql --host=127.0.0.1 --user=root --default-character-set=utf8mb4 --database=codecoachai_v1 -e "source sql/migration/V2_008__practice_answer_review.sql"
+Remove-Item Env:\MYSQL_PWD
 ```
 
 ## AI Mock Mode
@@ -165,7 +167,7 @@ B0-1 smoke endpoints:
 ## Boundaries
 
 - Do not modify the frontend repository from this backend workflow.
-- Do not introduce MQ, ES, MinIO, Seata, Redis distributed locks, vector databases, or embedding unless the official V2 PRD requires them.
+- V3 infrastructure uses RocketMQ for messaging and Aliyun OSS for file storage; do not add MinIO or another MQ/storage stack unless explicitly requested.
 - Keep `/inner/**` protected by existing internal-call authentication.
 - Keep admin APIs under `/admin/**` and guarded by admin permissions.
 - Preserve existing synchronous APIs when adding SSE-compatible endpoints.

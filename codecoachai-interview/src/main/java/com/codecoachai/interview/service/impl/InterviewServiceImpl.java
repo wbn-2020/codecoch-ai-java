@@ -45,6 +45,8 @@ import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
+import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
+import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -67,6 +69,7 @@ import org.springframework.util.StringUtils;
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
+    private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
@@ -94,6 +97,9 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
         session.setResumeId(dto.getResumeId());
+        session.setTargetJobId(dto.getTargetJobId());
+        session.setSkillProfileId(dto.getSkillProfileId());
+        session.setMatchReportId(dto.getMatchReportId());
         session.setMode(mode);
         session.setTitle(StringUtils.hasText(dto.getTitle()) ? dto.getTitle() : "CodeCoachAI V1 模拟面试");
         session.setTargetPosition(dto.getTargetPosition());
@@ -115,6 +121,9 @@ public class InterviewServiceImpl implements InterviewService {
         List<InterviewStage> stages = createStages(session);
         CreateInterviewVO vo = new CreateInterviewVO();
         vo.setId(session.getId());
+        vo.setTargetJobId(session.getTargetJobId());
+        vo.setSkillProfileId(session.getSkillProfileId());
+        vo.setMatchReportId(session.getMatchReportId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
@@ -395,6 +404,9 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         InterviewDetailVO vo = new InterviewDetailVO();
         vo.setId(session.getId());
+        vo.setTargetJobId(session.getTargetJobId());
+        vo.setSkillProfileId(session.getSkillProfileId());
+        vo.setMatchReportId(session.getMatchReportId());
         vo.setTitle(session.getTitle());
         vo.setMode(session.getMode());
         vo.setTargetPosition(session.getTargetPosition());
@@ -508,6 +520,10 @@ public class InterviewServiceImpl implements InterviewService {
         GenerateReportDTO reportDTO = new GenerateReportDTO();
         reportDTO.setInterviewId(session.getId());
         reportDTO.setUserId(session.getUserId());
+        reportDTO.setTargetJobId(session.getTargetJobId());
+        reportDTO.setSkillProfileId(session.getSkillProfileId());
+        reportDTO.setMatchReportId(session.getMatchReportId());
+        reportDTO.setSkillGapContext(skillGapContext(session));
         reportDTO.setMode(session.getMode());
         reportDTO.setTargetPosition(session.getTargetPosition());
         reportDTO.setExperienceLevel(session.getExperienceLevel());
@@ -637,10 +653,18 @@ public class InterviewServiceImpl implements InterviewService {
         selectDTO.setExperienceLevel(session.getExperienceLevel());
         selectDTO.setExcludeGroupIds(usedGroupIds(session.getId()));
         InnerQuestionVO question = FeignResultUtils.unwrap(questionFeignClient.select(selectDTO));
+        if (question == null || question.getId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "No persisted interview question is available for this stage");
+        }
 
         InnerResumeDetailVO resume = loadResume(session);
         GenerateInterviewQuestionDTO aiDTO = new GenerateInterviewQuestionDTO();
         aiDTO.setMode(session.getMode());
+        aiDTO.setTargetJobId(session.getTargetJobId());
+        aiDTO.setSkillProfileId(session.getSkillProfileId());
+        aiDTO.setMatchReportId(session.getMatchReportId());
+        aiDTO.setSkillGapContext(skillGapContext(session));
         aiDTO.setStageType(stage.getStageType());
         aiDTO.setCurrentStage(stage.getStageName());
         aiDTO.setFocusPoints(stage.getFocusPoints());
@@ -658,13 +682,21 @@ public class InterviewServiceImpl implements InterviewService {
         aiDTO.setProjectContent(buildProjectContent(resume));
         aiDTO.setHistorySummary(historySummary(session.getId()));
         GenerateInterviewQuestionVO aiQuestion = FeignResultUtils.unwrap(aiFeignClient.generateQuestion(aiDTO));
+        if (!StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionContent())
+                && !StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionText())
+                && !StringUtils.hasText(question.getContent())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
+        }
         String questionContent = firstText(aiQuestion == null ? null : aiQuestion.getQuestionContent(),
                 aiQuestion == null ? null : aiQuestion.getQuestionText(),
                 question == null ? null : question.getContent(),
                 "请结合当前面试阶段说明你的理解和项目实践。");
 
-        session.setCurrentQuestionId(question == null ? null : question.getId());
-        session.setCurrentQuestionGroupId(question == null ? null : question.getGroupId());
+        if (!StringUtils.hasText(questionContent)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
+        }
+        session.setCurrentQuestionId(question.getId());
+        session.setCurrentQuestionGroupId(question.getGroupId());
         InterviewMessage message = saveMessage(session, stage, question, "AI", followUp ? "FOLLOW_UP" : "QUESTION",
                 questionContent, null, null, parentMessageId, followUp, followUpCount, null, null);
         return toCurrentQuestionVO(session, stage, message);
@@ -949,9 +981,9 @@ public class InterviewServiceImpl implements InterviewService {
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
         if (aiReport == null) {
-            applyDefaultReportContent(report);
-            return;
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
         }
+        validateAiReport(aiReport);
         report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
         report.setSummary(StringUtils.hasText(aiReport.getSummary()) ? aiReport.getSummary() : DEFAULT_REPORT_SUMMARY);
         report.setStageScores(aiReport.getStageScores());
@@ -980,11 +1012,11 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private boolean isEnglishMockReport(InterviewReport report) {
-        return containsIgnoreCase(report.getSummary(), "Mock report")
+        return false && (containsIgnoreCase(report.getSummary(), "Mock report")
                 || containsIgnoreCase(report.getSummary(), "the interview has been completed")
                 || containsIgnoreCase(report.getStrengths(), "Shows basic understanding")
                 || containsIgnoreCase(report.getWeaknesses(), "Needs more depth")
-                || containsIgnoreCase(report.getSuggestions(), "Review JVM");
+                || containsIgnoreCase(report.getSuggestions(), "Review JVM"));
     }
 
     private boolean containsIgnoreCase(String value, String keyword) {
@@ -1014,6 +1046,14 @@ public class InterviewServiceImpl implements InterviewService {
             reportMapper.insert(report);
         } else {
             reportMapper.updateById(report);
+        }
+    }
+
+    private void validateAiReport(GenerateReportVO aiReport) {
+        if (aiReport.getTotalScore() == null
+                || !StringUtils.hasText(aiReport.getSummary())
+                || !StringUtils.hasText(aiReport.getReportContent())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
         }
     }
 
@@ -1098,6 +1138,38 @@ public class InterviewServiceImpl implements InterviewService {
             return null;
         }
         return FeignResultUtils.unwrap(resumeFeignClient.getResume(session.getResumeId()));
+    }
+
+    private String skillGapContext(InterviewSession session) {
+        InnerSkillProfileVO profile = null;
+        try {
+            if (session.getSkillProfileId() != null) {
+                profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(session.getSkillProfileId()));
+            } else if (session.getMatchReportId() != null) {
+                profile = FeignResultUtils.unwrap(resumeFeignClient.getSuccessSkillProfileByMatchReport(session.getMatchReportId()));
+            }
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+        if (profile == null || profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        appendLine(builder, "目标岗位ID", profile.getTargetJobId() == null ? null : profile.getTargetJobId().toString());
+        appendLine(builder, "匹配报告ID", profile.getMatchReportId() == null ? null : profile.getMatchReportId().toString());
+        appendLine(builder, "能力画像", profile.getSummary());
+        for (InnerSkillGapItemVO gap : profile.getGapItems().stream().limit(8).toList()) {
+            if (gap == null) {
+                continue;
+            }
+            builder.append("- ")
+                    .append(firstText(gap.getSkillName(), gap.getCategory(), "未命名短板"))
+                    .append(" | severity=").append(firstText(gap.getSeverity(), "UNKNOWN"))
+                    .append(" | gapLevel=").append(gap.getGapLevel() == null ? "" : gap.getGapLevel())
+                    .append(" | ").append(firstText(gap.getGapDescription(), ""))
+                    .append('\n');
+        }
+        return builder.toString().trim();
     }
 
     private String buildProjectContent(InnerResumeDetailVO resume) {

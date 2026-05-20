@@ -11,6 +11,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.user.convert.UserConvert;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
 import com.codecoachai.user.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.user.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
 import com.codecoachai.user.domain.dto.UpdateUserProfileDTO;
 import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
@@ -76,6 +77,23 @@ public class UserServiceImpl implements UserService {
             throw new BusinessException(ErrorCode.OLD_PASSWORD_ERROR);
         }
         user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public UserProfileVO updateAvatar(String avatarUrl) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setAvatarUrl(avatarUrl);
+        sysUserMapper.updateById(user);
+        return getCurrentUserProfile();
+    }
+
+    @Override
+    public void updatePhone(String phone) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setPhone(phone);
         sysUserMapper.updateById(user);
     }
 
@@ -152,9 +170,30 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public String resetPassword(Long id) {
+        requireAdmin();
+        SysUser user = getUserOrThrow(id);
+        String newPassword = "Cc@" + System.currentTimeMillis() % 100000;
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        sysUserMapper.updateById(user);
+        return newPassword;
+    }
+
+    @Override
     public InnerUserAuthVO getInnerUserByUsername(String username) {
         SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, username)
+                .last("limit 1"));
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        return UserConvert.toInnerUserAuthVO(user, roleService.listRoleCodesByUserId(user.getId()));
+    }
+
+    @Override
+    public InnerUserAuthVO getInnerUserByEmail(String email) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getEmail, email)
                 .last("limit 1"));
         if (user == null) {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
@@ -198,6 +237,16 @@ public class UserServiceImpl implements UserService {
     public InnerUserBasicVO getInnerUser(Long id) {
         SysUser user = getUserOrThrow(id);
         return UserConvert.toInnerUserBasicVO(user, roleService.listRoleCodesByUserId(id));
+    }
+
+    @Override
+    public void resetInnerPassword(Long id, InnerResetPasswordDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "passwordHash is required");
+        }
+        SysUser user = getUserOrThrow(id);
+        user.setPasswordHash(dto.getPasswordHash());
+        sysUserMapper.updateById(user);
     }
 
     private SysUser getUserOrThrow(Long id) {

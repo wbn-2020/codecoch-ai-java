@@ -35,4 +35,8 @@ public class AiCallLog extends BaseEntity {
     private Integer totalTokens;
     private Integer status;
     private String errorMessage;
+    /** V3 新增：路由轨迹，如 deepseek 或 deepseek -> dashscope */
+    private String routeTrace;
+    /** V3 新增：预估费用（元） */
+    private Double estimatedCost;
 }

@@ -8,6 +8,8 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromGapDTO;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromMatchReportDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyTaskStatusUpdateDTO;
@@ -15,23 +17,34 @@ import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.StudyPlan;
+import com.codecoachai.interview.domain.entity.StudyPlanSkillRelation;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
+import com.codecoachai.interview.domain.enums.StudyPlanSourceType;
 import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
+import com.codecoachai.interview.domain.vo.InnerStudyPlanSkillRelationVO;
+import com.codecoachai.interview.domain.vo.InnerStudyPlanVO;
+import com.codecoachai.interview.domain.vo.InnerStudyTaskVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
+import com.codecoachai.interview.domain.vo.StudyPlanSkillRelationVO;
+import com.codecoachai.interview.domain.vo.StudyPlanSourceTypeVO;
 import com.codecoachai.interview.domain.vo.StudyTaskVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.feign.dto.GenerateLearningPlanDTO;
+import com.codecoachai.interview.feign.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.interview.feign.vo.GenerateLearningPlanVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeOptimizeRecordVO;
+import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
+import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.StudyPlanMapper;
+import com.codecoachai.interview.mapper.StudyPlanSkillRelationMapper;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.service.StudyPlanService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -39,8 +52,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,6 +83,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private final StudyPlanMapper studyPlanMapper;
     private final StudyTaskMapper studyTaskMapper;
+    private final StudyPlanSkillRelationMapper relationMapper;
     private final InterviewReportMapper reportMapper;
     private final InterviewSessionMapper sessionMapper;
     private final InterviewMessageMapper messageMapper;
@@ -80,6 +102,49 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             return toGenerateVO(existing);
         }
         return generateNewPlan(userId, report, dto, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public StudyPlanGenerateVO generateFromGap(StudyPlanGenerateFromGapDTO dto) {
+        if (dto == null || dto.getProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+        }
+        InnerSkillProfileVO profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(dto.getProfileId()));
+        return generateFromSkillProfile(dto, profile, StudyPlanSourceType.JD_GAP, dto.getProfileId());
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public StudyPlanGenerateVO generateFromMatchReport(StudyPlanGenerateFromMatchReportDTO dto) {
+        if (dto == null || dto.getMatchReportId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+        }
+        InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                resumeFeignClient.getSuccessSkillProfileByMatchReport(dto.getMatchReportId()));
+        if (profile == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "No SUCCESS skill profile found for this match report. Please generate skill profile first.");
+        }
+        StudyPlanGenerateFromGapDTO gapDTO = new StudyPlanGenerateFromGapDTO();
+        gapDTO.setProfileId(profile.getProfileId());
+        gapDTO.setDays(dto.getDays());
+        gapDTO.setDailyMinutes(dto.getDailyMinutes());
+        gapDTO.setStartDate(dto.getStartDate());
+        gapDTO.setPlanTitle(dto.getPlanTitle());
+        return generateFromSkillProfile(gapDTO, profile, StudyPlanSourceType.RESUME_JOB_MATCH, dto.getMatchReportId());
+    }
+
+    @Override
+    public List<StudyPlanSourceTypeVO> sourceTypes() {
+        return java.util.Arrays.stream(StudyPlanSourceType.values())
+                .map(type -> {
+                    StudyPlanSourceTypeVO vo = new StudyPlanSourceTypeVO();
+                    vo.setCode(type.getCode());
+                    vo.setDescription(type.getDescription());
+                    return vo;
+                })
+                .toList();
     }
 
     @Override
@@ -108,9 +173,42 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     @Override
+    public InnerStudyPlanVO getInnerPlan(Long id) {
+        Long userId = requireCurrentUserId();
+        StudyPlan plan = getOwnedPlan(id, userId);
+        InnerStudyPlanVO vo = toInnerPlanVO(plan);
+        vo.setTasks(taskEntities(plan.getId(), userId).stream().map(this::toInnerTaskVO).toList());
+        vo.setSkillRelations(relationMapper.selectList(new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                        .eq(StudyPlanSkillRelation::getStudyPlanId, plan.getId())
+                        .eq(StudyPlanSkillRelation::getUserId, userId)
+                        .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)
+                        .orderByAsc(StudyPlanSkillRelation::getPriority)
+                        .orderByAsc(StudyPlanSkillRelation::getId))
+                .stream()
+                .map(this::toInnerRelationVO)
+                .toList());
+        return vo;
+    }
+
+    @Override
     public List<StudyTaskVO> tasks(Long planId) {
         StudyPlan plan = getOwnedPlan(planId, requireCurrentUserId());
         return taskEntities(plan.getId()).stream().map(this::toTaskVO).toList();
+    }
+
+    @Override
+    public List<StudyPlanSkillRelationVO> skillRelations(Long planId) {
+        Long userId = requireCurrentUserId();
+        StudyPlan plan = getOwnedPlan(planId, userId);
+        List<StudyPlanSkillRelation> relations = relationMapper.selectList(
+                new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                        .eq(StudyPlanSkillRelation::getStudyPlanId, plan.getId())
+                        .eq(StudyPlanSkillRelation::getUserId, userId)
+                        .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)
+                        .orderByAsc(StudyPlanSkillRelation::getPriority)
+                        .orderByAsc(StudyPlanSkillRelation::getId));
+        Map<Long, InnerSkillGapItemVO> gapMap = loadGapMap(plan.getSkillProfileId());
+        return relations.stream().map(relation -> toRelationVO(relation, gapMap)).toList();
     }
 
     @Override
@@ -246,6 +344,318 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             studyPlanMapper.updateById(plan);
         }
         return toGenerateVO(plan);
+    }
+
+    private StudyPlanGenerateVO generateFromSkillProfile(StudyPlanGenerateFromGapDTO dto,
+                                                         InnerSkillProfileVO profile,
+                                                         StudyPlanSourceType sourceType,
+                                                         Long sourceBizId) {
+        Long userId = requireCurrentUserId();
+        validateSkillProfile(profile, userId);
+        int days = normalizeGapDays(dto.getDays());
+        int dailyMinutes = normalizeDailyMinutes(dto.getDailyMinutes());
+        LocalDate startDate = dto.getStartDate() == null ? LocalDate.now() : dto.getStartDate();
+        List<InnerSkillGapItemVO> selectedGaps = resolveSelectedGaps(profile, dto.getGapItemIds());
+
+        StudyPlan plan = new StudyPlan();
+        plan.setUserId(userId);
+        plan.setSourceType(sourceType.getCode());
+        plan.setSourceId(sourceBizId);
+        plan.setTargetJobId(profile.getTargetJobId());
+        plan.setSkillProfileId(profile.getProfileId());
+        plan.setMatchReportId(profile.getMatchReportId());
+        plan.setTargetPosition(profile.getTargetJobTitle());
+        plan.setPlanTitle(firstText(dto.getPlanTitle(), defaultGapPlanTitle(profile, days)));
+        plan.setPlanSummary(profile.getSummary());
+        plan.setPlanStatus(PLAN_GENERATING);
+        plan.setDurationDays(days);
+        plan.setDailyMinutes(dailyMinutes);
+        plan.setStartDate(startDate);
+        plan.setRequestJson(toJson(dto));
+        studyPlanMapper.insert(plan);
+
+        GenerateTargetedStudyPlanDTO aiRequest = buildTargetedAiRequest(
+                plan, profile, selectedGaps, days, dailyMinutes, startDate);
+        plan.setRequestJson(toJson(aiRequest));
+        studyPlanMapper.updateById(plan);
+        try {
+            GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(
+                    aiFeignClient.generateTargetedStudyPlan(aiRequest));
+            validateAiPlan(aiPlan);
+            cleanupTasks(plan.getId());
+            cleanupRelations(plan.getId());
+            int taskCount = insertTargetedTasks(plan, aiPlan, selectedGaps);
+            plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), plan.getPlanTitle()));
+            plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
+            plan.setDurationDays(aiPlan.getDurationDays() == null ? days : aiPlan.getDurationDays());
+            plan.setAiCallLogId(aiPlan.getAiCallLogId());
+            plan.setResultJson(toJson(aiPlan));
+            plan.setFailureReason(null);
+            plan.setPlanStatus(PLAN_ACTIVE);
+            studyPlanMapper.updateById(plan);
+
+            StudyPlanGenerateVO vo = toGenerateVO(plan);
+            vo.setTaskCount(taskCount);
+            vo.setSkillGapCount(selectedGaps.size());
+            return vo;
+        } catch (RuntimeException ex) {
+            cleanupTasks(plan.getId());
+            cleanupRelations(plan.getId());
+            plan.setPlanStatus(PLAN_FAILED);
+            plan.setFailureReason(truncate(firstText(ex.getMessage(), "Gap-driven study plan generation failed"), 500));
+            studyPlanMapper.updateById(plan);
+            StudyPlanGenerateVO vo = toGenerateVO(plan);
+            vo.setTaskCount(0);
+            vo.setSkillGapCount(selectedGaps.size());
+            return vo;
+        }
+    }
+
+    private GenerateTargetedStudyPlanDTO buildTargetedAiRequest(StudyPlan plan,
+                                                                InnerSkillProfileVO profile,
+                                                                List<InnerSkillGapItemVO> selectedGaps,
+                                                                int days,
+                                                                int dailyMinutes,
+                                                                LocalDate startDate) {
+        GenerateTargetedStudyPlanDTO request = new GenerateTargetedStudyPlanDTO();
+        request.setLearningPlanId(plan.getId());
+        request.setUserId(plan.getUserId());
+        request.setTargetJobId(plan.getTargetJobId());
+        request.setSkillProfileId(plan.getSkillProfileId());
+        request.setMatchReportId(plan.getMatchReportId());
+        request.setTargetJobJson(toJson(targetJobSnapshot(profile)));
+        request.setSkillProfileJson(toJson(skillProfileSnapshot(profile)));
+        request.setSkillGapsJson(toJson(selectedGaps.stream().map(this::skillGapSnapshot).toList()));
+        request.setAvailableDays(days);
+        request.setDailyMinutes(dailyMinutes);
+        request.setStartDate(startDate);
+        request.setExistingStudyPlansJson(existingStudyPlansJson(plan.getUserId(), plan.getSkillProfileId()));
+        request.setPlanTitle(plan.getPlanTitle());
+        return request;
+    }
+
+    private int insertTargetedTasks(StudyPlan plan, GenerateLearningPlanVO aiPlan,
+                                    List<InnerSkillGapItemVO> selectedGaps) {
+        Map<Long, InnerSkillGapItemVO> gapById = selectedGaps.stream()
+                .filter(gap -> gap.getId() != null)
+                .collect(Collectors.toMap(InnerSkillGapItemVO::getId, Function.identity(), (a, b) -> a));
+        int order = 1;
+        int relationPriority = 1;
+        for (GenerateLearningPlanVO.StageVO stage : aiPlan.getStages()) {
+            if (stage == null || stage.getItems() == null) {
+                continue;
+            }
+            int stageNo = stage.getStageNo() == null ? 1 : Math.max(1, stage.getStageNo());
+            for (GenerateLearningPlanVO.ItemVO item : stage.getItems()) {
+                if (item == null || !StringUtils.hasText(item.getTaskTitle())) {
+                    continue;
+                }
+                InnerSkillGapItemVO gap = resolveTaskGap(item, selectedGaps, gapById);
+                StudyTask task = new StudyTask();
+                task.setPlanId(plan.getId());
+                task.setUserId(plan.getUserId());
+                task.setTargetJobId(plan.getTargetJobId());
+                task.setSkillProfileId(plan.getSkillProfileId());
+                task.setSkillGapItemId(gap == null ? null : gap.getId());
+                task.setSourceType(plan.getSourceType());
+                task.setSourceBizId(plan.getSourceId());
+                task.setStageNo(stageNo);
+                task.setPlannedDate(targetedPlannedDate(plan, item, stageNo));
+                task.setStageTitle(stage.getStageTitle());
+                task.setTaskOrder(order++);
+                task.setKnowledgePoint(firstText(item.getKnowledgePoint(), item.getSkillName(),
+                        gap == null ? null : gap.getSkillName()));
+                task.setTaskTitle(item.getTaskTitle());
+                task.setTaskDescription(item.getTaskDescription());
+                task.setTaskType(normalizeTaskType(item.getTaskType()));
+                task.setPriority(normalizePriority(item.getPriority()));
+                task.setEstimatedMinutes(firstInteger(item.getEstimatedMinutes(), plan.getDailyMinutes()));
+                task.setEstimatedHours(firstInteger(item.getEstimatedHours(),
+                        Math.max(1, (task.getEstimatedMinutes() + 59) / 60)));
+                task.setAcceptanceCriteria(item.getAcceptance());
+                task.setTaskStatus(TASK_TODO);
+                task.setRelatedQuestionIdsJson(toJson(item.getRelatedQuestionIds() == null
+                        ? List.of()
+                        : item.getRelatedQuestionIds()));
+                task.setRelatedTagsJson(toJson(item.getRelatedTags() == null ? List.of() : item.getRelatedTags()));
+                task.setResourcesJson(toJson(item.getResources() == null ? List.of() : item.getResources()));
+                studyTaskMapper.insert(task);
+                if (gap != null) {
+                    insertRelation(plan, task, gap, relationPriority++);
+                }
+            }
+        }
+        return order - 1;
+    }
+
+    private void insertRelation(StudyPlan plan, StudyTask task, InnerSkillGapItemVO gap, int priority) {
+        StudyPlanSkillRelation relation = new StudyPlanSkillRelation();
+        relation.setUserId(plan.getUserId());
+        relation.setStudyPlanId(plan.getId());
+        relation.setStudyTaskId(task.getId());
+        relation.setTargetJobId(plan.getTargetJobId());
+        relation.setSkillProfileId(plan.getSkillProfileId());
+        relation.setSkillGapItemId(gap.getId());
+        relation.setSourceType(plan.getSourceType());
+        relation.setSourceBizId(plan.getSourceId());
+        relation.setPriority(priority);
+        relationMapper.insert(relation);
+    }
+
+    private void validateSkillProfile(InnerSkillProfileVO profile, Long userId) {
+        if (profile == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+        }
+        if (!userId.equals(profile.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+        }
+        if (!"SUCCESS".equals(profile.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile is not available");
+        }
+        if (profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile has no skill gap items");
+        }
+    }
+
+    private List<InnerSkillGapItemVO> resolveSelectedGaps(InnerSkillProfileVO profile, List<Long> gapItemIds) {
+        List<InnerSkillGapItemVO> available = profile.getGapItems().stream()
+                .filter(Objects::nonNull)
+                .filter(gap -> profile.getProfileId().equals(gap.getProfileId()))
+                .filter(gap -> profile.getUserId().equals(gap.getUserId()))
+                .sorted(Comparator.comparing(gap -> firstInteger(gap.getPriority(), Integer.MAX_VALUE)))
+                .toList();
+        if (gapItemIds == null || gapItemIds.isEmpty()) {
+            List<InnerSkillGapItemVO> topGaps = available.stream().limit(5).toList();
+            if (topGaps.isEmpty()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile has no usable skill gap items");
+            }
+            return topGaps;
+        }
+        Map<Long, InnerSkillGapItemVO> gapMap = available.stream()
+                .filter(gap -> gap.getId() != null)
+                .collect(Collectors.toMap(InnerSkillGapItemVO::getId, Function.identity(), (a, b) -> a));
+        List<Long> distinctIds = gapItemIds.stream().filter(Objects::nonNull).distinct().toList();
+        if (distinctIds.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "gapItemIds must contain valid ids");
+        }
+        List<InnerSkillGapItemVO> selected = new ArrayList<>();
+        for (Long gapItemId : distinctIds) {
+            InnerSkillGapItemVO gap = gapMap.get(gapItemId);
+            if (gap == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Skill gap item not found or does not match this skill profile");
+            }
+            selected.add(gap);
+        }
+        return selected;
+    }
+
+    private InnerSkillGapItemVO resolveTaskGap(GenerateLearningPlanVO.ItemVO item,
+                                               List<InnerSkillGapItemVO> selectedGaps,
+                                               Map<Long, InnerSkillGapItemVO> gapById) {
+        Long sourceGapId = parseLong(item.getSourceGapId());
+        if (sourceGapId != null && gapById.containsKey(sourceGapId)) {
+            return gapById.get(sourceGapId);
+        }
+        String skillName = firstText(item.getSkillName(), item.getKnowledgePoint(), item.getTaskTitle());
+        if (StringUtils.hasText(skillName)) {
+            String normalized = skillName.toLowerCase(Locale.ROOT);
+            for (InnerSkillGapItemVO gap : selectedGaps) {
+                if (StringUtils.hasText(gap.getSkillName())
+                        && normalized.contains(gap.getSkillName().toLowerCase(Locale.ROOT))) {
+                    return gap;
+                }
+            }
+        }
+        return selectedGaps.isEmpty() ? null : selectedGaps.get(0);
+    }
+
+    private LocalDate targetedPlannedDate(StudyPlan plan, GenerateLearningPlanVO.ItemVO item, int stageNo) {
+        LocalDate start = plan.getStartDate() == null ? LocalDate.now() : plan.getStartDate();
+        int dayOffset = firstInteger(item.getDayOffset(), stageNo);
+        return start.plusDays(Math.max(0, dayOffset - 1));
+    }
+
+    private void cleanupRelations(Long planId) {
+        if (planId == null) {
+            return;
+        }
+        relationMapper.delete(new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                .eq(StudyPlanSkillRelation::getStudyPlanId, planId));
+    }
+
+    private Map<String, Object> targetJobSnapshot(InnerSkillProfileVO profile) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("targetJobId", profile.getTargetJobId());
+        snapshot.put("jobTitle", profile.getTargetJobTitle());
+        snapshot.put("companyName", profile.getTargetCompanyName());
+        snapshot.put("jobLevel", profile.getTargetJobLevel());
+        snapshot.put("jdSource", profile.getTargetJdSource());
+        return snapshot;
+    }
+
+    private Map<String, Object> skillProfileSnapshot(InnerSkillProfileVO profile) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("profileId", profile.getProfileId());
+        snapshot.put("targetJobId", profile.getTargetJobId());
+        snapshot.put("matchReportId", profile.getMatchReportId());
+        snapshot.put("profileName", profile.getProfileName());
+        snapshot.put("overallLevel", profile.getOverallLevel());
+        snapshot.put("overallScore", profile.getOverallScore());
+        snapshot.put("summary", profile.getSummary());
+        snapshot.put("sourceType", profile.getSourceType());
+        snapshot.put("sourceBizId", profile.getSourceBizId());
+        return snapshot;
+    }
+
+    private Map<String, Object> skillGapSnapshot(InnerSkillGapItemVO gap) {
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("id", gap.getId());
+        snapshot.put("skillName", gap.getSkillName());
+        snapshot.put("category", gap.getCategory());
+        snapshot.put("targetLevel", gap.getTargetLevel());
+        snapshot.put("currentLevel", gap.getCurrentLevel());
+        snapshot.put("gapLevel", gap.getGapLevel());
+        snapshot.put("confidence", gap.getConfidence());
+        snapshot.put("severity", gap.getSeverity());
+        snapshot.put("evidenceSources", readJsonFallback(gap.getEvidenceSourcesJson()));
+        snapshot.put("gapDescription", gap.getGapDescription());
+        snapshot.put("recommendedActions", readJsonFallback(gap.getRecommendedActionsJson()));
+        snapshot.put("priority", gap.getPriority());
+        return snapshot;
+    }
+
+    private String existingStudyPlansJson(Long userId, Long skillProfileId) {
+        List<StudyPlan> plans = studyPlanMapper.selectList(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getUserId, userId)
+                .eq(StudyPlan::getSkillProfileId, skillProfileId)
+                .eq(StudyPlan::getDeleted, CommonConstants.NO)
+                .orderByDesc(StudyPlan::getUpdatedAt)
+                .last("limit 3"));
+        return toJson(plans.stream().map(plan -> {
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("planId", plan.getId());
+            snapshot.put("planTitle", plan.getPlanTitle());
+            snapshot.put("planStatus", plan.getPlanStatus());
+            snapshot.put("durationDays", plan.getDurationDays());
+            snapshot.put("createdAt", plan.getCreatedAt());
+            return snapshot;
+        }).toList());
+    }
+
+    private Object readJsonFallback(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readTree(json);
+        } catch (Exception ex) {
+            return json;
+        }
+    }
+
+    private String defaultGapPlanTitle(InnerSkillProfileVO profile, int days) {
+        return firstText(profile.getTargetJobTitle(), "Java backend") + " gap repair " + days + "-day plan";
     }
 
     private GenerateLearningPlanDTO buildAiRequest(StudyPlan plan, InterviewSession session, InterviewReport report,
@@ -441,6 +851,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlanListVO vo = new StudyPlanListVO();
         vo.setId(plan.getId());
         vo.setReportId(plan.getReportId());
+        vo.setTargetJobId(plan.getTargetJobId());
+        vo.setSkillProfileId(plan.getSkillProfileId());
+        vo.setMatchReportId(plan.getMatchReportId());
         vo.setSessionId(plan.getSessionId());
         vo.setSourceType(plan.getSourceType());
         vo.setTargetPosition(plan.getTargetPosition());
@@ -449,6 +862,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setPlanSummary(plan.getPlanSummary());
         vo.setPlanStatus(plan.getPlanStatus());
         vo.setDurationDays(plan.getDurationDays());
+        vo.setDailyMinutes(plan.getDailyMinutes());
+        vo.setStartDate(plan.getStartDate());
         fillProgress(vo, plan.getId());
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
@@ -459,6 +874,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlanDetailVO vo = new StudyPlanDetailVO();
         vo.setId(plan.getId());
         vo.setReportId(plan.getReportId());
+        vo.setTargetJobId(plan.getTargetJobId());
+        vo.setSkillProfileId(plan.getSkillProfileId());
+        vo.setMatchReportId(plan.getMatchReportId());
         vo.setSessionId(plan.getSessionId());
         vo.setResumeId(plan.getResumeId());
         vo.setOptimizeRecordId(plan.getOptimizeRecordId());
@@ -469,11 +887,84 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setPlanSummary(plan.getPlanSummary());
         vo.setPlanStatus(plan.getPlanStatus());
         vo.setDurationDays(plan.getDurationDays());
+        vo.setDailyMinutes(plan.getDailyMinutes());
+        vo.setStartDate(plan.getStartDate());
         vo.setAiCallLogId(plan.getAiCallLogId());
         vo.setFailureReason(plan.getFailureReason());
         fillProgress(vo, plan.getId());
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyPlanVO toInnerPlanVO(StudyPlan plan) {
+        InnerStudyPlanVO vo = new InnerStudyPlanVO();
+        vo.setPlanId(plan.getId());
+        vo.setUserId(plan.getUserId());
+        vo.setSourceType(plan.getSourceType());
+        vo.setSourceId(plan.getSourceId());
+        vo.setTargetJobId(plan.getTargetJobId());
+        vo.setSkillProfileId(plan.getSkillProfileId());
+        vo.setMatchReportId(plan.getMatchReportId());
+        vo.setTargetPosition(plan.getTargetPosition());
+        vo.setIndustryDirection(plan.getIndustryDirection());
+        vo.setPlanTitle(plan.getPlanTitle());
+        vo.setPlanSummary(plan.getPlanSummary());
+        vo.setPlanStatus(plan.getPlanStatus());
+        vo.setDurationDays(plan.getDurationDays());
+        vo.setDailyMinutes(plan.getDailyMinutes());
+        vo.setStartDate(plan.getStartDate());
+        vo.setAiCallLogId(plan.getAiCallLogId());
+        vo.setResultJson(plan.getResultJson());
+        vo.setCreatedAt(plan.getCreatedAt());
+        vo.setUpdatedAt(plan.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyTaskVO toInnerTaskVO(StudyTask task) {
+        InnerStudyTaskVO vo = new InnerStudyTaskVO();
+        vo.setId(task.getId());
+        vo.setPlanId(task.getPlanId());
+        vo.setUserId(task.getUserId());
+        vo.setTargetJobId(task.getTargetJobId());
+        vo.setSkillProfileId(task.getSkillProfileId());
+        vo.setSkillGapItemId(task.getSkillGapItemId());
+        vo.setSourceType(task.getSourceType());
+        vo.setSourceBizId(task.getSourceBizId());
+        vo.setStageNo(task.getStageNo());
+        vo.setPlannedDate(task.getPlannedDate());
+        vo.setStageTitle(task.getStageTitle());
+        vo.setTaskOrder(task.getTaskOrder());
+        vo.setKnowledgePoint(task.getKnowledgePoint());
+        vo.setTaskTitle(task.getTaskTitle());
+        vo.setTaskDescription(task.getTaskDescription());
+        vo.setTaskType(task.getTaskType());
+        vo.setPriority(task.getPriority());
+        vo.setEstimatedMinutes(task.getEstimatedMinutes());
+        vo.setAcceptanceCriteria(task.getAcceptanceCriteria());
+        vo.setTaskStatus(task.getTaskStatus());
+        vo.setRelatedQuestionIdsJson(task.getRelatedQuestionIdsJson());
+        vo.setRelatedTagsJson(task.getRelatedTagsJson());
+        vo.setResourcesJson(task.getResourcesJson());
+        vo.setCreatedAt(task.getCreatedAt());
+        vo.setUpdatedAt(task.getUpdatedAt());
+        return vo;
+    }
+
+    private InnerStudyPlanSkillRelationVO toInnerRelationVO(StudyPlanSkillRelation relation) {
+        InnerStudyPlanSkillRelationVO vo = new InnerStudyPlanSkillRelationVO();
+        vo.setId(relation.getId());
+        vo.setUserId(relation.getUserId());
+        vo.setStudyPlanId(relation.getStudyPlanId());
+        vo.setStudyTaskId(relation.getStudyTaskId());
+        vo.setTargetJobId(relation.getTargetJobId());
+        vo.setSkillProfileId(relation.getSkillProfileId());
+        vo.setSkillGapItemId(relation.getSkillGapItemId());
+        vo.setSourceType(relation.getSourceType());
+        vo.setSourceBizId(relation.getSourceBizId());
+        vo.setPriority(relation.getPriority());
+        vo.setCreatedAt(relation.getCreatedAt());
+        vo.setUpdatedAt(relation.getUpdatedAt());
         return vo;
     }
 
@@ -499,6 +990,11 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyTaskVO vo = new StudyTaskVO();
         vo.setId(task.getId());
         vo.setPlanId(task.getPlanId());
+        vo.setTargetJobId(task.getTargetJobId());
+        vo.setSkillProfileId(task.getSkillProfileId());
+        vo.setSkillGapItemId(task.getSkillGapItemId());
+        vo.setSourceType(task.getSourceType());
+        vo.setSourceBizId(task.getSourceBizId());
         vo.setStageNo(task.getStageNo());
         vo.setPlannedDate(task.getPlannedDate());
         vo.setStageTitle(task.getStageTitle());
@@ -509,6 +1005,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setTaskType(task.getTaskType());
         vo.setPriority(task.getPriority());
         vo.setEstimatedHours(task.getEstimatedHours());
+        vo.setEstimatedMinutes(task.getEstimatedMinutes());
+        vo.setAcceptanceCriteria(task.getAcceptanceCriteria());
         vo.setTaskStatus(task.getTaskStatus());
         vo.setRelatedQuestionIds(readList(task.getRelatedQuestionIdsJson(), new TypeReference<List<Long>>() {}));
         vo.setRelatedTags(readList(task.getRelatedTagsJson(), new TypeReference<List<String>>() {}));
@@ -523,7 +1021,31 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setPlanId(plan.getId());
         vo.setPlanStatus(plan.getPlanStatus());
         vo.setPlanTitle(plan.getPlanTitle());
+        vo.setTaskCount(taskEntities(plan.getId()).size());
+        vo.setSkillGapCount(countRelations(plan.getId()));
+        vo.setAiCallLogId(plan.getAiCallLogId());
         vo.setFailureReason(plan.getFailureReason());
+        return vo;
+    }
+
+    private StudyPlanSkillRelationVO toRelationVO(StudyPlanSkillRelation relation,
+                                                  Map<Long, InnerSkillGapItemVO> gapMap) {
+        InnerSkillGapItemVO gap = gapMap.get(relation.getSkillGapItemId());
+        StudyPlanSkillRelationVO vo = new StudyPlanSkillRelationVO();
+        vo.setId(relation.getId());
+        vo.setStudyPlanId(relation.getStudyPlanId());
+        vo.setStudyTaskId(relation.getStudyTaskId());
+        vo.setTargetJobId(relation.getTargetJobId());
+        vo.setSkillProfileId(relation.getSkillProfileId());
+        vo.setSkillGapItemId(relation.getSkillGapItemId());
+        vo.setSkillName(gap == null ? null : gap.getSkillName());
+        vo.setCategory(gap == null ? null : gap.getCategory());
+        vo.setSeverity(gap == null ? null : gap.getSeverity());
+        vo.setSourceType(relation.getSourceType());
+        vo.setSourceBizId(relation.getSourceBizId());
+        vo.setPriority(relation.getPriority());
+        vo.setCreatedAt(relation.getCreatedAt());
+        vo.setUpdatedAt(relation.getUpdatedAt());
         return vo;
     }
 
@@ -536,6 +1058,29 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (!hasItem) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Learning plan response missing tasks");
         }
+    }
+
+    private Map<Long, InnerSkillGapItemVO> loadGapMap(Long skillProfileId) {
+        if (skillProfileId == null) {
+            return Map.of();
+        }
+        InnerSkillProfileVO profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(skillProfileId));
+        if (profile == null || profile.getGapItems() == null) {
+            return Map.of();
+        }
+        return profile.getGapItems().stream()
+                .filter(Objects::nonNull)
+                .filter(gap -> gap.getId() != null)
+                .collect(Collectors.toMap(InnerSkillGapItemVO::getId, Function.identity(), (a, b) -> a));
+    }
+
+    private int countRelations(Long planId) {
+        if (planId == null) {
+            return 0;
+        }
+        return Math.toIntExact(relationMapper.selectCount(new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                .eq(StudyPlanSkillRelation::getStudyPlanId, planId)
+                .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)));
     }
 
     private String questionPerformanceSummary(Long sessionId) {
@@ -641,6 +1186,26 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return 30;
     }
 
+    private int normalizeGapDays(Integer days) {
+        if (days == null) {
+            return DEFAULT_DURATION_DAYS;
+        }
+        if (days < 1 || days > 60) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "days must be between 1 and 60");
+        }
+        return days;
+    }
+
+    private int normalizeDailyMinutes(Integer dailyMinutes) {
+        if (dailyMinutes == null) {
+            return 60;
+        }
+        if (dailyMinutes < 15 || dailyMinutes > 480) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dailyMinutes must be between 15 and 480");
+        }
+        return dailyMinutes;
+    }
+
     private String defaultTitle(StudyPlan plan) {
         return firstText(plan.getTargetPosition(), "Java backend") + " " + plan.getDurationDays() + "-day study plan";
     }
@@ -655,6 +1220,29 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             }
         }
         return null;
+    }
+
+    private Integer firstInteger(Integer... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Integer value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Long parseLong(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private String firstText(String... values) {
