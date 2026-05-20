@@ -27,4 +27,8 @@ public interface QuestionRecommendationService {
     QuestionRecommendationBatchDetailVO batchDetail(Long batchId);
 
     List<QuestionRecommendationItemVO> batchItems(Long batchId);
+
+    List<QuestionRecommendationItemVO> recommendByJobTarget(Long targetJobId, Integer limit);
+
+    List<QuestionRecommendationItemVO> recommendBySkill(Long skillProfileId, String skillCode, String skillName, Integer limit);
 }

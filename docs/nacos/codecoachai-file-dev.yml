@@ -30,7 +30,7 @@ codecoachai:
   oss:
     enabled: true
     endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
-    bucket: ${OSS_BUCKET:codecoachai}
+    bucket: ${OSS_BUCKET:}
     access-key-id: ${OSS_AK:}
     access-key-secret: ${OSS_SK:}
     domain: ${OSS_DOMAIN:}

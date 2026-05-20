@@ -4,9 +4,8 @@ import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.payload.QuestionGeneratePayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import java.util.List;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
@@ -15,11 +14,13 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-@ConditionalOnBean(MqProducer.class)
-@RequiredArgsConstructor
 public class QuestionMqDispatcher {
 
     private final MqProducer mqProducer;
+
+    public QuestionMqDispatcher(ObjectProvider<MqProducer> mqProducerProvider) {
+        this.mqProducer = mqProducerProvider.getIfAvailable();
+    }
 
     /**
      * 投递"AI 批量出题"任务。
@@ -29,6 +30,10 @@ public class QuestionMqDispatcher {
                                     List<String> tags, String targetPosition,
                                     String experienceLevel) {
         if (batchId == null) {
+            return false;
+        }
+        if (mqProducer == null) {
+            log.warn("MQ producer unavailable, skip question generate dispatch batchId={}", batchId);
             return false;
         }
         try {

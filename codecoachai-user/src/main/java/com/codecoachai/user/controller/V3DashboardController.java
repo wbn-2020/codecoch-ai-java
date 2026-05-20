@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,22 +24,30 @@ import org.springframework.web.bind.annotation.RestController;
 public class V3DashboardController {
 
     private final JdbcTemplate jdbcTemplate;
+    private final ThreadLocal<List<String>> governanceTips = ThreadLocal.withInitial(ArrayList::new);
 
     @GetMapping("/overview")
     public Result<V3DashboardVO> overview() {
         Long userId = SecurityAssert.requireLoginUserId();
+        governanceTips.get().clear();
         V3DashboardVO vo = new V3DashboardVO();
-        V3DashboardVO.TargetJobCardVO targetJob = currentTargetJob(userId);
-        vo.setCurrentTargetJob(targetJob);
-        Long targetJobId = targetJob == null ? null : targetJob.getId();
-        vo.setLatestMatch(latestMatch(userId, targetJobId));
-        vo.setSkillProfile(skillProfile(userId, targetJobId));
-        vo.setStudyProgress(studyProgress(userId, targetJobId));
-        vo.setRecommendedQuestions(recommendedQuestions(userId, targetJobId));
-        vo.setTrainingTrend(trainingTrend(userId));
-        vo.setNextActions(nextActions(vo));
-        vo.setGeneratedAt(LocalDateTime.now());
-        return Result.success(vo);
+        try {
+            V3DashboardVO.TargetJobCardVO targetJob = currentTargetJob(userId);
+            vo.setCurrentTargetJob(targetJob);
+            Long targetJobId = targetJob == null ? null : targetJob.getId();
+            vo.setLatestMatch(latestMatch(userId, targetJobId));
+            vo.setSkillProfile(skillProfile(userId, targetJobId));
+            vo.setStudyProgress(studyProgress(userId, targetJobId));
+            vo.setRecommendedQuestions(recommendedQuestions(userId, targetJobId));
+            vo.setTrainingTrend(trainingTrend(userId));
+            vo.setNextActions(nextActions(vo));
+            vo.setDegraded(!governanceTips.get().isEmpty());
+            vo.setGovernanceTips(List.copyOf(governanceTips.get()));
+            vo.setGeneratedAt(LocalDateTime.now());
+            return Result.success(vo);
+        } finally {
+            governanceTips.remove();
+        }
     }
 
     @GetMapping("/skill-radar")
@@ -63,13 +72,14 @@ public class V3DashboardController {
         if (!tableExists("target_job")) {
             return null;
         }
+        String currentColumn = columnExists("target_job", "is_current") ? "is_current" : "current_flag";
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT id, job_title, company_name, job_level, status, is_current, updated_at
+                SELECT id, job_title, company_name, job_level, status, %s AS is_current, updated_at
                 FROM target_job
                 WHERE deleted = 0 AND user_id = ?
-                ORDER BY is_current DESC, updated_at DESC, id DESC
+                ORDER BY %s DESC, updated_at DESC, id DESC
                 LIMIT 1
-                """, userId);
+                """.formatted(currentColumn, currentColumn), userId);
         if (rows.isEmpty()) {
             return null;
         }
@@ -197,11 +207,12 @@ public class V3DashboardController {
             vo.setCompletionRate(0);
             return vo;
         }
-        Long total = queryLong("SELECT COUNT(1) FROM study_task WHERE deleted = 0 AND study_plan_id = ? AND user_id = ?", planId, userId);
+        String planColumn = columnExists("study_task", "study_plan_id") ? "study_plan_id" : "plan_id";
+        Long total = queryLong("SELECT COUNT(1) FROM study_task WHERE deleted = 0 AND " + planColumn + " = ? AND user_id = ?", planId, userId);
         Long completed = queryLong("""
                 SELECT COUNT(1) FROM study_task
-                WHERE deleted = 0 AND study_plan_id = ? AND user_id = ? AND task_status IN ('DONE','COMPLETED')
-                """, planId, userId);
+                WHERE deleted = 0 AND %s = ? AND user_id = ? AND task_status IN ('DONE','COMPLETED')
+                """.formatted(planColumn), planId, userId);
         vo.setTotalTasks(total == null ? 0L : total);
         vo.setCompletedTasks(completed == null ? 0L : completed);
         vo.setCompletionRate(vo.getTotalTasks() == 0 ? 0 : (int) (vo.getCompletedTasks() * 100 / vo.getTotalTasks()));
@@ -212,13 +223,32 @@ public class V3DashboardController {
         if (!tableExists("question_recommendation_item")) {
             return List.of();
         }
+        String titleColumn = columnExists("question_recommendation_item", "title") ? "title" : "question_title";
+        String targetFilter = "";
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        if (targetJobId != null && columnExists("question_recommendation_item", "target_job_id")) {
+            targetFilter = " AND target_job_id = ?";
+            args.add(targetJobId);
+        } else if (targetJobId != null && tableExists("question_recommendation_batch")
+                && columnExists("question_recommendation_item", "batch_id")
+                && columnExists("question_recommendation_batch", "job_target_id")) {
+            targetFilter = """
+                     AND EXISTS (
+                        SELECT 1 FROM question_recommendation_batch b
+                        WHERE b.id = question_recommendation_item.batch_id
+                          AND b.job_target_id = ?
+                    )
+                    """;
+            args.add(targetJobId);
+        }
         return jdbcTemplate.queryForList("""
-                SELECT id, title, skill_name, difficulty, recommend_reason
+                SELECT id, %s AS title, skill_name, difficulty, recommend_reason
                 FROM question_recommendation_item
-                WHERE deleted = 0 AND user_id = ? AND (? IS NULL OR target_job_id = ?)
+                WHERE deleted = 0 AND user_id = ?%s
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 8
-                """, userId, targetJobId, targetJobId);
+                """.formatted(titleColumn, targetFilter), args.toArray());
     }
 
     private List<V3DashboardVO.TrendItemVO> trainingTrend(Long userId) {
@@ -288,10 +318,38 @@ public class V3DashboardController {
     }
 
     private boolean tableExists(String tableName) {
-        Long count = jdbcTemplate.queryForObject(
-                "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
-                Long.class, tableName);
-        return count != null && count > 0;
+        try {
+            Long count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+                    Long.class, tableName);
+            boolean exists = count != null && count > 0;
+            if (!exists) {
+                addGovernanceTip("degraded: missing table " + tableName + ", related dashboard block is unavailable");
+            }
+            return exists;
+        } catch (DataAccessException ex) {
+            addGovernanceTip("degraded: unable to inspect table " + tableName + ", " + ex.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private boolean columnExists(String tableName, String columnName) {
+        try {
+            Long count = jdbcTemplate.queryForObject(
+                    "SELECT COUNT(1) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?",
+                    Long.class, tableName, columnName);
+            return count != null && count > 0;
+        } catch (DataAccessException ex) {
+            addGovernanceTip("degraded: unable to inspect column " + tableName + "." + columnName + ", " + ex.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private void addGovernanceTip(String tip) {
+        List<String> tips = governanceTips.get();
+        if (!tips.contains(tip)) {
+            tips.add(tip);
+        }
     }
 
     private Long longValue(Object value) {

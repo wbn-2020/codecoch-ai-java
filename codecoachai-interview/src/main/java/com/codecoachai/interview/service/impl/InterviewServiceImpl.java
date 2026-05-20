@@ -69,6 +69,7 @@ import org.springframework.util.StringUtils;
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
+    private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
@@ -652,6 +653,10 @@ public class InterviewServiceImpl implements InterviewService {
         selectDTO.setExperienceLevel(session.getExperienceLevel());
         selectDTO.setExcludeGroupIds(usedGroupIds(session.getId()));
         InnerQuestionVO question = FeignResultUtils.unwrap(questionFeignClient.select(selectDTO));
+        if (question == null || question.getId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "No persisted interview question is available for this stage");
+        }
 
         InnerResumeDetailVO resume = loadResume(session);
         GenerateInterviewQuestionDTO aiDTO = new GenerateInterviewQuestionDTO();
@@ -677,13 +682,21 @@ public class InterviewServiceImpl implements InterviewService {
         aiDTO.setProjectContent(buildProjectContent(resume));
         aiDTO.setHistorySummary(historySummary(session.getId()));
         GenerateInterviewQuestionVO aiQuestion = FeignResultUtils.unwrap(aiFeignClient.generateQuestion(aiDTO));
+        if (!StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionContent())
+                && !StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionText())
+                && !StringUtils.hasText(question.getContent())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
+        }
         String questionContent = firstText(aiQuestion == null ? null : aiQuestion.getQuestionContent(),
                 aiQuestion == null ? null : aiQuestion.getQuestionText(),
                 question == null ? null : question.getContent(),
                 "请结合当前面试阶段说明你的理解和项目实践。");
 
-        session.setCurrentQuestionId(question == null ? null : question.getId());
-        session.setCurrentQuestionGroupId(question == null ? null : question.getGroupId());
+        if (!StringUtils.hasText(questionContent)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
+        }
+        session.setCurrentQuestionId(question.getId());
+        session.setCurrentQuestionGroupId(question.getGroupId());
         InterviewMessage message = saveMessage(session, stage, question, "AI", followUp ? "FOLLOW_UP" : "QUESTION",
                 questionContent, null, null, parentMessageId, followUp, followUpCount, null, null);
         return toCurrentQuestionVO(session, stage, message);
@@ -968,9 +981,9 @@ public class InterviewServiceImpl implements InterviewService {
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
         if (aiReport == null) {
-            applyDefaultReportContent(report);
-            return;
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
         }
+        validateAiReport(aiReport);
         report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
         report.setSummary(StringUtils.hasText(aiReport.getSummary()) ? aiReport.getSummary() : DEFAULT_REPORT_SUMMARY);
         report.setStageScores(aiReport.getStageScores());
@@ -999,11 +1012,11 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private boolean isEnglishMockReport(InterviewReport report) {
-        return containsIgnoreCase(report.getSummary(), "Mock report")
+        return false && (containsIgnoreCase(report.getSummary(), "Mock report")
                 || containsIgnoreCase(report.getSummary(), "the interview has been completed")
                 || containsIgnoreCase(report.getStrengths(), "Shows basic understanding")
                 || containsIgnoreCase(report.getWeaknesses(), "Needs more depth")
-                || containsIgnoreCase(report.getSuggestions(), "Review JVM");
+                || containsIgnoreCase(report.getSuggestions(), "Review JVM"));
     }
 
     private boolean containsIgnoreCase(String value, String keyword) {
@@ -1033,6 +1046,14 @@ public class InterviewServiceImpl implements InterviewService {
             reportMapper.insert(report);
         } else {
             reportMapper.updateById(report);
+        }
+    }
+
+    private void validateAiReport(GenerateReportVO aiReport) {
+        if (aiReport.getTotalScore() == null
+                || !StringUtils.hasText(aiReport.getSummary())
+                || !StringUtils.hasText(aiReport.getReportContent())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
         }
     }
 

@@ -8,6 +8,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.task.domain.entity.AsyncTask;
 import com.codecoachai.task.domain.entity.MessageDeadLetter;
 import com.codecoachai.task.mapper.AsyncTaskMapper;
@@ -26,10 +27,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * 异步任务后台管理 Controller。
- */
-@Tag(name = "任务管理-后台")
+@Tag(name = "Task Admin")
 @RestController
 @RequestMapping("/admin/tasks")
 @RequiredArgsConstructor
@@ -38,9 +36,7 @@ public class AdminTaskController {
     private final AsyncTaskMapper asyncTaskMapper;
     private final MessageDeadLetterMapper deadLetterMapper;
 
-    // ==================== 任务列表 ====================
-
-    @Operation(summary = "分页查询异步任务")
+    @Operation(summary = "Page async tasks")
     @GetMapping
     public Result<PageResult<AsyncTask>> pageTasks(
             @RequestParam(defaultValue = "1") Long pageNo,
@@ -48,6 +44,7 @@ public class AdminTaskController {
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId) {
+        SecurityAssert.requireAdmin();
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<AsyncTask>()
@@ -58,9 +55,10 @@ public class AdminTaskController {
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
     }
 
-    @Operation(summary = "任务详情")
+    @Operation(summary = "Get async task")
     @GetMapping("/{id}")
     public Result<AsyncTask> getTask(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
         AsyncTask task = asyncTaskMapper.selectById(id);
         if (task == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
@@ -68,9 +66,10 @@ public class AdminTaskController {
         return Result.success(task);
     }
 
-    @Operation(summary = "按 messageId 查询")
+    @Operation(summary = "Get async task by message id")
     @GetMapping("/by-message-id/{messageId}")
     public Result<AsyncTask> getByMessageId(@PathVariable String messageId) {
+        SecurityAssert.requireAdmin();
         AsyncTask task = asyncTaskMapper.selectOne(
                 new LambdaQueryWrapper<AsyncTask>().eq(AsyncTask::getMessageId, messageId).last("limit 1"));
         if (task == null) {
@@ -79,9 +78,10 @@ public class AdminTaskController {
         return Result.success(task);
     }
 
-    @Operation(summary = "统计各状态数量")
+    @Operation(summary = "Task status stats")
     @GetMapping("/stats")
     public Result<List<Map<String, Object>>> stats() {
+        SecurityAssert.requireAdmin();
         List<Map<String, Object>> counts = asyncTaskMapper.selectMaps(
                 new QueryWrapper<AsyncTask>()
                         .select("status", "COUNT(*) AS count")
@@ -89,17 +89,16 @@ public class AdminTaskController {
         return Result.success(counts);
     }
 
-    // ==================== 重试 ====================
-
-    @Operation(summary = "手动重试失败任务（重置状态为 PENDING，等待下次消费）")
+    @Operation(summary = "Retry failed async task")
     @PostMapping("/{id}/retry")
     public Result<Void> retryTask(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
         AsyncTask task = asyncTaskMapper.selectById(id);
         if (task == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
         }
         if (!"FAILED".equals(task.getStatus()) && !"DEAD".equals(task.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "只能重试 FAILED/DEAD 状态的任务");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only FAILED/DEAD tasks can be retried");
         }
         asyncTaskMapper.update(null,
                 new LambdaUpdateWrapper<AsyncTask>()
@@ -111,15 +110,14 @@ public class AdminTaskController {
         return Result.success();
     }
 
-    // ==================== 死信管理 ====================
-
-    @Operation(summary = "分页查询死信")
+    @Operation(summary = "Page dead letters")
     @GetMapping("/dead-letters")
     public Result<PageResult<MessageDeadLetter>> pageDeadLetters(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String handleStatus,
             @RequestParam(required = false) String bizType) {
+        SecurityAssert.requireAdmin();
         Page<MessageDeadLetter> page = deadLetterMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<MessageDeadLetter>()
@@ -129,9 +127,10 @@ public class AdminTaskController {
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
     }
 
-    @Operation(summary = "死信详情")
+    @Operation(summary = "Get dead letter")
     @GetMapping("/dead-letters/{id}")
     public Result<MessageDeadLetter> getDeadLetter(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
         MessageDeadLetter dl = deadLetterMapper.selectById(id);
         if (dl == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
@@ -139,20 +138,37 @@ public class AdminTaskController {
         return Result.success(dl);
     }
 
-    @Operation(summary = "标记死信为已恢复")
+    @Operation(summary = "Recover dead letter")
     @PostMapping("/dead-letters/{id}/recover")
     public Result<Void> recoverDeadLetter(@PathVariable Long id,
                                           @RequestParam(required = false) String note) {
+        SecurityAssert.requireAdmin();
         updateDeadLetterStatus(id, "RECOVERED", note);
         return Result.success();
     }
 
-    @Operation(summary = "标记死信为已忽略")
+    @Operation(summary = "Ignore dead letter")
     @PostMapping("/dead-letters/{id}/ignore")
     public Result<Void> ignoreDeadLetter(@PathVariable Long id,
                                          @RequestParam(required = false) String note) {
+        SecurityAssert.requireAdmin();
         updateDeadLetterStatus(id, "IGNORED", note);
         return Result.success();
+    }
+
+    @Operation(summary = "Compatibility endpoint for dead letter retry")
+    @PostMapping("/{id}/dead-letter/retry")
+    public Result<Void> recoverDeadLetterCompat(@PathVariable Long id,
+                                                @RequestParam(required = false) String note) {
+        SecurityAssert.requireAdmin();
+        updateDeadLetterStatus(id, "RECOVERED", note);
+        return Result.success();
+    }
+
+    @Operation(summary = "Task service health")
+    @GetMapping("/health")
+    public Result<String> health() {
+        return Result.success("task-service ok");
     }
 
     private void updateDeadLetterStatus(Long id, String status, String note) {
@@ -166,11 +182,5 @@ public class AdminTaskController {
                         .set(MessageDeadLetter::getHandleStatus, status)
                         .set(StringUtils.hasText(note), MessageDeadLetter::getHandleNote, note)
                         .set(MessageDeadLetter::getUpdatedAt, LocalDateTime.now()));
-    }
-
-    @Operation(summary = "健康检查")
-    @GetMapping("/health")
-    public Result<String> health() {
-        return Result.success("task-service ok");
     }
 }

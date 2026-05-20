@@ -12,6 +12,7 @@ import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -41,9 +42,13 @@ public class UserController {
     }
 
     @PutMapping("/avatar")
-    public Result<Void> updateAvatar(@Valid @RequestBody UpdateAvatarDTO dto) {
-        userService.updateAvatar(dto.getAvatarUrl());
-        return Result.success();
+    public Result<UserProfileVO> updateAvatar(@Valid @RequestBody UpdateAvatarDTO dto) {
+        return Result.success(userService.updateAvatar(dto.getAvatarUrl()));
+    }
+
+    @PostMapping("/avatar")
+    public Result<UserProfileVO> updateAvatarCompat(@Valid @RequestBody UpdateAvatarDTO dto) {
+        return Result.success(userService.updateAvatar(dto.getAvatarUrl()));
     }
 
     @PutMapping("/phone")

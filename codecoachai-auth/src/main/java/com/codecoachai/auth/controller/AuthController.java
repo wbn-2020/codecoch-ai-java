@@ -1,10 +1,14 @@
 package com.codecoachai.auth.controller;
 
+import com.codecoachai.auth.domain.dto.ForgotPasswordDTO;
 import com.codecoachai.auth.domain.dto.LoginDTO;
 import com.codecoachai.auth.domain.dto.RegisterDTO;
+import com.codecoachai.auth.domain.dto.ResetPasswordDTO;
 import com.codecoachai.auth.domain.vo.CurrentUserVO;
+import com.codecoachai.auth.domain.vo.ForgotPasswordVO;
 import com.codecoachai.auth.domain.vo.LoginVO;
 import com.codecoachai.auth.domain.vo.RegisterVO;
+import com.codecoachai.auth.domain.vo.ResetPasswordVO;
 import com.codecoachai.auth.service.AuthService;
 import com.codecoachai.common.core.domain.Result;
 import jakarta.validation.Valid;
@@ -30,6 +34,16 @@ public class AuthController {
     @PostMapping("/login")
     public Result<LoginVO> login(@Valid @RequestBody LoginDTO dto) {
         return Result.success(authService.login(dto));
+    }
+
+    @PostMapping("/forgot-password")
+    public Result<ForgotPasswordVO> forgotPassword(@Valid @RequestBody ForgotPasswordDTO dto) {
+        return Result.success(authService.forgotPassword(dto));
+    }
+
+    @PostMapping("/reset-password")
+    public Result<ResetPasswordVO> resetPassword(@Valid @RequestBody ResetPasswordDTO dto) {
+        return Result.success(authService.resetPassword(dto));
     }
 
     @PostMapping("/logout")

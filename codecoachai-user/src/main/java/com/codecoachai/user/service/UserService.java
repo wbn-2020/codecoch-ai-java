@@ -3,6 +3,7 @@ package com.codecoachai.user.service;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
 import com.codecoachai.user.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.user.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
 import com.codecoachai.user.domain.dto.UpdateUserProfileDTO;
 import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
@@ -23,7 +24,7 @@ public interface UserService {
 
     void updateCurrentUserPassword(UpdatePasswordDTO dto);
 
-    void updateAvatar(String avatarUrl);
+    UserProfileVO updateAvatar(String avatarUrl);
 
     void updatePhone(String phone);
 
@@ -39,9 +40,13 @@ public interface UserService {
 
     InnerUserAuthVO getInnerUserByUsername(String username);
 
+    InnerUserAuthVO getInnerUserByEmail(String email);
+
     InnerCreateUserVO createInnerUser(InnerCreateUserDTO dto);
 
     InnerUserRoleVO getInnerUserRoles(Long id);
 
     InnerUserBasicVO getInnerUser(Long id);
+
+    void resetInnerPassword(Long id, InnerResetPasswordDTO dto);
 }

@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -67,5 +68,19 @@ public class QuestionRecommendationController {
     @GetMapping("/batches/{batchId}/items")
     public Result<List<QuestionRecommendationItemVO>> batchItems(@PathVariable Long batchId) {
         return Result.success(questionRecommendationService.batchItems(batchId));
+    }
+
+    @GetMapping("/by-job-target")
+    public Result<List<QuestionRecommendationItemVO>> byJobTarget(@RequestParam Long targetJobId,
+                                                                  @RequestParam(required = false) Integer limit) {
+        return Result.success(questionRecommendationService.recommendByJobTarget(targetJobId, limit));
+    }
+
+    @GetMapping("/by-skill")
+    public Result<List<QuestionRecommendationItemVO>> bySkill(@RequestParam(required = false) Long skillProfileId,
+                                                              @RequestParam(required = false) String skillCode,
+                                                              @RequestParam(required = false) String skillName,
+                                                              @RequestParam(required = false) Integer limit) {
+        return Result.success(questionRecommendationService.recommendBySkill(skillProfileId, skillCode, skillName, limit));
     }
 }

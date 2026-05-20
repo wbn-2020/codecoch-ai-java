@@ -30,8 +30,10 @@ public class OpenAiCompatibleClient implements AiClient {
         if (!Boolean.TRUE.equals(properties.getEnabled())) {
             throw new AiProviderException(AiFailureType.CONFIG_ERROR, "AI service is disabled");
         }
-        if (!StringUtils.hasText(properties.getBaseUrl()) || !StringUtils.hasText(properties.getApiKey())) {
-            throw new AiProviderException(AiFailureType.CONFIG_ERROR, "AI base-url or api-key is not configured");
+        if (!StringUtils.hasText(properties.getBaseUrl())
+                || !StringUtils.hasText(properties.getApiKey())
+                || !StringUtils.hasText(properties.getModel())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR, "AI base-url, api-key or model is not configured");
         }
 
         String baseUrl = properties.getBaseUrl().endsWith("/")

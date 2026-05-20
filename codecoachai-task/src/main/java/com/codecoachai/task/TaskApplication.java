@@ -15,7 +15,7 @@ import org.springframework.cloud.openfeign.EnableFeignClients;
  *  - 维护 async_task / message_dead_letter 表
  *  - 提供 /admin/tasks 后台管理接口
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.codecoachai")
 @EnableDiscoveryClient
 @EnableFeignClients(basePackages = "com.codecoachai")
 @MapperScan("com.codecoachai.task.mapper")

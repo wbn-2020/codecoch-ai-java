@@ -81,6 +81,18 @@ public class AdminMenuController {
     @PutMapping("/admin/roles/{roleId}/menus")
     public Result<Void> assignRoleMenus(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
         SecurityAssert.requireAdmin();
+        doAssignRoleMenus(roleId, dto);
+        return Result.success();
+    }
+
+    @PostMapping("/admin/roles/{roleId}/menus")
+    public Result<Void> assignRoleMenusByPost(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
+        SecurityAssert.requireAdmin();
+        doAssignRoleMenus(roleId, dto);
+        return Result.success();
+    }
+
+    private void doAssignRoleMenus(Long roleId, RoleMenuAssignDTO dto) {
         roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getRoleId, roleId));
         if (dto != null && dto.getMenuIds() != null) {
             for (Long menuId : dto.getMenuIds().stream().distinct().toList()) {
@@ -90,7 +102,6 @@ public class AdminMenuController {
                 roleMenuMapper.insert(relation);
             }
         }
-        return Result.success();
     }
 
     private void apply(SysMenu menu, SysMenuSaveDTO dto) {

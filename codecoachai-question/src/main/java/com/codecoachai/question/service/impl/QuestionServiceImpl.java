@@ -61,6 +61,7 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
+        requireCurrentUserId();
         Page<Question> page = questionMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
                 buildQuestionWrapper(query, false).eq(Question::getStatus, CommonConstants.YES));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
@@ -69,6 +70,7 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     public QuestionDetailVO getQuestion(Long id) {
+        requireCurrentUserId();
         return toDetailVO(getQuestionOrThrow(id));
     }
 

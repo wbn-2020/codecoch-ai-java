@@ -15,39 +15,43 @@ spring:
         - id: codecoachai-user-users
           uri: lb://codecoachai-user
           predicates:
-            - Path=/users/**
+            - Path=/users,/users/**
         - id: codecoachai-user-dashboard
           uri: lb://codecoachai-user
           predicates:
-            - Path=/dashboard/**
+            - Path=/dashboard,/dashboard/**
         - id: codecoachai-user-admin-users
           uri: lb://codecoachai-user
           predicates:
-            - Path=/admin/users/**
+            - Path=/admin/users,/admin/users/**
+        - id: codecoachai-system-admin-role-menus
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/roles/*/menus
         - id: codecoachai-user-admin-roles
           uri: lb://codecoachai-user
           predicates:
-            - Path=/admin/roles/**
+            - Path=/admin/roles,/admin/roles/**
         - id: codecoachai-question-users
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions/**
+            - Path=/questions,/questions/**
         - id: codecoachai-question-recommendations
           uri: lb://codecoachai-question
           predicates:
-            - Path=/question-recommendations/**
+            - Path=/question-recommendations,/question-recommendations/**
         - id: codecoachai-question-practice
           uri: lb://codecoachai-question
           predicates:
-            - Path=/practice/**
+            - Path=/practice,/practice/**
         - id: codecoachai-question-admin-questions
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/questions/**
+            - Path=/admin/questions,/admin/questions/**
         - id: codecoachai-question-admin-reviews
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-reviews/**
+            - Path=/admin/question-reviews,/admin/question-reviews/**
         - id: codecoachai-question-admin-ai-generate
           uri: lb://codecoachai-question
           predicates:
@@ -59,23 +63,23 @@ spring:
         - id: codecoachai-question-admin-duplicate-reviews
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-duplicate-reviews/**
+            - Path=/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**
         - id: codecoachai-question-admin-categories
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-categories/**
+            - Path=/admin/question-categories,/admin/question-categories/**
         - id: codecoachai-question-admin-tags
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-tags/**
+            - Path=/admin/question-tags,/admin/question-tags/**
         - id: codecoachai-question-admin-groups
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-groups/**
+            - Path=/admin/question-groups,/admin/question-groups/**
         - id: codecoachai-resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes/**
+            - Path=/resumes,/resumes/**
         - id: codecoachai-resume-job-targets
           uri: lb://codecoachai-resume
           predicates:
@@ -95,15 +99,23 @@ spring:
         - id: codecoachai-interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews/**
+            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**
         - id: codecoachai-interview-industry-templates
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/industry-templates/**
+            - Path=/industry-templates,/industry-templates/**
+        - id: codecoachai-interview-admin-industry-templates
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/admin/industry-templates,/admin/industry-templates/**
+        - id: codecoachai-interview-admin-reports
+          uri: lb://codecoachai-interview
+          predicates:
+            - Path=/admin/interview-reports,/admin/interview-reports/**
         - id: codecoachai-study
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/study-plans/**,/study-tasks/**,/study-checkins/**
+            - Path=/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**
         - id: codecoachai-interview-sse
           uri: lb://codecoachai-interview
           predicates:
@@ -115,31 +127,31 @@ spring:
         - id: codecoachai-file-admin
           uri: lb://codecoachai-file
           predicates:
-            - Path=/admin/files/**
+            - Path=/admin/files,/admin/files/**
         - id: codecoachai-file-users
           uri: lb://codecoachai-file
           predicates:
-            - Path=/files/**
+            - Path=/files,/files/**
         - id: codecoachai-task
           uri: lb://codecoachai-task
           predicates:
-            - Path=/admin/tasks/**,/admin/notifications/**,/notifications/**
+            - Path=/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
         - id: codecoachai-search
           uri: lb://codecoachai-search
           predicates:
-            - Path=/search/**,/admin/search/**
+            - Path=/search,/search/**,/admin/search,/admin/search/**
         - id: codecoachai-system-admin
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/system/**
+            - Path=/admin/system,/admin/system/**
         - id: codecoachai-system-admin-dashboard
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/dashboard/**
+            - Path=/admin/dashboard,/admin/dashboard/**
         - id: codecoachai-system-configs
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/configs/**,/admin/config/**,/admin/login-logs/**,/admin/operation-logs/**,/admin/announcements/**,/admin/stats/**,/announcements/**
+            - Path=/admin/configs,/admin/configs/**,/admin/config,/admin/config/**,/admin/menus,/admin/menus/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
 codecoachai:
   gateway:

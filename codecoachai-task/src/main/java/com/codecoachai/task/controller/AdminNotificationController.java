@@ -61,12 +61,27 @@ public class AdminNotificationController {
     @PostMapping("/send")
     public Result<Void> send(@Valid @RequestBody SendNotificationDTO dto) {
         SecurityAssert.requireAdmin();
+        doSend(dto);
+        return Result.success();
+    }
+
+    @PostMapping
+    public Result<Void> sendCompat(@Valid @RequestBody SendNotificationDTO dto) {
+        SecurityAssert.requireAdmin();
+        doSend(dto);
+        return Result.success();
+    }
+
+    private void doSend(SendNotificationDTO dto) {
         if (dto.getUserIds() != null && !dto.getUserIds().isEmpty()) {
             for (Long uid : dto.getUserIds()) {
                 notificationService.notifySystem(uid, dto.getTitle(), dto.getContent());
             }
+        } else if (dto.getTargetUserId() != null) {
+            notificationService.notifySystem(dto.getTargetUserId(), dto.getTitle(), dto.getContent());
+        } else {
+            notificationService.notifySystem(0L, dto.getTitle(), dto.getContent());
         }
-        return Result.success();
     }
 
     @Operation(summary = "发送系统通知给全体用户（写入 userId=0 的广播通知）")
@@ -89,6 +104,9 @@ public class AdminNotificationController {
     @Data
     public static class SendNotificationDTO {
         private List<Long> userIds;
+        private Long targetUserId;
+        private String targetType;
+        private String type;
         @NotBlank(message = "标题不能为空")
         private String title;
         @NotBlank(message = "内容不能为空")

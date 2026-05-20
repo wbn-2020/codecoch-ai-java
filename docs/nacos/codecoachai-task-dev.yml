@@ -1,5 +1,5 @@
 server:
-  port: 9201
+  port: 8090
 
 spring:
   datasource:
@@ -7,18 +7,8 @@ spring:
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
     password: ${MYSQL_PASSWORD:}
-    hikari:
-      maximum-pool-size: 10
-      minimum-idle: 2
-      connection-timeout: 30000
 
-sa-token:
-  token-name: Authorization
-  timeout: 86400
-  is-read-cookie: false
-  token-prefix: Bearer
-  is-print: false
-
-codecoachai:
-  auth:
-    token-expire-seconds: 86400
+rocketmq:
+  consumer:
+    group: codecoachai-task-consumer
+    max-reconsume-times: 16

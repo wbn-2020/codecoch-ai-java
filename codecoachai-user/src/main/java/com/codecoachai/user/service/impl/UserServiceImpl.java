@@ -11,6 +11,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.user.convert.UserConvert;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
 import com.codecoachai.user.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.user.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
 import com.codecoachai.user.domain.dto.UpdateUserProfileDTO;
 import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
@@ -80,11 +81,12 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    public void updateAvatar(String avatarUrl) {
+    public UserProfileVO updateAvatar(String avatarUrl) {
         Long userId = requireCurrentUserId();
         SysUser user = getUserOrThrow(userId);
         user.setAvatarUrl(avatarUrl);
         sysUserMapper.updateById(user);
+        return getCurrentUserProfile();
     }
 
     @Override
@@ -189,6 +191,17 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public InnerUserAuthVO getInnerUserByEmail(String email) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getEmail, email)
+                .last("limit 1"));
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        return UserConvert.toInnerUserAuthVO(user, roleService.listRoleCodesByUserId(user.getId()));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public InnerCreateUserVO createInnerUser(InnerCreateUserDTO dto) {
         Long count = sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
@@ -224,6 +237,16 @@ public class UserServiceImpl implements UserService {
     public InnerUserBasicVO getInnerUser(Long id) {
         SysUser user = getUserOrThrow(id);
         return UserConvert.toInnerUserBasicVO(user, roleService.listRoleCodesByUserId(id));
+    }
+
+    @Override
+    public void resetInnerPassword(Long id, InnerResetPasswordDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "passwordHash is required");
+        }
+        SysUser user = getUserOrThrow(id);
+        user.setPasswordHash(dto.getPasswordHash());
+        sysUserMapper.updateById(user);
     }
 
     private SysUser getUserOrThrow(Long id) {

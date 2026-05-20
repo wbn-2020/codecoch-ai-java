@@ -105,6 +105,9 @@ public class AiServiceImpl implements AiService {
                     null, null, AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateInterviewQuestionVO fallback = mockQuestion(dto, scene);
             saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
@@ -196,6 +199,9 @@ public class AiServiceImpl implements AiService {
             vo.setRawResponse(rawResponse);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             PracticeReviewVO fallback = mockPracticeReview(dto);
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getRecordId()),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
@@ -227,6 +233,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             EvaluateAnswerVO fallback = mockEvaluate(dto);
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
@@ -257,6 +266,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateFollowUpVO fallback = new GenerateFollowUpVO();
             fallback.setFollowUpQuestion(buildFallbackFollowUp(dto));
             fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
@@ -285,6 +297,9 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
             GenerateReportVO fallback = mockReport(dto);
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getInterviewId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
@@ -670,6 +685,10 @@ public class AiServiceImpl implements AiService {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
         return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume parse failed"));
+    }
+
+    private boolean mockEnabled() {
+        return Boolean.TRUE.equals(aiProperties.getMockEnabled());
     }
 
     private BusinessException toResumeOptimizeBusinessException(RuntimeException ex) {
@@ -1399,31 +1418,23 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateReportVO parseReport(String raw) {
-        JsonNode json;
-        try {
-            json = parseJson(raw);
-        } catch (BusinessException ex) {
-            GenerateReportVO fallback = mockReport();
-            fallback.setSummary(firstText(raw, fallback.getSummary()));
-            fallback.setReportContent(firstText(raw, fallback.getReportContent()));
-            return fallback;
-        }
-        GenerateReportVO vo = mockReport();
+        JsonNode json = parseJson(raw);
+        GenerateReportVO vo = new GenerateReportVO();
         if (json.path("totalScore").isNumber()) {
             vo.setTotalScore(json.path("totalScore").asInt());
         }
-        vo.setSummary(firstText(json.path("summary").asText(null), vo.getSummary()));
-        vo.setStageScores(jsonOrDefault(json.path("stageScores"), vo.getStageScores()));
-        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), vo.getWeakPoints()));
-        vo.setStrengths(jsonOrDefault(json.path("strengths"), vo.getStrengths()));
-        vo.setWeaknesses(firstText(json.path("weaknesses").asText(null), vo.getWeaknesses()));
-        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), vo.getMainProblems()));
-        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), vo.getProjectProblems()));
-        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), vo.getSuggestions()));
-        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), vo.getReviewSuggestions()));
-        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), vo.getRecommendedQuestions()));
-        vo.setQaReview(jsonOrDefault(json.path("qaReview"), vo.getQaReview()));
-        vo.setReportContent(firstText(json.path("reportContent").asText(null), vo.getSummary()));
+        vo.setSummary(json.path("summary").asText(null));
+        vo.setStageScores(jsonOrDefault(json.path("stageScores"), null));
+        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), null));
+        vo.setStrengths(jsonOrDefault(json.path("strengths"), null));
+        vo.setWeaknesses(json.path("weaknesses").asText(null));
+        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), null));
+        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), null));
+        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), null));
+        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), null));
+        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), null));
+        vo.setQaReview(jsonOrDefault(json.path("qaReview"), null));
+        vo.setReportContent(json.path("reportContent").asText(null));
         return vo;
     }
 

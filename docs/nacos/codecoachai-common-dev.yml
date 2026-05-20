@@ -44,3 +44,11 @@ management:
     web:
       exposure:
         include: health,info
+
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: codecoachai-producer
+    send-message-timeout: 5000
+    retry-times-when-send-failed: 2
+    retry-times-when-send-async-failed: 2

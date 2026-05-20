@@ -3,9 +3,8 @@ package com.codecoachai.interview.mq;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.payload.InterviewReportPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
@@ -14,17 +13,23 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
-@ConditionalOnBean(MqProducer.class)
-@RequiredArgsConstructor
 public class InterviewMqDispatcher {
 
     private final MqProducer mqProducer;
+
+    public InterviewMqDispatcher(ObjectProvider<MqProducer> mqProducerProvider) {
+        this.mqProducer = mqProducerProvider.getIfAvailable();
+    }
 
     /**
      * 投递"面试报告生成"任务。
      */
     public boolean dispatchReport(Long sessionId, Long userId) {
         if (sessionId == null) {
+            return false;
+        }
+        if (mqProducer == null) {
+            log.warn("MQ producer unavailable, skip interview report dispatch sessionId={}", sessionId);
             return false;
         }
         try {

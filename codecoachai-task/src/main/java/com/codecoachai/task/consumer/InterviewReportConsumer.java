@@ -19,6 +19,7 @@ import org.apache.rocketmq.spring.annotation.MessageModel;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.slf4j.MDC;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -30,6 +31,7 @@ import org.springframework.util.StringUtils;
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "rocketmq", name = "name-server")
 @RequiredArgsConstructor
 @RocketMQMessageListener(
         topic = MqTopics.INTERVIEW,

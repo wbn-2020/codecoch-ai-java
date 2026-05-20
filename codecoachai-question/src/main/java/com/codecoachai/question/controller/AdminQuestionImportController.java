@@ -62,11 +62,16 @@ public class AdminQuestionImportController {
     }
 
     @Operation(summary = "批量导出题目（Excel）")
-    @GetMapping("/export/excel")
+    @GetMapping({"/export/excel", "/export"})
     public void exportExcel(HttpServletResponse response,
                             @RequestParam(required = false) Long categoryId,
                             @RequestParam(required = false) String difficulty,
-                            @RequestParam(required = false) String questionType) throws Exception {
+                            @RequestParam(required = false) String questionType,
+                            @RequestParam(required = false, defaultValue = "excel") String format) throws Exception {
+        if ("json".equalsIgnoreCase(format)) {
+            exportJson(response, categoryId, difficulty, questionType);
+            return;
+        }
         SecurityAssert.requireAdmin();
         List<Question> questions = queryForExport(categoryId, difficulty, questionType);
 
@@ -90,7 +95,7 @@ public class AdminQuestionImportController {
     }
 
     @Operation(summary = "批量导出题目（JSON）")
-    @GetMapping("/export/json")
+    @GetMapping({"/export/json", "/download/json"})
     public void exportJson(HttpServletResponse response,
                            @RequestParam(required = false) Long categoryId,
                            @RequestParam(required = false) String difficulty,
@@ -102,6 +107,30 @@ public class AdminQuestionImportController {
         response.setHeader("Content-Disposition", "attachment;filename="
                 + URLEncoder.encode("题目导出.json", StandardCharsets.UTF_8));
         objectMapper.writeValue(response.getOutputStream(), questions);
+    }
+
+    @Operation(summary = "Download question import template")
+    @GetMapping({"/template", "/template/excel", "/import/template", "/download/template"})
+    public void downloadTemplate(HttpServletResponse response) throws Exception {
+        SecurityAssert.requireAdmin();
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment;filename="
+                + URLEncoder.encode("question-import-template.xlsx", StandardCharsets.UTF_8));
+        EasyExcel.write(response.getOutputStream(), QuestionExportRow.class)
+                .sheet("questions")
+                .doWrite(List.of(templateRow()));
+    }
+
+    private QuestionExportRow templateRow() {
+        QuestionExportRow row = new QuestionExportRow();
+        row.setTitle("Example: Java HashMap principle");
+        row.setContent("Please explain HashMap put/get internals.");
+        row.setReferenceAnswer("Mention hash, bucket, collision, resize, treeify.");
+        row.setAnalysis("Focus on JDK 8 array + linked list + red-black tree.");
+        row.setDifficulty("MEDIUM");
+        row.setQuestionType("SHORT_ANSWER");
+        row.setExperienceLevel("MID");
+        return row;
     }
 
     private List<Question> queryForExport(Long categoryId, String difficulty, String questionType) {

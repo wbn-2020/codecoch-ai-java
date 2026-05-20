@@ -20,28 +20,33 @@ spring:
             - Path=/auth/**
 
         # ========== 用户 ==========
+        - id: system-role-menus
+          uri: lb://codecoachai-system
+          predicates:
+            - Path=/admin/roles/*/menus
+
         - id: user
           uri: lb://codecoachai-user
           predicates:
-            - Path=/users/**,/admin/users/**,/admin/roles/**,/dashboard/**
+            - Path=/users,/users/**,/admin/users,/admin/users/**,/admin/roles,/admin/roles/**,/dashboard,/dashboard/**
 
         # ========== 题库 ==========
         - id: question
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions/**,/admin/questions/**,/admin/question-categories/**,/admin/question-tags/**,/admin/question-groups/**,/admin/question-reviews/**,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories/**,/tags/**,/practice/**,/question-recommendations/**,/ai/sse/admin/questions/**
+            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
 
         # ========== 简历 ==========
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes/**,/admin/resumes/**,/skill-profiles/**,/job-targets/**,/resume-job-match/**,/ai/sse/resume/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/ai/sse/resume/**,/ai/sse/resume-optimize
 
         # ========== 面试 ==========
         - id: interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews/**,/admin/interviews/**,/admin/industry-templates/**,/study-plans/**,/study-tasks/**,/study-checkins/**,/industry-templates/**,/ai/sse/interviews/**
+            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**,/admin/interview-reports,/admin/interview-reports/**,/admin/industry-templates,/admin/industry-templates/**,/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/industry-templates,/industry-templates/**,/ai/sse/interviews/**,/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
 
         # ========== AI ==========
         - id: ai
@@ -60,25 +65,25 @@ spring:
         - id: file
           uri: lb://codecoachai-file
           predicates:
-            - Path=/files/**,/admin/files/**
+            - Path=/files,/files/**,/admin/files,/admin/files/**
 
         # ========== 异步任务中心（V3 新增） ==========
         - id: task
           uri: lb://codecoachai-task
           predicates:
-            - Path=/admin/tasks/**,/admin/notifications/**,/notifications/**
+            - Path=/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
 
         # ========== 搜索（V3 新增） ==========
         - id: search
           uri: lb://codecoachai-search
           predicates:
-            - Path=/search/**,/admin/search/**
+            - Path=/search,/search/**,/admin/search,/admin/search/**
 
         # ========== 系统管理 ==========
         - id: system
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/system/**,/admin/config/**,/admin/configs/**,/admin/dashboard/**,/admin/login-logs/**,/admin/operation-logs/**,/admin/announcements/**,/admin/stats/**,/announcements/**
+            - Path=/admin/system,/admin/system/**,/admin/config,/admin/config/**,/admin/configs,/admin/configs/**,/admin/menus,/admin/menus/**,/admin/dashboard,/admin/dashboard/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
       # 全局 CORS
       globalcors:

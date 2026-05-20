@@ -16,6 +16,8 @@ public class V3DashboardVO {
     private List<Map<String, Object>> recommendedQuestions;
     private List<TrendItemVO> trainingTrend;
     private List<NextActionVO> nextActions;
+    private Boolean degraded;
+    private List<String> governanceTips;
     private LocalDateTime generatedAt;
 
     @Data

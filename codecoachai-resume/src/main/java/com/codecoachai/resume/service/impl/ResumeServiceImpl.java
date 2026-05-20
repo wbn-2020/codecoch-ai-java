@@ -375,9 +375,23 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    public ResumeProjectVO updateProject(Long projectId, ResumeProjectSaveDTO dto) {
+        ResumeProject project = getOwnedProject(projectId);
+        applyProject(project, dto);
+        projectMapper.updateById(project);
+        return ResumeConvert.toProjectVO(project);
+    }
+
+    @Override
     public void deleteProject(Long resumeId, Long projectId) {
         getOwnedResume(resumeId);
         ResumeProject project = getProject(resumeId, projectId);
+        projectMapper.deleteById(project.getId());
+    }
+
+    @Override
+    public void deleteProject(Long projectId) {
+        ResumeProject project = getOwnedProject(projectId);
         projectMapper.deleteById(project.getId());
     }
 
@@ -979,9 +993,19 @@ public class ResumeServiceImpl implements ResumeService {
 
     private ResumeProject getProject(Long resumeId, Long projectId) {
         ResumeProject project = projectMapper.selectById(projectId);
-        if (project == null || !resumeId.equals(project.getResumeId())) {
+        if (project == null || !resumeId.equals(project.getResumeId())
+                || CommonConstants.YES.equals(project.getDeleted())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume project not found");
         }
+        return project;
+    }
+
+    private ResumeProject getOwnedProject(Long projectId) {
+        ResumeProject project = projectMapper.selectById(projectId);
+        if (project == null || CommonConstants.YES.equals(project.getDeleted())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume project not found");
+        }
+        getOwnedResume(project.getResumeId());
         return project;
     }
 

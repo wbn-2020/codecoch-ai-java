@@ -206,6 +206,59 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 .toList();
     }
 
+    @Override
+    public List<QuestionRecommendationItemVO> recommendByJobTarget(Long targetJobId, Integer limit) {
+        if (targetJobId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+        }
+        Long userId = requireCurrentUserId();
+        QuestionRecommendationBatch batch = batchMapper.selectOne(new LambdaQueryWrapper<QuestionRecommendationBatch>()
+                .eq(QuestionRecommendationBatch::getUserId, userId)
+                .eq(QuestionRecommendationBatch::getJobTargetId, targetJobId)
+                .eq(QuestionRecommendationBatch::getStatus, QuestionRecommendationBatchStatus.SUCCESS.getCode())
+                .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
+                .orderByDesc(QuestionRecommendationBatch::getUpdatedAt)
+                .last("limit 1"));
+        if (batch == null) {
+            return List.of();
+        }
+        return listBatchItems(batch, normalizeRecommendationLimit(limit));
+    }
+
+    @Override
+    public List<QuestionRecommendationItemVO> recommendBySkill(Long skillProfileId, String skillCode,
+                                                               String skillName, Integer limit) {
+        Long userId = requireCurrentUserId();
+        LambdaQueryWrapper<QuestionRecommendationBatch> batchWrapper = new LambdaQueryWrapper<QuestionRecommendationBatch>()
+                .eq(QuestionRecommendationBatch::getUserId, userId)
+                .eq(skillProfileId != null, QuestionRecommendationBatch::getSkillProfileId, skillProfileId)
+                .eq(QuestionRecommendationBatch::getStatus, QuestionRecommendationBatchStatus.SUCCESS.getCode())
+                .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
+                .orderByDesc(QuestionRecommendationBatch::getUpdatedAt);
+        List<QuestionRecommendationBatch> batches = batchMapper.selectList(batchWrapper);
+        if (batches.isEmpty()) {
+            return List.of();
+        }
+        int itemLimit = normalizeRecommendationLimit(limit);
+        List<QuestionRecommendationItemVO> result = new java.util.ArrayList<>();
+        for (QuestionRecommendationBatch batch : batches) {
+            LambdaQueryWrapper<QuestionRecommendationItem> wrapper = new LambdaQueryWrapper<QuestionRecommendationItem>()
+                    .eq(QuestionRecommendationItem::getBatchId, batch.getId())
+                    .eq(QuestionRecommendationItem::getUserId, userId)
+                    .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
+                    .eq(StringUtils.hasText(skillCode), QuestionRecommendationItem::getSkillCode, skillCode)
+                    .like(StringUtils.hasText(skillName), QuestionRecommendationItem::getSkillName, skillName)
+                    .orderByAsc(QuestionRecommendationItem::getSortOrder)
+                    .orderByAsc(QuestionRecommendationItem::getId)
+                    .last("limit " + (itemLimit - result.size()));
+            result.addAll(itemMapper.selectList(wrapper).stream().map(this::toItemVO).toList());
+            if (result.size() >= itemLimit) {
+                break;
+            }
+        }
+        return result;
+    }
+
     private QuestionRecommendationGenerateVO generate(RecommendationRequest request, Long userId) {
         QuestionRecommendationBatch batch = createBatch(request, userId);
         try {
@@ -397,6 +450,19 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question recommendation batch not found");
         }
         return batch;
+    }
+
+    private List<QuestionRecommendationItemVO> listBatchItems(QuestionRecommendationBatch batch, int limit) {
+        return itemMapper.selectList(new LambdaQueryWrapper<QuestionRecommendationItem>()
+                        .eq(QuestionRecommendationItem::getBatchId, batch.getId())
+                        .eq(QuestionRecommendationItem::getUserId, batch.getUserId())
+                        .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
+                        .orderByAsc(QuestionRecommendationItem::getSortOrder)
+                        .orderByAsc(QuestionRecommendationItem::getId)
+                        .last("limit " + limit))
+                .stream()
+                .map(this::toItemVO)
+                .toList();
     }
 
     private QuestionRecommendationBatchListVO toListVO(QuestionRecommendationBatch batch) {
@@ -629,6 +695,13 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             return DEFAULT_PAGE_SIZE;
         }
         return Math.min(pageSize, MAX_PAGE_SIZE);
+    }
+
+    private int normalizeRecommendationLimit(Integer limit) {
+        if (limit == null || limit < 1) {
+            return 10;
+        }
+        return Math.min(limit, 50);
     }
 
     private JsonNode readJsonOrNull(String raw) {

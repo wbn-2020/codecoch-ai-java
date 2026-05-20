@@ -2,6 +2,7 @@ package com.codecoachai.user.controller;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.user.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.user.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.user.domain.vo.InnerCreateUserVO;
 import com.codecoachai.user.domain.vo.InnerUserAuthVO;
 import com.codecoachai.user.domain.vo.InnerUserBasicVO;
@@ -29,6 +30,11 @@ public class InnerUserController {
         return Result.success(userService.getInnerUserByUsername(username));
     }
 
+    @GetMapping("/by-email")
+    public Result<InnerUserAuthVO> getByEmail(@RequestParam String email) {
+        return Result.success(userService.getInnerUserByEmail(email));
+    }
+
     @PostMapping
     public Result<InnerCreateUserVO> createUser(@Valid @RequestBody InnerCreateUserDTO dto) {
         return Result.success(userService.createInnerUser(dto));
@@ -42,5 +48,11 @@ public class InnerUserController {
     @GetMapping("/{id}")
     public Result<InnerUserBasicVO> getUser(@PathVariable Long id) {
         return Result.success(userService.getInnerUser(id));
+    }
+
+    @PostMapping("/{id}/reset-password")
+    public Result<Void> resetPassword(@PathVariable Long id, @RequestBody InnerResetPasswordDTO dto) {
+        userService.resetInnerPassword(id, dto);
+        return Result.success();
     }
 }

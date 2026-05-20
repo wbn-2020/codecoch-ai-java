@@ -56,7 +56,11 @@ public interface ResumeService {
 
     ResumeProjectVO updateProject(Long resumeId, Long projectId, ResumeProjectSaveDTO dto);
 
+    ResumeProjectVO updateProject(Long projectId, ResumeProjectSaveDTO dto);
+
     void deleteProject(Long resumeId, Long projectId);
+
+    void deleteProject(Long projectId);
 
     InnerResumeDetailVO getInnerResume(Long id);
 

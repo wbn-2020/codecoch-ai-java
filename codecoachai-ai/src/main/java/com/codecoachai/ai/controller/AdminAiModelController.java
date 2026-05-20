@@ -39,6 +39,12 @@ public class AdminAiModelController {
                 .orderByDesc(AiModelConfig::getUpdatedAt)));
     }
 
+    @GetMapping("/admin/ai/models/{id}")
+    public Result<AiModelConfig> detail(@PathVariable Long id) {
+        SecurityAssert.requireAdmin();
+        return Result.success(get(id));
+    }
+
     @PostMapping("/admin/ai/models")
     public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
         SecurityAssert.requireAdmin();
@@ -74,6 +80,21 @@ public class AdminAiModelController {
         return Result.success(entity);
     }
 
+    @PutMapping("/admin/ai/models/{id}/default")
+    public Result<AiModelConfig> setDefaultCompat(@PathVariable Long id) {
+        return setDefault(id);
+    }
+
+    @PutMapping("/admin/ai/models/{id}/status")
+    public Result<AiModelConfig> updateStatus(@PathVariable Long id, @RequestBody ModelStatusDTO dto) {
+        SecurityAssert.requireAdmin();
+        AiModelConfig entity = get(id);
+        Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
+        entity.setEnabled(enabled == null ? 1 : enabled);
+        mapper.updateById(entity);
+        return Result.success(entity);
+    }
+
     @DeleteMapping("/admin/ai/models/{id}")
     public Result<Void> delete(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
@@ -82,17 +103,21 @@ public class AdminAiModelController {
     }
 
     private void apply(AiModelConfig entity, AiModelConfigSaveDTO dto) {
-        if (dto == null || !StringUtils.hasText(dto.getProvider()) || !StringUtils.hasText(dto.getModelCode())) {
+        String modelCode = dto == null ? null : (StringUtils.hasText(dto.getModelCode()) ? dto.getModelCode() : dto.getModelName());
+        if (dto == null || !StringUtils.hasText(dto.getProvider()) || !StringUtils.hasText(modelCode)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "provider and modelCode are required");
         }
         entity.setProvider(dto.getProvider().trim());
-        entity.setModelCode(dto.getModelCode().trim());
-        entity.setModelName(StringUtils.hasText(dto.getModelName()) ? dto.getModelName().trim() : entity.getModelCode());
+        entity.setModelCode(modelCode.trim());
+        entity.setModelName(StringUtils.hasText(dto.getDisplayName()) ? dto.getDisplayName().trim()
+                : StringUtils.hasText(dto.getModelName()) ? dto.getModelName().trim() : entity.getModelCode());
         entity.setCapabilityTags(dto.getCapabilityTags());
-        entity.setDefaultModel(dto.getDefaultModel() == null ? 0 : dto.getDefaultModel());
-        entity.setEnabled(dto.getEnabled() == null ? 1 : dto.getEnabled());
+        entity.setDefaultModel(dto.getDefaultModel() != null ? dto.getDefaultModel()
+                : dto.getIsDefault() == null ? 0 : dto.getIsDefault());
+        entity.setEnabled(dto.getEnabled() != null ? dto.getEnabled()
+                : dto.getStatus() == null ? 1 : dto.getStatus());
         entity.setSortOrder(dto.getSortOrder() == null ? 100 : dto.getSortOrder());
-        entity.setRemark(dto.getRemark());
+        entity.setRemark(StringUtils.hasText(dto.getRemark()) ? dto.getRemark() : dto.getDescription());
     }
 
     private AiModelConfig get(Long id) {
@@ -108,5 +133,11 @@ public class AdminAiModelController {
                 .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    @lombok.Data
+    public static class ModelStatusDTO {
+        private Integer status;
+        private Integer enabled;
     }
 }

@@ -1,16 +1,21 @@
 package com.codecoachai.auth.service.impl;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.codecoachai.auth.domain.dto.ForgotPasswordDTO;
 import com.codecoachai.auth.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.auth.domain.dto.InnerResetPasswordDTO;
 import com.codecoachai.auth.domain.dto.LoginDTO;
 import com.codecoachai.auth.domain.dto.RegisterDTO;
+import com.codecoachai.auth.domain.dto.ResetPasswordDTO;
 import com.codecoachai.auth.domain.vo.CurrentUserVO;
+import com.codecoachai.auth.domain.vo.ForgotPasswordVO;
 import com.codecoachai.auth.domain.vo.InnerCreateUserVO;
 import com.codecoachai.auth.domain.vo.InnerTokenInfoVO;
 import com.codecoachai.auth.domain.vo.InnerUserAuthVO;
 import com.codecoachai.auth.domain.vo.InnerUserBasicVO;
 import com.codecoachai.auth.domain.vo.LoginVO;
 import com.codecoachai.auth.domain.vo.RegisterVO;
+import com.codecoachai.auth.domain.vo.ResetPasswordVO;
 import com.codecoachai.auth.feign.UserFeignClient;
 import com.codecoachai.auth.service.AuthService;
 import com.codecoachai.common.core.constant.SecurityConstants;
@@ -18,9 +23,14 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -31,6 +41,9 @@ import org.springframework.util.StringUtils;
 public class AuthServiceImpl implements AuthService {
 
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final long RESET_TOKEN_TTL_SECONDS = 15 * 60L;
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final Map<String, PasswordResetToken> RESET_TOKENS = new ConcurrentHashMap<>();
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
@@ -83,12 +96,41 @@ public class AuthServiceImpl implements AuthService {
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
                 user.getAvatarUrl(), user.getEmail(), roles);
-        LoginVO vo = new LoginVO();
-        vo.setToken(token);
-        vo.setTokenName("Authorization");
-        vo.setExpireTime(LocalDateTime.now().plusDays(1).format(DATE_TIME_FORMATTER));
-        vo.setUserInfo(currentUser);
-        vo.setRoles(roles);
+        return buildLoginVO(token, currentUser, roles);
+    }
+
+    @Override
+    public ForgotPasswordVO forgotPassword(ForgotPasswordDTO dto) {
+        InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(dto.getEmail()));
+        if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+            throw new BusinessException(ErrorCode.USER_DISABLED);
+        }
+        String token = newResetToken();
+        RESET_TOKENS.put(token, new PasswordResetToken(user.getId(), normalizeEmail(dto.getEmail()),
+                LocalDateTime.now().plusSeconds(RESET_TOKEN_TTL_SECONDS)));
+
+        ForgotPasswordVO vo = new ForgotPasswordVO();
+        vo.setMessage("Password reset token issued. Use resetToken with POST /auth/reset-password.");
+        vo.setResetToken(token);
+        vo.setExpiresInSeconds(RESET_TOKEN_TTL_SECONDS);
+        return vo;
+    }
+
+    @Override
+    public ResetPasswordVO resetPassword(ResetPasswordDTO dto) {
+        if (StringUtils.hasText(dto.getConfirmPassword()) && !dto.getNewPassword().equals(dto.getConfirmPassword())) {
+            throw new BusinessException(ErrorCode.PASSWORD_CONFIRM_NOT_MATCH);
+        }
+        PasswordResetToken token = RESET_TOKENS.remove(dto.getToken());
+        if (token == null || token.expiresAt().isBefore(LocalDateTime.now())) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        InnerResetPasswordDTO innerDto = new InnerResetPasswordDTO();
+        innerDto.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        FeignResultUtils.unwrap(userFeignClient.resetPassword(token.userId(), innerDto));
+
+        ResetPasswordVO vo = new ResetPasswordVO();
+        vo.setMessage("Password has been reset.");
         return vo;
     }
 
@@ -118,7 +160,21 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginVO refreshToken() {
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "V1 暂未实现刷新 Token");
+        if (StpUtil.isLogin()) {
+            Long userId = Long.valueOf(StpUtil.getLoginIdAsString());
+            InnerUserBasicVO user = FeignResultUtils.unwrap(userFeignClient.getInnerUser(userId));
+            if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+                throw new BusinessException(ErrorCode.USER_DISABLED);
+            }
+            List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+            StpUtil.getSession().set("username", user.getUsername());
+            StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
+            StpUtil.getSession().set("roles", roles);
+            CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
+                    user.getAvatarUrl(), user.getEmail(), roles);
+            return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles);
+        }
+        throw new BusinessException(ErrorCode.TOKEN_INVALID);
     }
 
     @Override
@@ -149,5 +205,28 @@ public class AuthServiceImpl implements AuthService {
         vo.setEmail(email);
         vo.setRoles(roles == null ? List.of() : roles);
         return vo;
+    }
+
+    private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles) {
+        LoginVO vo = new LoginVO();
+        vo.setToken(token);
+        vo.setTokenName("Authorization");
+        vo.setExpireTime(LocalDateTime.now().plusDays(1).format(DATE_TIME_FORMATTER));
+        vo.setUserInfo(currentUser);
+        vo.setRoles(roles == null ? List.of() : roles);
+        return vo;
+    }
+
+    private String newResetToken() {
+        byte[] bytes = new byte[32];
+        SECURE_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private String normalizeEmail(String email) {
+        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private record PasswordResetToken(Long userId, String email, LocalDateTime expiresAt) {
     }
 }
