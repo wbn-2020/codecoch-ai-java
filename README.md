@@ -1,46 +1,189 @@
-# CodeCoachAI Java Backend
+# CodeCoachAI Java 后端
 
-This repository is the Java backend for CodeCoachAI.
+CodeCoachAI 是一个面向 Java 开发者求职准备场景的 AI 面试训练与简历优化平台。本仓库是 CodeCoachAI 的 Java 后端项目，采用 Spring Boot / Spring Cloud Alibaba 微服务架构，围绕题库训练、简历解析与优化、AI 模拟面试、面试报告、学习计划、目标岗位匹配、能力画像、任务中心、通知、搜索和 AI 调用治理等能力进行建设。
 
-Current branch focus: V2 backend completion, B0 backend freeze testing, and API contract stabilization.
+当前后端主线已经从 V1/V2 的基础闭环和 AI 能力增强，推进到 V3 的岗位目标驱动求职训练闭环与工程化增强阶段。V4 已完成 PRD 和开发前置设计，但本仓库当前 README 主要描述已实现与正在完善的 V1/V2/V3 后端能力。
 
-Authoritative V2 scope source:
+## 项目定位
 
-```text
-C:\my-claude\CodeCoachAI-doc\PRD\CodeCoachAI_PRD_V2_AI能力增强版.md
-```
-
-Frontend implementation is outside this repository.
-
-## Stack
-
-- Java 17
-- Spring Boot 3
-- Spring Cloud Alibaba
-- Spring Cloud Gateway
-- Nacos
-- OpenFeign
-- MyBatis-Plus
-- MySQL 8
-- Redis
-- Sa-Token
-- Knife4j / OpenAPI
-
-## Local Services
-
-Start infrastructure first:
+CodeCoachAI 的目标不是做一个简单的题库或聊天机器人，而是构建一条完整的求职训练链路：
 
 ```text
-MySQL -> Redis -> Nacos -> RocketMQ
+目标岗位 / JD
+  ↓
+简历解析与简历-JD 匹配
+  ↓
+能力画像与技能差距分析
+  ↓
+学习计划与题目推荐
+  ↓
+AI 模拟面试与动态追问
+  ↓
+面试报告与薄弱点反馈
+  ↓
+持续训练和复盘
 ```
 
-Then import Nacos configs:
+后端项目重点展示 Java 微服务、AI 应用工程化、异步任务、文件存储、搜索、日志审计、Prompt 治理和可观测性等能力。
+
+## 当前开发进度概览
+
+### V1：微服务核心闭环
+
+V1 主要完成了项目的基础架构和 AI 面试核心闭环：
+
+- Spring Cloud Alibaba 微服务骨架。
+- Gateway 网关统一入口。
+- 认证、用户、题库、简历、面试、AI、系统等服务拆分。
+- 用户注册、登录、退出、当前用户、资料与密码管理。
+- 题库、分类、标签、问题组管理。
+- 用户刷题、提交答案、收藏、错题、掌握状态。
+- 简历手动录入、编辑、项目经历和默认简历。
+- 创建 AI 模拟面试、当前问题、提交回答、动态追问。
+- 面试历史、面试详情和结构化面试报告。
+- Prompt 模板和 AI 调用日志基础能力。
+- 统一返回、统一异常、权限上下文、用户数据归属校验。
+
+### V2：AI 能力增强
+
+V2 在 V1 基础上补充了更完整的 AI 产品能力：
+
+- 简历文件上传与解析状态管理。
+- PDF / Word / Markdown / TXT 等简历文本解析能力。
+- AI 简历结构化解析。
+- AI 简历优化建议、风险提示和优化记录。
+- 行业场景面试与行业模板管理。
+- AI 题目生成与审核流程。
+- 题库去重、疑似重复题审核和题目关系管理。
+- 学习计划、每日任务、任务完成/跳过。
+- 简答题 AI 点评。
+- SSE 流式输出，用于面试提问、点评、报告、简历优化、学习计划、题目生成等场景。
+- Prompt 模板版本管理、回滚、测试和 AI 日志增强。
+- 文件记录管理和上传文件元数据治理。
+
+### V3：岗位目标驱动闭环与工程化增强
+
+V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工程化能力：
+
+- 目标岗位管理和 JD 解析。
+- 简历-JD 匹配报告。
+- 能力画像和技能差距分析。
+- 基于差距生成学习计划。
+- 基于岗位、画像、短板的题目推荐。
+- 目标岗位相关的模拟面试能力增强。
+- V3 求职驾驶舱聚合能力。
+- Redis 缓存、限流、幂等、锁等基础能力。
+- RocketMQ 异步任务、任务中心、死信任务和通知联动基础。
+- 文件服务增强，支持本地存储与阿里云 OSS 方向。
+- Elasticsearch 搜索服务，覆盖题库、简历、面试记录等全文搜索方向。
+- 操作日志、登录日志和后台审计能力。
+- Docker Compose、Nacos 配置、基础设施部署脚本。
+- AI workflow / traceId / ai_call_log 等 AI 调用治理基础。
+
+## 当前已实现的主要后端模块
+
+| 模块 | 说明 |
+|---|---|
+| `codecoachai-gateway` | 网关服务，负责统一入口、鉴权、Header 透传、内部接口保护、路由转发。 |
+| `codecoachai-auth` | 认证服务，负责注册、登录、退出、Token、当前用户等能力。 |
+| `codecoachai-user` | 用户服务，负责用户资料、角色、权限、用户管理、Dashboard 聚合等。 |
+| `codecoachai-question` | 题库服务，负责题目、分类、标签、问题组、刷题、收藏、错题、AI 题目审核、去重等。 |
+| `codecoachai-resume` | 简历服务，负责简历 CRUD、项目经历、简历上传解析、AI 优化、目标岗位、简历-JD 匹配、能力画像等。 |
+| `codecoachai-interview` | 面试服务，负责模拟面试、面试状态机、答题、动态追问、报告、学习计划等。 |
+| `codecoachai-ai` | AI 服务，负责模型调用、Prompt 渲染、AI 日志、简历解析、简历优化、题目生成、JD 解析、匹配分析等。 |
+| `codecoachai-file` | 文件服务，负责文件上传、文件记录、存储 Provider、文件元数据管理。 |
+| `codecoachai-task` | 任务服务，负责异步任务、通知、死信、MQ 消费等工程化能力。 |
+| `codecoachai-search` | 搜索服务，负责 Elasticsearch 索引、搜索、索引同步和管理。 |
+| `codecoachai-system` | 系统服务，负责系统配置、日志审计、后台治理能力。 |
+| `codecoachai-common` | 公共模块，包含 core、web、security、mybatis、redis、feign、log、ai、oss、mq 等通用能力。 |
+
+## 技术栈
+
+| 类型 | 技术 |
+|---|---|
+| JDK | Java 17 |
+| 基础框架 | Spring Boot 3.2.x |
+| 微服务 | Spring Cloud 2023.x、Spring Cloud Alibaba 2023.x |
+| 网关 | Spring Cloud Gateway |
+| 注册与配置 | Nacos |
+| 服务调用 | OpenFeign |
+| ORM | MyBatis-Plus |
+| 数据库 | MySQL 8 |
+| 缓存 | Redis / Redisson |
+| 权限 | Sa-Token |
+| 消息队列 | RocketMQ |
+| 搜索 | Elasticsearch 8 |
+| 文件存储 | 本地存储、阿里云 OSS 方向 |
+| API 文档 | Knife4j / OpenAPI |
+| AI 调用 | OpenAI Compatible Client，当前主要面向 DeepSeek 兼容接口 |
+| 部署 | Docker Compose、Nacos 配置导入脚本 |
+
+## 目录结构
+
+```text
+CodeCoachAI-java
+├── codecoachai-common                 # 公共模块
+│   ├── common-core                     # Result、错误码、异常、基础实体
+│   ├── common-web                      # Web、全局异常、日志切面
+│   ├── common-security                 # 登录上下文、安全过滤器
+│   ├── common-mybatis                  # MyBatis-Plus 公共配置
+│   ├── common-redis                    # Redis 工具与缓存基础
+│   ├── common-feign                    # Feign 公共能力
+│   ├── common-ai                       # AI 通用客户端能力
+│   ├── common-oss                      # OSS 存储能力
+│   └── common-mq                       # MQ 消息封装
+├── codecoachai-gateway                 # API 网关
+├── codecoachai-auth                    # 认证服务
+├── codecoachai-user                    # 用户服务
+├── codecoachai-question                # 题库服务
+├── codecoachai-resume                  # 简历、岗位、匹配、画像服务
+├── codecoachai-interview               # 面试和学习计划服务
+├── codecoachai-ai                      # AI 调用、Prompt、AI 日志服务
+├── codecoachai-file                    # 文件服务
+├── codecoachai-task                    # 异步任务和通知服务
+├── codecoachai-search                  # 搜索服务
+├── codecoachai-system                  # 系统配置和审计服务
+├── config/nacos                        # Nacos 配置文件
+├── scripts                             # 辅助脚本
+├── docs                                # 后端相关文档
+├── sql                                 # 初始化 SQL / migration 脚本
+├── docker-compose.yml                  # 基础设施编排
+└── pom.xml                             # Maven 根工程
+```
+
+## 本地开发环境
+
+### 基础依赖
+
+本地开发建议先启动以下基础设施：
+
+```text
+MySQL 8
+Redis
+Nacos
+RocketMQ
+Elasticsearch（搜索相关功能需要）
+```
+
+如果只验证 V1/V2 基础接口，可以先启动 MySQL、Redis、Nacos；如果验证异步任务、搜索、V3 工程化能力，需要同时启动 RocketMQ 和 Elasticsearch。
+
+### 导入 Nacos 配置
+
+项目提供 Nacos 配置导入脚本，启动 Nacos 后执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\nacos\import-nacos-config.ps1
 ```
 
-Start backend modules as needed:
+配置文件主要位于：
+
+```text
+config/nacos/
+```
+
+### 启动后端服务
+
+按需启动服务，例如：
 
 ```powershell
 mvn -pl codecoachai-gateway spring-boot:run
@@ -51,28 +194,32 @@ mvn -pl codecoachai-resume spring-boot:run
 mvn -pl codecoachai-interview spring-boot:run
 mvn -pl codecoachai-ai spring-boot:run
 mvn -pl codecoachai-file spring-boot:run
+mvn -pl codecoachai-task spring-boot:run
+mvn -pl codecoachai-search spring-boot:run
+mvn -pl codecoachai-system spring-boot:run
 ```
 
-## Database
+也可以先只启动当前联调所需服务，避免一次性启动全部模块。
 
-Keep the database name consistent with Nacos datasource config.
+## 数据库说明
 
-`sql/init.sql` currently creates and uses `codecoachai_v1` for local dev compatibility. The name is historical; after the V2 migrations below are applied, it is the local V2 verification schema. For an isolated V2 verification database, create a temporary copy with the database name replaced, then import that temporary file.
+本地数据库名称需与 Nacos 数据源配置保持一致。历史上项目使用过 `codecoachai_v1` 作为本地开发库名，后续 V2/V3 migration 也可能继续在该库上验证。
 
-Migration order:
+SQL 目录通常包含：
 
 ```text
-sql/migration/V2_001__file_resume_upload.sql
-sql/migration/V2_002__resume_optimize_record.sql
-sql/migration/V2_003__industry_template_scene_interview.sql
-sql/migration/V2_004__ai_question_review.sql
-sql/migration/V2_005__question_duplicate_review_relation.sql
-sql/migration/V2_006__study_plan_task.sql
-sql/migration/V2_007__prompt_template_version_ai_log_enhancement.sql
-sql/migration/V2_008__practice_answer_review.sql
+sql/init.sql
+sql/migration/
 ```
 
-Use Windows-safe MySQL commands:
+开发或联调前请确认：
+
+1. 当前 Nacos 数据源配置中的数据库名称。
+2. `sql/init.sql` 是否已导入。
+3. `sql/migration` 下 V2/V3/V4 迁移脚本是否已按顺序执行。
+4. Flyway 或 Docker 初始化方式是否与当前环境一致。
+
+Windows 下执行 SQL 示例：
 
 ```powershell
 $env:MYSQL_PWD="your-local-password"
@@ -80,13 +227,71 @@ mysql --host=127.0.0.1 --user=root --default-character-set=utf8mb4 --database=co
 Remove-Item Env:\MYSQL_PWD
 ```
 
-## AI Mock Mode
+## 重要接口与能力
 
-Local V2 backend smoke tests should use mock AI unless explicitly validating a real model provider. Check the `codecoachai-ai-dev.yml` Nacos config and keep `mockEnabled=true` for deterministic local verification.
+### 认证与用户
 
-## B0 Backend Freeze Contract
+```text
+/auth/register
+/auth/login
+/auth/logout
+/auth/current-user
+/users/profile
+/users/password
+/admin/users
+```
 
-SSE public endpoints:
+### 题库与刷题
+
+```text
+/questions
+/questions/{id}
+/questions/{id}/answers
+/questions/{id}/favorite
+/questions/favorites
+/questions/wrong-records
+/questions/{id}/mastery
+/admin/questions
+/admin/question-categories
+/admin/question-tags
+/admin/question-groups
+/admin/question-reviews
+/admin/question-duplicate-reviews
+```
+
+### 简历、岗位、匹配与画像
+
+```text
+/resumes
+/resumes/upload
+/resumes/{id}/parse-status
+/resumes/{id}/analysis-result
+/resumes/{id}/confirm-analysis
+/resumes/{id}/optimize
+/resumes/{id}/optimize-records
+/job-targets
+/job-targets/{id}/parse
+/resume-job-match/reports
+/skill-profiles
+```
+
+### 面试与学习计划
+
+```text
+/interviews
+/interviews/{id}/start
+/interviews/{id}/current
+/interviews/{id}/answer
+/interviews/{id}/finish
+/interviews/{id}/report
+/study-plans/generate
+/study-plans/generate-from-gap
+/study-plans/{id}/tasks
+/study-tasks/{id}/complete
+/study-tasks/{id}/skip
+```
+
+### SSE 流式接口
 
 ```text
 GET  /ai/sse/interview-question?sessionId={id}
@@ -98,76 +303,136 @@ GET  /ai/sse/study-plan?reportId={id}
 GET  /ai/sse/admin/questions/generate?count={count}
 ```
 
-`POST /ai/sse/interview-comment` accepts:
-
-```json
-{
-  "answerContent": "candidate answer"
-}
-```
-
-`GET /ai/sse/interview-comment` is retained only for compatibility and short smoke tests. Frontend code should prefer the POST form to avoid URL length limits, log exposure, and escaping issues.
-
-SSE event contract:
+SSE 事件约定：
 
 ```text
-start    stream accepted
-progress stage progress event
-chunk    primary content chunk event
-delta    legacy alias for chunk, kept for existing clients
-result   structured business result
-metadata structured business metadata
-done     stream completed
-error    sanitized failure event
+start      流式任务开始
+progress   阶段进度
+chunk      主要内容片段
+delta      chunk 的兼容别名
+result     结构化业务结果
+metadata   业务元数据
+done       流式任务完成
+error      脱敏后的失败事件
 ```
 
-Common payload fields:
+## AI 与 Prompt 治理
+
+后端已经具备 AI 调用、Prompt 模板、Prompt 版本、AI 调用日志等基础能力。
+
+主要能力包括：
+
+- Prompt 模板管理。
+- Prompt 版本管理、激活、回滚、测试。
+- AI 调用日志记录。
+- 模型名称、耗时、状态、失败原因等信息记录。
+- JD 解析、简历解析、简历优化、题目生成、学习计划、面试点评、报告生成等 AI 场景。
+
+需要注意：当前部分 AI 能力仍存在 mock/fallback 或直接本地兜底逻辑。正式演示或生产化前，应区分开发 mock 与真实模型调用，避免把 mock 结果误认为真实 AI 输出。
+
+## 当前已知问题与后续重点
+
+根据当前 PRD 对照审查，后端仍有以下重点问题需要继续完善：
+
+| 问题 | 说明 | 优先级 |
+|---|---|---|
+| AI mock/fallback 边界 | 部分 AI 失败后可能返回 mock/fallback，影响评分、追问、报告真实性 | P0 |
+| 简历优化 apply | 当前更偏生成草稿，尚未形成稳定结构化 patch 落库 | P0 |
+| V3 Dashboard 聚合 | 当前聚合实现仍需增强稳定空态、服务分层和字段一致性 | P0/P1 |
+| 任务中心闭环 | 任务记录、重试、通知、死信处理需继续完善 | P1 |
+| 操作日志覆盖 | AOP 能力存在，但核心写操作日志覆盖度需检查和补齐 | P1 |
+| 前后端契约 | 部分 VO、SSE 事件、返回结构仍需固定契约 | P1 |
+| Migration 一致性 | Flyway、Docker 初始化、SQL migration 执行路径需实跑验证 | P1 |
+| 搜索前后端联动 | 后端搜索服务已具备，前端统一搜索入口仍需完善 | P2 |
+
+## V4 规划状态
+
+V4 暂未进入后端代码开发阶段，但文档和前置设计已经完成。
+
+V4 定位为：
 
 ```text
-requestId, sessionId, content, index, messageId, aiCallLogId, fullContent, code, message, metadata
+个人求职智能体 + 长期成长档案 + 数据分析看板 + AI 工程化增强
 ```
 
-The current backend uses synchronous AI results split into SSE chunks where the AI client does not provide native token streaming.
+V4 不做支付、会员、企业版、多租户、真实 B 端场景。
 
-## Verification
+V4 已完成的主要文档包括：
 
-After backend changes, run:
+```text
+CodeCoachAI-doc/PRD/CodeCoachAI_PRD_V4_个人求职智能体与数据分析增强版.md
+CodeCoachAI-doc/MD/V4/V4_开发路线图.md
+CodeCoachAI-doc/MD/V4/V4-A/V4-A_技术设计.md
+CodeCoachAI-doc/MD/V4/V4-A/V4-A_数据库设计.md
+CodeCoachAI-doc/MD/V4/V4-A/V4-A_API契约.md
+CodeCoachAI-doc/MD/V4/V4-A/V4-A_Prompt设计.md
+CodeCoachAI-doc/MD/V4/V4-A/V4-A_开发任务拆解.md
+CodeCoachAI-doc/MD/V4/V4-C/V4-C-1_基础BI看板_预研.md
+```
+
+V4-A 计划优先实现 JobCoachAgent MVP，包括：
+
+- `agent_run`。
+- `agent_task`。
+- AgentContextBuilder。
+- CandidateTaskBuilder。
+- JobCoachAgent Prompt。
+- 今日计划生成。
+- 今日任务查询。
+- 任务完成/跳过。
+- Agent 运行详情。
+
+## 验证与测试
+
+后端代码修改后建议执行：
 
 ```powershell
 mvn clean compile
 git diff --check
 ```
 
-For SQL changes, also verify a clean database import or an equivalent isolated SQL replay.
-
-Recommended backend smoke scope before V2 API freeze:
-
-- resume upload and parse-status
-- interview list/report and SSE
-- question review list
-- duplicate review list
-- practice answer AI review
-- study plan generate and study task complete/skip
-- prompt version test and AI log fields
-- admin file list/detail
-- sampled user isolation and admin permission checks
-
-B0-1 smoke endpoints:
+如果修改了 SQL，还需要执行：
 
 ```text
-/ai/sse/interview-question
-/ai/sse/interview-comment
-/ai/sse/report
-/ai/sse/resume-optimize
-/ai/sse/study-plan
-/admin/ai/prompt-template-versions/{versionId}/test
-/questions/{questionId}/practice
+空库导入验证
+migration 重复执行验证
+关键表和索引存在性验证
 ```
 
-## Boundaries
+建议基础 Smoke Test 覆盖：
 
-- Do not modify the frontend repository from this backend workflow.
-- V3 infrastructure uses RocketMQ for messaging and Aliyun OSS for file storage; do not add MinIO or another MQ/storage stack unless explicitly requested.
-- Keep `/inner/**` protected by existing internal-call authentication.
-- Keep admin APIs under `/admin/**` and guarded by admin permissions.
-- Preserve existing synchronous APIs when adding SSE-compatible endpoints.
+- 注册 / 登录 / 当前用户。
+- 题库列表 / 题目详情 / 提交答案。
+- 简历上传 / 解析状态 / 确认解析结果。
+- 简历优化 / 优化记录。
+- 创建面试 / 当前问题 / 提交回答 / 报告生成。
+- 学习计划生成 / 任务完成 / 跳过。
+- AI 题目生成 / 审核 / 去重。
+- Prompt 版本测试 / AI 调用日志。
+- 文件上传 / 文件管理。
+- 通知中心。
+- 搜索接口。
+- 用户数据隔离和管理员权限。
+
+## 开发边界
+
+1. 后端仓库不直接修改前端代码。
+2. 新增接口应保持 Gateway 路由、权限和用户归属校验一致。
+3. `/inner/**` 内部接口必须保持内部调用保护。
+4. `/admin/**` 接口必须要求管理员权限。
+5. AI 相关接口必须记录调用日志和失败原因。
+6. 新增 AI 能力不应直接返回 mock 作为成功结果，除非明确处于本地开发 mock 模式。
+7. 新增数据库表必须提供 migration，并保证可重复执行或符合项目当前 migration 规范。
+8. 不新增支付、会员、企业版、多租户等商业化功能。
+
+## 相关仓库
+
+```text
+前端仓库：CodeCoachAI-vue
+后端仓库：CodeCoachAI-java
+文档仓库：CodeCoachAI-doc
+```
+
+## 说明
+
+本 README 依据当前项目开发进度、PRD 对照审查结果和 V4 规划文档整理，目的是为后端开发、联调和作品集展示提供中文说明。后续如果 V4-A 正式进入编码，应同步更新本文档中的 V4 代码实现状态。
