@@ -42,6 +42,9 @@ public class AliyunStsTokenService implements StsTokenService {
 
             AssumeRoleRequest request = new AssumeRoleRequest();
             request.setSysMethod(MethodType.POST);
+            if (StringUtils.hasText(sts.getEndpoint())) {
+                request.setSysEndpoint(sts.getEndpoint());
+            }
             request.setRoleArn(sts.getRoleArn());
             request.setRoleSessionName(sts.getRoleSessionName());
             request.setPolicy(buildPolicy(dirPrefix));
