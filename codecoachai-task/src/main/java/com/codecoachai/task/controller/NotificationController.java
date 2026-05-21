@@ -17,6 +17,7 @@ import lombok.Data;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -72,6 +73,12 @@ public class NotificationController {
                         .set(Notification::getReadStatus, 1)
                         .set(Notification::getReadAt, LocalDateTime.now()));
         return Result.success();
+    }
+
+    @Operation(summary = "标记单条已读（PUT 兼容）")
+    @PutMapping("/{id}/read")
+    public Result<Void> markReadCompat(@PathVariable Long id) {
+        return markRead(id);
     }
 
     @Operation(summary = "全部标记已读")

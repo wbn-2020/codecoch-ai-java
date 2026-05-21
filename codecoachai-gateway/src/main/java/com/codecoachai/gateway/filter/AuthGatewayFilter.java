@@ -4,13 +4,16 @@ import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.InternalSignatureUtils;
 import com.codecoachai.gateway.domain.TokenInfo;
 import com.codecoachai.gateway.service.AuthTokenClient;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -34,11 +37,24 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuthTokenClient authTokenClient;
 
+    @Value("${codecoachai.internal.auth.enabled:true}")
+    private boolean internalAuthEnabled;
+
+    @Value("${codecoachai.internal.auth.secret:}")
+    private String internalSecret;
+
+    @PostConstruct
+    public void validateInternalAuthSecret() {
+        if (internalAuthEnabled && !StringUtils.hasText(internalSecret)) {
+            throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
+        }
+    }
+
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
         String path = request.getURI().getPath();
-        if (path.startsWith("/inner/")) {
+        if ("/inner".equals(path) || path.startsWith("/inner/")) {
             return writeError(exchange, ErrorCode.FORBIDDEN);
         }
         if (HttpMethod.OPTIONS.equals(request.getMethod())) {
@@ -67,7 +83,7 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
                         return writeError(exchange, ErrorCode.FORBIDDEN);
                     }
                     ServerHttpRequest mutated = request.mutate()
-                            .headers(headers -> enrichUserHeaders(headers, authorization, result.getData()))
+                            .headers(headers -> enrichUserHeaders(headers, authorization, result.getData(), request))
                             .build();
                     return chain.filter(exchange.mutate().request(mutated).build());
                 });
@@ -87,7 +103,8 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         return roles != null && roles.stream().anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
     }
 
-    private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo) {
+    private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo,
+            ServerHttpRequest request) {
         removeUserHeaders(headers);
         headers.set(HeaderConstants.AUTHORIZATION, authorization);
         headers.set(HeaderConstants.USER_ID, String.valueOf(tokenInfo.getUserId()));
@@ -96,6 +113,7 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         if (roles != null && !roles.isEmpty()) {
             headers.set(HeaderConstants.ROLES, String.join(",", roles));
         }
+        signUserContext(headers, tokenInfo, request);
     }
 
     private void removeUserHeaders(HttpHeaders headers) {
@@ -103,11 +121,28 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         headers.remove(HeaderConstants.USER_ID);
         headers.remove(HeaderConstants.USERNAME);
         headers.remove(HeaderConstants.ROLES);
+        headers.remove(HeaderConstants.USER_CONTEXT_TIMESTAMP);
+        headers.remove(HeaderConstants.USER_CONTEXT_SIGNATURE);
         headers.remove(HeaderConstants.INTERNAL_CALL);
         headers.remove(HeaderConstants.SERVICE_NAME);
         headers.remove(HeaderConstants.INTERNAL_TIMESTAMP);
         headers.remove(HeaderConstants.INTERNAL_NONCE);
         headers.remove(HeaderConstants.INTERNAL_SIGNATURE);
+    }
+
+    private void signUserContext(HttpHeaders headers, TokenInfo tokenInfo, ServerHttpRequest request) {
+        if (!internalAuthEnabled || !StringUtils.hasText(internalSecret)) {
+            throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
+        }
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String userId = String.valueOf(tokenInfo.getUserId());
+        String username = headers.getFirst(HeaderConstants.USERNAME);
+        String roles = headers.getFirst(HeaderConstants.ROLES);
+        String payload = InternalSignatureUtils.userContextPayload(
+                String.valueOf(request.getMethod()), request.getURI().getPath(), timestamp, userId, username, roles);
+        String signature = InternalSignatureUtils.hmacSha256Hex(internalSecret, payload);
+        headers.set(HeaderConstants.USER_CONTEXT_TIMESTAMP, timestamp);
+        headers.set(HeaderConstants.USER_CONTEXT_SIGNATURE, signature);
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, ErrorCode errorCode) {

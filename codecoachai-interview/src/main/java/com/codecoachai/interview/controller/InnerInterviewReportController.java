@@ -13,7 +13,10 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 @RequestMapping("/inner/interviews")
 public class InnerInterviewReportController {
+
+    private static final DateTimeFormatter ES_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewMessageMapper messageMapper;
@@ -159,14 +164,23 @@ public class InnerInterviewReportController {
     }
 
     @GetMapping("/{id}/search-doc")
-    public Result<java.util.Map<String, Object>> getSearchDoc(@PathVariable Long id) {
+    public Result<Map<String, Object>> getSearchDoc(@PathVariable Long id) {
         InterviewSession s = sessionMapper.selectById(id);
         if (s == null) {
             return Result.success(null);
         }
-        java.util.Map<String, Object> doc = new java.util.HashMap<>();
+        InterviewReport report = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
+                .eq(InterviewReport::getSessionId, id)
+                .orderByDesc(InterviewReport::getUpdatedAt)
+                .orderByDesc(InterviewReport::getId)
+                .last("limit 1"));
+
+        Map<String, Object> doc = new HashMap<>();
+        doc.put("docId", String.valueOf(s.getId()));
         doc.put("id", s.getId());
-        doc.put("userId", s.getUserId());
+        doc.put("sessionId", s.getId());
+        doc.put("reportId", report == null ? null : report.getId());
+        doc.put("userId", String.valueOf(s.getUserId()));
         doc.put("mode", s.getMode());
         doc.put("title", s.getTitle());
         doc.put("targetPosition", s.getTargetPosition());
@@ -174,8 +188,30 @@ public class InnerInterviewReportController {
         doc.put("industryDirection", s.getIndustryDirection());
         doc.put("difficulty", s.getDifficulty());
         doc.put("status", s.getStatus());
-        doc.put("reportStatus", s.getReportStatus());
+        doc.put("reportStatus", report == null ? s.getReportStatus() : firstText(report.getStatus(), s.getReportStatus()));
+        doc.put("totalScore", report == null ? s.getTotalScore() : firstNonNull(report.getTotalScore(), s.getTotalScore()));
         doc.put("interviewerStyle", s.getInterviewerStyle());
+        doc.put("summary", report == null ? null : report.getSummary());
+        doc.put("weakPoints", report == null ? null : firstText(report.getWeakPoints(), report.getWeaknesses(), report.getMainProblems()));
+        doc.put("strengths", report == null ? null : report.getStrengths());
+        doc.put("mainProblems", report == null ? null : report.getMainProblems());
+        doc.put("projectProblems", report == null ? null : report.getProjectProblems());
+        doc.put("reviewSuggestions", report == null ? null : firstText(report.getReviewSuggestions(), report.getSuggestions()));
+        doc.put("suggestions", report == null ? null : report.getSuggestions());
+        doc.put("reportContent", report == null ? null : report.getReportContent());
+        doc.put("startTime", formatDateTime(s.getStartTime()));
+        doc.put("endTime", formatDateTime(s.getEndTime()));
+        doc.put("createdAt", formatDateTime(s.getCreatedAt()));
+        doc.put("generatedAt", report == null ? null : formatDateTime(report.getGeneratedAt()));
+        doc.put("syncedAt", java.time.Instant.now().toString());
         return Result.success(doc);
+    }
+
+    private Integer firstNonNull(Integer first, Integer second) {
+        return first != null ? first : second;
+    }
+
+    private String formatDateTime(LocalDateTime value) {
+        return value == null ? null : ES_DATE_FORMAT.format(value);
     }
 }

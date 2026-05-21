@@ -40,7 +40,7 @@ spring:
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/ai/sse/resume/**,/ai/sse/resume-optimize
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
 
         # ========== 面试 ==========
         - id: interview
@@ -71,7 +71,7 @@ spring:
         - id: task
           uri: lb://codecoachai-task
           predicates:
-            - Path=/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
+            - Path=/tasks,/tasks/**,/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
 
         # ========== 搜索（V3 新增） ==========
         - id: search
@@ -89,7 +89,11 @@ spring:
       globalcors:
         cors-configurations:
           '[/**]':
-            allowedOriginPatterns: "*"
+            allowedOriginPatterns:
+              - "http://localhost:5173"
+              - "http://127.0.0.1:5173"
+              - "http://localhost:3000"
+              - "http://127.0.0.1:3000"
             allowedMethods: "*"
             allowedHeaders: "*"
             allowCredentials: true
@@ -111,3 +115,8 @@ knife4j:
       version: openapi3
       excluded-services:
         - codecoachai-gateway
+
+codecoachai:
+  gateway:
+    cors:
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"

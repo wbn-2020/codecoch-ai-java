@@ -2,10 +2,17 @@ package com.codecoachai.resume.controller;
 
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.resume.domain.dto.JobDescriptionParseDTO;
+import com.codecoachai.resume.domain.dto.ResumeJobMatchCreateDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
+import com.codecoachai.resume.domain.vo.JobDescriptionAnalysisVO;
+import com.codecoachai.resume.domain.vo.ResumeJobMatchReportDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeJobMatchSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
+import com.codecoachai.resume.service.ResumeJobMatchService;
 import com.codecoachai.resume.service.ResumeService;
+import com.codecoachai.resume.service.TargetJobService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.io.IOException;
@@ -19,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,12 +41,180 @@ public class AiSseController {
     private static final long TIMEOUT_MILLIS = 120_000L;
 
     private final ResumeService resumeService;
+    private final TargetJobService targetJobService;
+    private final ResumeJobMatchService resumeJobMatchService;
     private final Executor resumeSseStreamExecutor;
 
     public AiSseController(ResumeService resumeService,
+                           TargetJobService targetJobService,
+                           ResumeJobMatchService resumeJobMatchService,
                            @Qualifier("resumeSseStreamExecutor") Executor resumeSseStreamExecutor) {
         this.resumeService = resumeService;
+        this.targetJobService = targetJobService;
+        this.resumeJobMatchService = resumeJobMatchService;
         this.resumeSseStreamExecutor = resumeSseStreamExecutor;
+    }
+
+    @Operation(summary = "Stream job target JD parse progress",
+            description = "Compatibility SSE endpoint for V3 job target parsing. The synchronous /job-targets/{id}/parse API remains the fallback.")
+    @GetMapping(value = "/job-targets/{id}/parse", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter jobTargetParse(@PathVariable Long id,
+                                     @RequestParam(required = false) Boolean forceRefresh,
+                                     @RequestParam(required = false) String userTargetDirection) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+        CompletableFuture.runAsync(() -> {
+            try {
+                LoginUserContext.setLoginUser(loginUser);
+                if (!send(emitter, active, "start", genericEvent(requestId, "job-target-parse", id, null,
+                        "JD parse started"))) {
+                    return;
+                }
+                if (!sendStageProgress(emitter, active, requestId, "job-target-parse", id, "LOAD_TARGET",
+                        "Loading target job")) {
+                    return;
+                }
+                JobDescriptionParseDTO dto = new JobDescriptionParseDTO();
+                dto.setForceRefresh(forceRefresh);
+                dto.setUserTargetDirection(userTargetDirection);
+                if (!sendStageProgress(emitter, active, requestId, "job-target-parse", id, "CALL_AI",
+                        "Calling DeepSeek to parse JD")) {
+                    return;
+                }
+                JobDescriptionAnalysisVO result = targetJobService.parseJobDescription(id, dto);
+                if (result == null || "FAILED".equalsIgnoreCase(result.getParseStatus())) {
+                    send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id,
+                            result == null ? "JD parse failed" : result.getParseErrorMessage()));
+                    complete(emitter, active);
+                    return;
+                }
+                send(emitter, active, "result", genericResultEvent(requestId, "job-target-parse", id, result));
+                send(emitter, active, "done", genericEvent(requestId, "job-target-parse", id,
+                        result.getAiCallLogId(), "JD parse completed"));
+                complete(emitter, active);
+            } catch (RuntimeException ex) {
+                log.warn("Job target parse SSE failed, requestId={}, targetJobId={}", requestId, id, ex);
+                send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id, ex.getMessage()));
+                complete(emitter, active);
+            } finally {
+                LoginUserContext.clear();
+            }
+        }, resumeSseStreamExecutor);
+        return emitter;
+    }
+
+    @Operation(summary = "Stream resume-job match report generation progress",
+            description = "Compatibility SSE endpoint for creating a match report. The synchronous POST /resume-job-match/reports API remains the fallback.")
+    @GetMapping(value = "/resume-job-match/reports", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter resumeJobMatchCreate(@RequestParam Long resumeId,
+                                           @RequestParam Long targetJobId,
+                                           @RequestParam(required = false) Boolean forceRefresh) {
+        ResumeJobMatchCreateDTO dto = new ResumeJobMatchCreateDTO();
+        dto.setResumeId(resumeId);
+        dto.setTargetJobId(targetJobId);
+        dto.setForceRefresh(forceRefresh);
+        return streamResumeJobMatchCreate(dto);
+    }
+
+    @Operation(summary = "Stream resume-job match report refresh progress",
+            description = "Compatibility SSE endpoint for reading or regenerating an existing match report.")
+    @GetMapping(value = "/resume-job-match/reports/{id}", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
+    public SseEmitter resumeJobMatchReport(@PathVariable Long id,
+                                           @RequestParam(required = false, defaultValue = "false") Boolean forceRefresh) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+        CompletableFuture.runAsync(() -> {
+            try {
+                LoginUserContext.setLoginUser(loginUser);
+                if (!send(emitter, active, "start", genericEvent(requestId, "resume-job-match", id, null,
+                        "Match report stream started"))) {
+                    return;
+                }
+                ResumeJobMatchReportDetailVO detail;
+                if (Boolean.TRUE.equals(forceRefresh)) {
+                    if (!sendStageProgress(emitter, active, requestId, "resume-job-match", id, "REGENERATE",
+                            "Regenerating match report")) {
+                        return;
+                    }
+                    ResumeJobMatchSubmitVO refreshed = resumeJobMatchService.regenerate(id);
+                    Long reportId = refreshed == null ? id : refreshed.getReportId();
+                    detail = resumeJobMatchService.getReport(reportId);
+                } else {
+                    if (!sendStageProgress(emitter, active, requestId, "resume-job-match", id, "LOAD_REPORT",
+                            "Loading match report")) {
+                        return;
+                    }
+                    detail = resumeJobMatchService.getReport(id);
+                }
+                send(emitter, active, "result", genericResultEvent(requestId, "resume-job-match",
+                        detail == null ? id : detail.getReportId(), detail));
+                send(emitter, active, "done", genericEvent(requestId, "resume-job-match",
+                        detail == null ? id : detail.getReportId(),
+                        detail == null ? null : detail.getAiCallLogId(), "Match report completed"));
+                complete(emitter, active);
+            } catch (RuntimeException ex) {
+                log.warn("Resume job match SSE failed, requestId={}, reportId={}", requestId, id, ex);
+                send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", id, ex.getMessage()));
+                complete(emitter, active);
+            } finally {
+                LoginUserContext.clear();
+            }
+        }, resumeSseStreamExecutor);
+        return emitter;
+    }
+
+    private SseEmitter streamResumeJobMatchCreate(ResumeJobMatchCreateDTO dto) {
+        String requestId = UUID.randomUUID().toString();
+        AtomicBoolean active = new AtomicBoolean(true);
+        SseEmitter emitter = createEmitter(requestId, active);
+        LoginUser loginUser = LoginUserContext.getLoginUser();
+        CompletableFuture.runAsync(() -> {
+            try {
+                LoginUserContext.setLoginUser(loginUser);
+                Long bizId = dto == null ? null : dto.getTargetJobId();
+                if (!send(emitter, active, "start", genericEvent(requestId, "resume-job-match", bizId, null,
+                        "Match report generation started"))) {
+                    return;
+                }
+                if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "LOAD_CONTEXT",
+                        "Loading resume and JD context")) {
+                    return;
+                }
+                if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "CALL_AI",
+                        "Calling DeepSeek to generate match report")) {
+                    return;
+                }
+                ResumeJobMatchSubmitVO submitted = resumeJobMatchService.createReport(dto);
+                if (submitted == null || "FAILED".equalsIgnoreCase(submitted.getStatus())) {
+                    send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", bizId,
+                            submitted == null ? "Match report generation failed" : submitted.getErrorMessage()));
+                    complete(emitter, active);
+                    return;
+                }
+                if (!sendStageProgress(emitter, active, requestId, "resume-job-match", submitted.getReportId(),
+                        "LOAD_REPORT", "Loading generated match report")) {
+                    return;
+                }
+                ResumeJobMatchReportDetailVO detail = resumeJobMatchService.getReport(submitted.getReportId());
+                send(emitter, active, "result", genericResultEvent(requestId, "resume-job-match",
+                        submitted.getReportId(), detail));
+                send(emitter, active, "done", genericEvent(requestId, "resume-job-match",
+                        submitted.getReportId(), submitted.getAiCallLogId(), "Match report generation completed"));
+                complete(emitter, active);
+            } catch (RuntimeException ex) {
+                log.warn("Resume job match create SSE failed, requestId={}", requestId, ex);
+                send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match",
+                        dto == null ? null : dto.getTargetJobId(), ex.getMessage()));
+                complete(emitter, active);
+            } finally {
+                LoginUserContext.clear();
+            }
+        }, resumeSseStreamExecutor);
+        return emitter;
     }
 
     @Operation(summary = "Stream resume optimization progress",
@@ -103,6 +279,51 @@ public class AiSseController {
             }
         }, resumeSseStreamExecutor);
         return emitter;
+    }
+
+    private boolean sendStageProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                      String workflow, Long bizId, String stage, String message) {
+        Map<String, Object> delta = genericEvent(requestId, workflow, bizId, null, message);
+        delta.put("stage", stage);
+        delta.put("content", message);
+        delta.put("metadata", stageMetadata(stage, "PROCESSING"));
+        if (!send(emitter, active, "delta", delta)) {
+            return false;
+        }
+        Map<String, Object> metadata = genericEvent(requestId, workflow, bizId, null, message);
+        metadata.put("stage", stage);
+        metadata.put("metadata", stageMetadata(stage, "PROCESSING"));
+        if (!send(emitter, active, "metadata", metadata)) {
+            return false;
+        }
+        Map<String, Object> progress = genericEvent(requestId, workflow, bizId, null, message);
+        progress.put("stage", stage);
+        return send(emitter, active, "progress", progress);
+    }
+
+    private Map<String, Object> genericResultEvent(String requestId, String workflow, Long bizId, Object result) {
+        Map<String, Object> data = genericEvent(requestId, workflow, bizId, null, "Task completed");
+        data.put("result", result);
+        return data;
+    }
+
+    private Map<String, Object> genericErrorEvent(String requestId, String workflow, Long bizId, String message) {
+        Map<String, Object> data = genericEvent(requestId, workflow, bizId, null,
+                message == null || message.isBlank() ? "Task failed" : message);
+        data.put("code", "V3_SSE_TASK_FAILED");
+        data.put("metadata", stageMetadata("ERROR", "FAILED"));
+        return data;
+    }
+
+    private Map<String, Object> genericEvent(String requestId, String workflow, Long bizId, Long aiCallLogId,
+                                             String message) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("requestId", requestId);
+        data.put("workflow", workflow);
+        data.put("bizId", bizId);
+        data.put("aiCallLogId", aiCallLogId);
+        data.put("message", message);
+        return data;
     }
 
     private boolean sendProgress(SseEmitter emitter, AtomicBoolean active, String requestId,

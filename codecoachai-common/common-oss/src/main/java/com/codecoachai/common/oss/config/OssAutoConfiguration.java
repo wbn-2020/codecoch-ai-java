@@ -7,15 +7,16 @@ import com.codecoachai.common.oss.service.StsTokenService;
 import com.codecoachai.common.oss.service.impl.AliyunOssFileService;
 import com.codecoachai.common.oss.service.impl.AliyunStsTokenService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.StringUtils;
 
 /**
- * OSS 自动配置。
- * 仅当 codecoachai.oss.enabled=true 时生效。
+ * Aliyun OSS auto configuration. Active only when codecoachai.oss.enabled=true.
  */
 @Slf4j
 @Configuration
@@ -26,7 +27,8 @@ public class OssAutoConfiguration {
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnMissingBean
     public OSS ossClient(OssProperties properties) {
-        log.info("初始化阿里云 OSS 客户端 endpoint={} bucket={}",
+        validateOssProperties(properties);
+        log.info("Initializing Aliyun OSS client endpoint={} bucket={}",
                 properties.getEndpoint(), properties.getBucket());
         return new OSSClientBuilder().build(
                 properties.getEndpoint(),
@@ -44,5 +46,31 @@ public class OssAutoConfiguration {
     @ConditionalOnMissingBean
     public StsTokenService stsTokenService(OssProperties properties) {
         return new AliyunStsTokenService(properties);
+    }
+
+    @Bean
+    public InitializingBean ossStsPropertiesValidator(OssProperties properties) {
+        return () -> {
+            validateOssProperties(properties);
+            OssProperties.Sts sts = properties.getSts();
+            if (sts == null || !StringUtils.hasText(sts.getRoleArn())) {
+                throw new IllegalStateException("codecoachai.oss.sts.role-arn must be configured when OSS is enabled");
+            }
+        };
+    }
+
+    private void validateOssProperties(OssProperties properties) {
+        if (!StringUtils.hasText(properties.getEndpoint())) {
+            throw new IllegalStateException("codecoachai.oss.endpoint must be configured when OSS is enabled");
+        }
+        if (!StringUtils.hasText(properties.getBucket())) {
+            throw new IllegalStateException("codecoachai.oss.bucket must be configured when OSS is enabled");
+        }
+        if (!StringUtils.hasText(properties.getAccessKeyId())) {
+            throw new IllegalStateException("codecoachai.oss.access-key-id must be configured when OSS is enabled");
+        }
+        if (!StringUtils.hasText(properties.getAccessKeySecret())) {
+            throw new IllegalStateException("codecoachai.oss.access-key-secret must be configured when OSS is enabled");
+        }
     }
 }

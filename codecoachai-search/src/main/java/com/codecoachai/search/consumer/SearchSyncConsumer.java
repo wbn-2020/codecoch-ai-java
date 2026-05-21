@@ -4,6 +4,9 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.DeleteRequest;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.mq.consumer.NonRetryableMqException;
+import com.codecoachai.common.mq.consumer.RetryableMqException;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.domain.MqMessage;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
@@ -64,7 +67,7 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
 
         try {
             if (envelope == null || !StringUtils.hasText(envelope.getMessageId())) {
-                throw new IllegalArgumentException("search sync envelope is invalid");
+                throw new NonRetryableMqException("search sync envelope is invalid");
             }
 
             idempotentKey = RedisKeyConstants.searchConsumedKey(envelope.getMessageId());
@@ -76,7 +79,7 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
 
             SearchSyncPayload payload = envelope.getPayload();
             if (payload == null || !StringUtils.hasText(payload.getIndexName()) || !StringUtils.hasText(payload.getDocId())) {
-                throw new IllegalArgumentException("search sync payload is invalid");
+                throw new NonRetryableMqException("search sync payload is invalid");
             }
 
             String op = payload.getOp();
@@ -85,11 +88,15 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             } else {
                 handleUpsert(payload);
             }
+        } catch (NonRetryableMqException ex) {
+            recordFailure(envelope, ex);
+            log.warn("Search sync skipped non-retryable messageId={} reason={}",
+                    envelope == null ? null : envelope.getMessageId(), ex.getMessage());
         } catch (Exception ex) {
             releaseIdempotentKey(idempotentKey);
             recordFailure(envelope, ex);
             log.error("Search sync failed messageId={}", envelope == null ? null : envelope.getMessageId(), ex);
-            throw new RuntimeException(ex);
+            throw new RetryableMqException("search sync retryable failure", ex);
         } finally {
             MDC.remove("traceId");
         }
@@ -98,8 +105,10 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
     private void handleUpsert(SearchSyncPayload payload) throws Exception {
         Map<String, Object> doc = fetchDocument(payload.getIndexName(), payload.getDocId());
         if (doc == null || doc.isEmpty()) {
-            throw new IllegalStateException("search sync document is empty: index=" + payload.getIndexName()
-                    + ", docId=" + payload.getDocId());
+            log.info("Search source document missing, delete stale ES doc index={} docId={}",
+                    payload.getIndexName(), payload.getDocId());
+            handleDelete(payload);
+            return;
         }
 
         String docJson = objectMapper.writeValueAsString(doc);
@@ -122,22 +131,34 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             } else if (IndexNames.INTERVIEW.equals(indexName)) {
                 result = interviewFeignClient.getSearchDoc(id);
             } else {
-                log.warn("Unknown search index index={}", indexName);
-                return null;
+                throw new NonRetryableMqException("unknown search index: " + indexName);
             }
             if (result != null && result.isSuccess()) {
                 return result.getData();
             }
-            log.warn("Fetch search document failed index={} docId={} msg={}", indexName, docId,
-                    result != null ? result.getMessage() : "null");
-            return null;
+            if (result == null) {
+                throw new RetryableMqException("fetch search document no response");
+            }
+            if (isBusinessFailure(result.getCode())) {
+                throw new NonRetryableMqException("fetch search document business failed: " + result.getMessage());
+            }
+            throw new RetryableMqException("fetch search document failed: " + result.getMessage());
         } catch (NumberFormatException e) {
-            log.warn("Search docId is not numeric index={} docId={}", indexName, docId);
-            return null;
+            throw new NonRetryableMqException("search docId is not numeric: " + docId, e);
+        } catch (NonRetryableMqException | RetryableMqException e) {
+            throw e;
         } catch (Exception e) {
-            log.warn("Fetch search document exception index={} docId={}", indexName, docId, e);
-            return null;
+            throw new RetryableMqException("fetch search document exception index=" + indexName + ", docId=" + docId, e);
         }
+    }
+
+    private boolean isBusinessFailure(Integer code) {
+        return code != null && (code == ErrorCode.PARAM_ERROR.getCode()
+                || code == ErrorCode.VALIDATION_ERROR.getCode()
+                || code == ErrorCode.UNAUTHORIZED.getCode()
+                || code == ErrorCode.FORBIDDEN.getCode()
+                || code == ErrorCode.USER_ERROR.getCode()
+                || code == ErrorCode.USER_NOT_FOUND.getCode());
     }
 
     private void handleDelete(SearchSyncPayload payload) throws Exception {

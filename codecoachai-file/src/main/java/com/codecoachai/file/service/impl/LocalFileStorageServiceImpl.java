@@ -13,6 +13,7 @@ import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -71,6 +72,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         String fileExt = extractExtension(originalFilename);
         validateExtension(fileExt);
         validateSize(file);
+        FileUploadValidator.validateContent(file, fileExt);
 
         Path root = normalizeRoot();
         String storedFilename = UUID.randomUUID() + "." + fileExt;
@@ -100,6 +102,23 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
         return downloadFile(fileInfo);
+    }
+
+    @Override
+    public String downloadUrl(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        StringBuilder url = new StringBuilder("/files/")
+                .append(fileInfo.getId())
+                .append("/download");
+        if (StringUtils.hasText(fileInfo.getBizType())) {
+            url.append("?bizType=").append(encodeHeaderValue(fileInfo.getBizType()));
+        }
+        return url.toString();
+    }
+
+    @Override
+    public FileInfoVO getUserFile(Long fileId, Long userId) {
+        return toFileInfoVO(getAvailableFile(fileId, userId, null));
     }
 
     @Override
@@ -198,13 +217,10 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         if (userId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
         }
-        if (!StringUtils.hasText(bizType)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType is required");
-        }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
                 .eq(FileInfo::getUserId, userId)
-                .eq(FileInfo::getBizType, bizType)
+                .eq(StringUtils.hasText(bizType), FileInfo::getBizType, bizType)
                 .eq(FileInfo::getStatus, STATUS_AVAILABLE)
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));

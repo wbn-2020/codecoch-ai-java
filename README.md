@@ -143,9 +143,9 @@ CodeCoachAI-java
 ├── codecoachai-task                    # 异步任务和通知服务
 ├── codecoachai-search                  # 搜索服务
 ├── codecoachai-system                  # 系统配置和审计服务
-├── config/nacos                        # Nacos 配置文件
+├── docs                                # 后端相关文档，含官方 Nacos 配置源 docs/nacos
+├── config/nacos                        # 历史/手工 Nacos 模板，保留作参考
 ├── scripts                             # 辅助脚本
-├── docs                                # 后端相关文档
 ├── sql                                 # 初始化 SQL / migration 脚本
 ├── docker-compose.yml                  # 基础设施编排
 └── pom.xml                             # Maven 根工程
@@ -175,11 +175,15 @@ Elasticsearch（搜索相关功能需要）
 powershell -ExecutionPolicy Bypass -File scripts\nacos\import-nacos-config.ps1
 ```
 
-配置文件主要位于：
+官方导入脚本默认读取：
 
 ```text
-config/nacos/
+docs/nacos/
 ```
+
+`config/nacos/` 仅保留为历史/手工模板参考，不再作为默认导入源；如手工上传，请优先对照 `docs/nacos/`。
+
+dev 验收口径使用真实阿里云 OSS：`codecoachai.file.storage.provider=ALIYUN_OSS`，`codecoachai.oss.enabled=true`。启动文件服务前请在环境变量或私有 Nacos 配置中提供 `OSS_BUCKET`、`OSS_AK`、`OSS_SK`、`OSS_STS_ROLE_ARN` 等凭证；缺失时应用会在启动期明确失败，而不是等上传时才报错。
 
 ### 启动后端服务
 
@@ -203,7 +207,13 @@ mvn -pl codecoachai-system spring-boot:run
 
 ## 数据库说明
 
-本地数据库名称需与 Nacos 数据源配置保持一致。历史上项目使用过 `codecoachai_v1` 作为本地开发库名，后续 V2/V3 migration 也可能继续在该库上验证。
+本地开发统一使用 `codecoachai_v1` 作为默认数据库名，需与 `docs/nacos/*-dev.yml` 中的数据源配置保持一致。
+
+Flyway Maven 插件默认也指向 `codecoachai_v1`。如需迁移到其他库，可在命令行覆盖：
+
+```powershell
+mvn flyway:migrate "-Dflyway.url=jdbc:mysql://127.0.0.1:3306/your_db?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true"
+```
 
 SQL 目录通常包含：
 
@@ -328,7 +338,7 @@ error      脱敏后的失败事件
 - 模型名称、耗时、状态、失败原因等信息记录。
 - JD 解析、简历解析、简历优化、题目生成、学习计划、面试点评、报告生成等 AI 场景。
 
-需要注意：当前部分 AI 能力仍存在 mock/fallback 或直接本地兜底逻辑。正式演示或生产化前，应区分开发 mock 与真实模型调用，避免把 mock 结果误认为真实 AI 输出。
+需要注意：dev Nacos 的 `docs/nacos/codecoachai-ai-dev.yml` 默认走真实 DeepSeek 调用，`codecoachai.ai.mock-enabled=false`。启动 AI 服务前请提供 `DEEPSEEK_API_KEY`；缺失时应用会在启动期明确失败，避免把 mock/fallback 结果误认为真实 AI 输出。管理端保存模型密钥还需要配置 `CODECOACHAI_AI_CRYPTO_SECRET_KEY`。
 
 ## 当前已知问题与后续重点
 

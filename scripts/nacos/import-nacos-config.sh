@@ -9,6 +9,7 @@ NACOS_PASSWORD="${NACOS_PASSWORD:-}"
 NACOS_ACCESS_TOKEN="${NACOS_ACCESS_TOKEN:-}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Official Nacos source directory. config/nacos is kept only as historical/manual templates.
 CONFIG_DIR="${ROOT_DIR}/docs/nacos"
 
 token="${NACOS_ACCESS_TOKEN}"

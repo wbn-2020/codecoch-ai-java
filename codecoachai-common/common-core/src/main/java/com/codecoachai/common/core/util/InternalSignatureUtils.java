@@ -22,6 +22,16 @@ public final class InternalSignatureUtils {
                 + "\n" + serviceName;
     }
 
+    public static String userContextPayload(String method, String path, String timestamp, String userId,
+            String username, String roles) {
+        return method.toUpperCase()
+                + "\n" + normalizePath(path)
+                + "\n" + nullToEmpty(timestamp)
+                + "\n" + nullToEmpty(userId)
+                + "\n" + nullToEmpty(username)
+                + "\n" + nullToEmpty(roles);
+    }
+
     public static String hmacSha256Hex(String secret, String payload) {
         try {
             Mac mac = Mac.getInstance(HMAC_SHA256);
@@ -46,5 +56,9 @@ public final class InternalSignatureUtils {
         int queryIndex = path.indexOf('?');
         String normalized = queryIndex >= 0 ? path.substring(0, queryIndex) : path;
         return normalized.startsWith("/") ? normalized : "/" + normalized;
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 }

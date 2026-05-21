@@ -1,12 +1,10 @@
-# ============================================================
-# codecoachai-file 服务专属配置（OSS 接入版）
-# 上传到 Nacos: dataId=codecoachai-file-dev.yml  group=DEFAULT_GROUP
-# ============================================================
+# codecoachai-file service config.
+# Upload to Nacos: dataId=codecoachai-file-dev.yml group=DEFAULT_GROUP
 
 codecoachai:
   file:
-    # 文件存储策略：LOCAL（本地）/ ALIYUN_OSS（阿里云）
-    # 切换时只改这里，无需重启代码
+    # Storage provider: LOCAL / ALIYUN_OSS.
+    # Dev acceptance uses real Aliyun OSS. Provide OSS_* env/private Nacos values before startup.
     storage:
       provider: ALIYUN_OSS
       root-path: ${CODECOACHAI_FILE_STORAGE_ROOT:./data/uploads}
@@ -21,6 +19,18 @@ codecoachai:
         - jpg
         - jpeg
 
-  # OSS：file 服务可独立覆盖 common 里的默认值
   oss:
     enabled: true
+    endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+    bucket: ${OSS_BUCKET:}
+    access-key-id: ${OSS_AK:}
+    access-key-secret: ${OSS_SK:}
+    domain: ${OSS_DOMAIN:}
+    sign-url-expire-seconds: 900
+    key-prefix: ${OSS_KEY_PREFIX:dev}
+    sts:
+      endpoint: ${OSS_STS_ENDPOINT:sts.cn-hangzhou.aliyuncs.com}
+      region-id: ${OSS_STS_REGION_ID:cn-hangzhou}
+      role-arn: ${OSS_STS_ROLE_ARN:}
+      role-session-name: codecoachai
+      duration-seconds: 3600

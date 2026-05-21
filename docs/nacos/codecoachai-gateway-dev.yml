@@ -95,7 +95,7 @@ spring:
         - id: codecoachai-resume-sse
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/ai/sse/resume-optimize
+            - Path=/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
         - id: codecoachai-interview
           uri: lb://codecoachai-interview
           predicates:
@@ -135,7 +135,7 @@ spring:
         - id: codecoachai-task
           uri: lb://codecoachai-task
           predicates:
-            - Path=/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
+            - Path=/tasks,/tasks/**,/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
         - id: codecoachai-search
           uri: lb://codecoachai-search
           predicates:
@@ -155,6 +155,8 @@ spring:
 
 codecoachai:
   gateway:
+    cors:
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
     auth:
       white-paths:
         - /auth/login

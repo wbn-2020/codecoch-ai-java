@@ -1,16 +1,15 @@
 package com.codecoachai.common.security.filter;
 
 import com.codecoachai.common.core.constant.HeaderConstants;
-import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.security.context.LoginUserContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.util.Arrays;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -32,7 +31,7 @@ public class AdminRoleFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (!hasAdminRole(request.getHeader(HeaderConstants.ROLES))) {
+        if (!LoginUserContext.isAdmin()) {
             writeForbidden(response);
             return;
         }
@@ -46,15 +45,6 @@ public class AdminRoleFilter extends OncePerRequestFilter {
             return requestUri.substring(contextPath.length());
         }
         return requestUri;
-    }
-
-    private boolean hasAdminRole(String roles) {
-        if (!StringUtils.hasText(roles)) {
-            return false;
-        }
-        return Arrays.stream(roles.split(","))
-                .map(String::trim)
-                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
     }
 
     private void writeForbidden(HttpServletResponse response) throws IOException {

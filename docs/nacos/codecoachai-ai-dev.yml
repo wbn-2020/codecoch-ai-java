@@ -11,11 +11,16 @@ spring:
 codecoachai:
   ai:
     enabled: true
+    # Dev acceptance uses real DeepSeek calls. Set DEEPSEEK_API_KEY in env/private Nacos before startup.
     mock-enabled: false
     provider: openai-compatible
     model: ${AI_MODEL:deepseek-chat}
     base-url: ${AI_BASE_URL:https://api.deepseek.com}
-    api-key: ${AI_API_KEY:}
+    api-key: ${DEEPSEEK_API_KEY:}
     temperature: 0.3
     max-tokens: 2048
     timeout-seconds: 60
+    crypto:
+      # Required when saving AI model apiKey values from the admin UI.
+      # Use at least 16 characters, or base64:<16/24/32-byte-key>.
+      secret-key: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY:}

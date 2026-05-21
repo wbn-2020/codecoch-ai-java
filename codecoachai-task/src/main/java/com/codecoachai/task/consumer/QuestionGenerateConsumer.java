@@ -1,6 +1,7 @@
 package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -80,6 +81,9 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
 
             Result<GenerateQuestionDraftVO> aiResp = aiFeignClient.generateQuestionDrafts(dto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
+                if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
+                    throw new NonRetryableMqException("AI 出题业务失败: " + aiResp.getMessage());
+                }
                 throw new RuntimeException("AI 出题返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
 
@@ -103,6 +107,9 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
             if (saveResp == null || saveResp.getCode() != 0 || saveResp.getData() == null
                     || saveResp.getData().getSavedCount() == null
                     || saveResp.getData().getSavedCount() != draftCount) {
+                if (saveResp != null && isBusinessFailure(saveResp.getCode())) {
+                    throw new NonRetryableMqException("题目草稿落库业务失败: " + saveResp.getMessage());
+                }
                 throw new RuntimeException("题目草稿落库失败: " + (saveResp == null ? "null" : saveResp.getMessage()));
             }
             log.info("AI 出题完成 batchId={} 生成并落库 {} 道题", payload.getBatchId(), draftCount);
@@ -129,5 +136,12 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
         } finally {
             MDC.remove("traceId");
         }
+    }
+
+    private boolean isBusinessFailure(Integer code) {
+        return code != null && (code == ErrorCode.PARAM_ERROR.getCode()
+                || code == ErrorCode.VALIDATION_ERROR.getCode()
+                || code == ErrorCode.UNAUTHORIZED.getCode()
+                || code == ErrorCode.FORBIDDEN.getCode());
     }
 }

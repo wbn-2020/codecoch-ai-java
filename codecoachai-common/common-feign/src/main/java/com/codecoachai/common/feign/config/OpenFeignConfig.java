@@ -2,6 +2,7 @@ package com.codecoachai.common.feign.config;
 
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.util.InternalSignatureUtils;
+import feign.RequestTemplate;
 import feign.RequestInterceptor;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
@@ -41,6 +42,7 @@ public class OpenFeignConfig {
                     }
                 }
             }
+            signForwardedUserContext(template, internalAuthEnabled, internalSecret);
             template.header(HeaderConstants.INTERNAL_CALL, "true");
             template.header(HeaderConstants.SERVICE_NAME, serviceName);
             if (internalAuthEnabled) {
@@ -58,5 +60,33 @@ public class OpenFeignConfig {
                 template.header(HeaderConstants.INTERNAL_SIGNATURE, signature);
             }
         };
+    }
+
+    private void signForwardedUserContext(RequestTemplate template, boolean internalAuthEnabled, String internalSecret) {
+        String userId = firstHeader(template, HeaderConstants.USER_ID);
+        if (!StringUtils.hasText(userId)) {
+            return;
+        }
+        if (!internalAuthEnabled || !StringUtils.hasText(internalSecret)) {
+            throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
+        }
+        template.removeHeader(HeaderConstants.USER_CONTEXT_TIMESTAMP);
+        template.removeHeader(HeaderConstants.USER_CONTEXT_SIGNATURE);
+
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String username = firstHeader(template, HeaderConstants.USERNAME);
+        String roles = firstHeader(template, HeaderConstants.ROLES);
+        String payload = InternalSignatureUtils.userContextPayload(
+                template.method(), template.path(), timestamp, userId, username, roles);
+        String signature = InternalSignatureUtils.hmacSha256Hex(internalSecret, payload);
+        template.header(HeaderConstants.USER_CONTEXT_TIMESTAMP, timestamp);
+        template.header(HeaderConstants.USER_CONTEXT_SIGNATURE, signature);
+    }
+
+    private String firstHeader(RequestTemplate template, String headerName) {
+        return template.headers().getOrDefault(headerName, List.of()).stream()
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse("");
     }
 }

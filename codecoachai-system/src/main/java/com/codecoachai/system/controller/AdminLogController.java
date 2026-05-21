@@ -34,7 +34,7 @@ public class AdminLogController {
     // ==================== 登录日志 ====================
 
     @Operation(summary = "分页查询登录日志")
-    @GetMapping("/admin/login-logs")
+    @GetMapping({"/admin/login-logs", "/admin/logs/logins"})
     public Result<PageResult<LoginLog>> pageLoginLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
@@ -68,7 +68,7 @@ public class AdminLogController {
     // ==================== 操作日志 ====================
 
     @Operation(summary = "分页查询操作日志")
-    @GetMapping("/admin/operation-logs")
+    @GetMapping({"/admin/operation-logs", "/admin/logs/operations"})
     public Result<PageResult<OperationLog>> pageOperationLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,

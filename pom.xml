@@ -51,6 +51,7 @@
         <poi.version>5.2.5</poi.version>
         <pdfbox.version>3.0.3</pdfbox.version>
         <flyway.version>10.10.0</flyway.version>
+        <flyway.url>jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&amp;characterEncoding=utf-8&amp;useSSL=false&amp;serverTimezone=Asia/Shanghai&amp;allowPublicKeyRetrieval=true</flyway.url>
         <elasticsearch-client.version>8.14.3</elasticsearch-client.version>
     </properties>
 
@@ -194,7 +195,7 @@
                     <artifactId>flyway-maven-plugin</artifactId>
                     <version>${flyway.version}</version>
                     <configuration>
-                        <url>jdbc:mysql://127.0.0.1:3306/codecoachai?useUnicode=true&amp;characterEncoding=utf-8&amp;useSSL=false&amp;serverTimezone=Asia/Shanghai&amp;allowPublicKeyRetrieval=true</url>
+                        <url>${flyway.url}</url>
                         <user>root</user>
                         <!-- 通过 -Dflyway.password=... 在命令行注入，避免提交明文 -->
                         <password>${env.MYSQL_PASSWORD}</password>
