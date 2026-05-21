@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
+import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentFeedback;
@@ -35,6 +36,7 @@ import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionCaseMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
+import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,6 +50,7 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -68,6 +71,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final AnalyticsJobLogMapper analyticsJobLogMapper;
     private final PromptRegressionCaseMapper promptRegressionCaseMapper;
     private final PromptRegressionResultMapper promptRegressionResultMapper;
+    private final JobCoachAgentService jobCoachAgentService;
+    private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -271,20 +276,55 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         AnalyticsJobRunDTO request = dto == null ? new AnalyticsJobRunDTO() : dto;
         String jobCode = firstText(request.getJobCode(), "AGENT_DAILY_PLAN");
         String jobName = firstText(request.getJobName(), "Agent daily plan batch");
-        AnalyticsJobLog log = startJob(jobCode, jobName, request.getStatDate() == null ? LocalDate.now() : request.getStatDate());
+        LocalDate planDate = request.getStatDate() == null ? LocalDate.now() : request.getStatDate();
+        AnalyticsJobLog log = startJob(jobCode, jobName, planDate);
         Map<String, Object> output = new LinkedHashMap<>();
         int success = 0;
         int failed = 0;
         List<String> errors = new ArrayList<>();
-        for (Long userId : request.getUserIds() == null ? List.<Long>of() : request.getUserIds()) {
-            failed++;
-            errors.add("userId=" + userId + ": admin batch daily-plan generation requires an internal per-user context API");
+        List<Long> userIds = resolveDailyPlanUserIds(request);
+        for (Long userId : userIds) {
+            try {
+                DailyPlanGenerateDTO generateDTO = new DailyPlanGenerateDTO();
+                generateDTO.setTargetJobId(request.getTargetJobId());
+                generateDTO.setDate(planDate);
+                generateDTO.setTaskCount(request.getTaskCount());
+                generateDTO.setMaxTotalMinutes(request.getMaxTotalMinutes());
+                generateDTO.setForceRegenerate(false);
+                jobCoachAgentService.generateDailyPlan(userId, generateDTO);
+                success++;
+            } catch (Exception ex) {
+                failed++;
+                errors.add("userId=" + userId + ": " + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+            }
         }
+        output.put("mode", request.getUserIds() == null || request.getUserIds().isEmpty() ? "ALL_ACTIVE_USER_ROLE" : "SPECIFIED_USERS");
+        output.put("planDate", planDate);
+        output.put("total", userIds.size());
         output.put("success", success);
         output.put("failed", failed);
         output.put("errors", errors);
         finishJob(log, failed == 0 ? "SUCCESS" : "FAILED", writeJson(output), errors.isEmpty() ? null : String.join("; ", errors));
         return toJobVO(log);
+    }
+
+    private List<Long> resolveDailyPlanUserIds(AnalyticsJobRunDTO request) {
+        if (request.getUserIds() != null && !request.getUserIds().isEmpty()) {
+            return request.getUserIds().stream()
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+        }
+        return jdbcTemplate.queryForList("""
+                SELECT DISTINCT u.id
+                FROM sys_user u
+                JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+                JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
+                WHERE u.deleted = 0
+                  AND u.status = 1
+                  AND r.role_code = 'USER'
+                ORDER BY u.id
+                """, Long.class);
     }
 
     @Override
