@@ -24,5 +24,6 @@ public class QuestionRecommendationItem extends BaseEntity {
     private String answerHint;
     private String evaluatePoints;
     private Integer sortOrder;
+    private String matchStatus;
     private String practiceStatus;
 }

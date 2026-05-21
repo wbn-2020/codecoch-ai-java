@@ -6,6 +6,7 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.JobDescriptionParseDTO;
 import com.codecoachai.resume.domain.dto.TargetJobQueryDTO;
@@ -41,6 +42,7 @@ public class TargetJobServiceImpl implements TargetJobService {
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final DistributedLockHelper distributedLockHelper;
 
     @Override
     public List<TargetJobVO> listTargetJobs(TargetJobQueryDTO query) {
@@ -120,15 +122,25 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Transactional(rollbackFor = Exception.class)
     public TargetJobVO setCurrent(Long id) {
         Long userId = requireCurrentUserId();
-        TargetJob job = getOwnedTargetJob(id, userId);
-        targetJobMapper.update(null, new LambdaUpdateWrapper<TargetJob>()
-                .set(TargetJob::getCurrentFlag, CommonConstants.NO)
-                .eq(TargetJob::getUserId, userId)
-                .eq(TargetJob::getDeleted, CommonConstants.NO)
-                .ne(TargetJob::getId, id));
-        job.setCurrentFlag(CommonConstants.YES);
-        targetJobMapper.updateById(job);
-        return toTargetJobVO(job, latestAnalysis(job.getId(), userId));
+        return distributedLockHelper.tryLockAndCall("lock:target-job:current:" + userId, 3, 10,
+                () -> setCurrentInTransaction(id, userId),
+                () -> {
+                    throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Target job current switch is busy");
+                });
+    }
+
+    private TargetJobVO setCurrentInTransaction(Long id, Long userId) {
+        return transactionTemplate.execute(status -> {
+            TargetJob job = getOwnedTargetJob(id, userId);
+            targetJobMapper.update(null, new LambdaUpdateWrapper<TargetJob>()
+                    .set(TargetJob::getCurrentFlag, CommonConstants.NO)
+                    .eq(TargetJob::getUserId, userId)
+                    .eq(TargetJob::getDeleted, CommonConstants.NO)
+                    .ne(TargetJob::getId, id));
+            job.setCurrentFlag(CommonConstants.YES);
+            targetJobMapper.updateById(job);
+            return toTargetJobVO(job, latestAnalysis(job.getId(), userId));
+        });
     }
 
     @Override

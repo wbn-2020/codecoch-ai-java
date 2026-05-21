@@ -39,6 +39,8 @@ public class V3DashboardController {
             vo.setSkillProfile(skillProfile(userId, targetJobId));
             vo.setStudyProgress(studyProgress(userId, targetJobId));
             vo.setRecommendedQuestions(recommendedQuestions(userId, targetJobId));
+            vo.setRecentInterview(recentInterview(userId, targetJobId));
+            vo.setRecentReport(recentReport(userId, targetJobId));
             vo.setTrainingTrend(trainingTrend(userId));
             vo.setNextActions(nextActions(vo));
             vo.setDegraded(!governanceTips.get().isEmpty());
@@ -219,36 +221,134 @@ public class V3DashboardController {
         return vo;
     }
 
-    private List<Map<String, Object>> recommendedQuestions(Long userId, Long targetJobId) {
-        if (!tableExists("question_recommendation_item")) {
-            return List.of();
+    private V3DashboardVO.RecommendedQuestionsVO recommendedQuestions(Long userId, Long targetJobId) {
+        if (!tableExists("question_recommendation_batch")) {
+            return null;
         }
-        String titleColumn = columnExists("question_recommendation_item", "title") ? "title" : "question_title";
+        String targetColumn = columnExists("question_recommendation_batch", "job_target_id")
+                ? "job_target_id"
+                : (columnExists("question_recommendation_batch", "target_job_id") ? "target_job_id" : null);
         String targetFilter = "";
         List<Object> args = new ArrayList<>();
         args.add(userId);
-        if (targetJobId != null && columnExists("question_recommendation_item", "target_job_id")) {
-            targetFilter = " AND target_job_id = ?";
-            args.add(targetJobId);
-        } else if (targetJobId != null && tableExists("question_recommendation_batch")
-                && columnExists("question_recommendation_item", "batch_id")
-                && columnExists("question_recommendation_batch", "job_target_id")) {
-            targetFilter = """
-                     AND EXISTS (
-                        SELECT 1 FROM question_recommendation_batch b
-                        WHERE b.id = question_recommendation_item.batch_id
-                          AND b.job_target_id = ?
-                    )
-                    """;
+        if (targetJobId != null && targetColumn != null) {
+            targetFilter = " AND " + targetColumn + " = ?";
             args.add(targetJobId);
         }
-        return jdbcTemplate.queryForList("""
-                SELECT id, %s AS title, skill_name, difficulty, recommend_reason
-                FROM question_recommendation_item
+        String targetSelect = targetColumn == null ? "NULL" : targetColumn;
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id, %s AS target_job_id, source_type, source_id, match_report_id,
+                       skill_profile_id, study_plan_id, status, question_count, updated_at
+                FROM question_recommendation_batch
                 WHERE deleted = 0 AND user_id = ?%s
                 ORDER BY updated_at DESC, id DESC
-                LIMIT 8
-                """.formatted(titleColumn, targetFilter), args.toArray());
+                LIMIT 1
+                """.formatted(targetSelect, targetFilter), args.toArray());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        Long batchId = longValue(row.get("id"));
+        Long itemCount = tableExists("question_recommendation_item")
+                ? queryLong("""
+                        SELECT COUNT(1)
+                        FROM question_recommendation_item
+                        WHERE deleted = 0 AND batch_id = ?
+                        """, batchId)
+                : longValue(row.get("question_count"));
+        Long canPracticeCount = tableExists("question_recommendation_item")
+                ? queryLong("""
+                        SELECT COUNT(1)
+                        FROM question_recommendation_item
+                        WHERE deleted = 0 AND batch_id = ?
+                          AND question_id IS NOT NULL
+                          %s
+                        """.formatted(columnExists("question_recommendation_item", "match_status")
+                                ? "AND (match_status IS NULL OR match_status <> 'UNMATCHED_DRAFT')" : ""), batchId)
+                : 0L;
+        V3DashboardVO.RecommendedQuestionsVO vo = new V3DashboardVO.RecommendedQuestionsVO();
+        vo.setBatchId(batchId);
+        vo.setTargetJobId(longValue(row.get("target_job_id")));
+        vo.setSourceType(stringValue(row.get("source_type")));
+        vo.setSourceId(longValue(row.get("source_id")));
+        vo.setMatchReportId(longValue(row.get("match_report_id")));
+        vo.setSkillProfileId(longValue(row.get("skill_profile_id")));
+        vo.setStudyPlanId(longValue(row.get("study_plan_id")));
+        vo.setStatus(stringValue(row.get("status")));
+        vo.setQuestionCount(itemCount == null || itemCount == 0 ? longValue(row.get("question_count")) : itemCount);
+        vo.setCanPracticeCount(canPracticeCount == null ? 0L : canPracticeCount);
+        vo.setPendingPracticeCount(Math.max(0L, (vo.getQuestionCount() == null ? 0L : vo.getQuestionCount()) - vo.getCanPracticeCount()));
+        vo.setUpdatedAt(dateTime(row.get("updated_at")));
+        return vo;
+    }
+
+    private V3DashboardVO.RecentInterviewVO recentInterview(Long userId, Long targetJobId) {
+        if (!tableExists("interview_session")) {
+            return null;
+        }
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        String targetFilter = "";
+        if (targetJobId != null && columnExists("interview_session", "target_job_id")) {
+            targetFilter = " AND target_job_id = ?";
+            args.add(targetJobId);
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id, title, status, report_status, updated_at
+                FROM interview_session
+                WHERE deleted = 0 AND user_id = ?%s
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """.formatted(targetFilter), args.toArray());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        V3DashboardVO.RecentInterviewVO vo = new V3DashboardVO.RecentInterviewVO();
+        vo.setInterviewId(longValue(row.get("id")));
+        vo.setTitle(stringValue(row.get("title")));
+        vo.setStatus(stringValue(row.get("status")));
+        vo.setReportStatus(stringValue(row.get("report_status")));
+        vo.setUpdatedAt(dateTime(row.get("updated_at")));
+        return vo;
+    }
+
+    private V3DashboardVO.RecentReportVO recentReport(Long userId, Long targetJobId) {
+        if (!tableExists("interview_report") || !tableExists("interview_session")) {
+            return null;
+        }
+        String weakPointsExpr = columnExists("interview_report", "weak_points") ? "r.weak_points" : "NULL";
+        String suggestionsExpr = columnExists("interview_report", "suggestions")
+                ? "r.suggestions"
+                : (columnExists("interview_report", "review_suggestions") ? "r.review_suggestions" : "NULL");
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        String targetFilter = "";
+        if (targetJobId != null && columnExists("interview_session", "target_job_id")) {
+            targetFilter = " AND s.target_job_id = ?";
+            args.add(targetJobId);
+        }
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT r.id, r.session_id, r.status, r.total_score, %s AS weak_points, %s AS suggestions, r.generated_at, r.updated_at
+                FROM interview_report r
+                JOIN interview_session s ON s.id = r.session_id AND s.deleted = 0
+                WHERE r.deleted = 0 AND s.user_id = ?%s
+                ORDER BY COALESCE(r.generated_at, r.updated_at) DESC, r.id DESC
+                LIMIT 1
+                """.formatted(weakPointsExpr, suggestionsExpr, targetFilter), args.toArray());
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> row = rows.get(0);
+        V3DashboardVO.RecentReportVO vo = new V3DashboardVO.RecentReportVO();
+        vo.setReportId(longValue(row.get("id")));
+        vo.setInterviewId(longValue(row.get("session_id")));
+        vo.setStatus(stringValue(row.get("status")));
+        vo.setTotalScore(intValue(row.get("total_score")));
+        vo.setWeakPoints(splitLines(stringValue(row.get("weak_points"))));
+        vo.setSuggestions(splitLines(stringValue(row.get("suggestions"))));
+        vo.setGeneratedAt(dateTime(row.get("generated_at")) == null ? dateTime(row.get("updated_at")) : dateTime(row.get("generated_at")));
+        return vo;
     }
 
     private List<V3DashboardVO.TrendItemVO> trainingTrend(Long userId) {
@@ -287,6 +387,7 @@ public class V3DashboardController {
 
     private List<V3DashboardVO.NextActionVO> nextActions(V3DashboardVO vo) {
         List<V3DashboardVO.NextActionVO> actions = new ArrayList<>();
+        appendReportActions(actions, vo);
         if (vo.getCurrentTargetJob() == null) {
             actions.add(action("CREATE_TARGET_JOB", "创建目标岗位", "先录入目标岗位和 JD，才能开启 V3 闭环。", "/job-targets", 1));
         } else if (vo.getLatestMatch() == null) {
@@ -300,6 +401,85 @@ public class V3DashboardController {
         }
         actions.add(action("REVIEW_GAPS", "复盘能力短板", "查看最新能力画像和面试报告回流弱项。", "/skill-profiles", 2));
         return actions;
+    }
+
+    private void appendReportActions(List<V3DashboardVO.NextActionVO> actions, V3DashboardVO vo) {
+        V3DashboardVO.RecentReportVO report = vo.getRecentReport();
+        if (report != null) {
+            String status = StringUtils.hasText(report.getStatus()) ? report.getStatus().toUpperCase() : "";
+            if ("FAILED".equals(status)) {
+                actions.add(action("RETRY_INTERVIEW_REPORT", "重新生成面试报告", "最近一次面试报告生成失败，先恢复报告再进入复盘。",
+                        "/interviews/" + report.getInterviewId() + "/report", 1));
+                return;
+            }
+            if (report.getInterviewId() != null) {
+                actions.add(action("REVIEW_INTERVIEW_REPORT", "查看最近面试报告", reportSummary(report),
+                        "/interviews/" + report.getInterviewId() + "/report", 1));
+            }
+            if (!report.getWeakPoints().isEmpty() || !report.getSuggestions().isEmpty()) {
+                actions.add(action("PRACTICE_REPORT_WEAKNESS", "按报告弱点继续练习", "围绕最近面试暴露的弱点进入推荐题训练。",
+                        recommendationPath(vo), 2));
+                actions.add(action("UPDATE_STUDY_PLAN_FROM_REPORT", "把报告建议纳入学习计划", "用报告弱点调整下一阶段学习任务。",
+                        studyPlanPath(vo, report), 3));
+            }
+            return;
+        }
+        V3DashboardVO.RecentInterviewVO interview = vo.getRecentInterview();
+        if (interview != null && StringUtils.hasText(interview.getReportStatus())) {
+            String status = interview.getReportStatus().toUpperCase();
+            if ("GENERATING".equals(status) || "REPORT_GENERATING".equals(status)) {
+                actions.add(action("VIEW_REPORT_PROGRESS", "查看报告生成进度", "最近面试报告仍在生成中，可进入报告页查看状态。",
+                        "/interviews/" + interview.getInterviewId() + "/report", 1));
+            }
+        }
+    }
+
+    private String reportSummary(V3DashboardVO.RecentReportVO report) {
+        List<String> points = new ArrayList<>();
+        points.addAll(report.getWeakPoints());
+        points.addAll(report.getSuggestions());
+        if (points.isEmpty()) {
+            return "查看总分、薄弱点和后续建议。";
+        }
+        return String.join("；", points.stream().limit(2).toList());
+    }
+
+    private String recommendationPath(V3DashboardVO vo) {
+        V3DashboardVO.RecommendedQuestionsVO recommendations = vo.getRecommendedQuestions();
+        if (recommendations != null && recommendations.getBatchId() != null) {
+            return "/questions/recommendations?batchId=" + recommendations.getBatchId()
+                    + queryPart("sourceType", recommendations.getSourceType())
+                    + queryPart("sourceId", recommendations.getSourceId());
+        }
+        if (vo.getStudyProgress() != null && vo.getStudyProgress().getActivePlanId() != null) {
+            return "/questions/recommendations?source=studyPlan&sourceId=" + vo.getStudyProgress().getActivePlanId();
+        }
+        if (vo.getSkillProfile() != null && vo.getSkillProfile().getProfileId() != null) {
+            return "/questions/recommendations?source=gap&sourceId=" + vo.getSkillProfile().getProfileId();
+        }
+        if (vo.getLatestMatch() != null && vo.getLatestMatch().getReportId() != null) {
+            return "/questions/recommendations?source=matchReport&sourceId=" + vo.getLatestMatch().getReportId();
+        }
+        return "/questions/recommendations";
+    }
+
+    private String studyPlanPath(V3DashboardVO vo, V3DashboardVO.RecentReportVO report) {
+        StringBuilder builder = new StringBuilder("/study-plans");
+        List<String> params = new ArrayList<>();
+        if (report.getReportId() != null) {
+            params.add("fromReportId=" + report.getReportId());
+        }
+        if (vo.getCurrentTargetJob() != null && vo.getCurrentTargetJob().getId() != null) {
+            params.add("targetJobId=" + vo.getCurrentTargetJob().getId());
+        }
+        if (params.isEmpty()) {
+            return builder.toString();
+        }
+        return builder.append("?").append(String.join("&", params)).toString();
+    }
+
+    private String queryPart(String name, Object value) {
+        return value == null || !StringUtils.hasText(String.valueOf(value)) ? "" : "&" + name + "=" + value;
     }
 
     private V3DashboardVO.NextActionVO action(String type, String title, String desc, String path, int priority) {
@@ -370,5 +550,16 @@ public class V3DashboardController {
 
     private LocalDateTime dateTime(Object value) {
         return value instanceof Timestamp ts ? ts.toLocalDateTime() : null;
+    }
+
+    private List<String> splitLines(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        return value.lines()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .limit(8)
+                .toList();
     }
 }

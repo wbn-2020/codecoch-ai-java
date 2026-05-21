@@ -70,6 +70,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     public ResumeJobMatchSubmitVO createReport(ResumeJobMatchCreateDTO dto) {
         Long userId = requireCurrentUserId();
         MatchContext context = prepareContext(dto.getResumeId(), dto.getTargetJobId(), userId);
+        if (!Boolean.TRUE.equals(dto.getForceRefresh())) {
+            ResumeJobMatchReport existing = latestSuccessfulReport(dto.getResumeId(), dto.getTargetJobId(), userId);
+            if (existing != null) {
+                return toSubmitVO(existing);
+            }
+        }
         ResumeJobMatchReport report = transactionTemplate.execute(status -> createProcessingReport(context));
         return generateReport(report.getId());
     }
@@ -348,6 +354,17 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job JD analysis is not parsed");
         }
         return analysis;
+    }
+
+    private ResumeJobMatchReport latestSuccessfulReport(Long resumeId, Long targetJobId, Long userId) {
+        return reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getUserId, userId)
+                .eq(ResumeJobMatchReport::getResumeId, resumeId)
+                .eq(ResumeJobMatchReport::getTargetJobId, targetJobId)
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.SUCCESS.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .orderByDesc(ResumeJobMatchReport::getUpdatedAt)
+                .last("limit 1"));
     }
 
     private ResumeJobMatchReportListVO toListVO(ResumeJobMatchReport report) {

@@ -5,12 +5,15 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
+import com.codecoachai.ai.security.AesGcmTextEncryptor;
+import com.codecoachai.ai.security.SensitiveTextMasker;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,11 +24,13 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @RestController
 @RequiredArgsConstructor
 public class AdminAiModelController {
 
     private final AiModelConfigMapper mapper;
+    private final AesGcmTextEncryptor apiKeyEncryptor;
 
     @GetMapping("/admin/ai/models")
     public Result<List<AiModelConfig>> list(@RequestParam(required = false) String keyword,
@@ -63,6 +68,7 @@ public class AdminAiModelController {
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
             clearDefault(entity.getProvider(), null);
         }
+        encryptPlainApiKeyBeforeSave(entity);
         mapper.insert(entity);
         return Result.success(maskApiKey(entity));
     }
@@ -75,6 +81,7 @@ public class AdminAiModelController {
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
             clearDefault(entity.getProvider(), id);
         }
+        encryptPlainApiKeyBeforeSave(entity);
         mapper.updateById(entity);
         return Result.success(maskApiKey(entity));
     }
@@ -86,6 +93,7 @@ public class AdminAiModelController {
         clearDefault(entity.getProvider(), id);
         entity.setDefaultModel(1);
         entity.setEnabled(1);
+        encryptPlainApiKeyBeforeSave(entity);
         mapper.updateById(entity);
         return Result.success(maskApiKey(entity));
     }
@@ -101,6 +109,7 @@ public class AdminAiModelController {
         AiModelConfig entity = get(id);
         Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
         entity.setEnabled(enabled == null ? 1 : enabled);
+        encryptPlainApiKeyBeforeSave(entity);
         mapper.updateById(entity);
         return Result.success(maskApiKey(entity));
     }
@@ -124,7 +133,7 @@ public class AdminAiModelController {
         entity.setCapabilityTags(dto.getCapabilityTags());
         entity.setApiBaseUrl(StringUtils.hasText(dto.getApiBaseUrl()) ? dto.getApiBaseUrl().trim() : null);
         if (StringUtils.hasText(dto.getApiKey())) {
-            entity.setApiKey(dto.getApiKey().trim());
+            entity.setApiKey(encryptApiKey(dto.getApiKey()));
         }
         entity.setTemperature(dto.getTemperature());
         entity.setMaxTokens(dto.getMaxTokens());
@@ -153,20 +162,39 @@ public class AdminAiModelController {
 
     private AiModelConfig maskApiKey(AiModelConfig entity) {
         if (entity != null) {
-            entity.setApiKeyMasked(mask(entity.getApiKey()));
+            entity.setApiKeyMasked(maskStoredApiKey(entity.getApiKey()));
+            entity.setApiKey(null);
         }
         return entity;
     }
 
-    private String mask(String apiKey) {
-        if (!StringUtils.hasText(apiKey)) {
+    private String encryptApiKey(String apiKey) {
+        try {
+            return apiKeyEncryptor.encrypt(apiKey);
+        } catch (IllegalStateException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "AI model apiKey encryption key is not configured or invalid");
+        }
+    }
+
+    private void encryptPlainApiKeyBeforeSave(AiModelConfig entity) {
+        if (entity != null && StringUtils.hasText(entity.getApiKey())
+                && !apiKeyEncryptor.isEncrypted(entity.getApiKey())) {
+            entity.setApiKey(encryptApiKey(entity.getApiKey()));
+        }
+    }
+
+    private String maskStoredApiKey(String storedApiKey) {
+        if (!StringUtils.hasText(storedApiKey)) {
             return "";
         }
-        String value = apiKey.trim();
-        if (value.length() <= 8) {
+        try {
+            return SensitiveTextMasker.maskSecret(apiKeyEncryptor.decryptIfNeeded(storedApiKey));
+        } catch (IllegalStateException ex) {
+            log.warn("AI_MODEL_API_KEY_DECRYPT_UNAVAILABLE encrypted={} reason={}",
+                    apiKeyEncryptor.isEncrypted(storedApiKey), ex.getMessage());
             return "******";
         }
-        return value.substring(0, 4) + "****" + value.substring(value.length() - 4);
     }
 
     @lombok.Data

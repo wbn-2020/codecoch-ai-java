@@ -1,6 +1,7 @@
 package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -103,6 +104,9 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
 
             Result<ParseResumeVO> aiResp = aiFeignClient.parseResume(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
+                if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
+                    throw new NonRetryableMqException("AI 简历解析业务失败: " + aiResp.getMessage());
+                }
                 throw new RuntimeException("AI 解析返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
             String structured = aiResp.getData().getStructuredJson();
@@ -152,5 +156,12 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
         } catch (Exception ignore) {
             log.warn("回写 resume FAILED 状态失败 msgId={}", envelope.getMessageId(), ignore);
         }
+    }
+
+    private boolean isBusinessFailure(Integer code) {
+        return code != null && (code == ErrorCode.PARAM_ERROR.getCode()
+                || code == ErrorCode.VALIDATION_ERROR.getCode()
+                || code == ErrorCode.UNAUTHORIZED.getCode()
+                || code == ErrorCode.FORBIDDEN.getCode());
     }
 }

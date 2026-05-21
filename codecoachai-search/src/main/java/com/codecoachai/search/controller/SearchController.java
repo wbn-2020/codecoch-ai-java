@@ -16,6 +16,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
@@ -37,10 +38,42 @@ public class SearchController {
 
     private final ElasticsearchClient esClient;
 
+    @Operation(summary = "Unified search entry")
+    @GetMapping
+    public Result<PageResult<JsonNode>> search(
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "1") Integer pageNo,
+            @RequestParam(defaultValue = "10") Integer pageSize,
+            @RequestParam(required = false) String difficulty,
+            @RequestParam(required = false) String categoryId,
+            @RequestParam(required = false) String reportStatus) throws IOException {
+        if (!StringUtils.hasText(type)) {
+            return unsupportedSearchType(type);
+        }
+        String normalizedType = type.trim().toLowerCase(Locale.ROOT);
+        switch (normalizedType) {
+            case "questions":
+            case "question":
+                return searchQuestions(keyword, pageNo, pageSize, difficulty, categoryId);
+            case "resumes":
+            case "resume":
+                return searchResumes(keyword, pageNo, pageSize);
+            case "interviews":
+            case "interview":
+                return searchInterviews(keyword, pageNo, pageSize);
+            case "reports":
+            case "report":
+                return searchReports(keyword, pageNo, pageSize, reportStatus);
+            default:
+                return unsupportedSearchType(type);
+        }
+    }
+
     @Operation(summary = "题库全文搜索")
     @GetMapping("/questions")
     public Result<PageResult<JsonNode>> searchQuestions(
-            @RequestParam String keyword,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) String difficulty,
@@ -52,7 +85,7 @@ public class SearchController {
     @Operation(summary = "当前用户简历搜索")
     @GetMapping("/resumes")
     public Result<PageResult<JsonNode>> searchResumes(
-            @RequestParam String keyword,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize) throws IOException {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -62,7 +95,7 @@ public class SearchController {
     @Operation(summary = "面试历史搜索")
     @GetMapping("/interviews")
     public Result<PageResult<JsonNode>> searchInterviews(
-            @RequestParam String keyword,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize) throws IOException {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -73,6 +106,18 @@ public class SearchController {
     @GetMapping("/health")
     public Result<String> health() {
         return Result.success("search-service ok");
+    }
+
+    @Operation(summary = "Reports search compatibility")
+    @GetMapping("/reports")
+    public Result<PageResult<JsonNode>> searchReports(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "1") Integer pageNo,
+            @RequestParam(defaultValue = "10") Integer pageSize,
+            @RequestParam(required = false) String reportStatus) throws IOException {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return doSearch(IndexNames.INTERVIEW, keyword, pageNo, pageSize,
+                reportFilters(userId, reportStatus));
     }
 
     // ==================== 内部方法 ====================
@@ -86,7 +131,9 @@ public class SearchController {
         if (StringUtils.hasText(keyword)) {
             boolBuilder.must(Query.of(q -> q.multiMatch(m -> m
                     .query(keyword)
-                    .fields("title^3", "content^2", "tags", "name", "summary", "targetPosition")
+                    .fields("title^3", "content^2", "tags", "name", "summary^2", "targetPosition",
+                            "weakPoints", "strengths", "mainProblems", "projectProblems",
+                            "reviewSuggestions", "suggestions", "reportContent")
                     .fuzziness("AUTO")
             )));
         } else {
@@ -115,6 +162,10 @@ public class SearchController {
         return Result.success(PageResult.of(records, total, (long) pageNo, (long) pageSize));
     }
 
+    private Result<PageResult<JsonNode>> unsupportedSearchType(String type) {
+        return Result.fail(40000, "Unsupported search type: " + (type == null ? "" : type));
+    }
+
     private List<Query> buildQuestionFilters(String difficulty, String categoryId) {
         List<Query> filters = new ArrayList<>();
         if (StringUtils.hasText(difficulty)) {
@@ -127,6 +178,14 @@ public class SearchController {
     }
 
     private List<Query> userScopedFilters(Long userId) {
-        return List.of(Query.of(q -> q.term(t -> t.field("userId").value(userId))));
+        return List.of(Query.of(q -> q.term(t -> t.field("userId").value(String.valueOf(userId)))));
+    }
+
+    private List<Query> reportFilters(Long userId, String reportStatus) {
+        List<Query> filters = new ArrayList<>(userScopedFilters(userId));
+        if (StringUtils.hasText(reportStatus)) {
+            filters.add(Query.of(q -> q.term(t -> t.field("reportStatus").value(reportStatus))));
+        }
+        return filters;
     }
 }

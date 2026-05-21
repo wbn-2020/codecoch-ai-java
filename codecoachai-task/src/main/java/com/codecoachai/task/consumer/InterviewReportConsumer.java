@@ -1,6 +1,7 @@
 package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -91,6 +92,9 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
 
             Result<GenerateReportVO> aiResp = aiFeignClient.generateInterviewReport(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
+                if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
+                    throw new NonRetryableMqException("AI 面试报告业务失败: " + aiResp.getMessage());
+                }
                 throw new RuntimeException("AI 报告返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
 
@@ -135,5 +139,12 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
         } catch (Exception ignored) {
             log.warn("回写 interview FAILED 状态失败 msgId={}", envelope.getMessageId(), ignored);
         }
+    }
+
+    private boolean isBusinessFailure(Integer code) {
+        return code != null && (code == ErrorCode.PARAM_ERROR.getCode()
+                || code == ErrorCode.VALIDATION_ERROR.getCode()
+                || code == ErrorCode.UNAUTHORIZED.getCode()
+                || code == ErrorCode.FORBIDDEN.getCode());
     }
 }

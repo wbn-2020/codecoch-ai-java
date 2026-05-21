@@ -34,6 +34,7 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
+import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionService;
 import java.time.LocalDateTime;
@@ -43,6 +44,8 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -58,6 +61,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
     private final QuestionDuplicateService questionDuplicateService;
+    private final QuestionMqDispatcher questionMqDispatcher;
 
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
@@ -170,7 +174,9 @@ public class QuestionServiceImpl implements QuestionService {
         applyQuestion(question, dto);
         questionMapper.insert(question);
         replaceTags(question.getId(), dto.getTagIds());
-        questionDuplicateService.checkDuplicateForQuestion(question.getId(), requireCurrentUserId());
+        Long userId = requireCurrentUserId();
+        questionDuplicateService.checkDuplicateForQuestion(question.getId(), userId);
+        syncQuestionSearchAfterCommit(question.getId(), userId, CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(question);
     }
 
@@ -181,19 +187,25 @@ public class QuestionServiceImpl implements QuestionService {
         applyQuestion(question, dto);
         questionMapper.updateById(question);
         replaceTags(question.getId(), dto.getTagIds());
+        syncQuestionSearchAfterCommit(question.getId(), LoginUserContext.getUserId(),
+                CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(getQuestionOrThrow(id));
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteQuestion(Long id) {
         questionMapper.deleteById(id);
+        syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), false);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateStatus(Long id, UpdateStatusDTO dto) {
         Question question = getQuestionOrThrow(id);
         question.setStatus(dto.getStatus());
         questionMapper.updateById(question);
+        syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), CommonConstants.YES.equals(dto.getStatus()));
     }
 
     @Override
@@ -448,6 +460,26 @@ public class QuestionServiceImpl implements QuestionService {
         } else {
             recordMapper.updateById(record);
         }
+    }
+
+    private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId);
+            } else {
+                questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private Long requireCurrentUserId() {

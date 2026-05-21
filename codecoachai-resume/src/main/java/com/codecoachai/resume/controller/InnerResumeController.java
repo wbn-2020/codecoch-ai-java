@@ -52,7 +52,7 @@ public class InnerResumeController {
         }
         Map<String, Object> doc = new HashMap<>();
         doc.put("id", r.getId());
-        doc.put("userId", r.getUserId());
+        doc.put("userId", String.valueOf(r.getUserId()));
         doc.put("title", r.getTitle());
         doc.put("realName", r.getRealName());
         doc.put("targetPosition", r.getTargetPosition());

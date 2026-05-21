@@ -61,6 +61,8 @@ public final class AiConvert {
         vo.setPromptVersion(log.getPromptVersion());
         vo.setRequestId(log.getRequestId());
         vo.setTraceId(log.getTraceId());
+        vo.setRouteTrace(log.getRouteTrace());
+        vo.setEstimatedCost(log.getEstimatedCost() == null ? log.getTokenCost() : log.getEstimatedCost());
         vo.setInputVariablesJson(log.getInputVariablesJson());
         vo.setModelParamsJson(log.getModelParamsJson());
         vo.setPromptHash(log.getPromptHash());

@@ -24,10 +24,11 @@ public class CommonSecurityAutoConfiguration {
     }
 
     @Bean
-    public FilterRegistrationBean<LoginUserContextFilter> loginUserContextFilter() {
+    public FilterRegistrationBean<LoginUserContextFilter> loginUserContextFilter(
+            InternalAuthProperties internalAuthProperties) {
         FilterRegistrationBean<LoginUserContextFilter> registrationBean = new FilterRegistrationBean<>();
-        registrationBean.setFilter(new LoginUserContextFilter());
-        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
+        registrationBean.setFilter(new LoginUserContextFilter(internalAuthProperties));
+        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 15);
         registrationBean.addUrlPatterns("/*");
         return registrationBean;
     }
@@ -47,7 +48,7 @@ public class CommonSecurityAutoConfiguration {
     public FilterRegistrationBean<AdminRoleFilter> adminRoleFilter() {
         FilterRegistrationBean<AdminRoleFilter> registrationBean = new FilterRegistrationBean<>();
         registrationBean.setFilter(new AdminRoleFilter());
-        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 15);
+        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         registrationBean.addUrlPatterns("/*");
         return registrationBean;
     }

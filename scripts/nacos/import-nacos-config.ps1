@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $rootDir = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+# Official Nacos source directory. config/nacos is kept only as historical/manual templates.
 $configDir = Join-Path $rootDir "docs\nacos"
 
 if (-not $AccessToken -and $Username -and $Password) {

@@ -15,6 +15,7 @@ spring:
 codecoachai:
   file:
     storage:
+      # Dev acceptance uses real Aliyun OSS. Provide OSS_* env/private Nacos values before startup.
       provider: ALIYUN_OSS
       root-path: ${CODECOACHAI_FILE_STORAGE_ROOT:./data/uploads}
       max-size-mb: 50

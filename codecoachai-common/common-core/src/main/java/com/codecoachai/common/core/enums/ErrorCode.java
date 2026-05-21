@@ -8,6 +8,7 @@ public enum ErrorCode {
     SUCCESS(0, "success"),
     PARAM_ERROR(40000, "请求参数错误"),
     VALIDATION_ERROR(40001, "参数校验失败"),
+    TOO_MANY_REQUESTS(42900, "请求过于频繁"),
     UNAUTHORIZED(41000, "未登录"),
     TOKEN_INVALID(41001, "Token 无效或已过期"),
     FORBIDDEN(41003, "无访问权限"),

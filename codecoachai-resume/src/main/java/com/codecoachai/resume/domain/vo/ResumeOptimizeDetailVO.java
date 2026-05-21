@@ -14,6 +14,7 @@ public class ResumeOptimizeDetailVO {
     private String industryDirection;
     private String optimizeStatus;
     private JsonNode resultJson;
+    private JsonNode fieldPatches;
     private String errorMessage;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

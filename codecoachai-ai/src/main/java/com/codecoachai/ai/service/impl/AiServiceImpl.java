@@ -1,6 +1,5 @@
 package com.codecoachai.ai.service.impl;
 
-import com.codecoachai.ai.client.AiClient;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
@@ -85,7 +84,6 @@ public class AiServiceImpl implements AiService {
     private final PromptRenderService promptRenderService;
     private final AiCallLogService aiCallLogService;
     private final AiProperties aiProperties;
-    private final AiClient aiClient;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -95,14 +93,18 @@ public class AiServiceImpl implements AiService {
         Map<String, String> variables = variables(dto, null);
         PromptRenderResult promptResult = promptRenderService.render(scene, questionPromptContent(scene),
                 variables, industryContextBlock(dto == null ? null : dto.getIndustryContext()), null);
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            GenerateInterviewQuestionVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockQuestion(dto, scene)
-                    : parseQuestion(rawResponse = aiClient.chat(prompt), scene);
-            saveLog(promptResult, toJson(vo), businessId(dto.getQuestionId()), start,
-                    null, null, AiFailureType.NONE);
+            GenerateInterviewQuestionVO vo;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockQuestion(dto, scene);
+                saveLog(promptResult, toJson(vo), businessId(dto.getQuestionId()), start,
+                        null, null, AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, null, businessId(dto.getQuestionId()));
+                rawResponse = routeResult.getContent();
+                vo = parseQuestion(rawResponse, scene);
+            }
             return vo;
         } catch (RuntimeException ex) {
             if (!mockEnabled()) {
@@ -121,19 +123,21 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_AI_QUESTION_GENERATE,
                 questionDraftPromptContent(), variables(dto));
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateQuestionDraftVO vo;
+            Long logId;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
                 vo = mockQuestionDrafts(dto);
                 rawResponse = toJson(Map.of("questions", vo.getQuestions()));
+                logId = saveLog(promptResult, rawResponse,
+                        dto.getBatchId(), start, null, dto.getAdminUserId(), AiFailureType.NONE);
             } else {
-                rawResponse = aiClient.chat(prompt);
+                RouteResult routeResult = callAndLog(promptResult, dto.getAdminUserId(), dto.getBatchId());
+                rawResponse = routeResult.getContent();
                 vo = parseQuestionDrafts(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
             }
-            Long logId = saveLog(promptResult, rawResponse,
-                    dto.getBatchId(), start, null, dto.getAdminUserId(), AiFailureType.NONE);
             vo.setBatchId(dto.getBatchId());
             vo.setAiCallLogId(logId);
             vo.setRawResponse(rawResponse);
@@ -157,15 +161,18 @@ public class AiServiceImpl implements AiService {
         String rawResponse = null;
         try {
             GenerateQuestionRecommendationVO vo;
+            Long logId;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
                 vo = mockQuestionRecommendations(dto);
                 rawResponse = toJson(vo);
+                logId = saveLog(promptResult, rawResponse, businessId(dto.getBatchId()),
+                        start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
-                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getBatchId()));
+                rawResponse = routeResult.getContent();
                 vo = parseQuestionRecommendations(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
             }
-            Long logId = saveLog(promptResult, rawResponse, businessId(dto.getBatchId()),
-                    start, null, dto.getUserId(), AiFailureType.NONE);
             vo.setBatchId(dto.getBatchId());
             vo.setAiCallLogId(logId);
             vo.setRawResponse(rawResponse);
@@ -186,15 +193,18 @@ public class AiServiceImpl implements AiService {
         String rawResponse = null;
         try {
             PracticeReviewVO vo;
+            Long logId;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
                 vo = mockPracticeReview(dto);
                 rawResponse = toJson(vo);
+                logId = saveLog(promptResult, rawResponse, businessId(dto.getRecordId()),
+                        start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
-                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getRecordId()));
+                rawResponse = routeResult.getContent();
                 vo = parsePracticeReview(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
             }
-            Long logId = saveLog(promptResult, rawResponse, businessId(dto.getRecordId()),
-                    start, null, dto.getUserId(), AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             vo.setRawResponse(rawResponse);
             return vo;
@@ -217,19 +227,25 @@ public class AiServiceImpl implements AiService {
         Map<String, String> variables = variables(null, dto);
         PromptRenderResult promptResult = promptRenderService.render(SCENE_EVALUATE, defaultEvaluatePrompt(),
                 variables, evaluatePromptPrefix(dto), null);
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            EvaluateAnswerVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockEvaluate(dto)
-                    : parseEvaluate(rawResponse = aiClient.chat(prompt), dto);
+            EvaluateAnswerVO vo;
+            Long logId;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockEvaluate(dto);
+                logId = saveLog(promptResult, toJson(vo),
+                        businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, null, businessId(dto.getQuestionId()));
+                rawResponse = routeResult.getContent();
+                vo = parseEvaluate(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
+            }
             if (Boolean.TRUE.equals(vo.getFollowUpValid()) && isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
                 vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
                 vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "AI 追问无效，使用本地兜底追问")));
                 vo.setFollowUpValid(true);
             }
-            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
-                    businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
@@ -249,20 +265,26 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_FOLLOW_UP, defaultFollowUpPrompt(),
                 variables(dto), industryContextBlock(dto == null ? null : dto.getIndustryContext()), null);
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            GenerateFollowUpVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockFollowUp(dto)
-                    : parseFollowUp(rawResponse = aiClient.chat(prompt), dto);
+            GenerateFollowUpVO vo;
+            Long logId;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockFollowUp(dto);
+                logId = saveLog(promptResult, toJson(vo),
+                        businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, null, businessId(dto.getQuestionId()));
+                rawResponse = routeResult.getContent();
+                vo = parseFollowUp(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
+            }
             if (isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
                 vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
                 vo.setReason(markFallback(firstText(vo.getReason(), "AI 追问无效，使用本地兜底追问")));
                 vo.setRelatedToOriginalQuestion(true);
                 vo.setFollowUpValid(true);
             }
-            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
-                    businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
@@ -286,14 +308,20 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_REPORT, defaultReportPrompt(),
                 variables(dto), reportPromptPrefix(dto), null);
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            GenerateReportVO vo = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockReport(dto)
-                    : parseReport(rawResponse = aiClient.chat(prompt));
-            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, vo),
-                    businessId(dto.getInterviewId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            GenerateReportVO vo;
+            Long logId;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockReport(dto);
+                logId = saveLog(promptResult, toJson(vo),
+                        businessId(dto.getInterviewId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getInterviewId()));
+                rawResponse = routeResult.getContent();
+                vo = parseReport(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
@@ -314,16 +342,20 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_PARSE, resumeParsePromptContent(),
                 variables(dto));
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            String structuredJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockResumeStructuredJson()
-                    : parseResumeStructuredJson(rawResponse = aiClient.chat(prompt));
+            String structuredJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                structuredJson = mockResumeStructuredJson();
+                saveLog(promptResult, structuredJson,
+                        businessId(dto.getAnalysisRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getAnalysisRecordId()));
+                rawResponse = routeResult.getContent();
+                structuredJson = parseResumeStructuredJson(rawResponse);
+            }
             ParseResumeVO vo = new ParseResumeVO();
             vo.setStructuredJson(structuredJson);
-            saveLog(promptResult, structuredJson,
-                    businessId(dto.getAnalysisRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
             return vo;
         } catch (RuntimeException ex) {
             saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
@@ -338,14 +370,20 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_RESUME_OPTIMIZE,
                 resumeOptimizePromptContent(), variables(dto));
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockResumeOptimizeJson()
-                    : parseResumeOptimizeJson(rawResponse = aiClient.chat(prompt));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getOptimizeRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            String resultJson;
+            Long logId;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockResumeOptimizeJson();
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getOptimizeRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getOptimizeRecordId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseResumeOptimizeJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             ResumeOptimizeAiResponseVO vo = new ResumeOptimizeAiResponseVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
@@ -363,19 +401,21 @@ public class AiServiceImpl implements AiService {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_LEARNING_PLAN_GENERATE,
                 learningPlanPromptContent(), variables(dto));
-        String prompt = promptResult.getRenderedPrompt();
         String rawResponse = null;
         try {
             GenerateLearningPlanVO vo;
+            Long logId;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
                 vo = mockLearningPlan(dto);
                 rawResponse = toJson(vo);
+                logId = saveLog(promptResult, rawResponse,
+                        businessId(dto.getLearningPlanId()), start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
-                rawResponse = aiClient.chat(prompt);
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getLearningPlanId()));
+                rawResponse = routeResult.getContent();
                 vo = parseLearningPlan(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
             }
-            Long logId = saveLog(promptResult, rawResponse,
-                    businessId(dto.getLearningPlanId()), start, null, dto.getUserId(), AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
@@ -394,16 +434,19 @@ public class AiServiceImpl implements AiService {
         String rawResponse = null;
         try {
             GenerateLearningPlanVO vo;
+            Long logId;
+            String businessId = businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId()));
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
                 vo = mockTargetedStudyPlan(dto);
                 rawResponse = toJson(vo);
+                logId = saveLog(promptResult, rawResponse, businessId,
+                        start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
-                rawResponse = aiClient.chat(promptResult.getRenderedPrompt());
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId);
+                rawResponse = routeResult.getContent();
                 vo = parseTargetedStudyPlan(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
             }
-            Long logId = saveLog(promptResult, rawResponse,
-                    businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
-                    start, null, dto.getUserId(), AiFailureType.NONE);
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
@@ -458,11 +501,18 @@ public class AiServiceImpl implements AiService {
                 resumeJobMatchPromptContent(), variables(dto));
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockResumeJobMatchJson()
-                    : parseResumeJobMatchJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockResumeJobMatchJson();
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getReportId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getReportId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseResumeJobMatchJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             AnalyzeResumeJobMatchVO vo = new AnalyzeResumeJobMatchVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
@@ -483,11 +533,18 @@ public class AiServiceImpl implements AiService {
                 skillGapAnalyzePromptContent(), variables(dto));
         String rawResponse = null;
         try {
-            String resultJson = Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                    ? mockSkillGapAnalyzeJson()
-                    : parseSkillGapAnalyzeJson(rawResponse = aiClient.chat(promptResult.getRenderedPrompt()));
-            Long logId = saveLog(promptResult, resultJson,
-                    businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockSkillGapAnalyzeJson();
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getProfileId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getProfileId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseSkillGapAnalyzeJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
             AnalyzeSkillGapVO vo = new AnalyzeSkillGapVO();
             vo.setResultJson(resultJson);
             vo.setAiCallLogId(logId);
@@ -2232,6 +2289,26 @@ public class AiServiceImpl implements AiService {
         } catch (RuntimeException ignored) {
             return null;
         }
+    }
+
+    private RouteResult callAndLog(PromptRenderResult promptResult, Long userId, String businessId) {
+        AiCallContext ctx = new AiCallContext();
+        String requestId = UUID.randomUUID().toString();
+        String traceId = currentTraceId();
+        ctx.setScene(promptResult.getScene());
+        ctx.setPrompt(promptResult.getRenderedPrompt());
+        ctx.setUserId(userId);
+        ctx.setBusinessId(businessId);
+        ctx.setRequestId(requestId);
+        ctx.setPromptTemplateId(promptResult.getPromptTemplateId());
+        ctx.setPromptTemplateVersionId(promptResult.getPromptTemplateVersionId());
+        ctx.setPromptVersion(promptResult.getPromptVersion());
+        ctx.setInputVariablesJson(promptResult.getInputVariablesJson());
+        ctx.setModelParamsJson(promptResult.getModelParamsJson());
+        ctx.setPromptHash(promptResult.getPromptHash());
+        ctx.setResponseFormat("JSON");
+        ctx.setRequestBody(buildRequestMetadata(promptResult, AiFailureType.NONE, requestId, traceId));
+        return aiCallLogService.callAndLog(ctx);
     }
 
     private String buildRequestMetadata(PromptRenderResult promptResult, AiFailureType failureType,

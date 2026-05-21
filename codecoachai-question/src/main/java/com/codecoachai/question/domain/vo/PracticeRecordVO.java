@@ -17,6 +17,12 @@ public class PracticeRecordVO {
     private String userAnswer;
     private Integer answerDurationSeconds;
     private String source;
+    private Long recommendationItemId;
+    private Long batchId;
+    private String sourceType;
+    private Long sourceId;
+    private Long skillProfileId;
+    private Long studyPlanId;
     private String reviewStatus;
     private Integer score;
     private String level;

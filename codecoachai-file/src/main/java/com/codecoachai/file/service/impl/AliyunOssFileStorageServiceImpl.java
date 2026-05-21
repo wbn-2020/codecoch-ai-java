@@ -16,6 +16,7 @@ import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -77,6 +78,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         String fileExt = extractExtension(originalFilename);
         validateExtension(fileExt);
         validateSize(file);
+        FileUploadValidator.validateContent(file, fileExt);
 
         // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
         String storedFilename = UUID.randomUUID().toString().replace("-", "") + "." + fileExt;
@@ -125,6 +127,31 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        return downloadFile(fileInfo);
+    }
+
+    @Override
+    public String downloadUrl(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "oss key is empty");
+        }
+        return ossFileService.signUrl(key, null);
+    }
+
+    @Override
+    public FileInfoVO getUserFile(Long fileId, Long userId) {
+        return toFileInfoVO(getAvailableFile(fileId, userId, null));
+    }
+
+    @Override
+    public ResponseEntity<byte[]> adminDownload(Long fileId) {
+        FileInfo fileInfo = getAvailableAdminFile(fileId);
+        return downloadFile(fileInfo);
+    }
+
+    private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
         String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "oss key is empty");
@@ -135,6 +162,12 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         return ResponseEntity.ok()
                 .contentType(mediaType)
                 .contentLength(bytes.length)
+                .header("X-Original-Filename", fileInfo.getOriginalFilename())
+                .header("X-File-Ext", fileInfo.getFileExt())
+                .header("X-File-Size", String.valueOf(fileInfo.getFileSize()))
+                .header("X-Mime-Type", StringUtils.hasText(fileInfo.getMimeType())
+                        ? fileInfo.getMimeType()
+                        : MediaType.APPLICATION_OCTET_STREAM_VALUE)
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
                         .filename(fileInfo.getOriginalFilename(), java.nio.charset.StandardCharsets.UTF_8)
                         .build()
@@ -190,18 +223,30 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         if (userId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
         }
-        if (!StringUtils.hasText(bizType)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType is required");
-        }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
                 .eq(FileInfo::getUserId, userId)
-                .eq(FileInfo::getBizType, bizType)
+                .eq(StringUtils.hasText(bizType), FileInfo::getBizType, bizType)
                 .eq(FileInfo::getStatus, STATUS_AVAILABLE)
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
         if (fileInfo == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+        }
+        return fileInfo;
+    }
+
+    private FileInfo getAvailableAdminFile(Long fileId) {
+        if (fileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+        }
+        FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
+                .eq(FileInfo::getId, fileId)
+                .eq(FileInfo::getStatus, STATUS_AVAILABLE)
+                .eq(FileInfo::getDeleted, NOT_DELETED)
+                .last("limit 1"));
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found or not downloadable");
         }
         return fileInfo;
     }

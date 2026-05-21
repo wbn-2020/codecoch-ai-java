@@ -4,10 +4,16 @@ import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.router.AiModelRouter;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * AI 调用日志增强服务。
@@ -19,6 +25,8 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AiCallLogService {
+
+    private static final String MDC_TRACE_ID = "traceId";
 
     private final AiModelRouter aiModelRouter;
     private final AiCallLogMapper aiCallLogMapper;
@@ -48,17 +56,30 @@ public class AiCallLogService {
             AiCallLog logEntry = new AiCallLog();
             logEntry.setUserId(ctx.getUserId());
             logEntry.setScene(ctx.getScene());
+            logEntry.setBusinessId(ctx.getBusinessId());
+            logEntry.setRequestId(StringUtils.hasText(ctx.getRequestId()) ? ctx.getRequestId() : UUID.randomUUID().toString());
+            logEntry.setTraceId(currentTraceId());
+            logEntry.setPromptTemplateId(ctx.getPromptTemplateId());
+            logEntry.setPromptTemplateVersionId(ctx.getPromptTemplateVersionId());
+            logEntry.setPromptVersion(ctx.getPromptVersion());
+            logEntry.setInputVariablesJson(ctx.getInputVariablesJson());
+            logEntry.setModelParamsJson(ctx.getModelParamsJson());
+            logEntry.setPromptHash(ctx.getPromptHash());
+            logEntry.setResponseFormat(StringUtils.hasText(ctx.getResponseFormat()) ? ctx.getResponseFormat() : "TEXT");
             logEntry.setRequestPrompt(truncate(ctx.getPrompt(), 10000));
+            logEntry.setRequestBody(truncate(ctx.getRequestBody(), 10000));
 
             if (result != null) {
                 logEntry.setModelName(result.getModel());
+                logEntry.setModel(result.getModel());
                 logEntry.setResponseContent(truncate(result.getContent(), 10000));
+                logEntry.setResponseBody(truncate(result.getContent(), 10000));
                 logEntry.setPromptTokens(result.getPromptTokens());
                 logEntry.setCompletionTokens(result.getCompletionTokens());
                 logEntry.setTotalTokens(result.getTotalTokens());
-                logEntry.setTraceId(result.getRouteTrace());
                 logEntry.setRouteTrace(result.getRouteTrace());
                 logEntry.setEstimatedCost(result.getEstimatedCost());
+                logEntry.setTokenCost(result.getEstimatedCost());
                 logEntry.setSuccess(1);
                 logEntry.setStatus(1);
             } else {
@@ -81,6 +102,17 @@ public class AiCallLogService {
         } catch (Exception ex) {
             log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);
         }
+    }
+
+    private String currentTraceId() {
+        String traceId = MDC.get(MDC_TRACE_ID);
+        if (traceId != null) {
+            return traceId;
+        }
+        if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes attributes) {
+            return attributes.getRequest().getHeader(HeaderConstants.TRACE_ID);
+        }
+        return null;
     }
 
     private String truncate(String text, int max) {

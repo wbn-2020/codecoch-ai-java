@@ -2,6 +2,7 @@ package com.codecoachai.resume.mq;
 
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
+import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +19,10 @@ import org.springframework.stereotype.Component;
 @ConditionalOnBean(MqProducer.class)
 @RequiredArgsConstructor
 public class ResumeMqDispatcher {
+
+    private static final String RESUME_INDEX = "cc_resume";
+    private static final String SEARCH_OP_UPSERT = "UPSERT";
+    private static final String SEARCH_OP_DELETE = "DELETE";
 
     private final MqProducer mqProducer;
 
@@ -42,6 +47,39 @@ public class ResumeMqDispatcher {
             return true;
         } catch (Exception ex) {
             log.error("派发简历解析任务失败 resumeId={}", payload.getResumeId(), ex);
+            return false;
+        }
+    }
+
+    public boolean dispatchResumeSearchUpsert(Long resumeId, Long userId) {
+        return dispatchResumeSearch(resumeId, userId, SEARCH_OP_UPSERT);
+    }
+
+    public boolean dispatchResumeSearchDelete(Long resumeId, Long userId) {
+        return dispatchResumeSearch(resumeId, userId, SEARCH_OP_DELETE);
+    }
+
+    private boolean dispatchResumeSearch(Long resumeId, Long userId, String op) {
+        if (resumeId == null) {
+            return false;
+        }
+        try {
+            SearchSyncPayload payload = SearchSyncPayload.builder()
+                    .indexName(RESUME_INDEX)
+                    .docId(String.valueOf(resumeId))
+                    .op(op)
+                    .build();
+            mqProducer.sendSync(
+                    MqTopics.dest(MqTopics.SEARCH, MqTopics.SEARCH_TAG_RESUME),
+                    "search.sync",
+                    String.valueOf(resumeId),
+                    userId,
+                    payload
+            );
+            log.info("派发简历搜索同步 resumeId={} op={}", resumeId, op);
+            return true;
+        } catch (Exception ex) {
+            log.error("派发简历搜索同步失败 resumeId={} op={}", resumeId, op, ex);
             return false;
         }
     }

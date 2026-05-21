@@ -36,6 +36,8 @@ public final class RedisKeyConstants {
 
     // ========== MQ 消费幂等 ==========
     public static final String MQ_CONSUMED_PREFIX = NS + "mq:consumed:";
+    public static final String SEARCH_CONSUMED_PREFIX = NS + "search:consumed:";
+    public static final String SEARCH_SYNC_FAILURE_PREFIX = NS + "search:failure:";
 
     private RedisKeyConstants() {
     }
@@ -80,7 +82,27 @@ public final class RedisKeyConstants {
         return LOCK_RESUME_PARSE_PREFIX + resumeId;
     }
 
+    public static String lockResumeOptimizeKey(Object resumeId) {
+        return LOCK_RESUME_OPTIMIZE_PREFIX + resumeId;
+    }
+
+    public static String lockPlanGenKey(Object userId) {
+        return LOCK_PLAN_GEN_PREFIX + userId;
+    }
+
+    public static String lockQuestionGenKey(Object batchId) {
+        return LOCK_QUESTION_GEN_PREFIX + batchId;
+    }
+
     public static String mqConsumedKey(String messageId) {
         return MQ_CONSUMED_PREFIX + messageId;
+    }
+
+    public static String searchConsumedKey(String messageId) {
+        return SEARCH_CONSUMED_PREFIX + messageId;
+    }
+
+    public static String searchSyncFailureKey(String messageId) {
+        return SEARCH_SYNC_FAILURE_PREFIX + messageId;
     }
 }

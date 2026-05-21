@@ -11,4 +11,5 @@ public class LoginVO {
     private String expireTime;
     private CurrentUserVO userInfo;
     private List<String> roles;
+    private List<String> permissions;
 }

@@ -20,6 +20,7 @@ import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
+import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -30,6 +31,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -50,6 +53,7 @@ public class InterviewReportAsyncService {
     private final AiFeignClient aiFeignClient;
     private final QuestionFeignClient questionFeignClient;
     private final ObjectMapper objectMapper;
+    private final InterviewMqDispatcher interviewMqDispatcher;
 
     @Async("interviewReportExecutor")
     @Transactional(rollbackFor = Exception.class)
@@ -81,6 +85,7 @@ public class InterviewReportAsyncService {
             session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
             session.setFailureReason(null);
             sessionMapper.updateById(session);
+            syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
         } catch (RuntimeException ex) {
             report.setStatus(ReportStatusEnum.FAILED.name());
             report.setFailureReason(ex.getMessage());
@@ -408,6 +413,20 @@ public class InterviewReportAsyncService {
         } else {
             reportMapper.updateById(report);
         }
+    }
+
+    private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
+        Runnable action = () -> interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private void validateAiReport(GenerateReportVO aiReport) {

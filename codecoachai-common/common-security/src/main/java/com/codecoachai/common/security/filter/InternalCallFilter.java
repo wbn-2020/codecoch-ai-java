@@ -53,7 +53,7 @@ public class InternalCallFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String path = normalizeRequestPath(request);
-        if (!path.startsWith("/inner/")) {
+        if (!isInternalPath(path)) {
             filterChain.doFilter(request, response);
             return;
         }
@@ -76,7 +76,13 @@ public class InternalCallFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (internalAuthProperties.isEnabled() && !verifySignature(request, path, serviceName, response)) {
+        if (!internalAuthProperties.isEnabled()) {
+            log.warn("Reject internal request: internal auth is disabled, path={}, serviceName={}", path, serviceName);
+            writeForbidden(response);
+            return;
+        }
+
+        if (!verifySignature(request, path, serviceName)) {
             writeForbidden(response);
             return;
         }
@@ -84,8 +90,7 @@ public class InternalCallFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
-    private boolean verifySignature(HttpServletRequest request, String path, String serviceName,
-            HttpServletResponse response) {
+    private boolean verifySignature(HttpServletRequest request, String path, String serviceName) {
         if (!StringUtils.hasText(internalAuthProperties.getSecret())) {
             log.warn("Reject internal request: internal secret not configured, path={}, serviceName={}", path,
                     serviceName);
@@ -155,6 +160,10 @@ public class InternalCallFilter extends OncePerRequestFilter {
             return InternalSignatureUtils.normalizePath(withoutContextPath);
         }
         return path;
+    }
+
+    private boolean isInternalPath(String path) {
+        return "/inner".equals(path) || path.startsWith("/inner/");
     }
 
     private void writeForbidden(HttpServletResponse response) throws IOException {

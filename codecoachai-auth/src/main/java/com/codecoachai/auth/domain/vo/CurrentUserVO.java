@@ -12,4 +12,5 @@ public class CurrentUserVO {
     private String avatarUrl;
     private String email;
     private List<String> roles;
+    private List<String> permissions;
 }

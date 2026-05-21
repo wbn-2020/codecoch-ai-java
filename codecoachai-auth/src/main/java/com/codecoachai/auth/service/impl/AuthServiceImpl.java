@@ -17,37 +17,48 @@ import com.codecoachai.auth.domain.vo.LoginVO;
 import com.codecoachai.auth.domain.vo.RegisterVO;
 import com.codecoachai.auth.domain.vo.ResetPasswordVO;
 import com.codecoachai.auth.feign.UserFeignClient;
+import com.codecoachai.auth.log.LoginLogRecorder;
+import com.codecoachai.auth.log.PasswordResetSecurityLogRecorder;
+import com.codecoachai.auth.service.AuthPermissionResolver;
 import com.codecoachai.auth.service.AuthService;
+import com.codecoachai.auth.service.PasswordResetDeliveryService;
 import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.redis.util.RedisCacheHelper;
 import com.codecoachai.common.security.context.LoginUserContext;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
     private static final DateTimeFormatter DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final long RESET_TOKEN_TTL_SECONDS = 15 * 60L;
+    private static final long RESET_REQUEST_LIMIT_TTL_SECONDS = 60L;
+    private static final String RESET_TOKEN_KEY_PREFIX = "auth:password-reset:";
+    private static final String RESET_REQUEST_LIMIT_KEY_PREFIX = "auth:password-reset-limit:";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
-    private static final Map<String, PasswordResetToken> RESET_TOKENS = new ConcurrentHashMap<>();
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
-    private final com.codecoachai.auth.log.LoginLogRecorder loginLogRecorder;
+    private final RedisCacheHelper redisCacheHelper;
+    private final LoginLogRecorder loginLogRecorder;
+    private final PasswordResetDeliveryService passwordResetDeliveryService;
+    private final PasswordResetSecurityLogRecorder passwordResetSecurityLogRecorder;
+    private final AuthPermissionResolver authPermissionResolver;
 
     @Override
     public RegisterVO register(RegisterDTO dto) {
@@ -87,32 +98,53 @@ public class AuthServiceImpl implements AuthService {
         }
         StpUtil.login(user.getId());
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        List<String> permissions = resolvePermissions(roles);
         StpUtil.getSession().set("username", user.getUsername());
         StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
         StpUtil.getSession().set("roles", roles);
+        StpUtil.getSession().set("permissions", permissions);
         String token = StpUtil.getTokenValue();
 
         loginLogRecorder.recordSuccess(user.getId(), user.getUsername(), "PASSWORD");
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), roles);
-        return buildLoginVO(token, currentUser, roles);
+                user.getAvatarUrl(), user.getEmail(), roles, permissions);
+        return buildLoginVO(token, currentUser, roles, permissions);
     }
 
     @Override
     public ForgotPasswordVO forgotPassword(ForgotPasswordDTO dto) {
-        InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(dto.getEmail()));
-        if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_DISABLED);
+        String email = dto.getEmail() == null ? "" : dto.getEmail().trim().toLowerCase();
+        String limitKey = resetRequestLimitKey(email);
+        if (StringUtils.hasText(redisCacheHelper.get(limitKey))) {
+            passwordResetSecurityLogRecorder.recordRejected("RATE_LIMIT");
+            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Password reset requests are too frequent");
         }
-        String token = newResetToken();
-        RESET_TOKENS.put(token, new PasswordResetToken(user.getId(), normalizeEmail(dto.getEmail()),
-                LocalDateTime.now().plusSeconds(RESET_TOKEN_TTL_SECONDS)));
+        redisCacheHelper.set(limitKey, "1", Duration.ofSeconds(RESET_REQUEST_LIMIT_TTL_SECONDS));
 
         ForgotPasswordVO vo = new ForgotPasswordVO();
-        vo.setMessage("Password reset token issued. Use resetToken with POST /auth/reset-password.");
-        vo.setResetToken(token);
+        vo.setMessage("Password reset request accepted. If the account exists, follow the instructions sent through the configured notification channel.");
         vo.setExpiresInSeconds(RESET_TOKEN_TTL_SECONDS);
+        try {
+            InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(email));
+            if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
+                passwordResetSecurityLogRecorder.recordRequested(email, "ACCOUNT_DISABLED");
+                log.info("Password reset request ignored for disabled account email={}", maskEmail(email));
+                return vo;
+            }
+            String token = newResetToken();
+            redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
+            passwordResetDeliveryService.sendResetToken(user.getId(), email, token, RESET_TOKEN_TTL_SECONDS);
+            passwordResetSecurityLogRecorder.recordRequested(email, "TOKEN_ISSUED");
+            log.info("Password reset request accepted userId={} email={} ttlSeconds={}", user.getId(), maskEmail(email), RESET_TOKEN_TTL_SECONDS);
+        } catch (BusinessException ex) {
+            if (ex.getCode() == null || ex.getCode() != ErrorCode.USER_NOT_FOUND.getCode()) {
+                passwordResetSecurityLogRecorder.recordRequested(email, "LOOKUP_FAILED");
+                throw ex;
+            }
+            passwordResetSecurityLogRecorder.recordRequested(email, "ACCOUNT_NOT_FOUND");
+            log.info("Password reset request accepted for non-existing email={}", maskEmail(email));
+        }
         return vo;
     }
 
@@ -121,13 +153,26 @@ public class AuthServiceImpl implements AuthService {
         if (StringUtils.hasText(dto.getConfirmPassword()) && !dto.getNewPassword().equals(dto.getConfirmPassword())) {
             throw new BusinessException(ErrorCode.PASSWORD_CONFIRM_NOT_MATCH);
         }
-        PasswordResetToken token = RESET_TOKENS.remove(dto.getToken());
-        if (token == null || token.expiresAt().isBefore(LocalDateTime.now())) {
+        if (!StringUtils.hasText(dto.getToken())) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        String tokenKey = resetTokenKey(dto.getToken());
+        String userId = redisCacheHelper.get(tokenKey);
+        if (!StringUtils.hasText(userId)) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        Long resetUserId;
+        try {
+            resetUserId = Long.valueOf(userId);
+        } catch (NumberFormatException ex) {
+            redisCacheHelper.delete(tokenKey);
             throw new BusinessException(ErrorCode.TOKEN_INVALID);
         }
         InnerResetPasswordDTO innerDto = new InnerResetPasswordDTO();
         innerDto.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
-        FeignResultUtils.unwrap(userFeignClient.resetPassword(token.userId(), innerDto));
+        FeignResultUtils.unwrap(userFeignClient.resetPassword(resetUserId, innerDto));
+        redisCacheHelper.delete(tokenKey);
+        passwordResetSecurityLogRecorder.recordCompleted(resetUserId);
 
         ResetPasswordVO vo = new ResetPasswordVO();
         vo.setMessage("Password has been reset.");
@@ -154,8 +199,10 @@ public class AuthServiceImpl implements AuthService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         InnerUserBasicVO user = FeignResultUtils.unwrap(userFeignClient.getInnerUser(userId));
+        List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        List<String> permissions = resolvePermissions(roles);
         return toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), user.getRoles());
+                user.getAvatarUrl(), user.getEmail(), roles, permissions);
     }
 
     @Override
@@ -167,12 +214,14 @@ public class AuthServiceImpl implements AuthService {
                 throw new BusinessException(ErrorCode.USER_DISABLED);
             }
             List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+            List<String> permissions = resolvePermissions(roles);
             StpUtil.getSession().set("username", user.getUsername());
             StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
             StpUtil.getSession().set("roles", roles);
+            StpUtil.getSession().set("permissions", permissions);
             CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                    user.getAvatarUrl(), user.getEmail(), roles);
-            return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles);
+                    user.getAvatarUrl(), user.getEmail(), roles, permissions);
+            return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles, permissions);
         }
         throw new BusinessException(ErrorCode.TOKEN_INVALID);
     }
@@ -191,12 +240,14 @@ public class AuthServiceImpl implements AuthService {
         vo.setUserId(user.getId());
         vo.setUsername(user.getUsername());
         vo.setNickname(StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
-        vo.setRoles(user.getRoles() == null ? List.of() : user.getRoles());
+        List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
+        vo.setRoles(roles);
+        vo.setPermissions(resolvePermissions(roles));
         return vo;
     }
 
     private CurrentUserVO toCurrentUser(Long id, String username, String nickname, String avatarUrl,
-                                        String email, List<String> roles) {
+                                        String email, List<String> roles, List<String> permissions) {
         CurrentUserVO vo = new CurrentUserVO();
         vo.setId(id);
         vo.setUsername(username);
@@ -204,17 +255,23 @@ public class AuthServiceImpl implements AuthService {
         vo.setAvatarUrl(avatarUrl);
         vo.setEmail(email);
         vo.setRoles(roles == null ? List.of() : roles);
+        vo.setPermissions(permissions == null ? List.of() : permissions);
         return vo;
     }
 
-    private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles) {
+    private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles, List<String> permissions) {
         LoginVO vo = new LoginVO();
         vo.setToken(token);
         vo.setTokenName("Authorization");
         vo.setExpireTime(LocalDateTime.now().plusDays(1).format(DATE_TIME_FORMATTER));
         vo.setUserInfo(currentUser);
         vo.setRoles(roles == null ? List.of() : roles);
+        vo.setPermissions(permissions == null ? List.of() : permissions);
         return vo;
+    }
+
+    private List<String> resolvePermissions(List<String> roles) {
+        return authPermissionResolver.resolvePermissions(roles == null ? List.of() : roles);
     }
 
     private String newResetToken() {
@@ -223,10 +280,23 @@ public class AuthServiceImpl implements AuthService {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
-    private String normalizeEmail(String email) {
-        return email == null ? null : email.trim().toLowerCase(Locale.ROOT);
+    private String resetTokenKey(String token) {
+        return RESET_TOKEN_KEY_PREFIX + token;
     }
 
-    private record PasswordResetToken(Long userId, String email, LocalDateTime expiresAt) {
+    private String resetRequestLimitKey(String email) {
+        return RESET_REQUEST_LIMIT_KEY_PREFIX + email;
     }
+
+    private String maskEmail(String email) {
+        if (!StringUtils.hasText(email)) {
+            return "";
+        }
+        int at = email.indexOf('@');
+        if (at <= 1) {
+            return "***" + (at >= 0 ? email.substring(at) : "");
+        }
+        return email.charAt(0) + "***" + email.substring(at);
+    }
+
 }

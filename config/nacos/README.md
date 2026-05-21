@@ -1,56 +1,40 @@
-# Nacos 配置文件模板
+# Nacos Legacy Templates
 
-本目录存放各服务在 Nacos 中的配置模板。请按下表上传到本机 Nacos 控制台。
+This directory keeps older/manual Nacos templates for reference. The preferred import source is `docs/nacos/`, and both `scripts/nacos/import-nacos-config.ps1` and `scripts/nacos/import-nacos-config.sh` read from `docs/nacos/` by default.
 
-## 上传步骤
+When uploading configs manually, prefer `docs/nacos/` first and keep any `config/nacos/` edits aligned with it.
 
-1. 启动 Nacos：
-   ```cmd
-   C:\my-claude\comware\nacos-server-2.5.2\bin\startup.cmd -m standalone
-   ```
-2. 浏览器打开：http://localhost:8848/nacos （默认 nacos / nacos）
-3. 进入"配置管理 → 配置列表"，点 ➕ 新建配置
-4. 按下表逐个上传（Group 全部填 `DEFAULT_GROUP`，类型选 `YAML`）
+## Required Data IDs
 
-| Data ID | 文件 | 必填 |
-|---------|------|------|
-| `codecoachai-common-dev.yml` | `codecoachai-common-dev.yml` | ✅ 必填，所有服务共用 |
-| `codecoachai-file-dev.yml` | `codecoachai-file-dev.yml` | ✅ 必填 |
-| `codecoachai-task-dev.yml` | `codecoachai-task-dev.yml` | ✅ 必填 |
-| `codecoachai-search-dev.yml` | `codecoachai-search-dev.yml` | ✅ 必填 |
+| Data ID | File | Required |
+|---|---|---|
+| `codecoachai-common-dev.yml` | `codecoachai-common-dev.yml` | Yes |
+| `codecoachai-gateway-dev.yml` | `codecoachai-gateway-dev.yml` | Yes |
+| `codecoachai-file-dev.yml` | `codecoachai-file-dev.yml` | Yes |
+| `codecoachai-ai-dev.yml` | `codecoachai-ai-dev.yml` | Yes for AI service |
+| `codecoachai-task-dev.yml` | `codecoachai-task-dev.yml` | Yes when task service starts |
+| `codecoachai-search-dev.yml` | `codecoachai-search-dev.yml` | Yes when search service starts |
 
-其他服务（auth/user/question/resume/interview/ai/system/gateway）暂时不配置专属 yml 也能跑（落到 common 默认值）。
+## Security And Provider Defaults
 
-## 关键参数说明
+- `codecoachai.gateway.cors.allowed-origin-patterns` and gateway `globalcors` must list trusted frontend origins explicitly. Do not use `*` together with `allowCredentials=true`.
+- `codecoachai.internal.auth.secret` must come from `CODECOACHAI_INTERNAL_SECRET` or private Nacos config before services exposing `/inner/**` start.
+- `codecoachai.file.storage.provider` is `ALIYUN_OSS` for the current dev acceptance path.
+- `codecoachai.oss.enabled` is `true`; set `OSS_BUCKET`, `OSS_AK`, `OSS_SK`, and `OSS_STS_ROLE_ARN` in local env/private Nacos before starting file service.
+- `codecoachai.ai.mock-enabled` is `false`; set `DEEPSEEK_API_KEY` before starting AI service.
+- `codecoachai.ai.crypto.secret-key` is required before saving AI model API keys from the admin UI.
 
-### codecoachai-common-dev.yml
-
-- **datasource**：MySQL 已写好（`localhost:3306/codecoachai`，用户名 `root`，密码通过 `${MYSQL_PASSWORD:}` 注入）。**首次启动前请先在 MySQL 里执行 `sql/init.sql` 建库建表**。
-- **redis**：默认无密码，端口 6379
-- **rocketmq**：默认 `127.0.0.1:9876`
-- **codecoachai.oss.enabled**：V3 默认 `true`，文件上传使用阿里云 OSS；凭证通过 `${OSS_AK}` / `${OSS_SK}` / 私有 Nacos 配置注入
-- **codecoachai.ai.api-key**：通过环境变量 `${DEEPSEEK_API_KEY:}` 注入；或直接在配置里填明文（不推荐生产）
-- **codecoachai.elasticsearch.uris**：默认 `http://127.0.0.1:9200`
-
-### 环境变量推荐配置
-
-在 Windows PowerShell 中：
+## Suggested Environment Variables
 
 ```powershell
-# 用户级环境变量（持久）
-[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-xxxxxxxx", "User")
 [Environment]::SetEnvironmentVariable("MYSQL_PASSWORD", "your-local-password", "User")
+[Environment]::SetEnvironmentVariable("CODECOACHAI_INTERNAL_SECRET", "change-me-in-private-nacos", "User")
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-xxxxxxxx", "User")
+[Environment]::SetEnvironmentVariable("CODECOACHAI_AI_CRYPTO_SECRET_KEY", "change-me-at-least-16-chars", "User")
+[Environment]::SetEnvironmentVariable("OSS_BUCKET", "your-oss-bucket", "User")
 [Environment]::SetEnvironmentVariable("OSS_AK", "your-oss-access-key-id", "User")
-[Environment]::SetEnvironmentVariable("OSS_SK", "xxx", "User")
+[Environment]::SetEnvironmentVariable("OSS_SK", "your-oss-access-key-secret", "User")
 [Environment]::SetEnvironmentVariable("OSS_STS_ROLE_ARN", "acs:ram::xxx:role/yyy", "User")
 ```
 
-设置后需要**重启 IDE / 终端**才生效。
-
-## 验证
-
-启动 task 服务，应看到日志：
-```
-i.n.config.NacosConfigService: get changedGroupKeys: [codecoachai-task-dev.yml...]
-```
-拉到配置就成功。
+Restart the terminal or IDE after setting user-level environment variables.

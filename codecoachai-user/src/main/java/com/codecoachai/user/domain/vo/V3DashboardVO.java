@@ -13,7 +13,9 @@ public class V3DashboardVO {
     private MatchSummaryVO latestMatch;
     private SkillProfileSummaryVO skillProfile;
     private StudyProgressVO studyProgress;
-    private List<Map<String, Object>> recommendedQuestions;
+    private RecommendedQuestionsVO recommendedQuestions;
+    private RecentInterviewVO recentInterview;
+    private RecentReportVO recentReport;
     private List<TrendItemVO> trainingTrend;
     private List<NextActionVO> nextActions;
     private Boolean degraded;
@@ -59,6 +61,42 @@ public class V3DashboardVO {
         private Long totalTasks;
         private Long completedTasks;
         private Integer completionRate;
+    }
+
+    @Data
+    public static class RecommendedQuestionsVO {
+        private Long batchId;
+        private Long targetJobId;
+        private String sourceType;
+        private Long sourceId;
+        private Long matchReportId;
+        private Long skillProfileId;
+        private Long studyPlanId;
+        private String status;
+        private Long questionCount;
+        private Long canPracticeCount;
+        private Long pendingPracticeCount;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class RecentInterviewVO {
+        private Long interviewId;
+        private String title;
+        private String status;
+        private String reportStatus;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class RecentReportVO {
+        private Long reportId;
+        private Long interviewId;
+        private String status;
+        private Integer totalScore;
+        private List<String> weakPoints;
+        private List<String> suggestions;
+        private LocalDateTime generatedAt;
     }
 
     @Data

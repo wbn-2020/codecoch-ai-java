@@ -6,6 +6,6 @@ import lombok.Data;
 public class ForgotPasswordVO {
 
     private String message;
-    private String resetToken;
+    /** TTL for the out-of-band credential; plaintext credential is never returned. */
     private Long expiresInSeconds;
 }
