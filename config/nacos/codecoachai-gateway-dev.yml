@@ -40,7 +40,7 @@ spring:
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/applications,/applications/**,/resume-versions,/resume-versions/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
 
         # ========== 面试 ==========
         - id: interview
@@ -52,7 +52,7 @@ spring:
         - id: ai
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/admin/ai/**
+            - Path=/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**
           filters:
             - name: RequestRateLimiter
               args:
