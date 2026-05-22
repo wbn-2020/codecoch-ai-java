@@ -1,7 +1,11 @@
 package com.codecoachai.ai.client;
 
 import com.codecoachai.ai.config.AiRouterProperties;
+import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.mapper.AiModelConfigMapper;
+import com.codecoachai.ai.security.AesGcmTextEncryptor;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.ConnectException;
@@ -31,6 +35,8 @@ import org.springframework.web.client.RestClientResponseException;
 public class ProviderAiCaller {
 
     private final AiRouterProperties routerProperties;
+    private final AiModelConfigMapper modelConfigMapper;
+    private final AesGcmTextEncryptor apiKeyEncryptor;
     private final ObjectMapper objectMapper;
 
     /**
@@ -41,7 +47,7 @@ public class ProviderAiCaller {
      * @param modelType    chat / reasoner（决定用 chatModel 还是 reasonerModel）
      */
     public CallResult chat(String providerName, String prompt, String modelType) {
-        AiRouterProperties.ProviderConfig cfg = routerProperties.getProviders().get(providerName);
+        AiRouterProperties.ProviderConfig cfg = resolveProvider(providerName);
         if (cfg == null) {
             throw new AiProviderException(AiFailureType.CONFIG_ERROR,
                     "Provider not configured: " + providerName);
@@ -109,6 +115,52 @@ public class ProviderAiCaller {
         } catch (Exception ex) {
             throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
                     "Provider " + providerName + " failed: " + ex.getMessage(), null, ex);
+        }
+    }
+
+    private AiRouterProperties.ProviderConfig resolveProvider(String providerName) {
+        AiRouterProperties.ProviderConfig configured = routerProperties.getProviders().get(providerName);
+        if (isUsable(configured)) {
+            return configured;
+        }
+        AiRouterProperties.ProviderConfig fromDatabase = loadProviderFromDatabase(providerName);
+        return fromDatabase != null ? fromDatabase : configured;
+    }
+
+    private boolean isUsable(AiRouterProperties.ProviderConfig cfg) {
+        return cfg != null && StringUtils.hasText(cfg.getBaseUrl()) && StringUtils.hasText(cfg.getApiKey());
+    }
+
+    private AiRouterProperties.ProviderConfig loadProviderFromDatabase(String providerName) {
+        if (!StringUtils.hasText(providerName)) {
+            return null;
+        }
+        AiModelConfig model = modelConfigMapper.selectOne(new LambdaQueryWrapper<AiModelConfig>()
+                .eq(AiModelConfig::getProvider, providerName)
+                .eq(AiModelConfig::getEnabled, 1)
+                .orderByDesc(AiModelConfig::getDefaultModel)
+                .orderByAsc(AiModelConfig::getSortOrder)
+                .orderByDesc(AiModelConfig::getUpdatedAt)
+                .last("LIMIT 1"));
+        if (model == null) {
+            return null;
+        }
+        AiRouterProperties.ProviderConfig cfg = new AiRouterProperties.ProviderConfig();
+        cfg.setBaseUrl(model.getApiBaseUrl());
+        cfg.setApiKey(decryptApiKey(providerName, model.getApiKey()));
+        cfg.setChatModel(model.getModelCode());
+        cfg.setReasonerModel(model.getModelCode());
+        cfg.setTemperature(model.getTemperature() == null ? 0.3 : model.getTemperature());
+        cfg.setMaxTokens(model.getMaxTokens() == null ? 2048 : model.getMaxTokens());
+        return cfg;
+    }
+
+    private String decryptApiKey(String providerName, String storedApiKey) {
+        try {
+            return apiKeyEncryptor.decryptIfNeeded(storedApiKey);
+        } catch (IllegalStateException ex) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider api-key decrypt failed: " + providerName, null, ex);
         }
     }
 

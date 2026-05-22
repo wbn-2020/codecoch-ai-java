@@ -2,10 +2,12 @@ package com.codecoachai.common.mq.config;
 
 import com.codecoachai.common.mq.producer.MqProducer;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
@@ -14,7 +16,13 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @ConditionalOnClass(name = "org.apache.rocketmq.spring.core.RocketMQTemplate")
 @ConditionalOnProperty(prefix = "rocketmq", name = "name-server")
-@ConditionalOnBean(RocketMQTemplate.class)
-@ComponentScan(basePackageClasses = MqProducer.class)
+@AutoConfigureAfter(name = "org.apache.rocketmq.spring.autoconfigure.RocketMQAutoConfiguration")
 public class MqAutoConfiguration {
+
+    @Bean
+    @ConditionalOnBean(RocketMQTemplate.class)
+    @ConditionalOnMissingBean
+    public MqProducer mqProducer(RocketMQTemplate rocketMQTemplate) {
+        return new MqProducer(rocketMQTemplate);
+    }
 }

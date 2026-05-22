@@ -7,7 +7,6 @@ import com.codecoachai.common.oss.service.StsTokenService;
 import com.codecoachai.common.oss.service.impl.AliyunOssFileService;
 import com.codecoachai.common.oss.service.impl.AliyunStsTokenService;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.InitializingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -46,17 +45,6 @@ public class OssAutoConfiguration {
     @ConditionalOnMissingBean
     public StsTokenService stsTokenService(OssProperties properties) {
         return new AliyunStsTokenService(properties);
-    }
-
-    @Bean
-    public InitializingBean ossStsPropertiesValidator(OssProperties properties) {
-        return () -> {
-            validateOssProperties(properties);
-            OssProperties.Sts sts = properties.getSts();
-            if (sts == null || !StringUtils.hasText(sts.getRoleArn())) {
-                throw new IllegalStateException("codecoachai.oss.sts.role-arn must be configured when OSS is enabled");
-            }
-        };
     }
 
     private void validateOssProperties(OssProperties properties) {

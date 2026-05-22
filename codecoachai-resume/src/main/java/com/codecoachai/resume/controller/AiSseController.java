@@ -184,8 +184,8 @@ public class AiSseController {
                         "Loading resume and JD context")) {
                     return;
                 }
-                if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "CALL_AI",
-                        "Calling DeepSeek to generate match report")) {
+                if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "SUBMIT_TASK",
+                        "Submitting match report task")) {
                     return;
                 }
                 ResumeJobMatchSubmitVO submitted = resumeJobMatchService.createReport(dto);
@@ -196,14 +196,14 @@ public class AiSseController {
                     return;
                 }
                 if (!sendStageProgress(emitter, active, requestId, "resume-job-match", submitted.getReportId(),
-                        "LOAD_REPORT", "Loading generated match report")) {
+                        "LOAD_REPORT", "Loading match report status")) {
                     return;
                 }
                 ResumeJobMatchReportDetailVO detail = resumeJobMatchService.getReport(submitted.getReportId());
                 send(emitter, active, "result", genericResultEvent(requestId, "resume-job-match",
                         submitted.getReportId(), detail));
                 send(emitter, active, "done", genericEvent(requestId, "resume-job-match",
-                        submitted.getReportId(), submitted.getAiCallLogId(), "Match report generation completed"));
+                        submitted.getReportId(), submitted.getAiCallLogId(), "Match report task accepted"));
                 complete(emitter, active);
             } catch (RuntimeException ex) {
                 log.warn("Resume job match create SSE failed, requestId={}", requestId, ex);

@@ -42,6 +42,9 @@ public class AliyunStsTokenService implements StsTokenService {
 
             AssumeRoleRequest request = new AssumeRoleRequest();
             request.setSysMethod(MethodType.POST);
+            if (StringUtils.hasText(sts.getEndpoint())) {
+                request.setSysEndpoint(sts.getEndpoint());
+            }
             request.setRoleArn(sts.getRoleArn());
             request.setRoleSessionName(sts.getRoleSessionName());
             request.setPolicy(buildPolicy(dirPrefix));
@@ -61,9 +64,20 @@ public class AliyunStsTokenService implements StsTokenService {
                     .region(sts.getRegionId())
                     .build();
         } catch (ClientException ex) {
-            log.error("STS 签发失败 errCode={} errMsg={}", ex.getErrCode(), ex.getErrMsg());
+            log.error("STS 签发失败 errCode={} errMsg={}", ex.getErrCode(), sanitizeErrorMessage(ex.getErrMsg()));
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "临时凭证获取失败");
         }
+    }
+
+    private String sanitizeErrorMessage(String message) {
+        if (!StringUtils.hasText(message)) {
+            return "";
+        }
+        return message
+                .replaceAll("(?i)(AccessKeyId=)[^&\\s]+", "$1***")
+                .replaceAll("(?i)(Signature=)[^&\\s]+", "$1***")
+                .replaceAll("(?i)(SecurityToken=)[^&\\s]+", "$1***")
+                .replaceAll("(?i)(AccessKeySecret=)[^&\\s]+", "$1***");
     }
 
     /**
