@@ -34,6 +34,7 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
 import com.codecoachai.resume.service.ResumeJobMatchService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -41,6 +42,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -65,6 +67,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final Optional<ResumeJobMatchMqDispatcher> resumeJobMatchMqDispatcher;
 
     @Override
     public ResumeJobMatchSubmitVO createReport(ResumeJobMatchCreateDTO dto) {
@@ -77,6 +80,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             }
         }
         ResumeJobMatchReport report = transactionTemplate.execute(status -> createProcessingReport(context));
+        if (dispatchAnalyze(report)) {
+            return toSubmitVO(report);
+        }
         return generateReport(report.getId());
     }
 
@@ -135,7 +141,15 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         ResumeJobMatchReport oldReport = getOwnedReport(id, userId);
         MatchContext context = prepareContext(oldReport.getResumeId(), oldReport.getTargetJobId(), userId);
         ResumeJobMatchReport newReport = transactionTemplate.execute(status -> createProcessingReport(context));
+        if (dispatchAnalyze(newReport)) {
+            return toSubmitVO(newReport);
+        }
         return generateReport(newReport.getId());
+    }
+
+    @Override
+    public ResumeJobMatchSubmitVO executeReport(Long id) {
+        return generateReport(id);
     }
 
     private ResumeJobMatchSubmitVO generateReport(Long reportId) {
@@ -143,8 +157,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (report == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
-        MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId());
         try {
+            MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId());
             AnalyzeResumeJobMatchVO response = FeignResultUtils.unwrap(aiFeignClient.analyzeResumeJobMatch(toAiRequest(report, context)));
             JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
             ResumeJobMatchReport success = transactionTemplate.execute(status ->
@@ -154,6 +168,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             ResumeJobMatchReport failed = transactionTemplate.execute(status -> markFailed(report.getId(), ex));
             return toSubmitVO(failed);
         }
+    }
+
+    private boolean dispatchAnalyze(ResumeJobMatchReport report) {
+        return report != null && resumeJobMatchMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchAnalyze(report.getId(), report.getUserId()))
+                .orElse(false);
     }
 
     private MatchContext prepareContext(Long resumeId, Long targetJobId, Long userId) {

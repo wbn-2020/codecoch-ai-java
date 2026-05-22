@@ -5,7 +5,10 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
+import com.codecoachai.resume.feign.vo.InnerFileDownloadVO;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
+import com.codecoachai.resume.service.FileContentService;
+import com.codecoachai.resume.service.extractor.ResumeTextExtractorDispatcher;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -37,6 +40,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class InnerResumeAnalysisController {
 
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
+    private final FileContentService fileContentService;
+    private final ResumeTextExtractorDispatcher textExtractorDispatcher;
 
     @Operation(summary = "获取简历解析任务原始数据（rawText + 元信息）")
     @GetMapping("/{id}/raw")
@@ -49,9 +54,25 @@ public class InnerResumeAnalysisController {
         vo.setId(record.getId());
         vo.setFileId(record.getFileId());
         vo.setUserId(record.getUserId());
-        vo.setRawText(record.getRawText());
+        RawTextPayload rawText = resolveRawText(record);
+        vo.setRawText(rawText.rawText());
+        vo.setOriginalFilename(rawText.originalFilename());
+        vo.setFileExt(rawText.fileExt());
         vo.setParseStatus(record.getParseStatus());
         return Result.success(vo);
+    }
+
+    private RawTextPayload resolveRawText(ResumeAnalysisRecord record) {
+        if (StringUtils.hasText(record.getRawText())) {
+            return new RawTextPayload(record.getRawText(), null, null);
+        }
+        InnerFileDownloadVO file = fileContentService.downloadResumeFile(record.getFileId(), record.getUserId());
+        String rawText = textExtractorDispatcher.extract(file.getFileExt(), file.getContent());
+        analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
+                .eq(ResumeAnalysisRecord::getId, record.getId())
+                .set(ResumeAnalysisRecord::getRawText, rawText)
+                .set(ResumeAnalysisRecord::getUpdatedAt, LocalDateTime.now()));
+        return new RawTextPayload(rawText, file.getOriginalFilename(), file.getFileExt());
     }
 
     @Operation(summary = "回写 AI 解析结果（task-service 调用）")
@@ -69,6 +90,9 @@ public class InnerResumeAnalysisController {
                 .set(ResumeAnalysisRecord::getUpdatedAt, LocalDateTime.now());
         if (StringUtils.hasText(dto.getStructuredJson())) {
             upd.set(ResumeAnalysisRecord::getStructuredJson, dto.getStructuredJson());
+        }
+        if (StringUtils.hasText(dto.getRawText())) {
+            upd.set(ResumeAnalysisRecord::getRawText, dto.getRawText());
         }
         if (StringUtils.hasText(dto.getErrorMessage())) {
             upd.set(ResumeAnalysisRecord::getErrorMessage, dto.getErrorMessage());
@@ -92,8 +116,12 @@ public class InnerResumeAnalysisController {
     @Data
     public static class CompleteDTO {
         private String structuredJson;
+        private String rawText;
         private String parseStatus;
         private String errorMessage;
         private String modelTrace;
+    }
+
+    private record RawTextPayload(String rawText, String originalFilename, String fileExt) {
     }
 }

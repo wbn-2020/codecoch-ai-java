@@ -18,4 +18,6 @@ public interface ResumeJobMatchService {
     ResumeJobMatchReportDetailVO getLatest(Long resumeId, Long targetJobId);
 
     ResumeJobMatchSubmitVO regenerate(Long id);
+
+    ResumeJobMatchSubmitVO executeReport(Long id);
 }

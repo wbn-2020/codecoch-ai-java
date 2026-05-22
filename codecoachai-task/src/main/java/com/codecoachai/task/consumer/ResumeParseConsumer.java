@@ -113,8 +113,9 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
 
             // 3. 回写
             CompleteResumeParseDTO complete = new CompleteResumeParseDTO();
-            complete.setParseStatus("SUCCESS");
+            complete.setParseStatus("WAIT_CONFIRM");
             complete.setStructuredJson(structured);
+            complete.setRawText(raw.getRawText());
             complete.setModelTrace("deepseek");
             resumeFeignClient.completeParse(analysisRecordId, complete);
 
