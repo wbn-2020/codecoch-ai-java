@@ -17,7 +17,9 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -33,6 +35,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/admin/search")
 @RequiredArgsConstructor
+@Slf4j
 public class AdminSearchController {
 
     private final IndexManageService indexManageService;
@@ -115,12 +118,21 @@ public class AdminSearchController {
             boolBuilder.filter(filter);
         }
 
-        SearchResponse<JsonNode> response = esClient.search(SearchRequest.of(s -> s
-                .index(index)
-                .query(Query.of(q -> q.bool(boolBuilder.build())))
-                .from(from)
-                .size(safePageSize)
-        ), JsonNode.class);
+        SearchResponse<JsonNode> response;
+        try {
+            response = esClient.search(SearchRequest.of(s -> s
+                    .index(index)
+                    .query(Query.of(q -> q.bool(boolBuilder.build())))
+                    .from(from)
+                    .size(safePageSize)
+            ), JsonNode.class);
+        } catch (RuntimeException ex) {
+            if (!isIndexUnavailable(ex)) {
+                throw ex;
+            }
+            log.warn("ES index unavailable for admin search, return empty page. index={}, reason={}", index, ex.getMessage());
+            return Result.success(PageResult.empty(safePageNo, safePageSize));
+        }
         long total = response.hits().total() == null ? 0 : response.hits().total().value();
         List<JsonNode> records = new ArrayList<>();
         for (Hit<JsonNode> hit : response.hits().hits()) {
@@ -136,5 +148,19 @@ public class AdminSearchController {
             return List.of();
         }
         return List.of(Query.of(q -> q.term(t -> t.field("userId").value(userId))));
+    }
+
+    private boolean isIndexUnavailable(RuntimeException ex) {
+        String message = ex.getMessage();
+        Throwable cause = ex.getCause();
+        while ((message == null || message.isBlank()) && cause != null) {
+            message = cause.getMessage();
+            cause = cause.getCause();
+        }
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("index_not_found_exception") || lower.contains("no such index");
     }
 }

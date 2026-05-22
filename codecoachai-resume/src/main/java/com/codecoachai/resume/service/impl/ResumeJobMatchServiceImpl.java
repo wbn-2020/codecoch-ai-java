@@ -123,15 +123,20 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     @Override
     public ResumeJobMatchReportDetailVO getLatest(Long resumeId, Long targetJobId) {
         Long userId = requireCurrentUserId();
-        getOwnedResume(resumeId, userId);
-        getOwnedTargetJob(targetJobId, userId);
-        ResumeJobMatchReport report = reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
+        LambdaQueryWrapper<ResumeJobMatchReport> wrapper = new LambdaQueryWrapper<ResumeJobMatchReport>()
                 .eq(ResumeJobMatchReport::getUserId, userId)
-                .eq(ResumeJobMatchReport::getResumeId, resumeId)
-                .eq(ResumeJobMatchReport::getTargetJobId, targetJobId)
                 .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
                 .orderByDesc(ResumeJobMatchReport::getCreatedAt)
-                .last("limit 1"));
+                .last("limit 1");
+        if (resumeId != null) {
+            getOwnedResume(resumeId, userId);
+            wrapper.eq(ResumeJobMatchReport::getResumeId, resumeId);
+        }
+        if (targetJobId != null) {
+            getOwnedTargetJob(targetJobId, userId);
+            wrapper.eq(ResumeJobMatchReport::getTargetJobId, targetJobId);
+        }
+        ResumeJobMatchReport report = reportMapper.selectOne(wrapper);
         return report == null ? null : toDetailVO(report);
     }
 

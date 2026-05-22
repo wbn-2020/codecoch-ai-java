@@ -26,6 +26,11 @@ public class V3DashboardController {
     private final JdbcTemplate jdbcTemplate;
     private final ThreadLocal<List<String>> governanceTips = ThreadLocal.withInitial(ArrayList::new);
 
+    @GetMapping({"", "/"})
+    public Result<V3DashboardVO> overviewCompat() {
+        return overview();
+    }
+
     @GetMapping("/overview")
     public Result<V3DashboardVO> overview() {
         Long userId = SecurityAssert.requireLoginUserId();

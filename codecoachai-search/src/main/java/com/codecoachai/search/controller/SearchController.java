@@ -125,7 +125,9 @@ public class SearchController {
     private Result<PageResult<JsonNode>> doSearch(String index, String keyword,
                                                    Integer pageNo, Integer pageSize,
                                                    List<Query> filters) throws IOException {
-        int from = (pageNo - 1) * pageSize;
+        int safePageNo = pageNo == null || pageNo < 1 ? 1 : pageNo;
+        int safePageSize = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
+        int from = (safePageNo - 1) * safePageSize;
 
         BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
         if (StringUtils.hasText(keyword)) {
@@ -147,10 +149,19 @@ public class SearchController {
                 .index(index)
                 .query(Query.of(q -> q.bool(boolBuilder.build())))
                 .from(from)
-                .size(pageSize)
+                .size(safePageSize)
         );
 
-        SearchResponse<JsonNode> response = esClient.search(searchRequest, JsonNode.class);
+        SearchResponse<JsonNode> response;
+        try {
+            response = esClient.search(searchRequest, JsonNode.class);
+        } catch (RuntimeException ex) {
+            if (!isIndexUnavailable(ex)) {
+                throw ex;
+            }
+            log.warn("ES index unavailable for search, return empty page. index={}, reason={}", index, ex.getMessage());
+            return Result.success(PageResult.empty(safePageNo, safePageSize));
+        }
         long total = response.hits().total() != null ? response.hits().total().value() : 0;
         List<JsonNode> records = new ArrayList<>();
         for (Hit<JsonNode> hit : response.hits().hits()) {
@@ -159,7 +170,21 @@ public class SearchController {
             }
         }
 
-        return Result.success(PageResult.of(records, total, (long) pageNo, (long) pageSize));
+        return Result.success(PageResult.of(records, total, (long) safePageNo, (long) safePageSize));
+    }
+
+    private boolean isIndexUnavailable(RuntimeException ex) {
+        String message = ex.getMessage();
+        Throwable cause = ex.getCause();
+        while ((message == null || message.isBlank()) && cause != null) {
+            message = cause.getMessage();
+            cause = cause.getCause();
+        }
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        return lower.contains("index_not_found_exception") || lower.contains("no such index");
     }
 
     private Result<PageResult<JsonNode>> unsupportedSearchType(String type) {
