@@ -60,6 +60,18 @@ public class QuestionRecommendationController {
         return Result.success(questionRecommendationService.listBatches(query));
     }
 
+    @GetMapping("/latest")
+    public Result<QuestionRecommendationBatchListVO> latest() {
+        QuestionRecommendationQueryDTO query = new QuestionRecommendationQueryDTO();
+        query.setPageNo(1L);
+        query.setPageSize(1L);
+        PageResult<QuestionRecommendationBatchListVO> page = questionRecommendationService.listBatches(query);
+        QuestionRecommendationBatchListVO latest = page.getRecords() == null || page.getRecords().isEmpty()
+                ? null
+                : page.getRecords().get(0);
+        return Result.success(latest);
+    }
+
     @GetMapping("/batches/{batchId}")
     public Result<QuestionRecommendationBatchDetailVO> batchDetail(@PathVariable Long batchId) {
         return Result.success(questionRecommendationService.batchDetail(batchId));

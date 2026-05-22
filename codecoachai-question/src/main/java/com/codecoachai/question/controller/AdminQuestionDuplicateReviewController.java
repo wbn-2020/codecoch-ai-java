@@ -41,6 +41,12 @@ public class AdminQuestionDuplicateReviewController {
         return Result.success(duplicateService.pageReviews(query));
     }
 
+    @GetMapping("/admin/question-relations")
+    public Result<PageResult<QuestionDuplicateReviewListVO>> pageRelations(QuestionDuplicateReviewQueryDTO query) {
+        SecurityAssert.requireAdmin();
+        return Result.success(duplicateService.pageReviews(query));
+    }
+
     @GetMapping("/admin/question-duplicate-reviews/{id}")
     public Result<QuestionDuplicateReviewDetailVO> getReview(@PathVariable Long id) {
         SecurityAssert.requireAdmin();

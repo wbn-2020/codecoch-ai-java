@@ -43,6 +43,18 @@ public class SkillProfileController {
         return Result.success(skillProfileService.getOverview(targetJobId));
     }
 
+    @GetMapping("/latest")
+    public Result<SkillProfileListVO> latest() {
+        SkillProfileQueryDTO query = new SkillProfileQueryDTO();
+        query.setPageNo(1L);
+        query.setPageSize(1L);
+        PageResult<SkillProfileListVO> page = skillProfileService.listProfiles(query);
+        SkillProfileListVO latest = page.getRecords() == null || page.getRecords().isEmpty()
+                ? null
+                : page.getRecords().get(0);
+        return Result.success(latest);
+    }
+
     @GetMapping
     public Result<PageResult<SkillProfileListVO>> list(@ModelAttribute SkillProfileQueryDTO query) {
         return Result.success(skillProfileService.listProfiles(query));

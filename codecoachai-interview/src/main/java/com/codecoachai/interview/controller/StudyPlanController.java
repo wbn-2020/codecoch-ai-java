@@ -19,6 +19,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import java.time.LocalDate;
+import java.util.Collections;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -90,6 +92,22 @@ public class StudyPlanController {
         return Result.success(studyPlanService.dailyView(planId, date));
     }
 
+    @GetMapping("/daily-tasks")
+    public Result<StudyPlanDailyViewVO> dailyTasks(@RequestParam(required = false) Long planId,
+                                                   @RequestParam(required = false) String date) {
+        if (planId != null) {
+            return Result.success(studyPlanService.dailyView(planId, date));
+        }
+        StudyPlanQueryDTO query = new StudyPlanQueryDTO();
+        query.setPageNo(1L);
+        query.setPageSize(1L);
+        PageResult<StudyPlanListVO> page = studyPlanService.list(query);
+        if (page.getRecords() == null || page.getRecords().isEmpty()) {
+            return Result.success(emptyDailyView(date));
+        }
+        return Result.success(studyPlanService.dailyView(page.getRecords().get(0).getId(), date));
+    }
+
     @PostMapping("/study-plans/{id}/regenerate")
     public Result<StudyPlanGenerateVO> regenerate(@PathVariable Long id) {
         return Result.success(studyPlanService.regenerate(id));
@@ -109,5 +127,18 @@ public class StudyPlanController {
     @PostMapping("/study-tasks/{taskId}/skip")
     public Result<StudyTaskVO> skipTask(@PathVariable Long taskId) {
         return Result.success(studyPlanService.skipTask(taskId));
+    }
+
+    private StudyPlanDailyViewVO emptyDailyView(String date) {
+        StudyPlanDailyViewVO vo = new StudyPlanDailyViewVO();
+        vo.setDate(date == null || date.isBlank() ? LocalDate.now() : LocalDate.parse(date));
+        vo.setDayIndex(0);
+        vo.setTotalTaskCount(0);
+        vo.setPendingTaskCount(0);
+        vo.setCompletedTaskCount(0);
+        vo.setSkippedTaskCount(0);
+        vo.setCompletionRate(0);
+        vo.setTasks(Collections.emptyList());
+        return vo;
     }
 }

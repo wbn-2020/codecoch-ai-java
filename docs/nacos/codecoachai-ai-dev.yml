@@ -20,6 +20,26 @@ codecoachai:
     temperature: 0.3
     max-tokens: 2048
     timeout-seconds: 60
+    router:
+      default-provider: deepseek
+      fallback-provider: dashscope
+    providers:
+      deepseek:
+        base-url: ${AI_BASE_URL:https://api.deepseek.com}
+        api-key: ${DEEPSEEK_API_KEY:}
+        chat-model: ${AI_MODEL:deepseek-chat}
+        reasoner-model: deepseek-reasoner
+        temperature: 0.3
+        max-tokens: 2048
+        timeout-seconds: 60
+      dashscope:
+        base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+        api-key: ${DASHSCOPE_API_KEY:}
+        chat-model: ${DASHSCOPE_CHAT_MODEL:qwen-plus}
+        reasoner-model: ${DASHSCOPE_REASONER_MODEL:qwen-max}
+        temperature: 0.3
+        max-tokens: 2048
+        timeout-seconds: 60
     crypto:
       # Required when saving AI model apiKey values from the admin UI.
       # Use at least 16 characters, or base64:<16/24/32-byte-key>.

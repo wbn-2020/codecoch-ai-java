@@ -34,7 +34,7 @@ spring:
         - id: question
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
+            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-relations,/admin/question-relations/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
 
         # ========== 简历 ==========
         - id: resume
@@ -46,7 +46,7 @@ spring:
         - id: interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**,/admin/interview-reports,/admin/interview-reports/**,/admin/industry-templates,/admin/industry-templates/**,/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/industry-templates,/industry-templates/**,/ai/sse/interviews/**,/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
+            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**,/admin/interview-reports,/admin/interview-reports/**,/admin/industry-templates,/admin/industry-templates/**,/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/daily-tasks,/daily-tasks/**,/industry-templates,/industry-templates/**,/ai/sse/interviews/**,/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
 
         # ========== AI ==========
         - id: ai
@@ -65,7 +65,7 @@ spring:
         - id: file
           uri: lb://codecoachai-file
           predicates:
-            - Path=/files,/files/**,/admin/files,/admin/files/**
+            - Path=/files,/files/**,/admin/files,/admin/files/**,/knowledge,/knowledge/**
 
         # ========== 异步任务中心（V3 新增） ==========
         - id: task
