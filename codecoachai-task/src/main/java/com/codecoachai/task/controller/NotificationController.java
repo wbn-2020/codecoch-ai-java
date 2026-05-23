@@ -40,13 +40,16 @@ public class NotificationController {
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) Integer readStatus) {
         Long userId = SecurityAssert.requireLoginUserId();
-        // 当前接口只返回写给本人的通知；广播通知仍以 userId=0 存储，由管理端统一治理。
-        Page<Notification> page = notificationMapper.selectPage(
-                Page.of(pageNo, pageSize),
-                new LambdaQueryWrapper<Notification>()
-                        .eq(Notification::getUserId, userId)
-                        .eq(readStatus != null, Notification::getReadStatus, readStatus)
-                        .orderByDesc(Notification::getCreatedAt));
+        // 用户端列表需要合并管理端广播通知：userId=0 是历史约定的全站公告，
+        // 但广播没有个人已读状态，因此已读筛选仍只作用在当前用户的专属通知上。
+        LambdaQueryWrapper<Notification> wrapper = new LambdaQueryWrapper<Notification>()
+                .and(query -> query.eq(Notification::getUserId, userId).or().eq(Notification::getUserId, 0L));
+        if (readStatus != null) {
+            wrapper.eq(Notification::getUserId, userId)
+                    .eq(Notification::getReadStatus, readStatus);
+        }
+        wrapper.orderByDesc(Notification::getCreatedAt);
+        Page<Notification> page = notificationMapper.selectPage(Page.of(pageNo, pageSize), wrapper);
         List<NotificationVO> records = page.getRecords().stream()
                 .map(NotificationVO::from)
                 .toList();
