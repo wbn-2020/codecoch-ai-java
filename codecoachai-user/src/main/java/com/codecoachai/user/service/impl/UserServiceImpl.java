@@ -204,6 +204,7 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public InnerCreateUserVO createInnerUser(InnerCreateUserDTO dto) {
+        // 注册由 auth 服务发起，这里在同一事务内创建用户并绑定默认角色，避免出现无角色账号。
         Long count = sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, dto.getUsername()));
         if (count != null && count > 0) {

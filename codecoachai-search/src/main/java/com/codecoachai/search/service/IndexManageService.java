@@ -4,6 +4,8 @@ import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.indices.CreateIndexRequest;
 import co.elastic.clients.elasticsearch.indices.DeleteIndexRequest;
 import co.elastic.clients.elasticsearch.indices.ExistsRequest;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.search.constant.IndexNames;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +29,9 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class IndexManageService {
+
+    private static final String REBUILD_CONFIRM_MESSAGE =
+            "Dangerous index rebuild requires explicit confirm=true.";
 
     private final ElasticsearchClient esClient;
     private final ObjectMapper objectMapper;
@@ -57,7 +62,9 @@ public class IndexManageService {
     /**
      * 重建指定索引（删除 + 重建）。
      */
-    public void rebuild(String indexName) throws IOException {
+    public void rebuild(String indexName, boolean confirm) throws IOException {
+        // 重建会先删除 ES 索引，必须由调用方显式 confirm=true，避免误触发导致检索短暂无数据。
+        requireRebuildConfirmed(confirm);
         if (!ALL_INDICES.contains(indexName)) {
             throw new IllegalArgumentException("Unknown index: " + indexName);
         }
@@ -73,9 +80,16 @@ public class IndexManageService {
     /**
      * 重建所有索引。
      */
-    public void rebuildAll() throws IOException {
+    public void rebuildAll(boolean confirm) throws IOException {
+        requireRebuildConfirmed(confirm);
         for (String index : ALL_INDICES) {
-            rebuild(index);
+            rebuild(index, true);
+        }
+    }
+
+    private void requireRebuildConfirmed(boolean confirm) {
+        if (!confirm) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, REBUILD_CONFIRM_MESSAGE);
         }
     }
 
@@ -87,6 +101,7 @@ public class IndexManageService {
             if (!isAnalyzerMissing(ex)) {
                 throw ex;
             }
+            // 本地或轻量环境可能未安装 IK 分词插件，降级为 standard analyzer 以保证索引可创建。
             log.warn("ES analyzer unavailable for {}, fallback to standard analyzer: {}", indexName, ex.getMessage());
             createIndexWithMapping(indexName, standardAnalyzerFallback(mappingJson));
         }
@@ -130,6 +145,7 @@ public class IndexManageService {
         if (settings instanceof ObjectNode settingsNode && settingsNode.has("analysis")) {
             settingsNode.remove("analysis");
         }
+        // 删除 analysis 配置后仍需递归替换字段 analyzer，否则 ES 仍会引用不存在的 IK analyzer。
         replaceIkAnalyzer(root);
         return objectMapper.writeValueAsString(root);
     }

@@ -34,6 +34,7 @@ public class AdminLogController {
     // ==================== 登录日志 ====================
 
     @Operation(summary = "分页查询登录日志")
+    @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_LOGIN_LOG", description = "查询登录日志", logArgs = false)
     @GetMapping({"/admin/login-logs", "/admin/logs/logins"})
     public Result<PageResult<LoginLog>> pageLoginLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
@@ -46,7 +47,8 @@ public class AdminLogController {
             @RequestParam(required = false) String loginType,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
-        String resolvedStatus = StringUtils.hasText(loginStatus) ? loginStatus : normalizeStatus(status);
+        // 前端历史上会传 1/0，新接口也支持 SUCCESS/FAILED；这里统一成数据库枚举，避免筛选无结果。
+        String resolvedStatus = StringUtils.hasText(loginStatus) ? normalizeStatus(loginStatus) : normalizeStatus(status);
         Page<LoginLog> page = loginLogMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<LoginLog>()
@@ -68,6 +70,7 @@ public class AdminLogController {
     // ==================== 操作日志 ====================
 
     @Operation(summary = "分页查询操作日志")
+    @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_OPERATION_LOG", description = "查询操作日志", logArgs = false)
     @GetMapping({"/admin/operation-logs", "/admin/logs/operations"})
     public Result<PageResult<OperationLog>> pageOperationLogs(
             @RequestParam(defaultValue = "1") Long pageNo,

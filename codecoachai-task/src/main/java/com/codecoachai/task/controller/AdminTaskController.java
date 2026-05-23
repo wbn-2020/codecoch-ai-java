@@ -36,6 +36,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * 管理端异步任务与死信治理接口。
+ * 负责查询任务执行状态、人工恢复死信消息和标记不可恢复消息。
+ */
 @Tag(name = "Task Admin")
 @RestController
 @RequestMapping("/admin/tasks")
@@ -67,6 +71,7 @@ public class AdminTaskController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId) {
         SecurityAssert.requireAdmin();
+        // type 是早期管理页字段，bizType 是当前实体字段；统一解析后再查询。
         String resolvedBizType = StringUtils.hasText(bizType) ? bizType : type;
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
                 Page.of(pageNo, pageSize),
@@ -129,6 +134,7 @@ public class AdminTaskController {
         if (!"FAILED".equals(task.getStatus()) && !"DEAD".equals(task.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Only FAILED/DEAD tasks can be retried");
         }
+        // 这里仅把任务状态退回 PENDING；真正重新投递由对应业务补偿入口或死信恢复流程触发。
         asyncTaskMapper.update(null,
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getId, id)
@@ -209,6 +215,7 @@ public class AdminTaskController {
         if (dl == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
         }
+        // 死信只允许从 UNHANDLED 恢复一次，防止管理员重复点击造成同一业务消息多次投递。
         if (!"UNHANDLED".equals(dl.getHandleStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Only UNHANDLED dead letters can be recovered");
         }
@@ -216,6 +223,7 @@ public class AdminTaskController {
     }
 
     private void replayDeadLetter(MessageDeadLetter dl) {
+        // 恢复死信时按 bizType 还原到原 Topic/Tag，payload 校验失败则拒绝恢复，避免投递脏消息。
         MqProducer producer = mqProducer.orElseThrow(() -> new BusinessException(ErrorCode.SYSTEM_ERROR, "MQ producer is not available"));
         if (BIZ_RESUME_PARSE.equals(dl.getBizType())) {
             ResumeParsePayload payload = readPayload(dl.getPayload(), ResumeParsePayload.class);
@@ -261,6 +269,7 @@ public class AdminTaskController {
     }
 
     private String resolveBizId(String deadLetterBizId, Object payloadBizId) {
+        // 老数据可能没有 bizId，恢复时用 payload 中的业务主键补齐消息键。
         return StringUtils.hasText(deadLetterBizId) ? deadLetterBizId : String.valueOf(payloadBizId);
     }
 
@@ -284,6 +293,7 @@ public class AdminTaskController {
         try {
             return objectMapper.readValue(payload, type);
         } catch (Exception ex) {
+            // payload 不可解析时不要进入 MQ，避免消费者收到结构不确定的历史死信。
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter payload cannot be parsed");
         }
     }
@@ -300,6 +310,7 @@ public class AdminTaskController {
                 .set(MessageDeadLetter::getUpdatedAt, LocalDateTime.now());
         Long handlerUserId = LoginUserContext.getUserId();
         if (handlerUserId != null) {
+            // 记录处理人用于后续审计，未登录上下文下只更新状态与备注。
             wrapper.set(MessageDeadLetter::getHandlerUserId, handlerUserId);
         }
         deadLetterMapper.update(null, wrapper);

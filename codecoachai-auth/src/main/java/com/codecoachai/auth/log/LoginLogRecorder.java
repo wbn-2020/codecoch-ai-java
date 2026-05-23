@@ -24,8 +24,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 public class LoginLogRecorder {
 
     private static final String INSERT_SQL =
-            "INSERT INTO login_log (user_id, username, login_type, login_status, ip, user_agent, " +
-                    "fail_reason, trace_id, login_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "INSERT INTO login_log (user_id, username, login_type, status, login_status, ip, user_agent, " +
+                    "failure_reason, fail_reason, trace_id, login_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -46,15 +46,21 @@ public class LoginLogRecorder {
 
     private void record(Long userId, String username, String loginType, String status, String reason) {
         try {
+            // 异步执行时可能已经没有请求上下文，IP/UA 缺失不能阻断登录主流程。
             HttpServletRequest req = currentRequest();
             String ip = req != null ? clientIp(req) : null;
             String ua = req != null ? truncate(req.getHeader("User-Agent"), 255) : null;
             String traceId = MDC.get("traceId");
 
+            LocalDateTime now = LocalDateTime.now();
+            String safeReason = truncate(reason, 255);
+
+            // 兼容 V3_008 的旧字段 status/failure_reason 与 V3_011 的新字段 login_status/fail_reason。
+            // 本地和存量环境可能同时存在两套字段，必须同时写入，否则旧字段 NOT NULL 会导致日志落库失败。
             jdbcTemplate.update(INSERT_SQL,
-                    userId, truncate(username, 64), loginType, status,
-                    ip, ua, truncate(reason, 255), traceId,
-                    LocalDateTime.now());
+                    userId, truncate(username, 64), loginType, status, status,
+                    ip, ua, safeReason, safeReason, traceId,
+                    now, now);
         } catch (Exception ex) {
             log.warn("登录日志写入失败 username={} status={}", username, status, ex);
         }

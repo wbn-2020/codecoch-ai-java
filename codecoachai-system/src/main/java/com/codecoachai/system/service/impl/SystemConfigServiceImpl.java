@@ -97,6 +97,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     public AdminDashboardOverviewVO dashboardOverview() {
         AdminDashboardOverviewVO vo = new AdminDashboardOverviewVO();
         LocalDateTime now = LocalDateTime.now();
+        // 管理首页只展示运行库实时聚合结果，不使用 mock 或兜底假数据，避免上线验收误判。
         vo.setSummaryCards(summaryCards());
         vo.setTrendStats(trendStats());
         vo.setPendingItems(pendingItems());
@@ -204,6 +205,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private void fillTrend(Map<LocalDate, AdminDashboardOverviewVO.TrendStatVO> map, String tableName,
                            String dateColumn, String condition, TrendSetter setter) {
+        // 部分本地库可能未执行所有历史迁移；趋势统计遇到缺表时保持 0，不影响整页概览。
         if (!tableExists(tableName)) {
             return;
         }
@@ -251,6 +253,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private AdminDashboardOverviewVO.SystemStatusVO systemStatus(LocalDateTime generatedAt) {
         AdminDashboardOverviewVO.SystemStatusVO vo = new AdminDashboardOverviewVO.SystemStatusVO();
+        // 这里只做本服务可直接验证的探测；其他微服务未接入注册中心健康查询前显式标记 UNKNOWN。
         List<AdminDashboardOverviewVO.ServiceStatusVO> services = List.of(
                 serviceStatus("overview", "HEALTHY", "Current admin dashboard aggregation completed.", "local"),
                 serviceStatus("database", databaseHealthy() ? "HEALTHY" : "DOWN",
@@ -289,6 +292,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     private long count(String tableName, String condition) {
+        // 管理概览跨多个业务表，缺表按 0 处理，用于兼容开发库与灰度库迁移进度不一致。
         if (!tableExists(tableName)) {
             return 0L;
         }

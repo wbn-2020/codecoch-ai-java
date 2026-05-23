@@ -23,8 +23,10 @@ public class AgentDailyPlanScheduleTask {
             return;
         }
         try {
+            // 定时任务不绑定单个用户，由 service 侧按规则批量生成每日 agent 计划。
             agentV4OpsService.runDailyPlanBatch(null);
         } catch (Exception ex) {
+            // 定时调度失败只记录错误，避免异常向外抛出导致调度线程中断。
             log.error("V4 agent daily plan batch failed", ex);
         }
     }

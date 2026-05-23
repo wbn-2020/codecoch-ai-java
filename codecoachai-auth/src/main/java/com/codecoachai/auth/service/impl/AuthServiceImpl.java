@@ -116,6 +116,7 @@ public class AuthServiceImpl implements AuthService {
     public ForgotPasswordVO forgotPassword(ForgotPasswordDTO dto) {
         String email = dto.getEmail() == null ? "" : dto.getEmail().trim().toLowerCase();
         String limitKey = resetRequestLimitKey(email);
+        // 按邮箱做短窗口限流，避免密码重置接口被刷；失败与不存在账号也返回统一受理文案。
         if (StringUtils.hasText(redisCacheHelper.get(limitKey))) {
             passwordResetSecurityLogRecorder.recordRejected("RATE_LIMIT");
             throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Password reset requests are too frequent");
@@ -133,6 +134,7 @@ public class AuthServiceImpl implements AuthService {
                 return vo;
             }
             String token = newResetToken();
+            // 重置 token 只落 Redis，过期自动失效；不要持久化明文 token 到数据库或日志。
             redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
             passwordResetDeliveryService.sendResetToken(user.getId(), email, token, RESET_TOKEN_TTL_SECONDS);
             passwordResetSecurityLogRecorder.recordRequested(email, "TOKEN_ISSUED");
@@ -142,6 +144,7 @@ public class AuthServiceImpl implements AuthService {
                 passwordResetSecurityLogRecorder.recordRequested(email, "LOOKUP_FAILED");
                 throw ex;
             }
+            // 不向前端暴露账号是否存在，降低账号枚举风险；差异只写安全审计日志。
             passwordResetSecurityLogRecorder.recordRequested(email, "ACCOUNT_NOT_FOUND");
             log.info("Password reset request accepted for non-existing email={}", maskEmail(email));
         }
@@ -165,12 +168,14 @@ public class AuthServiceImpl implements AuthService {
         try {
             resetUserId = Long.valueOf(userId);
         } catch (NumberFormatException ex) {
+            // Redis 中的用户 ID 异常说明 token 状态不可恢复，立即清理并按无效 token 处理。
             redisCacheHelper.delete(tokenKey);
             throw new BusinessException(ErrorCode.TOKEN_INVALID);
         }
         InnerResetPasswordDTO innerDto = new InnerResetPasswordDTO();
         innerDto.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
         FeignResultUtils.unwrap(userFeignClient.resetPassword(resetUserId, innerDto));
+        // 重置成功后删除 token，保证同一个链接只能使用一次。
         redisCacheHelper.delete(tokenKey);
         passwordResetSecurityLogRecorder.recordCompleted(resetUserId);
 
@@ -215,6 +220,7 @@ public class AuthServiceImpl implements AuthService {
             }
             List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
             List<String> permissions = resolvePermissions(roles);
+            // 刷新 token 时同步刷新 session 中的角色/权限，避免后台调整权限后前端继续使用旧权限快照。
             StpUtil.getSession().set("username", user.getUsername());
             StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
             StpUtil.getSession().set("roles", roles);

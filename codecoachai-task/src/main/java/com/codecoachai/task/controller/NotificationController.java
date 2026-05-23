@@ -40,6 +40,7 @@ public class NotificationController {
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) Integer readStatus) {
         Long userId = SecurityAssert.requireLoginUserId();
+        // 当前接口只返回写给本人的通知；广播通知仍以 userId=0 存储，由管理端统一治理。
         Page<Notification> page = notificationMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<Notification>()
@@ -66,6 +67,7 @@ public class NotificationController {
     @Operation(summary = "标记单条已读")
     @PostMapping("/{id}/read")
     public Result<Void> markRead(@PathVariable Long id) {
+        // 更新条件同时限定 id 和当前用户，避免用户通过枚举通知 ID 修改他人通知状态。
         notificationMapper.update(null,
                 new LambdaUpdateWrapper<Notification>()
                         .eq(Notification::getId, id)
@@ -85,6 +87,7 @@ public class NotificationController {
     @PostMapping("/read-all")
     public Result<Void> markAllRead() {
         Long userId = SecurityAssert.requireLoginUserId();
+        // 只批量更新当前用户未读通知，已经读过的记录不重复刷新 readAt。
         notificationMapper.update(null,
                 new LambdaUpdateWrapper<Notification>()
                         .eq(Notification::getUserId, userId)

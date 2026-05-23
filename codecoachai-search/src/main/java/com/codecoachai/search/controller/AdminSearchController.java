@@ -38,6 +38,10 @@ import org.springframework.web.bind.annotation.RestController;
 @Slf4j
 public class AdminSearchController {
 
+    private static final int PARAM_ERROR_CODE = 40000;
+    private static final String REBUILD_CONFIRM_MESSAGE =
+            "Dangerous index rebuild is rejected by default. Retry with confirm=true after verifying data sync can recover the index.";
+
     private final IndexManageService indexManageService;
     private final ElasticsearchClient esClient;
 
@@ -84,17 +88,26 @@ public class AdminSearchController {
 
     @Operation(summary = "重建指定索引（删除+重建，数据需重新同步）")
     @PostMapping("/indices/{indexName}/rebuild")
-    public Result<String> rebuildIndex(@PathVariable String indexName) throws IOException {
+    public Result<String> rebuildIndex(@PathVariable String indexName,
+                                       @RequestParam(defaultValue = "false") boolean confirm) throws IOException {
         SecurityAssert.requireAdmin();
-        indexManageService.rebuild(indexName);
+        // 重建会删除 ES 索引并等待后续数据同步补齐，管理端必须显式确认，避免误点导致检索短暂无数据。
+        if (!confirm) {
+            return Result.fail(PARAM_ERROR_CODE, REBUILD_CONFIRM_MESSAGE);
+        }
+        indexManageService.rebuild(indexName, true);
         return Result.success("索引 " + indexName + " 已重建，请触发数据同步");
     }
 
     @Operation(summary = "重建所有索引")
     @PostMapping("/indices/rebuild-all")
-    public Result<String> rebuildAll() throws IOException {
+    public Result<String> rebuildAll(@RequestParam(defaultValue = "false") boolean confirm) throws IOException {
         SecurityAssert.requireAdmin();
-        indexManageService.rebuildAll();
+        // 全量重建影响所有搜索域，继续沿用 confirm=true 安全闸。
+        if (!confirm) {
+            return Result.fail(PARAM_ERROR_CODE, REBUILD_CONFIRM_MESSAGE);
+        }
+        indexManageService.rebuildAll(true);
         return Result.success("所有索引已重建，请触发数据同步");
     }
 
@@ -130,6 +143,7 @@ public class AdminSearchController {
             if (!isIndexUnavailable(ex)) {
                 throw ex;
             }
+            // 索引未初始化时返回空页，避免后台搜索页因 ES 冷启动/迁移滞后直接报错。
             log.warn("ES index unavailable for admin search, return empty page. index={}, reason={}", index, ex.getMessage());
             return Result.success(PageResult.empty(safePageNo, safePageSize));
         }

@@ -46,7 +46,7 @@ public class AsyncTaskService {
             return false;
         }
 
-        // 落库 PENDING
+        // Redis 幂等键先占位，数据库记录用于后台可视化追踪；重复记录会被重新置为 RUNNING。
         AsyncTask existing = asyncTaskMapper.selectOne(
                 new LambdaQueryWrapper<AsyncTask>()
                         .eq(AsyncTask::getMessageId, envelope.getMessageId())
@@ -94,10 +94,12 @@ public class AsyncTaskService {
                         .set(AsyncTask::getFailureReason, truncate(reason, 2000))
                         .set(AsyncTask::getCompletedAt, LocalDateTime.now())
                         .setSql("retry_count = retry_count + 1"));
+        // 失败后释放 Redis 幂等键，交给 MQ 或人工补偿流程再次投递。
         redisTemplate.delete(RedisKeyConstants.mqConsumedKey(messageId));
     }
 
     public void markDead(MqMessage<?> envelope, String reason) {
+        // 超过重试阈值后保留死信记录，后台可按 bizType 解析 payload 后人工恢复。
         asyncTaskMapper.update(null,
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getMessageId, envelope.getMessageId())
