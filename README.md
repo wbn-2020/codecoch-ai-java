@@ -446,3 +446,52 @@ migration 重复执行验证
 ## 说明
 
 本 README 依据当前项目开发进度、PRD 对照审查结果和 V4 规划文档整理，目的是为后端开发、联调和作品集展示提供中文说明。后续 V4 功能、验收范围或运行配置策略变化时，应同步更新本文档中的 V4 代码实现状态。
+
+## 最近联调验证
+
+以下链路已在本地联调环境完成验证，当前结论是“可继续按上线标准收敛”，但仍建议在正式发布前复跑一轮与生产一致的配置：
+
+- Gateway 健康检查：`GET /health`
+- AI 健康检查：`GET /ai/health`
+- 搜索链路：`GET /search?keyword=Java`，已兼容旧参数入口
+- Prompt 回归：`POST /admin/agent/prompt-regression/cases` 缺参返回 `40000`
+- DeepSeek 日常计划生成：`POST /agent/job-coach/daily-plan/generate`
+- OSS 链路：STS、上传、详情、下载均已跑通
+
+本次验证覆盖了后端核心链路、第三方链路和管理后台关键入口。DeepSeek、OSS 等外部依赖仍应通过运行时配置注入，仓库内不保存生产密钥。
+
+## 前端联动说明
+
+前端仓库：`CodeCoachAI-vue`
+
+当前与本次联调直接相关的页面主要包括：
+
+- `src/views/admin/AdminPromptRegressionView.vue`
+- `src/views/v4/KnowledgeBaseView.vue`
+- `src/views/v4/JobApplicationView.vue`
+- `src/views/resume/ResumeListView.vue`
+- `src/views/admin/AdminFileManageView.vue`
+
+前端路由中已包含 V4/V4-A 相关入口，以及管理后台的 Prompt 回归页面：
+
+- `/admin/ai/prompt-regression`
+- `/agent/tasks`
+- `/agent/runs/:id`
+- `/knowledge`
+- `/applications`
+- `/resumes`
+
+前端联调建议优先检查这几条能力：
+
+- 登录后能正常进入管理后台与用户侧主页面
+- Prompt 回归页能正常加载、筛选、创建与执行
+- 简历上传、文件下载、知识库检索、投递管理等页面能正常调用后端接口
+
+## 发布前检查建议
+
+若按上线标准继续收敛，建议在发布前再补一轮：
+
+1. 生产配置下复跑 Gateway、AI、File、Search 的健康检查
+2. 复跑 DeepSeek 真实调用与 OSS 上传下载
+3. 复跑前端管理后台关键页和用户侧核心页
+4. 确认无未提交的日志目录、临时文件和本地调试产物
