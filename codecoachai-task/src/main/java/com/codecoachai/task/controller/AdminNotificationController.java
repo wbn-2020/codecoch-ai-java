@@ -49,6 +49,7 @@ public class AdminNotificationController {
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) Integer readStatus) {
         SecurityAssert.requireAdmin();
+        // status 是早期前端筛选字段，readStatus 是新字段；两者都保留，避免旧管理页筛选失效。
         Integer resolvedReadStatus = readStatus != null ? readStatus : status;
         Page<Notification> page = notificationMapper.selectPage(
                 Page.of(pageNo, pageSize),
@@ -77,6 +78,7 @@ public class AdminNotificationController {
     @PostMapping
     public Result<Void> sendCompat(@Valid @RequestBody SendNotificationDTO dto) {
         SecurityAssert.requireAdmin();
+        // 兼容旧管理端直接 POST /admin/notifications 的发送入口，实际发送规则统一收口到 doSend。
         doSend(dto);
         return Result.success();
     }
@@ -89,6 +91,7 @@ public class AdminNotificationController {
         } else if (dto.getTargetUserId() != null) {
             notificationService.notifySystem(dto.getTargetUserId(), dto.getTitle(), dto.getContent());
         } else {
+            // userId=0 是广播通知的历史约定，查询端需按自己的场景决定是否合并广播消息。
             notificationService.notifySystem(0L, dto.getTitle(), dto.getContent());
         }
     }

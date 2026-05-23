@@ -33,7 +33,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /**
- * Consumes search sync messages and applies them to Elasticsearch.
+ * 搜索同步消费者。
+ * 接收业务服务投递的变更消息，从业务服务拉取搜索文档后写入 Elasticsearch。
  */
 @Slf4j
 @Component
@@ -71,6 +72,7 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             }
 
             idempotentKey = RedisKeyConstants.searchConsumedKey(envelope.getMessageId());
+            // RocketMQ 至少一次投递，先用 messageId 做幂等占位；可重试异常会释放占位，允许后续重投。
             Boolean ok = redisTemplate.opsForValue().setIfAbsent(idempotentKey, "1", CONSUMED_TTL);
             if (!Boolean.TRUE.equals(ok)) {
                 log.debug("Duplicate search sync message skipped messageId={}", envelope.getMessageId());
@@ -89,10 +91,12 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
                 handleUpsert(payload);
             }
         } catch (NonRetryableMqException ex) {
+            // 参数错误、未知索引等确定性失败不重试，避免消息反复消费占用队列。
             recordFailure(envelope, ex);
             log.warn("Search sync skipped non-retryable messageId={} reason={}",
                     envelope == null ? null : envelope.getMessageId(), ex.getMessage());
         } catch (Exception ex) {
+            // Feign/ES 临时异常交给 RocketMQ 重试，释放幂等键保证下一次投递可重新执行。
             releaseIdempotentKey(idempotentKey);
             recordFailure(envelope, ex);
             log.error("Search sync failed messageId={}", envelope == null ? null : envelope.getMessageId(), ex);
@@ -124,6 +128,7 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
         try {
             Long id = Long.parseLong(docId);
             Result<Map<String, Object>> result;
+            // 搜索服务不直接读业务库，通过各业务服务 inner 接口拿裁剪后的搜索文档，避免跨库耦合。
             if (IndexNames.QUESTION.equals(indexName)) {
                 result = questionFeignClient.getSearchDoc(id);
             } else if (IndexNames.RESUME.equals(indexName)) {
@@ -185,6 +190,7 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             return;
         }
         try {
+            // 失败快照保留 3 天，供后台排查消息、业务 ID、索引和错误原因。
             Map<String, Object> failure = new LinkedHashMap<>();
             failure.put("messageId", envelope.getMessageId());
             failure.put("bizType", envelope.getBizType());

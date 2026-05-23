@@ -21,7 +21,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * 操作日志 AOP 切面。
- * 拦截标注了 {@link OperationLog} 的 Controller 方法，异步写入 operation_log 表。
+ * 拦截标注了 {@link OperationLog} 的 Controller 方法，尽力写入 operation_log 表。
  *
  * 依赖：common-web 已引入 spring-boot-starter-web + common-security + common-mybatis（含 JdbcTemplate）。
  */
@@ -56,6 +56,7 @@ public class OperationLogAspect {
         } finally {
             long costMs = System.currentTimeMillis() - start;
             try {
+                // 审计落库不能影响主业务结果；即使日志表异常，也只记录 warn 并放行业务响应。
                 saveLog(joinPoint, operationLog, status, errorMsg, result, costMs);
             } catch (Exception logEx) {
                 log.warn("操作日志写入失败", logEx);
@@ -80,6 +81,7 @@ public class OperationLogAspect {
 
         String argsJson = null;
         if (annotation.logArgs()) {
+            // 请求参数和响应体可能较大，入库前截断，避免审计表字段溢出影响业务接口。
             argsJson = truncate(toJson(joinPoint.getArgs()), 4000);
         }
         String responseJson = null;

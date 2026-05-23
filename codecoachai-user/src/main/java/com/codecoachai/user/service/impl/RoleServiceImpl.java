@@ -133,6 +133,7 @@ public class RoleServiceImpl implements RoleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void assignRolesToUser(Long userId, List<Long> roleIds) {
+        // 角色分配采用“先删后插”的全量替换模型，必须放在同一事务中避免中间态丢失角色。
         // 先删除旧关联
         sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
                 .eq(SysUserRole::getUserId, userId));

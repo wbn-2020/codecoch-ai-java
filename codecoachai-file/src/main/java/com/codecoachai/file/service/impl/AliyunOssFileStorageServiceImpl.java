@@ -78,6 +78,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         String fileExt = extractExtension(originalFilename);
         validateExtension(fileExt);
         validateSize(file);
+        // 先做文件头/内容校验，再上传 OSS，避免伪装扩展名的文件进入对象存储。
         FileUploadValidator.validateContent(file, fileExt);
 
         // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
@@ -116,7 +117,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         } catch (IOException e) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
         } catch (BusinessException be) {
-            // OSS 上传失败 → 透传
+            // OSS SDK 或校验层已经给出业务异常时直接透传，避免包装后丢失可读错误码。
             throw be;
         } catch (Exception ex) {
             log.error("OSS 上传失败", ex);
@@ -159,6 +160,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
 
         byte[] bytes = ossFileService.download(key);
         MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
+        // 文件名走 RFC 5987 编码，避免中文简历名下载时在浏览器中乱码。
         return ResponseEntity.ok()
                 .contentType(mediaType)
                 .contentLength(bytes.length)
@@ -366,6 +368,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 fillResumeAnalysisStatus(record, latestRecordMap.get(record.getId()));
             }
         } catch (RuntimeException ex) {
+            // 文件列表是主流程，解析状态只作为管理端辅助信息，查询失败时不阻断列表展示。
             log.warn("Failed to fill resume analysis status for fileIds={}", resumeFileIds, ex);
         }
     }

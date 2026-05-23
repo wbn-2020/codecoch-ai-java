@@ -33,6 +33,7 @@ public class OpenAiCompatibleClient implements AiClient {
         if (!StringUtils.hasText(properties.getBaseUrl())
                 || !StringUtils.hasText(properties.getApiKey())
                 || !StringUtils.hasText(properties.getModel())) {
+            // 第三方 AI 调用必须显式配置，避免验收时误把未配置环境当成模型返回失败。
             throw new AiProviderException(AiFailureType.CONFIG_ERROR, "AI base-url, api-key or model is not configured");
         }
 
@@ -59,6 +60,7 @@ public class OpenAiCompatibleClient implements AiClient {
                     .body(String.class);
             JsonNode root = objectMapper.readTree(response);
             JsonNode content = root.path("choices").path(0).path("message").path("content");
+            // OpenAI 兼容协议的成功 HTTP 响应也可能没有可用内容，需单独归类为空响应。
             if (!content.isTextual() || !StringUtils.hasText(content.asText())) {
                 throw new AiProviderException(AiFailureType.EMPTY_RESPONSE, "AI response content is empty");
             }
@@ -71,6 +73,7 @@ public class OpenAiCompatibleClient implements AiClient {
                     ex.getStatusCode().value(),
                     ex);
         } catch (ResourceAccessException ex) {
+            // 连接超时和读取超时归为 TIMEOUT，便于上层熔断、重试或降级时做精确判断。
             AiFailureType type = containsCause(ex, SocketTimeoutException.class)
                     || containsCause(ex, ConnectException.class)
                     ? AiFailureType.TIMEOUT
