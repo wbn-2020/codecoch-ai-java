@@ -11,7 +11,7 @@ import org.springframework.util.StringUtils;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/health")
+@RequestMapping({"/health", "/ai/health"})
 public class HealthController {
 
     private final AiProperties aiProperties;

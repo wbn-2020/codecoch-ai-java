@@ -48,10 +48,7 @@ public class SearchController {
             @RequestParam(required = false) String difficulty,
             @RequestParam(required = false) String categoryId,
             @RequestParam(required = false) String reportStatus) throws IOException {
-        if (!StringUtils.hasText(type)) {
-            return unsupportedSearchType(type);
-        }
-        String normalizedType = type.trim().toLowerCase(Locale.ROOT);
+        String normalizedType = StringUtils.hasText(type) ? type.trim().toLowerCase(Locale.ROOT) : "questions";
         switch (normalizedType) {
             case "questions":
             case "question":

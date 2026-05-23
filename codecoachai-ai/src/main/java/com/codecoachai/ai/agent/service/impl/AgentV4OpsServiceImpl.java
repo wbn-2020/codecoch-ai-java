@@ -38,6 +38,8 @@ import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -340,16 +342,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public PromptRegressionCaseVO savePromptCase(PromptRegressionCaseSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getCaseName()) || !StringUtils.hasText(dto.getPromptType())
                 || !StringUtils.hasText(dto.getInputJson())) {
-            throw new IllegalArgumentException("caseName, promptType and inputJson are required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "caseName, promptType and inputJson are required");
         }
         PromptRegressionCase item = dto.getId() == null ? new PromptRegressionCase() : promptRegressionCaseMapper.selectById(dto.getId());
         if (item == null) {
-            throw new IllegalArgumentException("Prompt regression case not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt regression case not found");
         }
-        item.setCaseName(dto.getCaseName());
-        item.setPromptType(dto.getPromptType());
-        item.setInputJson(dto.getInputJson());
-        item.setExpectedSchemaJson(dto.getExpectedSchemaJson());
+        validateJsonObject(dto.getInputJson(), "inputJson");
+        if (StringUtils.hasText(dto.getExpectedSchemaJson())) {
+            validateJsonObject(dto.getExpectedSchemaJson(), "expectedSchemaJson");
+        }
+        item.setCaseName(dto.getCaseName().trim());
+        item.setPromptType(dto.getPromptType().trim());
+        item.setInputJson(dto.getInputJson().trim());
+        item.setExpectedSchemaJson(StringUtils.hasText(dto.getExpectedSchemaJson()) ? dto.getExpectedSchemaJson().trim() : null);
         item.setEnabled(dto.getEnabled() == null ? 1 : dto.getEnabled());
         if (item.getId() == null) {
             promptRegressionCaseMapper.insert(item);
@@ -578,6 +584,19 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
             return "{}";
+        }
+    }
+
+    private void validateJsonObject(String value, String fieldName) {
+        try {
+            JsonNode node = objectMapper.readTree(value);
+            if (node == null || !node.isContainerNode()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " must be a JSON object or array");
+            }
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " must be valid JSON");
         }
     }
 

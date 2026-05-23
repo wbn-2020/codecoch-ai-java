@@ -52,7 +52,7 @@ spring:
         - id: ai
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**
+            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**
           filters:
             - name: RequestRateLimiter
               args:

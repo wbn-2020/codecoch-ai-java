@@ -32,7 +32,7 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
-    private static final List<String> WHITE_PATHS = List.of("/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password");
+    private static final List<String> WHITE_PATHS = List.of("/health", "/ai/health", "/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuthTokenClient authTokenClient;
