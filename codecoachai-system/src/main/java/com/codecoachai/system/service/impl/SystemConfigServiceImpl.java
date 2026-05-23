@@ -14,6 +14,11 @@ import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
 import com.codecoachai.system.service.SystemConfigService;
 import java.sql.Date;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -30,6 +35,9 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private final SystemConfigMapper systemConfigMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final HttpClient healthHttpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofMillis(600))
+            .build();
 
     @Override
     public List<SystemConfigVO> listConfigs() {
@@ -102,7 +110,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         vo.setTrendStats(trendStats());
         vo.setPendingItems(pendingItems());
         vo.setSystemStatus(systemStatus(now));
-        vo.setDataSourceDesc("All dashboard numbers are aggregated from the runtime database in real time.");
+        vo.setDataSourceDesc("管理首页数据来自运行库实时聚合。");
         vo.setGeneratedAt(now);
         return vo;
     }
@@ -255,22 +263,42 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         AdminDashboardOverviewVO.SystemStatusVO vo = new AdminDashboardOverviewVO.SystemStatusVO();
         // 这里只做本服务可直接验证的探测；其他微服务未接入注册中心健康查询前显式标记 UNKNOWN。
         List<AdminDashboardOverviewVO.ServiceStatusVO> services = List.of(
-                serviceStatus("overview", "HEALTHY", "Current admin dashboard aggregation completed.", "local"),
+                serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"),
                 serviceStatus("database", databaseHealthy() ? "HEALTHY" : "DOWN",
-                        databaseHealthy() ? "SELECT 1 succeeded." : "SELECT 1 failed.", "jdbc"),
-                serviceStatus("codecoachai-gateway", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-auth", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-user", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-resume", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-interview", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-question", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-ai", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported"),
-                serviceStatus("codecoachai-file", "UNKNOWN", "Runtime service registry is not queried by this endpoint.", "unsupported")
+                        databaseHealthy() ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"),
+                probeService("codecoachai-gateway", 18080),
+                probeService("codecoachai-auth", 9201),
+                probeService("codecoachai-user", 9202),
+                probeService("codecoachai-resume", 9204),
+                probeService("codecoachai-interview", 9205),
+                probeService("codecoachai-question", 9203),
+                probeService("codecoachai-ai", 9206),
+                probeService("codecoachai-task", 8090),
+                probeService("codecoachai-file", 9209)
         );
         vo.setServices(services);
         vo.setStatus(services.stream().anyMatch(service -> "DOWN".equals(service.getStatus())) ? "DEGRADED" : "HEALTHY");
         vo.setGeneratedAt(generatedAt);
         return vo;
+    }
+
+    private AdminDashboardOverviewVO.ServiceStatusVO probeService(String name, int port) {
+        String url = "http://127.0.0.1:" + port + "/actuator/health";
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMillis(900))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = healthHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            boolean healthy = response.statusCode() >= 200
+                    && response.statusCode() < 300
+                    && response.body() != null
+                    && response.body().contains("\"status\":\"UP\"");
+            return serviceStatus(name, healthy ? "HEALTHY" : "DOWN",
+                    healthy ? "Actuator 健康检查通过。" : "Actuator 返回异常状态。", url);
+        } catch (Exception ex) {
+            return serviceStatus(name, "UNKNOWN", "本机 Actuator 探测失败：" + ex.getClass().getSimpleName(), url);
+        }
     }
 
     private AdminDashboardOverviewVO.ServiceStatusVO serviceStatus(String name, String status, String reason, String source) {
