@@ -15,6 +15,7 @@ import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
 import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import io.swagger.v3.oas.annotations.Operation;
@@ -63,6 +64,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize, keyword, scene, status));
     }
 
+    @OperationLog(module = "ai", action = "CREATE_PROMPT", description = "新增 Prompt 模板")
     @PostMapping("/admin/ai/prompts")
     public Result<PromptTemplateVO> createPrompt(@Valid @RequestBody PromptTemplateSaveDTO dto) {
         SecurityAssert.requireAdmin();
@@ -81,6 +83,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.getPromptDetail(id));
     }
 
+    @OperationLog(module = "ai", action = "UPDATE_PROMPT", description = "编辑 Prompt 模板")
     @PutMapping("/admin/ai/prompts/{id}")
     public Result<PromptTemplateVO> updatePrompt(@PathVariable Long id,
                                                  @Valid @RequestBody PromptTemplateSaveDTO dto) {
@@ -88,6 +91,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.updatePrompt(id, dto));
     }
 
+    @OperationLog(module = "ai", action = "DELETE_PROMPT", description = "删除 Prompt 模板")
     @DeleteMapping("/admin/ai/prompts/{id}")
     public Result<Void> deletePrompt(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
@@ -95,6 +99,7 @@ public class AdminAiController {
         return Result.success();
     }
 
+    @OperationLog(module = "ai", action = "UPDATE_PROMPT_STATUS", description = "切换 Prompt 模板状态")
     @PutMapping("/admin/ai/prompts/{id}/status")
     public Result<Void> updatePromptStatus(@PathVariable Long id,
                                            @Valid @RequestBody UpdatePromptStatusDTO dto) {
@@ -110,6 +115,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.pageVersions(id, query));
     }
 
+    @OperationLog(module = "ai", action = "CREATE_PROMPT_VERSION", description = "新增 Prompt 版本")
     @PostMapping("/admin/ai/prompt-templates/{id}/versions")
     public Result<PromptTemplateVersionVO> createPromptVersion(@PathVariable Long id,
                                                                @Valid @RequestBody PromptTemplateVersionCreateDTO dto) {
@@ -117,6 +123,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.createVersion(id, dto));
     }
 
+    @OperationLog(module = "ai", action = "ACTIVATE_PROMPT_VERSION", description = "激活 Prompt 版本")
     @PostMapping("/admin/ai/prompt-template-versions/{versionId}/activate")
     @Operation(summary = "激活 Prompt 版本", description = "管理端接口：激活指定 Prompt 版本，并同步模板当前内容。")
     public Result<PromptTemplateVersionVO> activatePromptVersion(@PathVariable Long versionId,
@@ -126,6 +133,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.activateVersion(versionId, dto));
     }
 
+    @OperationLog(module = "ai", action = "ROLLBACK_PROMPT_VERSION", description = "回滚 Prompt 版本")
     @PostMapping("/admin/ai/prompt-template-versions/{versionId}/rollback")
     @Operation(summary = "回滚 Prompt 版本", description = "管理端接口：等价于激活历史版本，内部复用激活逻辑并保留 changeLog。")
     public Result<PromptTemplateVersionVO> rollbackPromptVersion(@PathVariable Long versionId,
@@ -135,6 +143,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.rollbackVersion(versionId, dto));
     }
 
+    @OperationLog(module = "ai", action = "DISABLE_PROMPT_VERSION", description = "禁用 Prompt 版本")
     @PostMapping("/admin/ai/prompt-template-versions/{versionId}/disable")
     @Operation(summary = "禁用 Prompt 版本", description = "管理端接口：禁用非激活状态的 Prompt 版本。")
     public Result<Void> disablePromptVersion(@PathVariable Long versionId,
@@ -144,6 +153,7 @@ public class AdminAiController {
         return Result.success();
     }
 
+    @OperationLog(module = "ai", action = "TEST_PROMPT_VERSION", description = "测试 Prompt 版本", logResponse = false)
     @PostMapping("/admin/ai/prompt-template-versions/{versionId}/test")
     @Operation(summary = "测试 Prompt 版本", description = "管理端接口：渲染或调用 AI 测试指定 Prompt 版本。")
     public Result<PromptVersionTestVO> testPromptVersion(@PathVariable Long versionId,

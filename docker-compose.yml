@@ -1,5 +1,11 @@
 version: '3.8'
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 # ============================================================
 # CodeCoachAI V3 本地开发环境 docker-compose
 # 启动基础设施：MySQL + Redis + Nacos + RocketMQ + Elasticsearch
@@ -11,6 +17,7 @@ services:
   mysql:
     image: mysql:8.0
     container_name: codecoachai-mysql
+    logging: *default-logging
     ports:
       - "3306:3306"
     environment:
@@ -31,6 +38,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: codecoachai-redis
+    logging: *default-logging
     ports:
       - "6379:6379"
     volumes:
@@ -45,6 +53,7 @@ services:
   nacos:
     image: nacos/nacos-server:v2.3.1
     container_name: codecoachai-nacos
+    logging: *default-logging
     ports:
       - "8848:8848"
       - "9848:9848"
@@ -63,6 +72,7 @@ services:
   rocketmq-namesrv:
     image: apache/rocketmq:5.1.4
     container_name: codecoachai-rocketmq-namesrv
+    logging: *default-logging
     ports:
       - "9876:9876"
     command: sh mqnamesrv
@@ -73,6 +83,7 @@ services:
   rocketmq-broker:
     image: apache/rocketmq:5.1.4
     container_name: codecoachai-rocketmq-broker
+    logging: *default-logging
     ports:
       - "10911:10911"
       - "10909:10909"
@@ -87,6 +98,7 @@ services:
   rocketmq-dashboard:
     image: apacherocketmq/rocketmq-dashboard:latest
     container_name: codecoachai-rocketmq-dashboard
+    logging: *default-logging
     ports:
       - "18080:8080"
     depends_on:
@@ -98,6 +110,7 @@ services:
   elasticsearch:
     image: elasticsearch:8.14.3
     container_name: codecoachai-elasticsearch
+    logging: *default-logging
     ports:
       - "9200:9200"
       - "9300:9300"
