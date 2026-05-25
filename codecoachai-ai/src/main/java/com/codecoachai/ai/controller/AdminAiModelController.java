@@ -11,6 +11,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -61,6 +62,7 @@ public class AdminAiModelController {
     }
 
     @PostMapping("/admin/ai/models")
+    @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logResponse = false)
     public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
         SecurityAssert.requireAdmin();
         AiModelConfig entity = new AiModelConfig();
@@ -74,6 +76,7 @@ public class AdminAiModelController {
     }
 
     @PutMapping("/admin/ai/models/{id}")
+    @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logResponse = false)
     public Result<AiModelConfig> update(@PathVariable Long id, @RequestBody AiModelConfigSaveDTO dto) {
         SecurityAssert.requireAdmin();
         AiModelConfig entity = get(id);
@@ -87,6 +90,7 @@ public class AdminAiModelController {
     }
 
     @PostMapping("/admin/ai/models/{id}/set-default")
+    @OperationLog(module = "ai", action = "SET_DEFAULT_AI_MODEL", description = "Set default AI model", logResponse = false)
     public Result<AiModelConfig> setDefault(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         AiModelConfig entity = get(id);
@@ -104,6 +108,7 @@ public class AdminAiModelController {
     }
 
     @PutMapping("/admin/ai/models/{id}/status")
+    @OperationLog(module = "ai", action = "UPDATE_AI_MODEL_STATUS", description = "Update AI model status", logResponse = false)
     public Result<AiModelConfig> updateStatus(@PathVariable Long id, @RequestBody ModelStatusDTO dto) {
         SecurityAssert.requireAdmin();
         AiModelConfig entity = get(id);
@@ -115,6 +120,7 @@ public class AdminAiModelController {
     }
 
     @DeleteMapping("/admin/ai/models/{id}")
+    @OperationLog(module = "ai", action = "DELETE_AI_MODEL", description = "Delete AI model config", logResponse = false)
     public Result<Void> delete(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         mapper.deleteById(id);

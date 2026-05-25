@@ -165,9 +165,18 @@ management:
 # 日志
 # ============================================================
 logging:
+  file:
+    path: ${CODECOACHAI_LOG_PATH:./logs/${spring.application.name:codecoachai-service}}
   level:
     root: INFO
     com.codecoachai: DEBUG
     org.springframework: INFO
+  logback:
+    rollingpolicy:
+      max-file-size: 50MB
+      max-history: 7
+      total-size-cap: 1GB
+      clean-history-on-start: false
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{64} - %msg%n"

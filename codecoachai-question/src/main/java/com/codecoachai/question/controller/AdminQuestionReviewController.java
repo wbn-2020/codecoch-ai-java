@@ -3,6 +3,7 @@ package com.codecoachai.question.controller;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionReviewRejectDTO;
@@ -31,6 +32,7 @@ public class AdminQuestionReviewController {
 
     private final QuestionReviewService questionReviewService;
 
+    @OperationLog(module = "question", action = "GENERATE_AI_QUESTION", description = "Generate AI question drafts", logResponse = false)
     @PostMapping("/admin/ai/questions/generate")
     @Operation(summary = "Generate AI question drafts", description = "Admin endpoint. Generated questions enter question_review as PENDING drafts and do not directly enter the formal question bank.")
     public Result<AiQuestionGenerateResultVO> generate(@Valid @RequestBody AiQuestionGenerateRequestDTO dto) {
@@ -52,6 +54,7 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.getReview(id));
     }
 
+    @OperationLog(module = "question", action = "APPROVE_QUESTION_REVIEW", description = "Approve AI question draft")
     @PostMapping("/admin/question-reviews/{id}/approve")
     @Operation(summary = "Approve AI question draft", description = "Admin endpoint. Approval writes the draft into the formal question table.")
     public Result<QuestionReviewDetailVO> approve(@PathVariable Long id,
@@ -60,6 +63,7 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.approve(id, dto));
     }
 
+    @OperationLog(module = "question", action = "BATCH_APPROVE_QUESTION_REVIEW", description = "Batch approve AI question drafts", logResponse = false)
     @PostMapping("/admin/question-reviews/batch-approve")
     @Operation(summary = "Batch approve AI question drafts", description = "Admin endpoint. Each draft reuses the single approve flow; failed items are returned without stopping the batch.")
     public Result<BatchQuestionReviewResultVO> batchApprove(
@@ -68,6 +72,7 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.batchApprove(dto));
     }
 
+    @OperationLog(module = "question", action = "REJECT_QUESTION_REVIEW", description = "Reject AI question draft")
     @PostMapping("/admin/question-reviews/{id}/reject")
     @Operation(summary = "Reject AI question draft", description = "Admin endpoint. Rejected drafts stay out of the formal question table.")
     public Result<QuestionReviewDetailVO> reject(@PathVariable Long id,
@@ -76,6 +81,7 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.reject(id, dto));
     }
 
+    @OperationLog(module = "question", action = "BATCH_REJECT_QUESTION_REVIEW", description = "Batch reject AI question drafts", logResponse = false)
     @PostMapping("/admin/question-reviews/batch-reject")
     @Operation(summary = "Batch reject AI question drafts", description = "Admin endpoint. Each draft reuses the single reject flow; failed items are returned without stopping the batch.")
     public Result<BatchQuestionReviewResultVO> batchReject(
