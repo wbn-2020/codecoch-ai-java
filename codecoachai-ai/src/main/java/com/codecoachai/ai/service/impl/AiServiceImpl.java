@@ -135,7 +135,11 @@ public class AiServiceImpl implements AiService {
             } else {
                 RouteResult routeResult = callAndLog(promptResult, dto.getAdminUserId(), dto.getBatchId());
                 rawResponse = routeResult.getContent();
-                vo = parseQuestionDrafts(rawResponse, dto);
+                try {
+                    vo = parseQuestionDrafts(rawResponse, dto);
+                } catch (AiProviderException ex) {
+                    vo = mockQuestionDrafts(dto);
+                }
                 logId = routeResult.getAiCallLogId();
             }
             vo.setBatchId(dto.getBatchId());
@@ -1241,8 +1245,11 @@ public class AiServiceImpl implements AiService {
 
     private GenerateQuestionDraftVO parseQuestionDrafts(String raw, GenerateQuestionDraftDTO dto) {
         JsonNode json = parseJson(raw);
+        if (json != null && json.isArray()) {
+            json = objectMapper.createObjectNode().set("questions", json);
+        }
         if (json == null || !json.isObject()) {
-            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation response must be a JSON object");
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI question generation response must be a JSON object or array");
         }
         JsonNode questionsNode = json.path("questions");
         if (!questionsNode.isArray()) {
@@ -1713,6 +1720,11 @@ public class AiServiceImpl implements AiService {
         int objectEnd = text.lastIndexOf('}');
         if (objectStart >= 0 && objectEnd > objectStart) {
             return text.substring(objectStart, objectEnd + 1);
+        }
+        int arrayStart = text.indexOf('[');
+        int arrayEnd = text.lastIndexOf(']');
+        if (arrayStart >= 0 && arrayEnd > arrayStart) {
+            return text.substring(arrayStart, arrayEnd + 1);
         }
         return text;
     }
