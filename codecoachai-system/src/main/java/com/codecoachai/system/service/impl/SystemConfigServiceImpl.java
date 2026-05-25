@@ -272,7 +272,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                 serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"),
                 serviceStatus("database", databaseHealthy() ? "HEALTHY" : "DOWN",
                         databaseHealthy() ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"),
-                probeService("codecoachai-gateway", "codecoachai-gateway", 18080),
+                probeGateway("codecoachai-gateway", "codecoachai-gateway", 18080),
                 probeService("codecoachai-auth", "codecoachai-auth", 9201),
                 probeService("codecoachai-user", "codecoachai-user", 9202),
                 probeService("codecoachai-resume", "codecoachai-resume", 9204),
@@ -305,6 +305,28 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                     healthy ? "Actuator 健康检查通过。" : "Actuator 返回异常状态。", url);
         } catch (Exception ex) {
             return serviceStatus(name, "UNKNOWN", "本机 Actuator 探测失败：" + ex.getClass().getSimpleName(), url);
+        }
+    }
+
+    private AdminDashboardOverviewVO.ServiceStatusVO probeGateway(String name, String host, int port) {
+        AdminDashboardOverviewVO.ServiceStatusVO actuatorStatus = probeService(name, host, port);
+        if ("HEALTHY".equals(actuatorStatus.getStatus())) {
+            return actuatorStatus;
+        }
+
+        String url = "http://" + host + ":" + port + "/";
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofMillis(900))
+                    .GET()
+                    .build();
+            HttpResponse<String> response = healthHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            boolean reachable = response.statusCode() >= 200 && response.statusCode() < 500;
+            return serviceStatus(name, reachable ? "HEALTHY" : "DOWN",
+                    reachable ? "Gateway HTTP port reachable." : "Gateway HTTP port returned " + response.statusCode() + ".",
+                    url);
+        } catch (Exception ex) {
+            return serviceStatus(name, actuatorStatus.getStatus(), actuatorStatus.getReason(), actuatorStatus.getSource());
         }
     }
 
