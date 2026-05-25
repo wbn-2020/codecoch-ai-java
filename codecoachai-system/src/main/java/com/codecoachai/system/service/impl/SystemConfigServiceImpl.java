@@ -14,10 +14,12 @@ import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
 import com.codecoachai.system.service.SystemConfigService;
 import java.sql.Date;
+import java.util.Properties;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -27,6 +29,9 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -35,6 +40,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private final SystemConfigMapper systemConfigMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider;
     private final HttpClient healthHttpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(600))
             .build();
@@ -266,24 +272,25 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                 serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"),
                 serviceStatus("database", databaseHealthy() ? "HEALTHY" : "DOWN",
                         databaseHealthy() ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"),
-                probeService("codecoachai-gateway", 18080),
-                probeService("codecoachai-auth", 9201),
-                probeService("codecoachai-user", 9202),
-                probeService("codecoachai-resume", 9204),
-                probeService("codecoachai-interview", 9205),
-                probeService("codecoachai-question", 9203),
-                probeService("codecoachai-ai", 9206),
-                probeService("codecoachai-task", 8090),
-                probeService("codecoachai-file", 9209)
+                probeService("codecoachai-gateway", "codecoachai-gateway", 18080),
+                probeService("codecoachai-auth", "codecoachai-auth", 9201),
+                probeService("codecoachai-user", "codecoachai-user", 9202),
+                probeService("codecoachai-resume", "codecoachai-resume", 9204),
+                probeService("codecoachai-interview", "codecoachai-interview", 9205),
+                probeService("codecoachai-question", "codecoachai-question", 9203),
+                probeService("codecoachai-ai", "codecoachai-ai", 9206),
+                probeService("codecoachai-task", "codecoachai-task", 8090),
+                probeService("codecoachai-file", "codecoachai-file", 9209)
         );
         vo.setServices(services);
         vo.setStatus(services.stream().anyMatch(service -> "DOWN".equals(service.getStatus())) ? "DEGRADED" : "HEALTHY");
+        vo.setOpsMetrics(opsMetrics());
         vo.setGeneratedAt(generatedAt);
         return vo;
     }
 
-    private AdminDashboardOverviewVO.ServiceStatusVO probeService(String name, int port) {
-        String url = "http://127.0.0.1:" + port + "/actuator/health";
+    private AdminDashboardOverviewVO.ServiceStatusVO probeService(String name, String host, int port) {
+        String url = "http://" + host + ":" + port + "/actuator/health";
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                     .timeout(Duration.ofMillis(900))
@@ -298,6 +305,106 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                     healthy ? "Actuator 健康检查通过。" : "Actuator 返回异常状态。", url);
         } catch (Exception ex) {
             return serviceStatus(name, "UNKNOWN", "本机 Actuator 探测失败：" + ex.getClass().getSimpleName(), url);
+        }
+    }
+
+    private AdminDashboardOverviewVO.OpsMetricsVO opsMetrics() {
+        AdminDashboardOverviewVO.OpsMetricsVO vo = new AdminDashboardOverviewVO.OpsMetricsVO();
+        long requestsLastMinute = recentCount("operation_log", "created_at", "deleted = 0")
+                + recentCount("login_log", "created_at", "1 = 1");
+        long transactionsLastMinute = recentCount("resume", "created_at", "deleted = 0")
+                + recentCount("target_job", "created_at", "deleted = 0")
+                + recentCount("study_plan", "created_at", "deleted = 0")
+                + recentCount("study_task", "created_at", "deleted = 0")
+                + recentCount("interview_session", "created_at", "deleted = 0")
+                + recentCount("practice_record", "created_at", "deleted = 0")
+                + recentCount("agent_task", "created_at", "deleted = 0");
+        vo.setQps(round2(requestsLastMinute / 60.0));
+        vo.setTps(round2(transactionsLastMinute / 60.0));
+        vo.setRpm(requestsLastMinute);
+        vo.setTpm(recentTokenCount());
+        fillJvmMetrics(vo);
+        fillRedisMetrics(vo);
+        vo.setMetricsSource("runtime-db-jvm-redis");
+        return vo;
+    }
+
+    private long recentCount(String tableName, String dateColumn, String condition) {
+        if (!tableExists(tableName) || !columnExists(tableName, dateColumn)) {
+            return 0L;
+        }
+        String sql = "SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition
+                + " AND `" + dateColumn + "` >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class);
+        return count == null ? 0L : count;
+    }
+
+    private long recentTokenCount() {
+        if (!tableExists("ai_call_log") || !columnExists("ai_call_log", "created_at")) {
+            return 0L;
+        }
+        boolean hasPromptTokens = columnExists("ai_call_log", "prompt_tokens");
+        boolean hasCompletionTokens = columnExists("ai_call_log", "completion_tokens");
+        if (!hasPromptTokens && !hasCompletionTokens) {
+            return 0L;
+        }
+        String promptExpr = hasPromptTokens ? "COALESCE(prompt_tokens, 0)" : "0";
+        String completionExpr = hasCompletionTokens ? "COALESCE(completion_tokens, 0)" : "0";
+        String sql = "SELECT COALESCE(SUM(" + promptExpr + " + " + completionExpr
+                + "), 0) FROM ai_call_log WHERE deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class);
+        return count == null ? 0L : count;
+    }
+
+    private void fillJvmMetrics(AdminDashboardOverviewVO.OpsMetricsVO vo) {
+        Runtime runtime = Runtime.getRuntime();
+        long used = runtime.totalMemory() - runtime.freeMemory();
+        long max = runtime.maxMemory();
+        vo.setHeapUsedMb(used / 1024 / 1024);
+        vo.setHeapMaxMb(max / 1024 / 1024);
+        vo.setHeapUsage(max > 0 ? round2((double) used * 100 / max) : 0.0);
+        java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
+        if (bean instanceof com.sun.management.OperatingSystemMXBean osBean) {
+            vo.setProcessCpuUsage(percent(osBean.getProcessCpuLoad()));
+            vo.setSystemCpuUsage(percent(osBean.getCpuLoad()));
+        }
+    }
+
+    private void fillRedisMetrics(AdminDashboardOverviewVO.OpsMetricsVO vo) {
+        RedisConnectionFactory factory = redisConnectionFactoryProvider.getIfAvailable();
+        if (factory == null) {
+            return;
+        }
+        try (RedisConnection connection = factory.getConnection()) {
+            Properties stats = connection.serverCommands().info("stats");
+            Properties clients = connection.serverCommands().info("clients");
+            long hits = parseLong(stats.getProperty("keyspace_hits"));
+            long misses = parseLong(stats.getProperty("keyspace_misses"));
+            vo.setRedisKeyspaceHits(hits);
+            vo.setRedisKeyspaceMisses(misses);
+            vo.setRedisHitRate(hits + misses > 0 ? round2((double) hits * 100 / (hits + misses)) : 0.0);
+            vo.setRedisConnectedClients((int) parseLong(clients.getProperty("connected_clients")));
+        } catch (RuntimeException ex) {
+            vo.setRedisHitRate(0.0);
+        }
+    }
+
+    private Double percent(double value) {
+        return value >= 0 ? round2(value * 100) : null;
+    }
+
+    private double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
+    private long parseLong(String value) {
+        if (value == null || value.isBlank()) {
+            return 0L;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException ex) {
+            return 0L;
         }
     }
 
@@ -332,6 +439,13 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private boolean tableExists(String tableName) {
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
         Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
+        return count != null && count > 0;
+    }
+
+    private boolean columnExists(String tableName, String columnName) {
+        String sql = "SELECT COUNT(1) FROM information_schema.columns "
+                + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName, columnName);
         return count != null && count > 0;
     }
 

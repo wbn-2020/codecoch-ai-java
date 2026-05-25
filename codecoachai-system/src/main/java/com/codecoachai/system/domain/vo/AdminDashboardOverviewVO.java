@@ -48,6 +48,7 @@ public class AdminDashboardOverviewVO {
     public static class SystemStatusVO {
         private String status;
         private List<ServiceStatusVO> services;
+        private OpsMetricsVO opsMetrics;
         private LocalDateTime generatedAt;
     }
 
@@ -57,5 +58,23 @@ public class AdminDashboardOverviewVO {
         private String status;
         private String reason;
         private String source;
+    }
+
+    @Data
+    public static class OpsMetricsVO {
+        private Double qps;
+        private Double tps;
+        private Long rpm;
+        private Long tpm;
+        private Double processCpuUsage;
+        private Double systemCpuUsage;
+        private Long heapUsedMb;
+        private Long heapMaxMb;
+        private Double heapUsage;
+        private Double redisHitRate;
+        private Long redisKeyspaceHits;
+        private Long redisKeyspaceMisses;
+        private Integer redisConnectedClients;
+        private String metricsSource;
     }
 }
