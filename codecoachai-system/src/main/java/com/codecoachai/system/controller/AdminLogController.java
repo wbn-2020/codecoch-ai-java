@@ -7,9 +7,11 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.system.domain.entity.LoginLog;
 import com.codecoachai.system.domain.entity.OperationLog;
+import com.codecoachai.system.domain.entity.SlowSqlLog;
 import com.codecoachai.system.domain.vo.AdminLogSummaryVO;
 import com.codecoachai.system.mapper.LoginLogMapper;
 import com.codecoachai.system.mapper.OperationLogMapper;
+import com.codecoachai.system.mapper.SlowSqlLogMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDateTime;
@@ -30,6 +32,7 @@ public class AdminLogController {
 
     private final LoginLogMapper loginLogMapper;
     private final OperationLogMapper operationLogMapper;
+    private final SlowSqlLogMapper slowSqlLogMapper;
 
     @Operation(summary = "Query log audit summary")
     @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_LOG_SUMMARY",
@@ -135,6 +138,36 @@ public class AdminLogController {
                         .ge(startTime != null, OperationLog::getCreatedAt, startTime)
                         .le(endTime != null, OperationLog::getCreatedAt, endTime)
                         .orderByDesc(OperationLog::getCreatedAt));
+        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+    }
+
+    @Operation(summary = "Page slow SQL logs")
+    @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_SLOW_SQL_LOG",
+            description = "Query slow SQL logs", logArgs = false)
+    @GetMapping({"/admin/slow-sql-logs", "/admin/logs/slow-sql"})
+    public Result<PageResult<SlowSqlLog>> pageSlowSqlLogs(
+            @RequestParam(defaultValue = "1") Long pageNo,
+            @RequestParam(defaultValue = "20") Long pageSize,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String mapperId,
+            @RequestParam(required = false) String sqlCommandType,
+            @RequestParam(required = false) Long minCostMs,
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
+            @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
+        SecurityAssert.requireAdmin();
+        Page<SlowSqlLog> page = slowSqlLogMapper.selectPage(
+                Page.of(pageNo, pageSize),
+                new LambdaQueryWrapper<SlowSqlLog>()
+                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                .like(SlowSqlLog::getMapperId, keyword)
+                                .or().like(SlowSqlLog::getSqlText, keyword)
+                                .or().like(SlowSqlLog::getDatabaseName, keyword))
+                        .like(StringUtils.hasText(mapperId), SlowSqlLog::getMapperId, mapperId)
+                        .eq(StringUtils.hasText(sqlCommandType), SlowSqlLog::getSqlCommandType, sqlCommandType)
+                        .ge(minCostMs != null, SlowSqlLog::getCostMs, minCostMs)
+                        .ge(startTime != null, SlowSqlLog::getCreatedAt, startTime)
+                        .le(endTime != null, SlowSqlLog::getCreatedAt, endTime)
+                        .orderByDesc(SlowSqlLog::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
     }
 

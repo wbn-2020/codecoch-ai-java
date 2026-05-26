@@ -98,6 +98,12 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     @Override
+    public SkillProfileDetailVO getById(Long profileId) {
+        Long userId = requireCurrentUserId();
+        return toDetailVO(getOwnedProfile(profileId, userId));
+    }
+
+    @Override
     public SkillProfileOverviewVO getOverview(Long targetJobId) {
         Long userId = requireCurrentUserId();
         Long resolvedTargetJobId = resolveOverviewTargetJobId(targetJobId, userId);

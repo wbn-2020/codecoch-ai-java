@@ -38,6 +38,11 @@ public class SkillProfileController {
         return Result.success(skillProfileService.getByTargetJob(targetJobId));
     }
 
+    @GetMapping("/{profileId}")
+    public Result<SkillProfileDetailVO> getById(@PathVariable Long profileId) {
+        return Result.success(skillProfileService.getById(profileId));
+    }
+
     @GetMapping("/overview")
     public Result<SkillProfileOverviewVO> overview(@RequestParam(required = false) Long targetJobId) {
         return Result.success(skillProfileService.getOverview(targetJobId));
