@@ -31,6 +31,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 @RequiredArgsConstructor
 public class OperationLogAspect {
 
+    public static final String LOG_RECORDED_ATTRIBUTE = OperationLogAspect.class.getName() + ".RECORDED";
+
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
 
@@ -96,6 +98,9 @@ public class OperationLogAspect {
                 methodName, uri, argsJson, responseJson,
                 status, errorMsg, ip, userAgent, costMs,
                 LocalDateTime.now());
+        if (request != null) {
+            request.setAttribute(LOG_RECORDED_ATTRIBUTE, Boolean.TRUE);
+        }
     }
 
     private HttpServletRequest getRequest() {

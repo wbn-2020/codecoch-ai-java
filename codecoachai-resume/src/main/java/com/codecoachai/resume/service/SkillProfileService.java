@@ -17,6 +17,8 @@ public interface SkillProfileService {
 
     SkillProfileDetailVO getByTargetJob(Long targetJobId);
 
+    SkillProfileDetailVO getById(Long profileId);
+
     SkillProfileOverviewVO getOverview(Long targetJobId);
 
     PageResult<SkillProfileListVO> listProfiles(SkillProfileQueryDTO query);
