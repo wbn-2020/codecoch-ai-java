@@ -83,7 +83,7 @@ spring:
         - id: system
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/system,/admin/system/**,/admin/config,/admin/config/**,/admin/configs,/admin/configs/**,/admin/menus,/admin/menus/**,/admin/dashboard,/admin/dashboard/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
+            - Path=/admin/system,/admin/system/**,/admin/config,/admin/config/**,/admin/configs,/admin/configs/**,/admin/menus,/admin/menus/**,/admin/dashboard,/admin/dashboard/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/logs,/admin/logs/**,/admin/audit,/admin/audit/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
       # 全局 CORS
       globalcors:

@@ -2,6 +2,8 @@ package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
@@ -230,7 +232,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Resume resume = resumeMapper.selectById(resumeId);
         Long userId = LoginUserContext.getUserId();
         if (resume == null || !Objects.equals(userId, resume.getUserId())) {
-            throw new IllegalArgumentException("Resume not found or access denied");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "简历不存在或无权访问");
         }
         return resume;
     }
@@ -239,7 +241,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         ResumeVersion version = resumeVersionMapper.selectById(versionId);
         Long userId = LoginUserContext.getUserId();
         if (version == null || !Objects.equals(userId, version.getUserId())) {
-            throw new IllegalArgumentException("Resume version not found or access denied");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "简历版本不存在或无权访问");
         }
         return version;
     }
@@ -248,14 +250,14 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         JobApplication app = jobApplicationMapper.selectById(applicationId);
         Long userId = LoginUserContext.getUserId();
         if (app == null || !Objects.equals(userId, app.getUserId())) {
-            throw new IllegalArgumentException("Application not found or access denied");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问");
         }
         return app;
     }
 
     private void ensureVersionBelongsToResume(Long resumeId, ResumeVersion version) {
         if (!Objects.equals(resumeId, version.getResumeId())) {
-            throw new IllegalArgumentException("Version does not belong to this resume");
+            throw new BusinessException(ErrorCode.FORBIDDEN, "简历版本不属于当前简历");
         }
     }
 

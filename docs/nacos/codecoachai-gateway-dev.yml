@@ -155,7 +155,7 @@ spring:
         - id: codecoachai-system-configs
           uri: lb://codecoachai-system
           predicates:
-            - Path=/admin/configs,/admin/configs/**,/admin/config,/admin/config/**,/admin/menus,/admin/menus/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
+            - Path=/admin/configs,/admin/configs/**,/admin/config,/admin/config/**,/admin/menus,/admin/menus/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/logs,/admin/logs/**,/admin/audit,/admin/audit/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
 codecoachai:
   gateway:
