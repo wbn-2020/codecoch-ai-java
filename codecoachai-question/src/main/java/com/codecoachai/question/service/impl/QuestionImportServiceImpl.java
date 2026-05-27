@@ -14,7 +14,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -210,6 +214,8 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         int success = 0;
         int fail = 0;
         int duplicate = 0;
+        Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
+        Set<String> seenNormalizedTitles = new LinkedHashSet<>();
 
         for (int i = 0; i < parsed.size(); i++) {
             ParsedQuestion pq = parsed.get(i);
@@ -224,17 +230,28 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                     continue;
                 }
 
-                // 归一化标题去重检测
                 String normalized = QuestionTextNormalizeUtils.normalizeTitle(pq.getTitle());
+                if (StringUtils.hasText(normalized) && seenNormalizedTitles.contains(normalized)) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "FILE_TITLE_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("FILE_TITLE_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
+
                 Long existsCount = questionMapper.selectCount(
                         new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
                                 .eq(Question::getNormalizedTitle, normalized));
                 if (existsCount > 0) {
                     duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "BANK_TITLE_DUPLICATE");
                     ImportError err = new ImportError();
                     err.setRowIndex(i + 1);
                     err.setTitle(pq.getTitle());
-                    err.setReason("疑似重复题目");
+                    err.setReason("BANK_TITLE_DUPLICATE");
                     result.getErrors().add(err);
                     continue;
                 }
@@ -254,6 +271,9 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setAuditStatus("APPROVED");
                 question.setSourceType("IMPORT");
                 questionMapper.insert(question);
+                if (StringUtils.hasText(normalized)) {
+                    seenNormalizedTitles.add(normalized);
+                }
                 success++;
             } catch (Exception ex) {
                 fail++;
@@ -268,8 +288,13 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         result.setSuccessCount(success);
         result.setFailCount(fail);
         result.setDuplicateCount(duplicate);
+        result.setDuplicateReasonCounts(duplicateReasonCounts);
         log.info("题目导入完成 total={} success={} fail={} duplicate={}", parsed.size(), success, fail, duplicate);
         return result;
+    }
+
+    private void incrementDuplicateReason(Map<String, Integer> counts, String reasonCode) {
+        counts.put(reasonCode, counts.getOrDefault(reasonCode, 0) + 1);
     }
 
     private String getExtension(String fileName) {
