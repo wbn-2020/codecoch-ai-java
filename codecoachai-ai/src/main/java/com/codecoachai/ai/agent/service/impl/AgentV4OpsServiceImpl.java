@@ -78,6 +78,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private static final int CHUNK_SIZE = 800;
     private static final int CHUNK_OVERLAP = 80;
+    private static final int MIN_CHUNK_SIZE = 180;
     private static final int EMBEDDING_BATCH_SIZE = 64;
     private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
     private static final int ASK_DEFAULT_LIMIT = 5;
@@ -544,17 +545,127 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (!StringUtils.hasText(content)) {
             return List.of();
         }
+        String normalized = normalizeKnowledgeContent(content);
+        List<String> blocks = splitSemanticBlocks(normalized);
         List<String> chunks = new ArrayList<>();
-        int start = 0;
-        while (start < content.length()) {
-            int end = Math.min(content.length(), start + CHUNK_SIZE);
-            chunks.add(content.substring(start, end));
-            if (end >= content.length()) {
-                break;
+        StringBuilder current = new StringBuilder();
+        for (String block : blocks) {
+            for (String part : splitOversizedBlock(block)) {
+                if (!StringUtils.hasText(part)) {
+                    continue;
+                }
+                if (current.isEmpty()) {
+                    current.append(part);
+                    continue;
+                }
+                if (current.length() + 2 + part.length() <= CHUNK_SIZE) {
+                    current.append("\n\n").append(part);
+                    continue;
+                }
+                flushKnowledgeChunk(chunks, current);
+                current.append(part);
             }
-            start = Math.max(end - CHUNK_OVERLAP, start + 1);
+        }
+        flushKnowledgeChunk(chunks, current);
+        if (chunks.isEmpty() && StringUtils.hasText(normalized)) {
+            chunks.add(normalized);
         }
         return chunks;
+    }
+
+    private String normalizeKnowledgeContent(String content) {
+        return content.replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .trim();
+    }
+
+    private List<String> splitSemanticBlocks(String content) {
+        List<String> blocks = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean inCodeBlock = false;
+        for (String rawLine : content.split("\n", -1)) {
+            String line = rawLine.stripTrailing();
+            boolean codeFence = line.trim().startsWith("```");
+            boolean heading = isMarkdownHeading(line);
+            boolean blank = !StringUtils.hasText(line);
+            if (codeFence) {
+                inCodeBlock = !inCodeBlock;
+            }
+            if (!inCodeBlock && heading && !current.isEmpty()) {
+                flushKnowledgeBlock(blocks, current);
+            }
+            if (!inCodeBlock && blank) {
+                flushKnowledgeBlock(blocks, current);
+                continue;
+            }
+            if (!current.isEmpty()) {
+                current.append('\n');
+            }
+            current.append(line);
+        }
+        flushKnowledgeBlock(blocks, current);
+        return blocks;
+    }
+
+    private boolean isMarkdownHeading(String line) {
+        String trimmed = line.trim();
+        if (!trimmed.startsWith("#")) {
+            return false;
+        }
+        int count = 0;
+        while (count < trimmed.length() && trimmed.charAt(count) == '#') {
+            count++;
+        }
+        return count > 0 && count <= 6 && count < trimmed.length() && Character.isWhitespace(trimmed.charAt(count));
+    }
+
+    private void flushKnowledgeBlock(List<String> blocks, StringBuilder current) {
+        String value = current.toString().trim();
+        if (StringUtils.hasText(value)) {
+            blocks.add(value);
+        }
+        current.setLength(0);
+    }
+
+    private List<String> splitOversizedBlock(String block) {
+        if (block.length() <= CHUNK_SIZE) {
+            return List.of(block);
+        }
+        List<String> chunks = new ArrayList<>();
+        int start = 0;
+        while (start < block.length()) {
+            int end = Math.min(block.length(), start + CHUNK_SIZE);
+            int splitAt = findSemanticSplit(block, start, end);
+            if (splitAt <= start) {
+                splitAt = end;
+            }
+            chunks.add(block.substring(start, splitAt).trim());
+            if (splitAt >= block.length()) {
+                break;
+            }
+            start = Math.max(splitAt - CHUNK_OVERLAP, start + 1);
+        }
+        return chunks.stream().filter(StringUtils::hasText).toList();
+    }
+
+    private int findSemanticSplit(String text, int start, int end) {
+        int min = Math.min(end, start + MIN_CHUNK_SIZE);
+        String delimiters = "。！？.!?\n；;";
+        for (int i = end - 1; i >= min; i--) {
+            if (delimiters.indexOf(text.charAt(i)) >= 0) {
+                return i + 1;
+            }
+        }
+        int whitespace = text.lastIndexOf(' ', end - 1);
+        return whitespace >= min ? whitespace : end;
+    }
+
+    private void flushKnowledgeChunk(List<String> chunks, StringBuilder current) {
+        String value = current.toString().trim();
+        if (StringUtils.hasText(value)) {
+            chunks.add(value);
+        }
+        current.setLength(0);
     }
 
     private void indexPersonalKnowledgeVectors(Long userId, PersonalKnowledgeDocument document,
