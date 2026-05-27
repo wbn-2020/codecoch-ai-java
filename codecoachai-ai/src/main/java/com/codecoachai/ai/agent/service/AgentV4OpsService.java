@@ -45,6 +45,8 @@ public interface AgentV4OpsService {
 
     List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit);
 
+    void deleteKnowledgeChunk(Long userId, Long chunkId);
+
     void deleteKnowledgeDocument(Long userId, Long id);
 
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);

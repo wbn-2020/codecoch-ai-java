@@ -391,6 +391,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public void deleteKnowledgeChunk(Long userId, Long chunkId) {
+        PersonalKnowledgeChunk chunk = ownedChunk(userId, chunkId);
+        personalKnowledgeChunkMapper.deleteById(chunk.getId());
+        deletePersonalKnowledgeVectors(List.of(chunk));
+        int remaining = chunkCount(chunk.getDocumentId());
+        if (remaining == 0) {
+            PersonalKnowledgeDocument document = ownedDocument(userId, chunk.getDocumentId());
+            document.setStatus("EMPTY");
+            personalKnowledgeDocumentMapper.updateById(document);
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteKnowledgeDocument(Long userId, Long id) {
         PersonalKnowledgeDocument document = ownedDocument(userId, id);
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
