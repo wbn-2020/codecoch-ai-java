@@ -25,6 +25,8 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewItemVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -108,6 +110,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final double KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD = 0.88D;
     private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown", "pdf", "docx", "doc");
     private static final String KNOWLEDGE_CHUNK_STRATEGY = "SEMANTIC_BLOCK_800_OVERLAP_80";
+    private static final int KNOWLEDGE_DUPLICATE_REVIEW_DEFAULT_LIMIT = 20;
+    private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT = 80;
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -405,6 +409,66 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             log.warn("List personal knowledge similar chunks failed userId={} chunkId={}", userId, chunkId, ex);
             return List.of();
         }
+    }
+
+    @Override
+    public KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit) {
+        int size = normalizeDuplicateReviewLimit(limit);
+        KnowledgeDuplicateReviewVO vo = new KnowledgeDuplicateReviewVO();
+        vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        vo.setLimit(size);
+        vo.setGeneratedAt(LocalDateTime.now());
+        if (!vectorStoreClient.isEnabled()) {
+            vo.setScannedChunkCount(0);
+            vo.setCandidateCount(0);
+            vo.setItems(List.of());
+            return vo;
+        }
+        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .orderByDesc(PersonalKnowledgeChunk::getUpdatedAt)
+                        .last("LIMIT " + Math.max(size * 5, size)));
+        vo.setScannedChunkCount(chunks.size());
+        if (chunks.isEmpty()) {
+            vo.setCandidateCount(0);
+            vo.setItems(List.of());
+            return vo;
+        }
+        List<KnowledgeDuplicateReviewItemVO> items = new ArrayList<>();
+        Set<String> seenPairs = new HashSet<>();
+        for (PersonalKnowledgeChunk chunk : chunks) {
+            if (items.size() >= size) {
+                break;
+            }
+            List<KnowledgeSearchResultVO> matches = listSimilarKnowledgeChunks(userId, chunk.getId(), 3).stream()
+                    .filter(match -> match.getScore() != null && match.getScore() >= KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD)
+                    .filter(match -> seenPairs.add(knowledgePairKey(chunk.getId(), match.getChunkId())))
+                    .toList();
+            if (matches.isEmpty()) {
+                continue;
+            }
+            PersonalKnowledgeDocument document = ownedDocument(userId, chunk.getDocumentId());
+            KnowledgeDuplicateReviewItemVO item = new KnowledgeDuplicateReviewItemVO();
+            item.setDocumentId(document.getId());
+            item.setChunkId(chunk.getId());
+            item.setTitle(document.getTitle());
+            item.setDocumentType(document.getDocumentType());
+            item.setChunkIndex(chunk.getChunkIndex());
+            item.setSourceRef(chunk.getSourceRef());
+            item.setSnippet(snippet(chunk.getContent(), chunk.getContent()));
+            item.setTopScore(matches.stream()
+                    .map(KnowledgeSearchResultVO::getScore)
+                    .filter(Objects::nonNull)
+                    .max(Double::compareTo)
+                    .orElse(null));
+            item.setMatches(matches);
+            items.add(item);
+        }
+        vo.setCandidateCount(items.size());
+        vo.setItems(items);
+        return vo;
     }
 
     @Override
@@ -1300,6 +1364,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return 10;
         }
         return Math.min(limit, 50);
+    }
+
+    private int normalizeDuplicateReviewLimit(Integer limit) {
+        if (limit == null || limit < 1) {
+            return KNOWLEDGE_DUPLICATE_REVIEW_DEFAULT_LIMIT;
+        }
+        return Math.min(limit, KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT);
+    }
+
+    private String knowledgePairKey(Long left, Long right) {
+        if (left == null || right == null) {
+            return String.valueOf(left) + ":" + right;
+        }
+        return left < right ? left + ":" + right : right + ":" + left;
     }
 
     private String buildKnowledgeAskPrompt(Long userId, String question, List<KnowledgeSearchResultVO> references) {
