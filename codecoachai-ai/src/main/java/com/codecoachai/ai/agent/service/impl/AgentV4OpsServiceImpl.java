@@ -35,6 +35,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO.DuplicateDocumentHotspot;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
@@ -314,12 +315,52 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                         .eq(PersonalKnowledgeDocument::getUserId, userId)
-                        .select(PersonalKnowledgeDocument::getId, PersonalKnowledgeDocument::getDocumentType));
+                        .select(PersonalKnowledgeDocument::getId,
+                                PersonalKnowledgeDocument::getTitle,
+                                PersonalKnowledgeDocument::getDocumentType));
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
-                        .select(PersonalKnowledgeChunk::getId, PersonalKnowledgeChunk::getChunkHash));
-        long duplicateCount = chunks.stream()
+                        .select(PersonalKnowledgeChunk::getId,
+                                PersonalKnowledgeChunk::getDocumentId,
+                                PersonalKnowledgeChunk::getChunkHash));
+        List<PersonalKnowledgeChunk> duplicateCandidates = exactDuplicateCleanupCandidates(chunks);
+        Map<Long, PersonalKnowledgeDocument> documentMap = documents.stream()
+                .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity()));
+        Map<Long, Long> chunkCountByDocument = chunks.stream()
+                .filter(chunk -> chunk.getDocumentId() != null)
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getDocumentId, Collectors.counting()));
+        Map<Long, Long> duplicateCountByDocument = duplicateCandidates.stream()
+                .filter(chunk -> chunk.getDocumentId() != null)
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getDocumentId, Collectors.counting()));
+        Map<String, Integer> duplicateTypeCounts = duplicateCandidates.stream()
+                .map(chunk -> documentMap.get(chunk.getDocumentId()))
+                .filter(Objects::nonNull)
+                .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
+                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
+                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
+        long duplicateCount = duplicateCandidates.size();
+        List<DuplicateDocumentHotspot> duplicateDocumentHotspots = duplicateCountByDocument.entrySet().stream()
+                .sorted((left, right) -> Long.compare(right.getValue(), left.getValue()))
+                .limit(5)
+                .map(entry -> {
+                    PersonalKnowledgeDocument document = documentMap.get(entry.getKey());
+                    if (document == null) {
+                        return null;
+                    }
+                    long documentChunkCount = chunkCountByDocument.getOrDefault(entry.getKey(), 0L);
+                    DuplicateDocumentHotspot hotspot = new DuplicateDocumentHotspot();
+                    hotspot.setDocumentId(document.getId());
+                    hotspot.setTitle(document.getTitle());
+                    hotspot.setDocumentType(firstText(document.getDocumentType(), "UNKNOWN"));
+                    hotspot.setDuplicateChunkCount(Math.toIntExact(entry.getValue()));
+                    hotspot.setChunkCount(Math.toIntExact(documentChunkCount));
+                    hotspot.setDuplicateRatio(rate(entry.getValue(), documentChunkCount));
+                    return hotspot;
+                })
+                .filter(Objects::nonNull)
+                .toList();
+        long hashDuplicateCount = chunks.stream()
                 .map(PersonalKnowledgeChunk::getChunkHash)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
@@ -331,7 +372,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         KnowledgeStatsVO vo = new KnowledgeStatsVO();
         vo.setDocumentCount(documents.size());
         vo.setChunkCount(chunks.size());
-        vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
+        vo.setDuplicateChunkCount(Math.toIntExact(Math.max(duplicateCount, hashDuplicateCount)));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
@@ -339,6 +380,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
                 .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
                         Collectors.collectingAndThen(Collectors.counting(), Long::intValue))));
+        vo.setDuplicateTypeCounts(duplicateTypeCounts);
+        vo.setDuplicateDocumentHotspots(duplicateDocumentHotspots);
         return vo;
     }
 
@@ -591,9 +634,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit) {
         boolean previewOnly = dryRun == null || dryRun;
         List<List<PersonalKnowledgeChunk>> duplicateGroups = exactDuplicateChunkGroups(userId, limit);
-        List<PersonalKnowledgeChunk> deleteCandidates = duplicateGroups.stream()
-                .flatMap(group -> group.stream().skip(1))
-                .toList();
+        List<PersonalKnowledgeChunk> deleteCandidates = exactDuplicateCleanupCandidates(duplicateGroups.stream()
+                .flatMap(List::stream)
+                .toList());
         KnowledgeDuplicateCleanupVO vo = new KnowledgeDuplicateCleanupVO();
         vo.setDryRun(previewOnly);
         vo.setDuplicateGroupCount(duplicateGroups.size());
@@ -1134,6 +1177,25 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .filter(group -> group.size() > 1)
                 .sorted((left, right) -> Integer.compare(right.size(), left.size()))
                 .limit(size)
+                .toList();
+    }
+
+    private List<PersonalKnowledgeChunk> exactDuplicateCleanupCandidates(List<PersonalKnowledgeChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        return chunks.stream()
+                .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
+                .sorted(Comparator.comparing(PersonalKnowledgeChunk::getChunkHash)
+                        .thenComparing(PersonalKnowledgeChunk::getCreatedAt,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(PersonalKnowledgeChunk::getId,
+                                Comparator.nullsLast(Comparator.naturalOrder())))
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
+                .values()
+                .stream()
+                .filter(group -> group.size() > 1)
+                .flatMap(group -> group.stream().skip(1))
                 .toList();
     }
 
