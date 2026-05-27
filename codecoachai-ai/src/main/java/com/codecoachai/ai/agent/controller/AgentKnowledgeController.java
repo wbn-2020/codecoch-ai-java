@@ -99,6 +99,12 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.listKnowledgeChunks(userId, id));
     }
 
+    @GetMapping("/chunks/{chunkId}")
+    public Result<KnowledgeChunkVO> chunk(@PathVariable Long chunkId) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.getKnowledgeChunk(userId, chunkId));
+    }
+
     @GetMapping("/chunks/{chunkId}/similar")
     public Result<List<KnowledgeSearchResultVO>> similarChunks(@PathVariable Long chunkId,
                                                                @RequestParam(required = false) Integer limit) {

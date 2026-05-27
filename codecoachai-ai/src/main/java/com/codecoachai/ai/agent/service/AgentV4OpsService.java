@@ -54,6 +54,8 @@ public interface AgentV4OpsService {
 
     List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId);
 
+    KnowledgeChunkVO getKnowledgeChunk(Long userId, Long chunkId);
+
     List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit);
 
     KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit);

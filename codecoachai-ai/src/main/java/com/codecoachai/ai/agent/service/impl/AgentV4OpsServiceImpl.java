@@ -384,6 +384,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    public KnowledgeChunkVO getKnowledgeChunk(Long userId, Long chunkId) {
+        PersonalKnowledgeChunk chunk = ownedChunk(userId, chunkId);
+        return toKnowledgeChunkVO(chunk, false);
+    }
+
+    @Override
     public List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit) {
         PersonalKnowledgeChunk source = ownedChunk(userId, chunkId);
         if (!vectorStoreClient.isEnabled()) {
