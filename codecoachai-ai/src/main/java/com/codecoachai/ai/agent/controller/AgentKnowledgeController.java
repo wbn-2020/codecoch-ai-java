@@ -115,9 +115,10 @@ public class AgentKnowledgeController {
     }
 
     @GetMapping("/duplicates/review")
-    public Result<KnowledgeDuplicateReviewVO> duplicateReview(@RequestParam(required = false) Integer limit) {
+    public Result<KnowledgeDuplicateReviewVO> duplicateReview(@RequestParam(required = false) Integer limit,
+                                                             @RequestParam(required = false) Double threshold) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.reviewDuplicateKnowledgeChunks(userId, limit));
+        return Result.success(agentV4OpsService.reviewDuplicateKnowledgeChunks(userId, limit, threshold));
     }
 
     @GetMapping("/duplicates/exact")

@@ -60,7 +60,7 @@ public interface AgentV4OpsService {
 
     List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit);
 
-    KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit);
+    KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit, Double threshold);
 
     List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit);
 

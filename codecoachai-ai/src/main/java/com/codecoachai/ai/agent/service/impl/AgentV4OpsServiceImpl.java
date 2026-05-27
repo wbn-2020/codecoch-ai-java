@@ -456,11 +456,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit) {
+    public KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit, Double threshold) {
         int size = normalizeDuplicateReviewLimit(limit);
+        double minScore = threshold == null ? knowledgeProperties.safeNearDuplicateThreshold() : normalizeScore(threshold);
         KnowledgeDuplicateReviewVO vo = new KnowledgeDuplicateReviewVO();
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setThreshold(knowledgeProperties.safeNearDuplicateThreshold());
+        vo.setThreshold(minScore);
         vo.setLimit(size);
         vo.setGeneratedAt(LocalDateTime.now());
         if (!vectorStoreClient.isEnabled()) {
@@ -487,7 +488,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 break;
             }
             List<KnowledgeSearchResultVO> matches = listSimilarKnowledgeChunks(userId, chunk.getId(), 3).stream()
-                    .filter(match -> match.getScore() != null && match.getScore() >= knowledgeProperties.safeNearDuplicateThreshold())
+                    .filter(match -> match.getScore() != null && match.getScore() >= minScore)
                     .filter(match -> seenPairs.add(knowledgePairKey(chunk.getId(), match.getChunkId())))
                     .toList();
             if (matches.isEmpty()) {
