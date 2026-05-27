@@ -31,7 +31,7 @@ public interface AgentV4OpsService {
 
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
 
-    List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword);
+    List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);
 
     List<AnalyticsMetricDefinitionVO> listMetrics(String category, Integer enabled);
 

@@ -42,8 +42,9 @@ public class AgentKnowledgeController {
     }
 
     @GetMapping("/search")
-    public Result<List<KnowledgeSearchResultVO>> search(@RequestParam String keyword) {
+    public Result<List<KnowledgeSearchResultVO>> search(@RequestParam String keyword,
+                                                        @RequestParam(required = false) Integer limit) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.searchKnowledge(userId, keyword));
+        return Result.success(agentV4OpsService.searchKnowledge(userId, keyword, limit));
     }
 }

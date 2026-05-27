@@ -10,4 +10,6 @@ public class KnowledgeSearchResultVO {
     private String documentType;
     private String snippet;
     private String sourceRef;
+    private Double score;
+    private String matchType;
 }
