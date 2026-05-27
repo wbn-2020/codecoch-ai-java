@@ -3,10 +3,12 @@ package com.codecoachai.ai.agent.service;
 import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
+import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
@@ -32,6 +34,8 @@ public interface AgentV4OpsService {
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
 
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);
+
+    KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto);
 
     List<AnalyticsMetricDefinitionVO> listMetrics(String category, Integer enabled);
 

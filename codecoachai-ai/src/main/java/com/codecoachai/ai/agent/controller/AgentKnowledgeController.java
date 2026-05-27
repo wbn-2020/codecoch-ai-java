@@ -1,6 +1,8 @@
 package com.codecoachai.ai.agent.controller;
 
+import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
@@ -46,5 +48,11 @@ public class AgentKnowledgeController {
                                                         @RequestParam(required = false) Integer limit) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.searchKnowledge(userId, keyword, limit));
+    }
+
+    @PostMapping("/ask")
+    public Result<KnowledgeAskVO> ask(@RequestBody KnowledgeAskDTO dto) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.askKnowledge(userId, dto));
     }
 }

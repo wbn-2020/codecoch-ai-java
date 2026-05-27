@@ -6,6 +6,7 @@ import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentFeedback;
@@ -20,6 +21,7 @@ import com.codecoachai.ai.agent.domain.entity.PromptRegressionResult;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO.FeedbackTypeCount;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
@@ -39,6 +41,9 @@ import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
 import com.codecoachai.ai.domain.vo.EmbeddingResponseVO;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.EmbeddingService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -75,6 +80,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int CHUNK_OVERLAP = 80;
     private static final int EMBEDDING_BATCH_SIZE = 64;
     private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
+    private static final int ASK_DEFAULT_LIMIT = 5;
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -88,6 +94,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final JobCoachAgentService jobCoachAgentService;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final AiCallLogService aiCallLogService;
     private final EmbeddingService embeddingService;
     private final VectorStoreClient vectorStoreClient;
 
@@ -234,6 +241,46 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             }
         }
         return result.stream().limit(size).toList();
+    }
+
+    @Override
+    public KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto) {
+        String question = dto == null ? null : dto.getQuestion();
+        if (!StringUtils.hasText(question)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "question is required");
+        }
+        String normalizedQuestion = question.trim();
+        int limit = dto == null || dto.getLimit() == null ? ASK_DEFAULT_LIMIT : normalizeLimit(dto.getLimit());
+        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit);
+
+        KnowledgeAskVO vo = new KnowledgeAskVO();
+        vo.setQuestion(normalizedQuestion);
+        vo.setReferences(references);
+        vo.setGeneratedAt(LocalDateTime.now());
+        if (references.isEmpty()) {
+            vo.setAnswer("No relevant content was found in your personal knowledge base. Add or upload materials first.");
+            return vo;
+        }
+
+        try {
+            AiCallContext ctx = new AiCallContext();
+            ctx.setScene("PERSONAL_KNOWLEDGE_ASK");
+            ctx.setUserId(userId);
+            ctx.setBusinessId("knowledge:" + userId);
+            ctx.setPrompt(buildKnowledgeAskPrompt(userId, normalizedQuestion, references));
+            ctx.setResponseFormat("TEXT");
+            ctx.setRequestBody(writeJson(Map.of(
+                    "questionLength", normalizedQuestion.length(),
+                    "referenceCount", references.size()
+            )));
+            RouteResult result = aiCallLogService.callAndLog(ctx);
+            vo.setAnswer(result.getContent());
+            vo.setAiCallLogId(result.getAiCallLogId());
+        } catch (Exception ex) {
+            log.warn("Personal knowledge ask generation failed userId={}", userId, ex);
+            vo.setAnswer("Relevant references were found, but the AI answer could not be generated. Please review the cited snippets.");
+        }
+        return vo;
     }
 
     @Override
@@ -645,6 +692,54 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return 10;
         }
         return Math.min(limit, 50);
+    }
+
+    private String buildKnowledgeAskPrompt(Long userId, String question, List<KnowledgeSearchResultVO> references) {
+        Map<Long, String> chunkContentMap = referenceChunkContentMap(userId, references);
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("You are a personal RAG assistant. Answer in the same language as the user question.\n")
+                .append("Use only the references below. If the references are insufficient, say what is missing.\n")
+                .append("Keep the answer concise and cite references as [1], [2].\n\n")
+                .append("Question:\n")
+                .append(question)
+                .append("\n\nReferences:\n");
+        for (int i = 0; i < references.size(); i++) {
+            KnowledgeSearchResultVO ref = references.get(i);
+            String content = ref.getChunkId() == null ? ref.getSnippet() : chunkContentMap.get(ref.getChunkId());
+            prompt.append("[")
+                    .append(i + 1)
+                    .append("] ")
+                    .append(firstText(ref.getTitle(), "Untitled"))
+                    .append(" / ")
+                    .append(firstText(ref.getSourceRef(), ref.getDocumentType(), "knowledge"))
+                    .append("\n")
+                    .append(truncateText(firstText(content, ref.getSnippet(), ""), 1200))
+                    .append("\n\n");
+        }
+        return prompt.toString();
+    }
+
+    private Map<Long, String> referenceChunkContentMap(Long userId, List<KnowledgeSearchResultVO> references) {
+        List<Long> chunkIds = references.stream()
+                .map(KnowledgeSearchResultVO::getChunkId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (chunkIds.isEmpty()) {
+            return Map.of();
+        }
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .in(PersonalKnowledgeChunk::getId, chunkIds))
+                .stream()
+                .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, PersonalKnowledgeChunk::getContent));
+    }
+
+    private String truncateText(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength);
     }
 
     private String snippet(String text, String keyword) {
