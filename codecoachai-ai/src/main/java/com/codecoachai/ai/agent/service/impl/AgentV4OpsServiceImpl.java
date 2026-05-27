@@ -29,6 +29,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewItemVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -519,6 +520,36 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setCandidateCount(items.size());
         vo.setItems(items);
         return vo;
+    }
+
+    @Override
+    public List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit) {
+        int size = normalizeDuplicateReviewLimit(limit);
+        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .isNotNull(PersonalKnowledgeChunk::getChunkHash)
+                        .orderByAsc(PersonalKnowledgeChunk::getChunkHash)
+                        .orderByAsc(PersonalKnowledgeChunk::getDocumentId)
+                        .orderByAsc(PersonalKnowledgeChunk::getChunkIndex));
+        return chunks.stream()
+                .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
+                .entrySet()
+                .stream()
+                .filter(entry -> entry.getValue().size() > 1)
+                .sorted((left, right) -> Integer.compare(right.getValue().size(), left.getValue().size()))
+                .limit(size)
+                .map(entry -> {
+                    KnowledgeExactDuplicateGroupVO vo = new KnowledgeExactDuplicateGroupVO();
+                    vo.setChunkHash(entry.getKey());
+                    vo.setDuplicateCount(entry.getValue().size() - 1);
+                    vo.setChunks(entry.getValue().stream()
+                            .map(chunk -> toKnowledgeChunkVO(chunk, true))
+                            .toList());
+                    return vo;
+                })
+                .toList();
     }
 
     @Override
