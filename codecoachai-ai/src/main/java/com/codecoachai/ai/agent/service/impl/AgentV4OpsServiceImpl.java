@@ -663,7 +663,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
         String normalizedQuestion = question.trim();
         int limit = dto == null || dto.getLimit() == null ? knowledgeProperties.safeAskDefaultLimit() : normalizeLimit(dto.getLimit());
-        double minScore = knowledgeProperties.safeAskMinScore();
+        double minScore = dto == null || dto.getMinScore() == null
+                ? knowledgeProperties.safeAskMinScore()
+                : normalizeScore(dto.getMinScore());
         List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit, minScore).stream()
                 .filter(reference -> reference.getScore() != null && reference.getScore() >= minScore)
                 .toList();

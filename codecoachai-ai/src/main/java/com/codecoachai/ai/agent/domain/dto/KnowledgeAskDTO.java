@@ -6,4 +6,5 @@ import lombok.Data;
 public class KnowledgeAskDTO {
     private String question;
     private Integer limit;
+    private Double minScore;
 }
