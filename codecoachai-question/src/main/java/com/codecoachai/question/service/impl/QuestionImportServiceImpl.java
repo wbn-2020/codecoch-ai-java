@@ -215,7 +215,8 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         int fail = 0;
         int duplicate = 0;
         Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
-        Set<String> seenNormalizedTitles = new LinkedHashSet<>();
+        Set<String> seenNormalizedTitleHashes = new LinkedHashSet<>();
+        Set<String> seenContentHashes = new LinkedHashSet<>();
 
         for (int i = 0; i < parsed.size(); i++) {
             ParsedQuestion pq = parsed.get(i);
@@ -231,7 +232,12 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 }
 
                 String normalized = QuestionTextNormalizeUtils.normalizeTitle(pq.getTitle());
-                if (StringUtils.hasText(normalized) && seenNormalizedTitles.contains(normalized)) {
+                String normalizedTitleHash = QuestionTextNormalizeUtils.sha256Hex(normalized);
+                String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
+                        pq.getTitle(), pq.getContent(), pq.getReferenceAnswer(), pq.getAnalysis());
+                String contentHash = QuestionTextNormalizeUtils.sha256Hex(normalizedContent);
+
+                if (StringUtils.hasText(normalizedTitleHash) && seenNormalizedTitleHashes.contains(normalizedTitleHash)) {
                     duplicate++;
                     incrementDuplicateReason(duplicateReasonCounts, "FILE_TITLE_DUPLICATE");
                     ImportError err = new ImportError();
@@ -241,11 +247,21 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                     result.getErrors().add(err);
                     continue;
                 }
+                if (StringUtils.hasText(contentHash) && seenContentHashes.contains(contentHash)) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "FILE_CONTENT_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("FILE_CONTENT_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
 
-                Long existsCount = questionMapper.selectCount(
+                Long titleExistsCount = questionMapper.selectCount(
                         new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
-                                .eq(Question::getNormalizedTitle, normalized));
-                if (existsCount > 0) {
+                                .eq(StringUtils.hasText(normalizedTitleHash), Question::getNormalizedTitleHash, normalizedTitleHash));
+                if (titleExistsCount > 0) {
                     duplicate++;
                     incrementDuplicateReason(duplicateReasonCounts, "BANK_TITLE_DUPLICATE");
                     ImportError err = new ImportError();
@@ -255,10 +271,25 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                     result.getErrors().add(err);
                     continue;
                 }
+                Long contentExistsCount = questionMapper.selectCount(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
+                                .eq(StringUtils.hasText(contentHash), Question::getContentHash, contentHash));
+                if (contentExistsCount > 0) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "BANK_CONTENT_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("BANK_CONTENT_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
 
                 Question question = new Question();
                 question.setTitle(pq.getTitle());
                 question.setNormalizedTitle(normalized);
+                question.setNormalizedTitleHash(normalizedTitleHash);
+                question.setContentHash(contentHash);
                 question.setContent(pq.getContent());
                 question.setReferenceAnswer(pq.getReferenceAnswer());
                 question.setAnalysis(pq.getAnalysis());
@@ -271,8 +302,11 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setAuditStatus("APPROVED");
                 question.setSourceType("IMPORT");
                 questionMapper.insert(question);
-                if (StringUtils.hasText(normalized)) {
-                    seenNormalizedTitles.add(normalized);
+                if (StringUtils.hasText(normalizedTitleHash)) {
+                    seenNormalizedTitleHashes.add(normalizedTitleHash);
+                }
+                if (StringUtils.hasText(contentHash)) {
+                    seenContentHashes.add(contentHash);
                 }
                 success++;
             } catch (Exception ex) {

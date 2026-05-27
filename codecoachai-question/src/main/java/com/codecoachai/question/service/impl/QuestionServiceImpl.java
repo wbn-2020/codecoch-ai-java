@@ -38,6 +38,7 @@ import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionService;
+import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -342,6 +343,7 @@ public class QuestionServiceImpl implements QuestionService {
         question.setContent(dto.getContent());
         question.setReferenceAnswer(StringUtils.hasText(dto.getReferenceAnswer()) ? dto.getReferenceAnswer() : dto.getAnswer());
         question.setAnalysis(dto.getAnalysis());
+        applyQuestionFingerprints(question);
         question.setCategoryId(dto.getCategoryId());
         question.setGroupId(dto.getGroupId());
         question.setDifficulty(StringUtils.hasText(dto.getDifficulty()) ? dto.getDifficulty() : "MEDIUM");
@@ -351,6 +353,14 @@ public class QuestionServiceImpl implements QuestionService {
         question.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
     }
 
+    private void applyQuestionFingerprints(Question question) {
+        String normalizedTitle = QuestionTextNormalizeUtils.normalizeTitle(question.getTitle());
+        String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
+                question.getTitle(), question.getContent(), question.getReferenceAnswer(), question.getAnalysis());
+        question.setNormalizedTitle(normalizedTitle);
+        question.setNormalizedTitleHash(QuestionTextNormalizeUtils.sha256Hex(normalizedTitle));
+        question.setContentHash(QuestionTextNormalizeUtils.sha256Hex(normalizedContent));
+    }
     private void replaceTags(Long questionId, List<Long> tagIds) {
         tagRelationMapper.delete(new LambdaQueryWrapper<QuestionTagRelation>()
                 .eq(QuestionTagRelation::getQuestionId, questionId));

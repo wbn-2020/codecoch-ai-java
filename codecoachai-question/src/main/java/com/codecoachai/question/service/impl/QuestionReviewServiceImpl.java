@@ -40,6 +40,7 @@ import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionReviewService;
+import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -154,6 +155,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         question.setContent(payload.content());
         question.setReferenceAnswer(payload.referenceAnswer());
         question.setAnalysis(payload.analysis());
+        applyQuestionFingerprints(question);
         question.setCategoryId(payload.categoryId());
         question.setGroupId(payload.groupId());
         question.setDifficulty(payload.difficulty());
@@ -665,6 +667,14 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         }
     }
 
+    private void applyQuestionFingerprints(Question question) {
+        String normalizedTitle = QuestionTextNormalizeUtils.normalizeTitle(question.getTitle());
+        String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
+                question.getTitle(), question.getContent(), question.getReferenceAnswer(), question.getAnalysis());
+        question.setNormalizedTitle(normalizedTitle);
+        question.setNormalizedTitleHash(QuestionTextNormalizeUtils.sha256Hex(normalizedTitle));
+        question.setContentHash(QuestionTextNormalizeUtils.sha256Hex(normalizedContent));
+    }
     private void insertTagRelations(Long questionId, List<Long> tagIds) {
         if (tagIds == null || tagIds.isEmpty()) {
             return;
