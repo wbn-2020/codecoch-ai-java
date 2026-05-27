@@ -79,6 +79,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
 
 @Slf4j
 @Service
@@ -91,6 +92,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int EMBEDDING_BATCH_SIZE = 64;
     private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
     private static final int ASK_DEFAULT_LIMIT = 5;
+    private static final long KNOWLEDGE_UPLOAD_MAX_BYTES = 2L * 1024 * 1024;
+    private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown");
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -215,6 +218,36 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(duplicateChunkCount);
         return vo;
+    }
+
+    @Override
+    public KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is required");
+        }
+        if (file.getSize() > KNOWLEDGE_UPLOAD_MAX_BYTES) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size must be <= 2MB");
+        }
+        String originalFilename = firstText(file.getOriginalFilename(), "knowledge.txt").trim();
+        String extension = fileExtension(originalFilename);
+        if (!KNOWLEDGE_UPLOAD_EXTENSIONS.contains(extension)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "only txt, md and markdown files are supported");
+        }
+        try {
+            String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+            if (!StringUtils.hasText(content)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "file content is empty");
+            }
+            KnowledgeDocumentCreateDTO dto = new KnowledgeDocumentCreateDTO();
+            dto.setTitle(stripExtension(originalFilename));
+            dto.setDocumentType(firstText(documentType, extension.equals("txt") ? "TEXT" : "MARKDOWN"));
+            dto.setContent(content);
+            return createKnowledgeDocument(userId, dto);
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file read failed");
+        }
     }
 
     @Override
@@ -732,6 +765,26 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return content.replace("\r\n", "\n")
                 .replace('\r', '\n')
                 .trim();
+    }
+
+    private String fileExtension(String filename) {
+        if (!StringUtils.hasText(filename)) {
+            return "";
+        }
+        int index = filename.lastIndexOf('.');
+        if (index < 0 || index == filename.length() - 1) {
+            return "";
+        }
+        return filename.substring(index + 1).toLowerCase();
+    }
+
+    private String stripExtension(String filename) {
+        if (!StringUtils.hasText(filename)) {
+            return "Untitled knowledge";
+        }
+        int index = filename.lastIndexOf('.');
+        String value = index > 0 ? filename.substring(0, index) : filename;
+        return StringUtils.hasText(value) ? value.trim() : "Untitled knowledge";
     }
 
     private String normalizeKnowledgeFingerprint(String content) {

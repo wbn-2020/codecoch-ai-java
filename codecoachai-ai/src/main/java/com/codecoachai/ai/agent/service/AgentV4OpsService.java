@@ -20,6 +20,7 @@ import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionCaseVO;
 import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionResultVO;
 import com.codecoachai.common.core.domain.PageResult;
 import java.util.List;
+import org.springframework.web.multipart.MultipartFile;
 
 public interface AgentV4OpsService {
 
@@ -31,6 +32,8 @@ public interface AgentV4OpsService {
     AgentFeedbackStatsVO feedbackStats(Integer days);
 
     KnowledgeDocumentVO createKnowledgeDocument(Long userId, KnowledgeDocumentCreateDTO dto);
+
+    KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType);
 
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);
 
