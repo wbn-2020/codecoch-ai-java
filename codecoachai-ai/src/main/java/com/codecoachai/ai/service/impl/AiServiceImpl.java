@@ -1752,12 +1752,26 @@ public class AiServiceImpl implements AiService {
         String targetPosition = firstText(dto.getTargetPosition(), "Java 后端开发工程师");
         String difficulty = firstText(dto.getDifficulty(), "MEDIUM");
         String questionType = firstText(dto.getQuestionType(), "SHORT_ANSWER");
+        String[] titleTemplates = {
+                "%s 的核心原理和适用场景是什么？",
+                "%s 在生产环境中常见的失效场景有哪些？",
+                "如何排查 %s 相关的线上问题？",
+                "%s 的关键参数或边界条件如何设计？",
+                "请结合项目说明 %s 的工程取舍",
+                "%s 与相邻技术方案应该如何对比？",
+                "如何验证 %s 方案是否达到预期效果？",
+                "%s 在高并发场景下要注意什么？"
+        };
         List<QuestionDraftItemVO> questions = new java.util.ArrayList<>();
         for (int i = 1; i <= count; i++) {
             QuestionDraftItemVO item = new QuestionDraftItemVO();
-            item.setTitle(topic + " 核心面试题 " + i);
-            item.setContent("面向" + targetPosition + "，请说明 " + topic + " 的核心原理、典型生产场景、边界问题和工程取舍。");
-            item.setReferenceAnswer(topic + " 需要从基本原理、关键机制、常见异常场景、可观测性和生产取舍几个角度回答。");
+            String title = String.format(titleTemplates[(i - 1) % titleTemplates.length], topic);
+            if (i > titleTemplates.length) {
+                title = title + "（场景 " + i + "）";
+            }
+            item.setTitle(title);
+            item.setContent("面向" + targetPosition + "，请围绕“" + title + "”说明核心原理、典型生产场景、边界问题和工程取舍。");
+            item.setReferenceAnswer(topic + " 需要结合具体问题，从基本原理、关键机制、常见异常场景、可观测性和生产取舍几个角度回答。");
             item.setAnalysis("优秀回答应覆盖该机制为什么存在、如何工作、什么时候会失效，以及在真实 Java 后端系统中如何验证和排查。");
             item.setDifficulty(difficulty);
             item.setQuestionType(questionType);
@@ -1767,14 +1781,62 @@ public class AiServiceImpl implements AiService {
             item.setTagSuggestions(Boolean.TRUE.equals(dto.getGenerateTagSuggestions())
                     ? List.of(topic, "Java", "后端")
                     : List.of());
-            item.setCategorySuggestion(Boolean.TRUE.equals(dto.getGenerateCategorySuggestion()) ? "Java 后端" : null);
-            item.setGroupSuggestion(topic);
+            item.setCategorySuggestion(Boolean.TRUE.equals(dto.getGenerateCategorySuggestion())
+                    ? inferQuestionCategorySuggestion(topic)
+                    : null);
+            item.setGroupSuggestion(inferQuestionGroupSuggestion(topic));
             questions.add(item);
         }
         GenerateQuestionDraftVO vo = new GenerateQuestionDraftVO();
         vo.setBatchId(dto.getBatchId());
         vo.setQuestions(questions);
         return vo;
+    }
+
+    private String inferQuestionCategorySuggestion(String topic) {
+        String text = topic == null ? "" : topic.toLowerCase();
+        if (text.contains("mysql") || text.contains("索引") || text.contains("sql")) {
+            return "MySQL";
+        }
+        if (text.contains("redis") || text.contains("缓存")) {
+            return "Redis";
+        }
+        if (text.contains("jvm") || text.contains("gc") || text.contains("垃圾回收")) {
+            return "JVM";
+        }
+        if (text.contains("并发") || text.contains("多线程") || text.contains("juc") || text.contains("线程")) {
+            return "并发";
+        }
+        if (text.contains("hashmap") || text.contains("collection") || text.contains("集合")) {
+            return "集合";
+        }
+        if (text.contains("spring")) {
+            return "Spring Boot";
+        }
+        return "Java基础";
+    }
+
+    private String inferQuestionGroupSuggestion(String topic) {
+        String text = topic == null ? "" : topic.toLowerCase();
+        if (text.contains("hashmap")) {
+            return "HashMap";
+        }
+        if (text.contains("jvm") || text.contains("gc") || text.contains("垃圾回收")) {
+            return "JVM GC";
+        }
+        if (text.contains("线程池") || text.contains("threadpool")) {
+            return "线程池";
+        }
+        if (text.contains("并发") || text.contains("多线程") || text.contains("juc") || text.contains("线程")) {
+            return "多线程基础";
+        }
+        if (text.contains("mysql") || text.contains("索引")) {
+            return "MySQL索引";
+        }
+        if (text.contains("redis") || text.contains("缓存")) {
+            return "Redis缓存一致性";
+        }
+        return topic;
     }
 
     private GenerateQuestionRecommendationVO mockQuestionRecommendations(GenerateQuestionRecommendationDTO dto) {

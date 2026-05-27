@@ -306,8 +306,22 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         request.setGenerateFollowUps(dto.getGenerateFollowUps());
         request.setGenerateTagSuggestions(dto.getGenerateTagSuggestions());
         request.setGenerateCategorySuggestion(dto.getGenerateCategorySuggestion());
-        request.setExtraRequirements(dto.getExtraRequirements());
+        request.setExtraRequirements(buildQuestionGenerateExtraRequirements(dto.getExtraRequirements()));
         return request;
+    }
+
+    private String buildQuestionGenerateExtraRequirements(String extraRequirements) {
+        String qualityRules = """
+                请使用中文输出题干、参考答案、解析、分类建议和问题组建议。
+                每道题标题必须具体描述考点，不要使用“核心面试题 1/2/3”这类流水号标题。
+                同一批题目之间需要覆盖不同子考点或不同业务场景，避免只替换序号造成重复题。
+                分类建议优先使用：Java基础、集合、并发、JVM、Spring Boot、MySQL、Redis、微服务、设计模式、项目场景。
+                问题组建议要贴近考点，例如 HashMap、JVM GC、线程池、MySQL索引、Redis缓存一致性、分布式锁。
+                """;
+        if (!StringUtils.hasText(extraRequirements)) {
+            return qualityRules;
+        }
+        return extraRequirements + "\n" + qualityRules;
     }
 
     private QuestionReview toReview(AiQuestionGenerateRequestDTO request, String batchId, Long adminUserId,
@@ -376,6 +390,13 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         if (!StringUtils.hasText(title)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "question title is required");
         }
+        Long categoryId = resolveCategoryId(review,
+                dto != null && dto.getCategoryId() != null ? dto.getCategoryId() : review.getCategoryId());
+        Long groupId = resolveGroupId(review,
+                dto != null && dto.getGroupId() != null ? dto.getGroupId() : review.getGroupId(), categoryId);
+        if (tagIds == null || tagIds.isEmpty()) {
+            tagIds = resolveTagIds(review);
+        }
         return new ApprovedQuestionPayload(
                 title,
                 defaultText(dto == null ? null : dto.getContent(), review.getQuestionContent()),
@@ -383,14 +404,227 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 defaultText(dto == null ? null : dto.getAnalysis(), review.getAnalysis()),
                 defaultText(dto == null ? null : dto.getDifficulty(), review.getDifficulty(), "MEDIUM"),
                 defaultText(dto == null ? null : dto.getQuestionType(), review.getQuestionType(), "SHORT_ANSWER"),
-                dto != null && dto.getCategoryId() != null ? dto.getCategoryId() : review.getCategoryId(),
-                dto != null && dto.getGroupId() != null ? dto.getGroupId() : review.getGroupId(),
+                categoryId,
+                groupId,
                 tagIds,
                 dto != null && dto.getStatus() != null ? dto.getStatus() : CommonConstants.YES,
                 dto != null && dto.getIsHighFrequency() != null ? dto.getIsHighFrequency() : CommonConstants.NO,
                 defaultText(dto == null ? null : dto.getExperienceLevel(),
                         review.getExperienceYears() == null ? null : String.valueOf(review.getExperienceYears()))
         );
+    }
+
+    private Long resolveCategoryId(QuestionReview review, Long selectedId) {
+        if (selectedId != null) {
+            return selectedId;
+        }
+        String searchText = lookupText(review.getCategorySuggestion(), review.getTechnologyStack(),
+                review.getKnowledgePoint(), review.getQuestionTitle(), review.getQuestionContent());
+        List<QuestionCategory> categories = categoryMapper.selectList(new LambdaQueryWrapper<QuestionCategory>()
+                .eq(QuestionCategory::getStatus, CommonConstants.YES));
+        for (QuestionCategory category : categories) {
+            if (containsNormalized(searchText, category.getCategoryName())) {
+                return category.getId();
+            }
+        }
+        for (String candidateName : categoryCandidates(searchText)) {
+            Long id = findCategoryId(categories, candidateName);
+            if (id != null) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    private Long resolveGroupId(QuestionReview review, Long selectedId, Long categoryId) {
+        if (selectedId != null) {
+            return selectedId;
+        }
+        String searchText = lookupText(review.getGroupSuggestion(), review.getTechnologyStack(),
+                review.getKnowledgePoint(), review.getQuestionTitle(), review.getQuestionContent());
+        List<QuestionGroup> groups = groupMapper.selectList(new LambdaQueryWrapper<QuestionGroup>()
+                .eq(QuestionGroup::getStatus, CommonConstants.YES));
+        for (QuestionGroup group : groups) {
+            if (containsNormalized(searchText, group.getGroupName())
+                    || containsNormalized(searchText, group.getCanonicalTitle())
+                    || containsNormalized(searchText, group.getMainKnowledgePoint())) {
+                return group.getId();
+            }
+        }
+        for (String candidateName : groupCandidates(searchText)) {
+            Long id = findGroupId(groups, candidateName);
+            if (id != null) {
+                return id;
+            }
+        }
+        if (categoryId != null) {
+            return groups.stream()
+                    .filter(group -> categoryId.equals(group.getCategoryId()))
+                    .map(QuestionGroup::getId)
+                    .findFirst()
+                    .orElse(null);
+        }
+        return null;
+    }
+
+    private List<Long> resolveTagIds(QuestionReview review) {
+        String searchText = lookupText(review.getTagSuggestionsJson(), review.getTechnologyStack(),
+                review.getKnowledgePoint(), review.getQuestionTitle(), review.getQuestionContent());
+        List<String> names = new ArrayList<>(parseStringList(review.getTagSuggestionsJson()));
+        names.addAll(tagCandidates(searchText));
+        if (names.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<QuestionTag> tags = tagMapper.selectList(new LambdaQueryWrapper<QuestionTag>()
+                .eq(QuestionTag::getStatus, CommonConstants.YES));
+        List<Long> ids = new ArrayList<>();
+        for (String name : names) {
+            for (QuestionTag tag : tags) {
+                if (containsNormalized(name, tag.getTagName()) || containsNormalized(searchText, tag.getTagName())) {
+                    ids.add(tag.getId());
+                    break;
+                }
+            }
+        }
+        return ids.stream().filter(id -> id != null).distinct().toList();
+    }
+
+    private Long findCategoryId(List<QuestionCategory> categories, String candidateName) {
+        return categories.stream()
+                .filter(category -> normalizedEquals(category.getCategoryName(), candidateName))
+                .map(QuestionCategory::getId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private Long findGroupId(List<QuestionGroup> groups, String candidateName) {
+        return groups.stream()
+                .filter(group -> normalizedEquals(group.getGroupName(), candidateName)
+                        || normalizedEquals(group.getCanonicalTitle(), candidateName)
+                        || normalizedEquals(group.getMainKnowledgePoint(), candidateName))
+                .map(QuestionGroup::getId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private List<String> categoryCandidates(String text) {
+        List<String> names = new ArrayList<>();
+        if (containsAny(text, "mysql", "sql", "索引", "事务", "explain")) {
+            names.addAll(List.of("MySQL", "MySQL 性能优化"));
+        }
+        if (containsAny(text, "redis", "缓存", "cache", "分布式锁")) {
+            names.addAll(List.of("Redis", "Redis 缓存与锁"));
+        }
+        if (containsAny(text, "jvm", "gc", "垃圾回收", "内存")) {
+            names.add("JVM");
+        }
+        if (containsAny(text, "并发", "多线程", "线程", "thread", "concurrency", "juc", "锁")) {
+            names.addAll(List.of("并发", "Concurrency"));
+        }
+        if (containsAny(text, "collection", "collections", "集合", "hashmap", "map", "list", "set")) {
+            names.addAll(List.of("集合", "Collections", "Java基础", "Java Basics"));
+        }
+        if (containsAny(text, "spring", "springboot", "spring boot")) {
+            names.addAll(List.of("Spring Boot", "Spring Boot 实战"));
+        }
+        if (containsAny(text, "微服务", "microservice", "gateway", "网关")) {
+            names.addAll(List.of("微服务", "Microservices", "微服务与网关"));
+        }
+        if (containsAny(text, "设计模式", "designpattern", "pattern")) {
+            names.addAll(List.of("设计模式", "Design Patterns"));
+        }
+        if (containsAny(text, "项目", "场景", "scenario")) {
+            names.addAll(List.of("项目场景", "Project Scenario", "项目场景表达"));
+        }
+        names.addAll(List.of("Java基础", "Java Basics"));
+        return names;
+    }
+
+    private List<String> groupCandidates(String text) {
+        List<String> names = new ArrayList<>();
+        if (containsAny(text, "hashmap")) {
+            names.add("HashMap");
+        }
+        if (containsAny(text, "jvm", "gc", "垃圾回收")) {
+            names.add("JVM GC");
+        }
+        if (containsAny(text, "线程池", "threadpool", "thread pool")) {
+            names.addAll(List.of("线程池", "ThreadPool"));
+        }
+        if (containsAny(text, "多线程", "并发", "juc", "线程")) {
+            names.addAll(List.of("多线程基础", "并发基础", "线程池", "ThreadPool"));
+        }
+        if (containsAny(text, "mysql", "索引", "explain")) {
+            names.addAll(List.of("MySQL索引", "MySQL Index"));
+        }
+        if (containsAny(text, "redis", "缓存一致", "cache consistency")) {
+            names.addAll(List.of("Redis缓存一致性", "Redis Cache Consistency"));
+        }
+        return names;
+    }
+
+    private List<String> tagCandidates(String text) {
+        List<String> names = new ArrayList<>();
+        if (containsAny(text, "hashmap")) {
+            names.add("HashMap");
+        }
+        if (containsAny(text, "jvm", "gc")) {
+            names.add("JVM");
+        }
+        if (containsAny(text, "多线程", "并发", "线程池", "threadpool", "thread")) {
+            names.addAll(List.of("线程池", "ThreadPool"));
+        }
+        if (containsAny(text, "mysql", "索引", "explain")) {
+            names.addAll(List.of("MySQL索引", "MySQL Index"));
+        }
+        if (containsAny(text, "redis", "缓存")) {
+            names.addAll(List.of("Redis缓存", "Redis Cache"));
+        }
+        if (containsAny(text, "spring")) {
+            names.addAll(List.of("Spring事务", "Spring Transaction"));
+        }
+        return names;
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        String normalizedText = normalizeLookup(text);
+        for (String keyword : keywords) {
+            if (normalizedText.contains(normalizeLookup(keyword))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean containsNormalized(String text, String value) {
+        String normalizedText = normalizeLookup(text);
+        String normalizedValue = normalizeLookup(value);
+        return StringUtils.hasText(normalizedText)
+                && StringUtils.hasText(normalizedValue)
+                && (normalizedText.contains(normalizedValue) || normalizedValue.contains(normalizedText));
+    }
+
+    private boolean normalizedEquals(String left, String right) {
+        String normalizedLeft = normalizeLookup(left);
+        String normalizedRight = normalizeLookup(right);
+        return StringUtils.hasText(normalizedLeft) && normalizedLeft.equals(normalizedRight);
+    }
+
+    private String lookupText(String... values) {
+        return String.join(" ", java.util.Arrays.stream(values)
+                .filter(StringUtils::hasText)
+                .toList());
+    }
+
+    private String normalizeLookup(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return value.toLowerCase()
+                .replace(" ", "")
+                .replace("-", "")
+                .replace("_", "")
+                .replace("/", "");
     }
 
     private boolean hasEditedFields(QuestionReviewApproveDTO dto) {
@@ -507,6 +741,22 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         try {
             return objectMapper.readValue(json, new TypeReference<List<Long>>() {
             });
+        } catch (Exception ex) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<String> parseStringList(String json) {
+        if (!StringUtils.hasText(json)) {
+            return Collections.emptyList();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {
+            }).stream()
+                    .filter(StringUtils::hasText)
+                    .map(String::trim)
+                    .distinct()
+                    .toList();
         } catch (Exception ex) {
             return Collections.emptyList();
         }
