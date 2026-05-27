@@ -12,6 +12,7 @@ public class KnowledgeChunkVO {
     private String chunkHash;
     private String sourceRef;
     private Boolean duplicateInDocument;
+    private Boolean cleanupCandidate;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

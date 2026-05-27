@@ -618,8 +618,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     KnowledgeExactDuplicateGroupVO vo = new KnowledgeExactDuplicateGroupVO();
                     vo.setChunkHash(entry.getKey());
                     vo.setDuplicateCount(entry.getValue().size() - 1);
+                    Set<Long> cleanupCandidateIds = exactDuplicateCleanupCandidates(entry.getValue()).stream()
+                            .map(PersonalKnowledgeChunk::getId)
+                            .collect(Collectors.toSet());
                     vo.setChunks(entry.getValue().stream()
-                            .map(chunk -> toKnowledgeChunkVO(chunk, true))
+                            .map(chunk -> toKnowledgeChunkVO(chunk, true, cleanupCandidateIds.contains(chunk.getId())))
                             .toList());
                     return vo;
                 })
@@ -1951,6 +1954,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private KnowledgeChunkVO toKnowledgeChunkVO(PersonalKnowledgeChunk chunk, boolean duplicateInDocument) {
+        return toKnowledgeChunkVO(chunk, duplicateInDocument, false);
+    }
+
+    private KnowledgeChunkVO toKnowledgeChunkVO(PersonalKnowledgeChunk chunk, boolean duplicateInDocument,
+                                               boolean cleanupCandidate) {
         KnowledgeChunkVO vo = new KnowledgeChunkVO();
         vo.setId(chunk.getId());
         vo.setDocumentId(chunk.getDocumentId());
@@ -1959,6 +1967,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setChunkHash(chunk.getChunkHash());
         vo.setSourceRef(chunk.getSourceRef());
         vo.setDuplicateInDocument(duplicateInDocument);
+        vo.setCleanupCandidate(cleanupCandidate);
         vo.setCreatedAt(chunk.getCreatedAt());
         vo.setUpdatedAt(chunk.getUpdatedAt());
         return vo;
