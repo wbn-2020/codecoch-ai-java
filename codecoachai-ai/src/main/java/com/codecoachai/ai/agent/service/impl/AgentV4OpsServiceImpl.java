@@ -311,6 +311,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     @Override
     public KnowledgeStatsVO getKnowledgeStats(Long userId) {
+        List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .select(PersonalKnowledgeDocument::getId, PersonalKnowledgeDocument::getDocumentType));
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
@@ -325,13 +329,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .mapToLong(count -> count - 1)
                 .sum();
         KnowledgeStatsVO vo = new KnowledgeStatsVO();
-        vo.setDocumentCount(personalKnowledgeDocumentMapper.selectCount(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
-                .eq(PersonalKnowledgeDocument::getUserId, userId)).intValue());
+        vo.setDocumentCount(documents.size());
         vo.setChunkCount(chunks.size());
         vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
+        vo.setDocumentTypeCounts(documents.stream()
+                .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
+                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
+                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue))));
         return vo;
     }
 
