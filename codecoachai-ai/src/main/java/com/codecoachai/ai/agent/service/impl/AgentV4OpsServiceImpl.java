@@ -281,6 +281,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    public List<String> listKnowledgeDocumentTypes(Long userId) {
+        return personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .select(PersonalKnowledgeDocument::getDocumentType))
+                .stream()
+                .map(PersonalKnowledgeDocument::getDocumentType)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    @Override
     public KnowledgeStatsVO getKnowledgeStats(Long userId) {
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()

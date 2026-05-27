@@ -66,6 +66,12 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.listKnowledgeDocuments(userId, title, documentType, status));
     }
 
+    @GetMapping("/documents/types")
+    public Result<List<String>> documentTypes() {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.listKnowledgeDocumentTypes(userId));
+    }
+
     @GetMapping("/stats")
     public Result<KnowledgeStatsVO> stats() {
         Long userId = SecurityAssert.requireLoginUserId();

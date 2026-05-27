@@ -44,6 +44,8 @@ public interface AgentV4OpsService {
 
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status);
 
+    List<String> listKnowledgeDocumentTypes(Long userId);
+
     KnowledgeStatsVO getKnowledgeStats(Long userId);
 
     KnowledgeConfigVO getKnowledgeConfig(Long userId);
