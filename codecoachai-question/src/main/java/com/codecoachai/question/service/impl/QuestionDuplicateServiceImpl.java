@@ -4,9 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.vector.domain.VectorPoint;
+import com.codecoachai.common.vector.domain.VectorSearchRequest;
+import com.codecoachai.common.vector.domain.VectorSearchResult;
+import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.codecoachai.question.domain.dto.QuestionDuplicateCheckDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateIgnoreDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateMergeDTO;
@@ -25,6 +30,9 @@ import com.codecoachai.question.domain.vo.QuestionDuplicateReviewDetailVO;
 import com.codecoachai.question.domain.vo.QuestionDuplicateReviewListVO;
 import com.codecoachai.question.domain.vo.QuestionRelationVO;
 import com.codecoachai.question.domain.vo.QuestionSummaryVO;
+import com.codecoachai.question.feign.AiEmbeddingFeignClient;
+import com.codecoachai.question.feign.dto.EmbeddingRequestDTO;
+import com.codecoachai.question.feign.vo.EmbeddingResponseVO;
 import com.codecoachai.question.mapper.QuestionDuplicateReviewMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
@@ -36,25 +44,37 @@ import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
 
     private static final int MAX_BATCH_CHECK_COUNT = 100;
     private static final int MAX_TARGET_CANDIDATE_COUNT = 200;
+    private static final int MAX_VECTOR_SEED_COUNT = 300;
+    private static final int VECTOR_SEARCH_LIMIT = 30;
+    private static final int EMBEDDING_BATCH_SIZE = 64;
+    private static final double SEMANTIC_SIMILAR_THRESHOLD = 0.82D;
+    private static final String QUESTION_COLLECTION = "question_embedding";
 
     private final QuestionMapper questionMapper;
     private final QuestionGroupMapper groupMapper;
     private final QuestionDuplicateReviewMapper duplicateReviewMapper;
     private final QuestionRelationMapper relationMapper;
+    private final AiEmbeddingFeignClient aiEmbeddingFeignClient;
+    private final VectorStoreClient vectorStoreClient;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -189,7 +209,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 continue;
             }
             checkedCount++;
-            for (Question target : findTargetCandidates(source)) {
+            Set<String> handledPairs = new LinkedHashSet<>();
+            List<Question> ruleCandidates = findTargetCandidates(source);
+            for (Question target : ruleCandidates) {
                 MatchResult match = match(source, target);
                 if (match == null || relationExists(source.getId(), target.getId())
                         || duplicateReviewExists(source.getId(), target.getId())) {
@@ -198,6 +220,23 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 QuestionDuplicateReview review = buildReview(source, target, match, operatorId);
                 duplicateReviewMapper.insert(review);
                 createdIds.add(review.getId());
+                handledPairs.add(pairKey(source.getId(), target.getId()));
+            }
+            for (SemanticCandidate candidate : findSemanticCandidates(source, ruleCandidates)) {
+                Question target = candidate.question();
+                String pairKey = pairKey(source.getId(), target.getId());
+                if (handledPairs.contains(pairKey) || relationExists(source.getId(), target.getId())
+                        || duplicateReviewExists(source.getId(), target.getId())) {
+                    continue;
+                }
+                MatchResult match = semanticMatch(source, target, candidate.score());
+                if (match == null) {
+                    continue;
+                }
+                QuestionDuplicateReview review = buildReview(source, target, match, operatorId);
+                duplicateReviewMapper.insert(review);
+                createdIds.add(review.getId());
+                handledPairs.add(pairKey);
             }
         }
         QuestionDuplicateCheckResultVO vo = new QuestionDuplicateCheckResultVO();
@@ -260,6 +299,193 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                     "content similarity match");
         }
         return null;
+    }
+
+    private MatchResult semanticMatch(Question source, Question target, double vectorScore) {
+        if (vectorScore < SEMANTIC_SIMILAR_THRESHOLD) {
+            return null;
+        }
+        double titleSimilarity = Math.max(
+                QuestionTextNormalizeUtils.jaccard(source.getTitle(), target.getTitle()),
+                QuestionTextNormalizeUtils.levenshteinSimilarity(source.getTitle(), target.getTitle()));
+        double contentSimilarity = QuestionTextNormalizeUtils.jaccard(
+                QuestionTextNormalizeUtils.snapshot(source.getContent(), 500),
+                QuestionTextNormalizeUtils.snapshot(target.getContent(), 500));
+        double textScore = Math.max(titleSimilarity, contentSimilarity);
+        double finalScore = Math.min(1D, vectorScore * 0.78D + textScore * 0.22D);
+        String reason = "semantic vector match; vectorScore=" + score(vectorScore * 100D)
+                + "; textScore=" + score(textScore * 100D)
+                + "; finalScore=" + score(finalScore * 100D);
+        return new MatchResult(QuestionDuplicateMatchType.SEMANTIC_SIMILAR, score(finalScore * 100D), reason);
+    }
+
+    private List<SemanticCandidate> findSemanticCandidates(Question source, List<Question> ruleCandidates) {
+        if (!vectorStoreClient.isEnabled()) {
+            return List.of();
+        }
+        try {
+            List<Question> seedQuestions = mergeSeedQuestions(source, ruleCandidates, findVectorSeedCandidates(source));
+            Map<Long, List<Float>> vectors = embedQuestionVectors(seedQuestions);
+            List<Float> sourceVector = vectors.get(source.getId());
+            if (sourceVector == null || sourceVector.isEmpty()) {
+                return List.of();
+            }
+            vectorStoreClient.ensureCollection(QUESTION_COLLECTION, sourceVector.size());
+            upsertQuestionVectors(seedQuestions, vectors);
+
+            List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
+                    .collectionName(QUESTION_COLLECTION)
+                    .vector(sourceVector)
+                    .mustMatchPayload(questionVectorFilter(source))
+                    .limit(VECTOR_SEARCH_LIMIT)
+                    .build());
+            if (hits.isEmpty()) {
+                return List.of();
+            }
+            Set<Long> hitQuestionIds = new LinkedHashSet<>();
+            Map<Long, Double> scoreMap = new LinkedHashMap<>();
+            for (VectorSearchResult hit : hits) {
+                Long questionId = payloadLong(hit.getPayload(), "questionId");
+                if (questionId == null || Objects.equals(questionId, source.getId())) {
+                    continue;
+                }
+                hitQuestionIds.add(questionId);
+                scoreMap.putIfAbsent(questionId, hit.getScore());
+            }
+            if (hitQuestionIds.isEmpty()) {
+                return List.of();
+            }
+            Map<Long, Question> questionMap = questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                            .in(Question::getId, hitQuestionIds)
+                            .eq(Question::getStatus, CommonConstants.YES))
+                    .stream()
+                    .collect(java.util.stream.Collectors.toMap(Question::getId, item -> item));
+            return hitQuestionIds.stream()
+                    .map(questionMap::get)
+                    .filter(Objects::nonNull)
+                    .map(question -> new SemanticCandidate(question, scoreMap.getOrDefault(question.getId(), 0D)))
+                    .sorted(Comparator.comparing(SemanticCandidate::score).reversed())
+                    .toList();
+        } catch (Exception ex) {
+            log.warn("Question semantic duplicate candidate search failed questionId={}", source.getId(), ex);
+            return List.of();
+        }
+    }
+
+    private List<Question> findVectorSeedCandidates(Question source) {
+        return questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                .ne(Question::getId, source.getId())
+                .eq(Question::getStatus, CommonConstants.YES)
+                .eq(source.getCategoryId() != null, Question::getCategoryId, source.getCategoryId())
+                .eq(StringUtils.hasText(source.getQuestionType()), Question::getQuestionType, source.getQuestionType())
+                .orderByDesc(Question::getUpdatedAt)
+                .last("limit " + MAX_VECTOR_SEED_COUNT));
+    }
+
+    private List<Question> mergeSeedQuestions(Question source, List<Question> ruleCandidates,
+                                              List<Question> vectorSeedCandidates) {
+        Map<Long, Question> seedMap = new LinkedHashMap<>();
+        seedMap.put(source.getId(), source);
+        for (Question question : ruleCandidates) {
+            seedMap.put(question.getId(), question);
+        }
+        for (Question question : vectorSeedCandidates) {
+            seedMap.put(question.getId(), question);
+        }
+        return seedMap.values().stream().toList();
+    }
+
+    private Map<Long, List<Float>> embedQuestionVectors(List<Question> questions) {
+        Map<Long, List<Float>> vectorMap = new LinkedHashMap<>();
+        for (int start = 0; start < questions.size(); start += EMBEDDING_BATCH_SIZE) {
+            int end = Math.min(questions.size(), start + EMBEDDING_BATCH_SIZE);
+            List<Question> batch = questions.subList(start, end);
+            EmbeddingRequestDTO request = new EmbeddingRequestDTO();
+            request.setTexts(batch.stream().map(this::questionVectorText).toList());
+            Result<EmbeddingResponseVO> response = aiEmbeddingFeignClient.embeddings(request);
+            if (response == null || !response.isSuccess() || response.getData() == null
+                    || response.getData().getVectors() == null) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI embedding response is empty");
+            }
+            List<List<Float>> vectors = response.getData().getVectors();
+            if (vectors.size() != batch.size()) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI embedding vector count mismatch");
+            }
+            for (int i = 0; i < batch.size(); i++) {
+                vectorMap.put(batch.get(i).getId(), vectors.get(i));
+            }
+        }
+        return vectorMap;
+    }
+
+    private void upsertQuestionVectors(List<Question> questions, Map<Long, List<Float>> vectors) {
+        List<VectorPoint> points = new ArrayList<>();
+        for (Question question : questions) {
+            List<Float> vector = vectors.get(question.getId());
+            if (vector == null || vector.isEmpty()) {
+                continue;
+            }
+            points.add(VectorPoint.builder()
+                    .id(questionPointId(question.getId()))
+                    .vector(vector)
+                    .payload(questionPayload(question))
+                    .build());
+        }
+        vectorStoreClient.upsert(QUESTION_COLLECTION, points);
+    }
+
+    private Map<String, Object> questionPayload(Question question) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("questionId", question.getId());
+        payload.put("status", CommonConstants.YES);
+        if (question.getCategoryId() != null) {
+            payload.put("categoryId", question.getCategoryId());
+        }
+        if (StringUtils.hasText(question.getQuestionType())) {
+            payload.put("questionType", question.getQuestionType());
+        }
+        if (StringUtils.hasText(question.getDifficulty())) {
+            payload.put("difficulty", question.getDifficulty());
+        }
+        return payload;
+    }
+
+    private Map<String, Object> questionVectorFilter(Question source) {
+        Map<String, Object> filter = new LinkedHashMap<>();
+        filter.put("status", CommonConstants.YES);
+        if (source.getCategoryId() != null) {
+            filter.put("categoryId", source.getCategoryId());
+        }
+        if (StringUtils.hasText(source.getQuestionType())) {
+            filter.put("questionType", source.getQuestionType());
+        }
+        return filter;
+    }
+
+    private String questionVectorText(Question question) {
+        return firstText(question.getTitle(), "") + "\n"
+                + firstText(question.getContent(), "") + "\n"
+                + firstText(question.getReferenceAnswer(), "") + "\n"
+                + firstText(question.getAnalysis(), "");
+    }
+
+    private String questionPointId(Long questionId) {
+        return "question-" + questionId;
+    }
+
+    private Long payloadLong(Map<String, Object> payload, String key) {
+        if (payload == null || payload.get(key) == null) {
+            return null;
+        }
+        Object value = payload.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     private QuestionDuplicateReview buildReview(Question left, Question right, MatchResult match, Long operatorId) {
@@ -483,6 +709,15 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP);
     }
 
+    private String firstText(String first, String second) {
+        return StringUtils.hasText(first) ? first : second;
+    }
+
+    private String pairKey(Long leftQuestionId, Long rightQuestionId) {
+        QuestionPairIds pair = sortedPairIds(leftQuestionId, rightQuestionId);
+        return pair.sourceQuestionId() + ":" + pair.targetQuestionId();
+    }
+
     private QuestionDuplicateCheckResultVO emptyResult() {
         QuestionDuplicateCheckResultVO vo = new QuestionDuplicateCheckResultVO();
         vo.setCheckedCount(0);
@@ -500,6 +735,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private record MatchResult(QuestionDuplicateMatchType matchType, BigDecimal score, String reason) {
+    }
+
+    private record SemanticCandidate(Question question, double score) {
     }
 
     private record QuestionPair(Question source, Question target) {
