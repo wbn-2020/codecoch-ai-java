@@ -36,6 +36,7 @@ import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
+import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionService;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -61,6 +62,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
     private final QuestionDuplicateService questionDuplicateService;
+    private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionMqDispatcher questionMqDispatcher;
 
     @Override
@@ -176,6 +178,7 @@ public class QuestionServiceImpl implements QuestionService {
         replaceTags(question.getId(), dto.getTagIds());
         Long userId = requireCurrentUserId();
         questionDuplicateService.checkDuplicateForQuestion(question.getId(), userId);
+        syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
         syncQuestionSearchAfterCommit(question.getId(), userId, CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(question);
     }
@@ -187,6 +190,7 @@ public class QuestionServiceImpl implements QuestionService {
         applyQuestion(question, dto);
         questionMapper.updateById(question);
         replaceTags(question.getId(), dto.getTagIds());
+        syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
         syncQuestionSearchAfterCommit(question.getId(), LoginUserContext.getUserId(),
                 CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(getQuestionOrThrow(id));
@@ -196,6 +200,7 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteQuestion(Long id) {
         questionMapper.deleteById(id);
+        syncQuestionEmbeddingAfterCommit(id, false);
         syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), false);
     }
 
@@ -205,6 +210,7 @@ public class QuestionServiceImpl implements QuestionService {
         Question question = getQuestionOrThrow(id);
         question.setStatus(dto.getStatus());
         questionMapper.updateById(question);
+        syncQuestionEmbeddingAfterCommit(id, CommonConstants.YES.equals(dto.getStatus()));
         syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), CommonConstants.YES.equals(dto.getStatus()));
     }
 
@@ -460,6 +466,26 @@ public class QuestionServiceImpl implements QuestionService {
         } else {
             recordMapper.updateById(record);
         }
+    }
+
+    private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                questionEmbeddingIndexService.indexQuestion(questionId);
+            } else {
+                questionEmbeddingIndexService.deleteQuestion(questionId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {
