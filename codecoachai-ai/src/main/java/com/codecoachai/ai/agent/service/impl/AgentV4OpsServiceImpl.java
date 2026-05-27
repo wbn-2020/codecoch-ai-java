@@ -297,7 +297,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setChunkCount(chunks.size());
         vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
+        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         return vo;
     }
@@ -307,7 +307,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         KnowledgeConfigVO vo = new KnowledgeConfigVO();
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setVectorCollection(knowledgeProperties.getCollection());
-        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
+        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         vo.setChunkSize(knowledgeProperties.safeChunkSize());
         vo.setChunkOverlap(knowledgeProperties.safeChunkOverlap());
@@ -620,10 +620,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         String value = keyword.trim();
         Double normalizedMinScore = normalizeScore(minScore);
         List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, size);
-        semanticResults = filterByMinScore(semanticResults, normalizedMinScore);
-        if (!semanticResults.isEmpty()) {
-            return semanticResults;
-        }
+        List<KnowledgeSearchResultVO> keywordResults = searchKnowledgeByKeyword(userId, value, size);
+        List<KnowledgeSearchResultVO> mergedResults = mergeKnowledgeSearchResults(semanticResults, keywordResults);
+        return filterByMinScore(mergedResults, normalizedMinScore).stream().limit(size).toList();
+    }
+
+    private List<KnowledgeSearchResultVO> searchKnowledgeByKeyword(Long userId, String value, int size) {
         List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                         .eq(PersonalKnowledgeDocument::getUserId, userId)
@@ -653,7 +655,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), value, 0.75D, "KEYWORD_CHUNK"));
             }
         }
-        return filterByMinScore(result, normalizedMinScore).stream().limit(size).toList();
+        return result.stream()
+                .sorted(Comparator.comparing(KnowledgeSearchResultVO::getScore,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(size)
+                .toList();
     }
 
     @Override
@@ -1555,6 +1561,48 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return results.stream()
                 .filter(result -> result.getScore() != null && result.getScore() >= minScore)
                 .toList();
+    }
+
+    private List<KnowledgeSearchResultVO> mergeKnowledgeSearchResults(List<KnowledgeSearchResultVO> semanticResults,
+                                                                      List<KnowledgeSearchResultVO> keywordResults) {
+        Map<String, KnowledgeSearchResultVO> merged = new LinkedHashMap<>();
+        mergeKnowledgeSearchResultGroup(merged, semanticResults);
+        mergeKnowledgeSearchResultGroup(merged, keywordResults);
+        return merged.values().stream()
+                .sorted(Comparator.comparing(KnowledgeSearchResultVO::getScore,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .toList();
+    }
+
+    private void mergeKnowledgeSearchResultGroup(Map<String, KnowledgeSearchResultVO> merged,
+                                                 List<KnowledgeSearchResultVO> results) {
+        for (KnowledgeSearchResultVO result : results) {
+            if (result == null) {
+                continue;
+            }
+            String key = knowledgeSearchResultKey(result);
+            KnowledgeSearchResultVO existing = merged.get(key);
+            if (existing == null) {
+                merged.put(key, result);
+                continue;
+            }
+            double existingScore = existing.getScore() == null ? 0D : existing.getScore();
+            double resultScore = result.getScore() == null ? 0D : result.getScore();
+            existing.setScore(Math.max(existingScore, resultScore));
+            existing.setMatchType("HYBRID");
+            if (StringUtils.hasText(result.getSnippet()) && resultScore >= existingScore) {
+                existing.setSnippet(result.getSnippet());
+                existing.setHighlightedSnippet(result.getHighlightedSnippet());
+                existing.setMatchedTerms(result.getMatchedTerms());
+            }
+        }
+    }
+
+    private String knowledgeSearchResultKey(KnowledgeSearchResultVO result) {
+        if (result.getChunkId() != null) {
+            return "chunk:" + result.getChunkId();
+        }
+        return "document:" + result.getDocumentId();
     }
 
     private int normalizeDuplicateReviewLimit(Integer limit) {
