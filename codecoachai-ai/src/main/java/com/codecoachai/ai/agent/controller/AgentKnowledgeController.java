@@ -7,6 +7,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
@@ -123,6 +124,14 @@ public class AgentKnowledgeController {
     public Result<List<KnowledgeExactDuplicateGroupVO>> exactDuplicates(@RequestParam(required = false) Integer limit) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.listExactDuplicateKnowledgeChunks(userId, limit));
+    }
+
+    @PostMapping("/duplicates/exact/cleanup")
+    public Result<KnowledgeDuplicateCleanupVO> cleanupExactDuplicates(
+            @RequestParam(defaultValue = "true") Boolean dryRun,
+            @RequestParam(required = false) Integer limit) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.cleanupExactDuplicateKnowledgeChunks(userId, dryRun, limit));
     }
 
     @DeleteMapping("/chunks/{chunkId}")

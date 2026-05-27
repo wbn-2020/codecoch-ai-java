@@ -13,6 +13,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
@@ -62,6 +63,8 @@ public interface AgentV4OpsService {
     KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit);
 
     List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit);
+
+    KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit);
 
     void deleteKnowledgeChunk(Long userId, Long chunkId);
 

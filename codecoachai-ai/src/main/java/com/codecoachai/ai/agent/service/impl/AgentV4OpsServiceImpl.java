@@ -27,6 +27,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewItemVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
@@ -554,6 +555,42 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit) {
+        boolean previewOnly = dryRun == null || dryRun;
+        List<List<PersonalKnowledgeChunk>> duplicateGroups = exactDuplicateChunkGroups(userId, limit);
+        List<PersonalKnowledgeChunk> deleteCandidates = duplicateGroups.stream()
+                .flatMap(group -> group.stream().skip(1))
+                .toList();
+        KnowledgeDuplicateCleanupVO vo = new KnowledgeDuplicateCleanupVO();
+        vo.setDryRun(previewOnly);
+        vo.setDuplicateGroupCount(duplicateGroups.size());
+        vo.setDeleteCandidateCount(deleteCandidates.size());
+        vo.setDeletedCount(0);
+        vo.setDeletedChunkIds(deleteCandidates.stream().map(PersonalKnowledgeChunk::getId).toList());
+        vo.setGeneratedAt(LocalDateTime.now());
+        if (previewOnly || deleteCandidates.isEmpty()) {
+            return vo;
+        }
+        personalKnowledgeChunkMapper.delete(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                .eq(PersonalKnowledgeChunk::getUserId, userId)
+                .in(PersonalKnowledgeChunk::getId, deleteCandidates.stream().map(PersonalKnowledgeChunk::getId).toList()));
+        deletePersonalKnowledgeVectors(deleteCandidates);
+        Set<Long> affectedDocumentIds = deleteCandidates.stream()
+                .map(PersonalKnowledgeChunk::getDocumentId)
+                .collect(Collectors.toSet());
+        for (Long documentId : affectedDocumentIds) {
+            if (chunkCount(documentId) == 0) {
+                PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
+                document.setStatus("EMPTY");
+                personalKnowledgeDocumentMapper.updateById(document);
+            }
+        }
+        vo.setDeletedCount(deleteCandidates.size());
+        return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteKnowledgeChunk(Long userId, Long chunkId) {
         PersonalKnowledgeChunk chunk = ownedChunk(userId, chunkId);
         personalKnowledgeChunkMapper.deleteById(chunk.getId());
@@ -1016,6 +1053,25 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             }
         }
         return duplicates;
+    }
+
+    private List<List<PersonalKnowledgeChunk>> exactDuplicateChunkGroups(Long userId, Integer limit) {
+        int size = normalizeDuplicateReviewLimit(limit);
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .isNotNull(PersonalKnowledgeChunk::getChunkHash)
+                        .orderByAsc(PersonalKnowledgeChunk::getChunkHash)
+                        .orderByAsc(PersonalKnowledgeChunk::getCreatedAt)
+                        .orderByAsc(PersonalKnowledgeChunk::getId))
+                .stream()
+                .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
+                .values()
+                .stream()
+                .filter(group -> group.size() > 1)
+                .sorted((left, right) -> Integer.compare(right.size(), left.size()))
+                .limit(size)
+                .toList();
     }
 
     private List<PersonalKnowledgeDocument> listRebuildDocuments(Long userId, Long documentId) {
