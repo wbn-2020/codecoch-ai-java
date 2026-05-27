@@ -318,6 +318,78 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    public List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit) {
+        PersonalKnowledgeChunk source = ownedChunk(userId, chunkId);
+        if (!vectorStoreClient.isEnabled()) {
+            return List.of();
+        }
+        int size = normalizeLimit(limit);
+        try {
+            List<List<Float>> vectors = embedTexts(List.of(source.getContent()));
+            if (vectors.isEmpty()) {
+                return List.of();
+            }
+            List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
+                    .collectionName(KNOWLEDGE_COLLECTION)
+                    .vector(vectors.get(0))
+                    .mustMatchPayload(Map.of("userId", userId))
+                    .limit(size + 1)
+                    .build());
+            List<Long> candidateChunkIds = hits.stream()
+                    .map(hit -> payloadLong(hit.getPayload(), "chunkId"))
+                    .filter(Objects::nonNull)
+                    .filter(id -> !Objects.equals(id, chunkId))
+                    .distinct()
+                    .limit(size)
+                    .toList();
+            if (candidateChunkIds.isEmpty()) {
+                return List.of();
+            }
+            Map<Long, VectorSearchResult> hitMap = new LinkedHashMap<>();
+            for (VectorSearchResult hit : hits) {
+                Long hitChunkId = payloadLong(hit.getPayload(), "chunkId");
+                if (hitChunkId != null && !Objects.equals(hitChunkId, chunkId)) {
+                    hitMap.putIfAbsent(hitChunkId, hit);
+                }
+            }
+            Map<Long, PersonalKnowledgeChunk> chunkMap = personalKnowledgeChunkMapper.selectList(
+                            new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                                    .eq(PersonalKnowledgeChunk::getUserId, userId)
+                                    .in(PersonalKnowledgeChunk::getId, candidateChunkIds))
+                    .stream()
+                    .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, Function.identity()));
+            List<Long> documentIds = chunkMap.values().stream()
+                    .map(PersonalKnowledgeChunk::getDocumentId)
+                    .distinct()
+                    .toList();
+            Map<Long, PersonalKnowledgeDocument> documentMap = documentIds.isEmpty()
+                    ? Map.of()
+                    : personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                            .eq(PersonalKnowledgeDocument::getUserId, userId)
+                            .in(PersonalKnowledgeDocument::getId, documentIds))
+                    .stream()
+                    .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity()));
+            return candidateChunkIds.stream()
+                    .map(chunkMap::get)
+                    .filter(Objects::nonNull)
+                    .map(chunk -> {
+                        PersonalKnowledgeDocument document = documentMap.get(chunk.getDocumentId());
+                        VectorSearchResult hit = hitMap.get(chunk.getId());
+                        if (document == null || hit == null) {
+                            return null;
+                        }
+                        return toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), source.getContent()),
+                                source.getContent(), hit.getScore(), "VECTOR_SIMILAR");
+                    })
+                    .filter(Objects::nonNull)
+                    .toList();
+        } catch (Exception ex) {
+            log.warn("List personal knowledge similar chunks failed userId={} chunkId={}", userId, chunkId, ex);
+            return List.of();
+        }
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteKnowledgeDocument(Long userId, Long id) {
         PersonalKnowledgeDocument document = ownedDocument(userId, id);
@@ -688,6 +760,14 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new IllegalArgumentException("Knowledge document not found or forbidden");
         }
         return document;
+    }
+
+    private PersonalKnowledgeChunk ownedChunk(Long userId, Long id) {
+        PersonalKnowledgeChunk chunk = personalKnowledgeChunkMapper.selectById(id);
+        if (chunk == null || !Objects.equals(chunk.getUserId(), userId)) {
+            throw new IllegalArgumentException("Knowledge chunk not found or forbidden");
+        }
+        return chunk;
     }
 
     private int chunkCount(Long documentId) {

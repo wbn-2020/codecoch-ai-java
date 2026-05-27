@@ -43,6 +43,8 @@ public interface AgentV4OpsService {
 
     List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId);
 
+    List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit);
+
     void deleteKnowledgeDocument(Long userId, Long id);
 
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);

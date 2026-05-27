@@ -69,6 +69,13 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.listKnowledgeChunks(userId, id));
     }
 
+    @GetMapping("/chunks/{chunkId}/similar")
+    public Result<List<KnowledgeSearchResultVO>> similarChunks(@PathVariable Long chunkId,
+                                                               @RequestParam(required = false) Integer limit) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.listSimilarKnowledgeChunks(userId, chunkId, limit));
+    }
+
     @DeleteMapping("/documents/{id}")
     public Result<Void> deleteDocument(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
