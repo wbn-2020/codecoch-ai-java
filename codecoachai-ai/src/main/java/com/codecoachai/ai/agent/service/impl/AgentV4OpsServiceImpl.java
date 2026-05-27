@@ -201,6 +201,21 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteKnowledgeDocument(Long userId, Long id) {
+        PersonalKnowledgeDocument document = ownedDocument(userId, id);
+        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .eq(PersonalKnowledgeChunk::getDocumentId, document.getId()));
+        personalKnowledgeChunkMapper.delete(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                .eq(PersonalKnowledgeChunk::getUserId, userId)
+                .eq(PersonalKnowledgeChunk::getDocumentId, document.getId()));
+        personalKnowledgeDocumentMapper.deleteById(document.getId());
+        deletePersonalKnowledgeVectors(chunks);
+    }
+
+    @Override
     public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit) {
         if (!StringUtils.hasText(keyword)) {
             return List.of();
@@ -577,6 +592,17 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         } catch (Exception ex) {
             log.warn("Personal knowledge vector indexing failed userId={} documentId={}", userId, document.getId(), ex);
         }
+    }
+
+    private void deletePersonalKnowledgeVectors(List<PersonalKnowledgeChunk> chunks) {
+        if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
+            return;
+        }
+        vectorStoreClient.delete(KNOWLEDGE_COLLECTION, chunks.stream()
+                .map(PersonalKnowledgeChunk::getId)
+                .filter(Objects::nonNull)
+                .map(this::knowledgePointId)
+                .toList());
     }
 
     private List<KnowledgeSearchResultVO> searchKnowledgeByVector(Long userId, String keyword, int limit) {

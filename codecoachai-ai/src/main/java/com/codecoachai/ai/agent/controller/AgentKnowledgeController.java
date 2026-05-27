@@ -10,6 +10,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -41,6 +42,13 @@ public class AgentKnowledgeController {
     public Result<KnowledgeDocumentVO> document(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.getKnowledgeDocument(userId, id));
+    }
+
+    @DeleteMapping("/documents/{id}")
+    public Result<Void> deleteDocument(@PathVariable Long id) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        agentV4OpsService.deleteKnowledgeDocument(userId, id);
+        return Result.success();
     }
 
     @GetMapping("/search")

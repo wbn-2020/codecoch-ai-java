@@ -33,6 +33,8 @@ public interface AgentV4OpsService {
 
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
 
+    void deleteKnowledgeDocument(Long userId, Long id);
+
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);
 
     KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto);
