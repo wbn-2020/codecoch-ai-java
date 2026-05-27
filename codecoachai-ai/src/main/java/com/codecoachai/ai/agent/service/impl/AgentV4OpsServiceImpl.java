@@ -6,6 +6,7 @@ import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentFeedback;
@@ -20,6 +21,7 @@ import com.codecoachai.ai.agent.domain.entity.PromptRegressionResult;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO.FeedbackTypeCount;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
@@ -37,14 +39,25 @@ import com.codecoachai.ai.agent.mapper.PromptRegressionCaseMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
+import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
+import com.codecoachai.ai.domain.vo.EmbeddingResponseVO;
+import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.service.AiCallLogService;
+import com.codecoachai.ai.service.EmbeddingService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.vector.domain.VectorPoint;
+import com.codecoachai.common.vector.domain.VectorSearchRequest;
+import com.codecoachai.common.vector.domain.VectorSearchResult;
+import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,17 +65,22 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private static final int CHUNK_SIZE = 800;
     private static final int CHUNK_OVERLAP = 80;
+    private static final int EMBEDDING_BATCH_SIZE = 64;
+    private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
+    private static final int ASK_DEFAULT_LIMIT = 5;
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -76,6 +94,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final JobCoachAgentService jobCoachAgentService;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final AiCallLogService aiCallLogService;
+    private final EmbeddingService embeddingService;
+    private final VectorStoreClient vectorStoreClient;
 
     @Override
     public AgentFeedbackVO createFeedback(Long userId, AgentFeedbackCreateDTO dto) {
@@ -148,6 +169,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         personalKnowledgeDocumentMapper.insert(document);
 
         int index = 0;
+        List<PersonalKnowledgeChunk> chunks = new ArrayList<>();
         for (String chunkContent : splitChunks(dto.getContent())) {
             PersonalKnowledgeChunk chunk = new PersonalKnowledgeChunk();
             chunk.setUserId(userId);
@@ -156,7 +178,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             chunk.setContent(chunkContent);
             chunk.setSourceRef(document.getTitle() + "#" + index);
             personalKnowledgeChunkMapper.insert(chunk);
+            chunks.add(chunk);
         }
+        indexPersonalKnowledgeVectors(userId, document, chunks);
         return toKnowledgeDocumentVO(document, index, true);
     }
 
@@ -177,18 +201,23 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword) {
+    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit) {
         if (!StringUtils.hasText(keyword)) {
             return List.of();
         }
+        int size = normalizeLimit(limit);
         String value = keyword.trim();
+        List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, size);
+        if (!semanticResults.isEmpty()) {
+            return semanticResults;
+        }
         List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                         .eq(PersonalKnowledgeDocument::getUserId, userId)
                         .and(query -> query.like(PersonalKnowledgeDocument::getTitle, value)
                                 .or()
                                 .like(PersonalKnowledgeDocument::getContent, value))
-                        .last("LIMIT 20"));
+                        .last("LIMIT " + size));
         Map<Long, PersonalKnowledgeDocument> docMap = documents.stream()
                 .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
@@ -196,22 +225,62 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
                         .like(PersonalKnowledgeChunk::getContent, value)
-                        .last("LIMIT 30"));
+                        .last("LIMIT " + Math.max(size, 30)));
         for (PersonalKnowledgeChunk chunk : chunks) {
             docMap.computeIfAbsent(chunk.getDocumentId(), personalKnowledgeDocumentMapper::selectById);
         }
 
         List<KnowledgeSearchResultVO> result = new ArrayList<>();
         for (PersonalKnowledgeDocument document : documents) {
-            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), value)));
+            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), value), 0.6D, "KEYWORD_DOCUMENT"));
         }
         for (PersonalKnowledgeChunk chunk : chunks) {
             PersonalKnowledgeDocument document = docMap.get(chunk.getDocumentId());
             if (document != null && Objects.equals(document.getUserId(), userId)) {
-                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value)));
+                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), 0.75D, "KEYWORD_CHUNK"));
             }
         }
-        return result.stream().limit(50).toList();
+        return result.stream().limit(size).toList();
+    }
+
+    @Override
+    public KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto) {
+        String question = dto == null ? null : dto.getQuestion();
+        if (!StringUtils.hasText(question)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "question is required");
+        }
+        String normalizedQuestion = question.trim();
+        int limit = dto == null || dto.getLimit() == null ? ASK_DEFAULT_LIMIT : normalizeLimit(dto.getLimit());
+        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit);
+
+        KnowledgeAskVO vo = new KnowledgeAskVO();
+        vo.setQuestion(normalizedQuestion);
+        vo.setReferences(references);
+        vo.setGeneratedAt(LocalDateTime.now());
+        if (references.isEmpty()) {
+            vo.setAnswer("No relevant content was found in your personal knowledge base. Add or upload materials first.");
+            return vo;
+        }
+
+        try {
+            AiCallContext ctx = new AiCallContext();
+            ctx.setScene("PERSONAL_KNOWLEDGE_ASK");
+            ctx.setUserId(userId);
+            ctx.setBusinessId("knowledge:" + userId);
+            ctx.setPrompt(buildKnowledgeAskPrompt(userId, normalizedQuestion, references));
+            ctx.setResponseFormat("TEXT");
+            ctx.setRequestBody(writeJson(Map.of(
+                    "questionLength", normalizedQuestion.length(),
+                    "referenceCount", references.size()
+            )));
+            RouteResult result = aiCallLogService.callAndLog(ctx);
+            vo.setAnswer(result.getContent());
+            vo.setAiCallLogId(result.getAiCallLogId());
+        } catch (Exception ex) {
+            log.warn("Personal knowledge ask generation failed userId={}", userId, ex);
+            vo.setAnswer("Relevant references were found, but the AI answer could not be generated. Please review the cited snippets.");
+        }
+        return vo;
     }
 
     @Override
@@ -473,6 +542,206 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return chunks;
     }
 
+    private void indexPersonalKnowledgeVectors(Long userId, PersonalKnowledgeDocument document,
+                                               List<PersonalKnowledgeChunk> chunks) {
+        if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
+            return;
+        }
+        try {
+            List<List<Float>> vectors = embedTexts(chunks.stream()
+                    .map(PersonalKnowledgeChunk::getContent)
+                    .toList());
+            if (vectors.size() != chunks.size() || vectors.isEmpty()) {
+                log.warn("Personal knowledge embedding size mismatch documentId={} chunkCount={} vectorCount={}",
+                        document.getId(), chunks.size(), vectors.size());
+                return;
+            }
+            vectorStoreClient.ensureCollection(KNOWLEDGE_COLLECTION, vectors.get(0).size());
+            List<VectorPoint> points = new ArrayList<>();
+            for (int i = 0; i < chunks.size(); i++) {
+                PersonalKnowledgeChunk chunk = chunks.get(i);
+                points.add(VectorPoint.builder()
+                        .id(knowledgePointId(chunk.getId()))
+                        .vector(vectors.get(i))
+                        .payload(Map.of(
+                                "userId", userId,
+                                "documentId", document.getId(),
+                                "chunkId", chunk.getId(),
+                                "title", document.getTitle(),
+                                "documentType", firstText(document.getDocumentType(), "NOTE"),
+                                "sourceRef", firstText(chunk.getSourceRef(), document.getTitle())
+                        ))
+                        .build());
+            }
+            vectorStoreClient.upsert(KNOWLEDGE_COLLECTION, points);
+        } catch (Exception ex) {
+            log.warn("Personal knowledge vector indexing failed userId={} documentId={}", userId, document.getId(), ex);
+        }
+    }
+
+    private List<KnowledgeSearchResultVO> searchKnowledgeByVector(Long userId, String keyword, int limit) {
+        if (!vectorStoreClient.isEnabled()) {
+            return List.of();
+        }
+        try {
+            List<List<Float>> vectors = embedTexts(List.of(keyword));
+            if (vectors.isEmpty()) {
+                return List.of();
+            }
+            List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
+                    .collectionName(KNOWLEDGE_COLLECTION)
+                    .vector(vectors.get(0))
+                    .mustMatchPayload(Map.of("userId", userId))
+                    .limit(limit)
+                    .build());
+            if (hits.isEmpty()) {
+                return List.of();
+            }
+            List<Long> chunkIds = hits.stream()
+                    .map(hit -> payloadLong(hit.getPayload(), "chunkId"))
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+            if (chunkIds.isEmpty()) {
+                return List.of();
+            }
+            Map<Long, VectorSearchResult> hitMap = new LinkedHashMap<>();
+            for (VectorSearchResult hit : hits) {
+                Long chunkId = payloadLong(hit.getPayload(), "chunkId");
+                if (chunkId != null) {
+                    hitMap.putIfAbsent(chunkId, hit);
+                }
+            }
+            Map<Long, PersonalKnowledgeChunk> chunkMap = personalKnowledgeChunkMapper.selectList(
+                            new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                                    .eq(PersonalKnowledgeChunk::getUserId, userId)
+                                    .in(PersonalKnowledgeChunk::getId, chunkIds))
+                    .stream()
+                    .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, Function.identity()));
+            List<Long> documentIds = chunkMap.values().stream()
+                    .map(PersonalKnowledgeChunk::getDocumentId)
+                    .distinct()
+                    .toList();
+            if (documentIds.isEmpty()) {
+                return List.of();
+            }
+            Map<Long, PersonalKnowledgeDocument> documentMap = personalKnowledgeDocumentMapper.selectList(
+                            new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                                    .eq(PersonalKnowledgeDocument::getUserId, userId)
+                                    .in(PersonalKnowledgeDocument::getId, documentIds))
+                    .stream()
+                    .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity()));
+            return chunkIds.stream()
+                    .map(chunkMap::get)
+                    .filter(Objects::nonNull)
+                    .map(chunk -> {
+                        PersonalKnowledgeDocument document = documentMap.get(chunk.getDocumentId());
+                        VectorSearchResult hit = hitMap.get(chunk.getId());
+                        if (document == null || hit == null) {
+                            return null;
+                        }
+                        return toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), keyword),
+                                hit.getScore(), "VECTOR");
+                    })
+                    .filter(Objects::nonNull)
+                    .sorted(Comparator.comparing(KnowledgeSearchResultVO::getScore,
+                            Comparator.nullsLast(Comparator.reverseOrder())))
+                    .limit(limit)
+                    .toList();
+        } catch (Exception ex) {
+            log.warn("Personal knowledge vector search failed userId={}", userId, ex);
+            return List.of();
+        }
+    }
+
+    private List<List<Float>> embedTexts(List<String> texts) {
+        List<List<Float>> vectors = new ArrayList<>();
+        for (int start = 0; start < texts.size(); start += EMBEDDING_BATCH_SIZE) {
+            int end = Math.min(texts.size(), start + EMBEDDING_BATCH_SIZE);
+            EmbeddingRequestDTO request = new EmbeddingRequestDTO();
+            request.setTexts(texts.subList(start, end));
+            EmbeddingResponseVO response = embeddingService.embed(request);
+            if (response.getVectors() != null) {
+                vectors.addAll(response.getVectors());
+            }
+        }
+        return vectors;
+    }
+
+    private String knowledgePointId(Long chunkId) {
+        return "pkc-" + chunkId;
+    }
+
+    private Long payloadLong(Map<String, Object> payload, String key) {
+        if (payload == null || payload.get(key) == null) {
+            return null;
+        }
+        Object value = payload.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private int normalizeLimit(Integer limit) {
+        if (limit == null || limit < 1) {
+            return 10;
+        }
+        return Math.min(limit, 50);
+    }
+
+    private String buildKnowledgeAskPrompt(Long userId, String question, List<KnowledgeSearchResultVO> references) {
+        Map<Long, String> chunkContentMap = referenceChunkContentMap(userId, references);
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("You are a personal RAG assistant. Answer in the same language as the user question.\n")
+                .append("Use only the references below. If the references are insufficient, say what is missing.\n")
+                .append("Keep the answer concise and cite references as [1], [2].\n\n")
+                .append("Question:\n")
+                .append(question)
+                .append("\n\nReferences:\n");
+        for (int i = 0; i < references.size(); i++) {
+            KnowledgeSearchResultVO ref = references.get(i);
+            String content = ref.getChunkId() == null ? ref.getSnippet() : chunkContentMap.get(ref.getChunkId());
+            prompt.append("[")
+                    .append(i + 1)
+                    .append("] ")
+                    .append(firstText(ref.getTitle(), "Untitled"))
+                    .append(" / ")
+                    .append(firstText(ref.getSourceRef(), ref.getDocumentType(), "knowledge"))
+                    .append("\n")
+                    .append(truncateText(firstText(content, ref.getSnippet(), ""), 1200))
+                    .append("\n\n");
+        }
+        return prompt.toString();
+    }
+
+    private Map<Long, String> referenceChunkContentMap(Long userId, List<KnowledgeSearchResultVO> references) {
+        List<Long> chunkIds = references.stream()
+                .map(KnowledgeSearchResultVO::getChunkId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (chunkIds.isEmpty()) {
+            return Map.of();
+        }
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .in(PersonalKnowledgeChunk::getId, chunkIds))
+                .stream()
+                .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, PersonalKnowledgeChunk::getContent));
+    }
+
+    private String truncateText(String text, int maxLength) {
+        if (text == null || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength);
+    }
+
     private String snippet(String text, String keyword) {
         if (!StringUtils.hasText(text)) {
             return "";
@@ -511,7 +780,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return vo;
     }
 
-    private KnowledgeSearchResultVO toKnowledgeSearchVO(PersonalKnowledgeDocument document, PersonalKnowledgeChunk chunk, String snippet) {
+    private KnowledgeSearchResultVO toKnowledgeSearchVO(PersonalKnowledgeDocument document, PersonalKnowledgeChunk chunk,
+                                                        String snippet, Double score, String matchType) {
         KnowledgeSearchResultVO vo = new KnowledgeSearchResultVO();
         vo.setDocumentId(document.getId());
         vo.setChunkId(chunk == null ? null : chunk.getId());
@@ -519,6 +789,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDocumentType(document.getDocumentType());
         vo.setSnippet(snippet);
         vo.setSourceRef(chunk == null ? document.getTitle() : chunk.getSourceRef());
+        vo.setScore(score);
+        vo.setMatchType(matchType);
         return vo;
     }
 

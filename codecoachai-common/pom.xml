@@ -26,5 +26,6 @@
         <module>common-ai</module>
         <module>common-oss</module>
         <module>common-mq</module>
+        <module>common-vector</module>
     </modules>
 </project>

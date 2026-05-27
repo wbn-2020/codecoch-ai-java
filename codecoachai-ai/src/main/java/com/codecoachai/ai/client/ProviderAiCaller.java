@@ -118,6 +118,76 @@ public class ProviderAiCaller {
         }
     }
 
+    public EmbeddingResult embedding(String providerName, List<String> inputs, String overrideModel) {
+        AiRouterProperties.ProviderConfig cfg = resolveProvider(providerName);
+        if (cfg == null) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider not configured: " + providerName);
+        }
+        if (!StringUtils.hasText(cfg.getBaseUrl()) || !StringUtils.hasText(cfg.getApiKey())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider base-url or api-key empty: " + providerName);
+        }
+        String model = StringUtils.hasText(overrideModel) ? overrideModel : cfg.getEmbeddingModel();
+        if (!StringUtils.hasText(model)) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider embedding model empty: " + providerName);
+        }
+
+        Map<String, Object> body = Map.of("model", model, "input", inputs);
+        long started = System.currentTimeMillis();
+        try {
+            String response = RestClient.builder()
+                    .requestFactory(requestFactory(cfg.timeout()))
+                    .build()
+                    .post()
+                    .uri(normalizeEmbeddingUrl(cfg.getBaseUrl()))
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + cfg.getApiKey())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode root = objectMapper.readTree(response);
+            List<List<Float>> vectors = new java.util.ArrayList<>();
+            for (JsonNode item : root.path("data")) {
+                List<Float> vector = new java.util.ArrayList<>();
+                for (JsonNode value : item.path("embedding")) {
+                    vector.add((float) value.asDouble());
+                }
+                vectors.add(vector);
+            }
+            if (vectors.isEmpty()) {
+                throw new AiProviderException(AiFailureType.EMPTY_RESPONSE,
+                        "Provider " + providerName + " empty embedding response");
+            }
+            EmbeddingResult result = new EmbeddingResult();
+            result.setProvider(providerName);
+            result.setModel(model);
+            result.setVectors(vectors);
+            result.setDimension(vectors.get(0).size());
+            result.setPromptTokens(intOrZero(root.path("usage").path("prompt_tokens")));
+            result.setTotalTokens(intOrZero(root.path("usage").path("total_tokens")));
+            result.setElapsedMs(System.currentTimeMillis() - started);
+            return result;
+        } catch (AiProviderException ex) {
+            throw ex;
+        } catch (RestClientResponseException ex) {
+            throw new AiProviderException(AiFailureType.HTTP_ERROR,
+                    "Provider " + providerName + " embedding HTTP " + ex.getStatusCode().value(),
+                    ex.getStatusCode().value(), ex);
+        } catch (ResourceAccessException ex) {
+            AiFailureType type = containsCause(ex, SocketTimeoutException.class)
+                    || containsCause(ex, ConnectException.class)
+                    ? AiFailureType.TIMEOUT
+                    : AiFailureType.UNKNOWN_ERROR;
+            throw new AiProviderException(type,
+                    "Provider " + providerName + " embedding failed: " + ex.getMessage(), null, ex);
+        } catch (Exception ex) {
+            throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
+                    "Provider " + providerName + " embedding failed: " + ex.getMessage(), null, ex);
+        }
+    }
+
     private AiRouterProperties.ProviderConfig resolveProvider(String providerName) {
         AiRouterProperties.ProviderConfig configured = routerProperties.getProviders().get(providerName);
         if (isUsable(configured)) {
@@ -150,6 +220,7 @@ public class ProviderAiCaller {
         cfg.setApiKey(decryptApiKey(providerName, model.getApiKey()));
         cfg.setChatModel(model.getModelCode());
         cfg.setReasonerModel(model.getModelCode());
+        cfg.setEmbeddingModel(model.getModelCode());
         cfg.setTemperature(model.getTemperature() == null ? 0.3 : model.getTemperature());
         cfg.setMaxTokens(model.getMaxTokens() == null ? 2048 : model.getMaxTokens());
         return cfg;
@@ -167,6 +238,14 @@ public class ProviderAiCaller {
     private String normalizeUrl(String baseUrl) {
         String b = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
         return b.endsWith("/chat/completions") ? b : b + "/chat/completions";
+    }
+
+    private String normalizeEmbeddingUrl(String baseUrl) {
+        String b = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+        if (b.endsWith("/chat/completions")) {
+            b = b.substring(0, b.length() - "/chat/completions".length());
+        }
+        return b.endsWith("/embeddings") ? b : b + "/embeddings";
     }
 
     private int intOrZero(JsonNode node) {
@@ -209,5 +288,16 @@ public class ProviderAiCaller {
         private Integer totalTokens;
         private Long elapsedMs;
         private Double estimatedCost;
+    }
+
+    @Data
+    public static class EmbeddingResult {
+        private String provider;
+        private String model;
+        private List<List<Float>> vectors;
+        private Integer dimension;
+        private Integer promptTokens;
+        private Integer totalTokens;
+        private Long elapsedMs;
     }
 }
