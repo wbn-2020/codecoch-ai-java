@@ -70,7 +70,7 @@ public interface AgentV4OpsService {
 
     void deleteKnowledgeDocument(Long userId, Long id);
 
-    List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore);
+    List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore, String documentType);
 
     KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto);
 

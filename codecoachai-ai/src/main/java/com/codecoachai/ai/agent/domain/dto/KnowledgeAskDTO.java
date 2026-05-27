@@ -7,4 +7,5 @@ public class KnowledgeAskDTO {
     private String question;
     private Integer limit;
     private Double minScore;
+    private String documentType;
 }
