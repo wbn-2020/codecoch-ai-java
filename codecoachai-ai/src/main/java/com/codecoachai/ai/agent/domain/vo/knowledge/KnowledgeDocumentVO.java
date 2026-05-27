@@ -11,6 +11,8 @@ public class KnowledgeDocumentVO {
     private String status;
     private Integer chunkCount;
     private Integer duplicateChunkCount;
+    private Integer nearDuplicateChunkCount;
+    private Double nearDuplicateThreshold;
     private Long duplicateDocumentId;
     private Boolean duplicateDocument;
     private String content;

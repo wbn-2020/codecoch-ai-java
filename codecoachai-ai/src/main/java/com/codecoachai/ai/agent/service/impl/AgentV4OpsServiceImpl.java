@@ -104,6 +104,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int ASK_DEFAULT_LIMIT = 5;
     private static final long KNOWLEDGE_UPLOAD_MAX_BYTES = 8L * 1024 * 1024;
     private static final int KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS = 100_000;
+    private static final double KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD = 0.88D;
     private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown", "pdf", "docx", "doc");
 
     private final AgentFeedbackMapper agentFeedbackMapper;
@@ -224,10 +225,13 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             personalKnowledgeChunkMapper.insert(chunk);
             chunks.add(chunk);
         }
+        int nearDuplicateChunkCount = countNearDuplicateChunks(userId, chunks);
         indexPersonalKnowledgeVectors(userId, document, chunks);
         KnowledgeDocumentVO vo = toKnowledgeDocumentVO(document, index, true);
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(duplicateChunkCount);
+        vo.setNearDuplicateChunkCount(nearDuplicateChunkCount);
+        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
         return vo;
     }
 
@@ -968,6 +972,36 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
     }
 
+    private int countNearDuplicateChunks(Long userId, List<PersonalKnowledgeChunk> chunks) {
+        if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
+            return 0;
+        }
+        try {
+            List<List<Float>> vectors = embedTexts(chunks.stream()
+                    .map(PersonalKnowledgeChunk::getContent)
+                    .toList());
+            if (vectors.size() != chunks.size()) {
+                return 0;
+            }
+            int count = 0;
+            for (List<Float> vector : vectors) {
+                List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
+                        .collectionName(KNOWLEDGE_COLLECTION)
+                        .vector(vector)
+                        .mustMatchPayload(Map.of("userId", userId))
+                        .limit(1)
+                        .build());
+                if (!hits.isEmpty() && hits.get(0).getScore() >= KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD) {
+                    count++;
+                }
+            }
+            return count;
+        } catch (Exception ex) {
+            log.warn("Personal knowledge near duplicate check failed userId={}", userId, ex);
+            return 0;
+        }
+    }
+
     private int upsertPersonalKnowledgeVectors(Long userId, PersonalKnowledgeDocument document,
                                                List<PersonalKnowledgeChunk> chunks) {
         List<List<Float>> vectors = embedTexts(chunks.stream()
@@ -1235,6 +1269,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setChunkCount(chunkCount);
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(0);
+        vo.setNearDuplicateChunkCount(0);
+        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
         vo.setContent(includeContent ? document.getContent() : null);
         vo.setCreatedAt(document.getCreatedAt());
         vo.setUpdatedAt(document.getUpdatedAt());
