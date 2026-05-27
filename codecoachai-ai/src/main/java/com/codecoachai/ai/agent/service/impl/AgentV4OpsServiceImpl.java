@@ -267,10 +267,14 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId) {
-        return personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
-                        .eq(PersonalKnowledgeDocument::getUserId, userId)
-                        .orderByDesc(PersonalKnowledgeDocument::getUpdatedAt))
+    public List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status) {
+        LambdaQueryWrapper<PersonalKnowledgeDocument> query = new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                .eq(PersonalKnowledgeDocument::getUserId, userId)
+                .like(StringUtils.hasText(title), PersonalKnowledgeDocument::getTitle, normalizeKeyword(title))
+                .eq(StringUtils.hasText(documentType), PersonalKnowledgeDocument::getDocumentType, normalizeKeyword(documentType))
+                .eq(StringUtils.hasText(status), PersonalKnowledgeDocument::getStatus, normalizeKeyword(status))
+                .orderByDesc(PersonalKnowledgeDocument::getUpdatedAt);
+        return personalKnowledgeDocumentMapper.selectList(query)
                 .stream()
                 .map(document -> toKnowledgeDocumentVO(document, chunkCount(document.getId()), false))
                 .toList();
@@ -1167,6 +1171,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return content.replace("\r\n", "\n")
                 .replace('\r', '\n')
                 .trim();
+    }
+
+    private String normalizeKeyword(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
 
     private String fileExtension(String filename) {

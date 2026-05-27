@@ -42,7 +42,7 @@ public interface AgentV4OpsService {
 
     KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType);
 
-    List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);
+    List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status);
 
     KnowledgeStatsVO getKnowledgeStats(Long userId);
 
