@@ -57,6 +57,7 @@ import com.codecoachai.common.vector.domain.VectorSearchResult;
 import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -78,6 +79,12 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.hwpf.HWPFDocument;
+import org.apache.poi.hwpf.extractor.WordExtractor;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -95,8 +102,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int EMBEDDING_BATCH_SIZE = 64;
     private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
     private static final int ASK_DEFAULT_LIMIT = 5;
-    private static final long KNOWLEDGE_UPLOAD_MAX_BYTES = 2L * 1024 * 1024;
-    private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown");
+    private static final long KNOWLEDGE_UPLOAD_MAX_BYTES = 8L * 1024 * 1024;
+    private static final int KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS = 100_000;
+    private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown", "pdf", "docx", "doc");
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -229,21 +237,21 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file is required");
         }
         if (file.getSize() > KNOWLEDGE_UPLOAD_MAX_BYTES) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size must be <= 2MB");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size must be <= 8MB");
         }
         String originalFilename = firstText(file.getOriginalFilename(), "knowledge.txt").trim();
         String extension = fileExtension(originalFilename);
         if (!KNOWLEDGE_UPLOAD_EXTENSIONS.contains(extension)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "only txt, md and markdown files are supported");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "only txt, md, markdown, pdf, docx and doc files are supported");
         }
         try {
-            String content = new String(file.getBytes(), StandardCharsets.UTF_8);
+            String content = extractKnowledgeFileText(extension, file.getBytes());
             if (!StringUtils.hasText(content)) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "file content is empty");
             }
             KnowledgeDocumentCreateDTO dto = new KnowledgeDocumentCreateDTO();
             dto.setTitle(stripExtension(originalFilename));
-            dto.setDocumentType(firstText(documentType, extension.equals("txt") ? "TEXT" : "MARKDOWN"));
+            dto.setDocumentType(firstText(documentType, documentTypeByExtension(extension)));
             dto.setContent(content);
             return createKnowledgeDocument(userId, dto);
         } catch (BusinessException ex) {
@@ -788,6 +796,53 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         int index = filename.lastIndexOf('.');
         String value = index > 0 ? filename.substring(0, index) : filename;
         return StringUtils.hasText(value) ? value.trim() : "Untitled knowledge";
+    }
+
+    private String documentTypeByExtension(String extension) {
+        return switch (extension) {
+            case "pdf" -> "PDF";
+            case "doc", "docx" -> "WORD";
+            case "txt" -> "TEXT";
+            default -> "MARKDOWN";
+        };
+    }
+
+    private String extractKnowledgeFileText(String extension, byte[] bytes) throws Exception {
+        String text = switch (extension) {
+            case "pdf" -> extractPdfText(bytes);
+            case "docx" -> extractDocxText(bytes);
+            case "doc" -> extractDocText(bytes);
+            default -> new String(bytes, StandardCharsets.UTF_8);
+        };
+        String normalized = normalizeKnowledgeContent(text);
+        if (normalized.length() > KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS) {
+            log.warn("Personal knowledge uploaded text truncated, extension={}, originalChars={}, maxChars={}",
+                    extension, normalized.length(), KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
+            return normalized.substring(0, KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
+        }
+        return normalized;
+    }
+
+    private String extractPdfText(byte[] bytes) throws Exception {
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            return new PDFTextStripper().getText(document);
+        }
+    }
+
+    private String extractDocxText(byte[] bytes) throws Exception {
+        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            return document.getParagraphs().stream()
+                    .map(paragraph -> firstText(paragraph.getText(), ""))
+                    .filter(StringUtils::hasText)
+                    .collect(Collectors.joining("\n"));
+        }
+    }
+
+    private String extractDocText(byte[] bytes) throws Exception {
+        try (HWPFDocument document = new HWPFDocument(new ByteArrayInputStream(bytes));
+             WordExtractor extractor = new WordExtractor(document)) {
+            return extractor.getText();
+        }
     }
 
     private String normalizeKnowledgeFingerprint(String content) {
