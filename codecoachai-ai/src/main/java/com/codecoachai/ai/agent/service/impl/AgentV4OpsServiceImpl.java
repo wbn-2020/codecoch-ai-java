@@ -22,6 +22,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO.FeedbackTypeCount;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -229,6 +230,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id) {
         PersonalKnowledgeDocument document = ownedDocument(userId, id);
         return toKnowledgeDocumentVO(document, chunkCount(document.getId()), true);
+    }
+
+    @Override
+    public List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId) {
+        ownedDocument(userId, documentId);
+        List<PersonalKnowledgeChunk> chunks = listDocumentChunks(userId, documentId);
+        Set<String> seen = new HashSet<>();
+        return chunks.stream()
+                .map(chunk -> toKnowledgeChunkVO(chunk, StringUtils.hasText(chunk.getChunkHash()) && !seen.add(chunk.getChunkHash())))
+                .toList();
     }
 
     @Override
@@ -1074,6 +1085,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setSourceRef(chunk == null ? document.getTitle() : chunk.getSourceRef());
         vo.setScore(score);
         vo.setMatchType(matchType);
+        return vo;
+    }
+
+    private KnowledgeChunkVO toKnowledgeChunkVO(PersonalKnowledgeChunk chunk, boolean duplicateInDocument) {
+        KnowledgeChunkVO vo = new KnowledgeChunkVO();
+        vo.setId(chunk.getId());
+        vo.setDocumentId(chunk.getDocumentId());
+        vo.setChunkIndex(chunk.getChunkIndex());
+        vo.setContent(chunk.getContent());
+        vo.setChunkHash(chunk.getChunkHash());
+        vo.setSourceRef(chunk.getSourceRef());
+        vo.setDuplicateInDocument(duplicateInDocument);
+        vo.setCreatedAt(chunk.getCreatedAt());
+        vo.setUpdatedAt(chunk.getUpdatedAt());
         return vo;
     }
 

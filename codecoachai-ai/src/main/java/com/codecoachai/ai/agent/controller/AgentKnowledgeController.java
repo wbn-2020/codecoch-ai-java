@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.controller;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -43,6 +44,12 @@ public class AgentKnowledgeController {
     public Result<KnowledgeDocumentVO> document(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.getKnowledgeDocument(userId, id));
+    }
+
+    @GetMapping("/documents/{id}/chunks")
+    public Result<List<KnowledgeChunkVO>> chunks(@PathVariable Long id) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.listKnowledgeChunks(userId, id));
     }
 
     @DeleteMapping("/documents/{id}")

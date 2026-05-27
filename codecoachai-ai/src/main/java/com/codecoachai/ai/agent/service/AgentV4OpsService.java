@@ -9,6 +9,7 @@ import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -33,6 +34,8 @@ public interface AgentV4OpsService {
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);
 
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
+
+    List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId);
 
     void deleteKnowledgeDocument(Long userId, Long id);
 
