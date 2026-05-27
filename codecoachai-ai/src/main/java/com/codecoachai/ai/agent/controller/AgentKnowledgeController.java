@@ -137,17 +137,21 @@ public class AgentKnowledgeController {
     }
 
     @GetMapping("/duplicates/exact")
-    public Result<List<KnowledgeExactDuplicateGroupVO>> exactDuplicates(@RequestParam(required = false) Integer limit) {
+    public Result<List<KnowledgeExactDuplicateGroupVO>> exactDuplicates(@RequestParam(required = false) Integer limit,
+                                                                       @RequestParam(required = false) Long documentId,
+                                                                       @RequestParam(required = false) String documentType) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.listExactDuplicateKnowledgeChunks(userId, limit));
+        return Result.success(agentV4OpsService.listExactDuplicateKnowledgeChunks(userId, limit, documentId, documentType));
     }
 
     @PostMapping("/duplicates/exact/cleanup")
     public Result<KnowledgeDuplicateCleanupVO> cleanupExactDuplicates(
             @RequestParam(defaultValue = "true") Boolean dryRun,
-            @RequestParam(required = false) Integer limit) {
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) Long documentId,
+            @RequestParam(required = false) String documentType) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.cleanupExactDuplicateKnowledgeChunks(userId, dryRun, limit));
+        return Result.success(agentV4OpsService.cleanupExactDuplicateKnowledgeChunks(userId, dryRun, limit, documentId, documentType));
     }
 
     @DeleteMapping("/chunks/{chunkId}")

@@ -67,9 +67,11 @@ public interface AgentV4OpsService {
 
     KnowledgeDuplicateReviewVO reviewDuplicateKnowledgeChunks(Long userId, Integer limit, Double threshold);
 
-    List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit);
+    List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit,
+                                                                          Long documentId, String documentType);
 
-    KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit);
+    KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit,
+                                                                     Long documentId, String documentType);
 
     void deleteKnowledgeChunk(Long userId, Long chunkId);
 

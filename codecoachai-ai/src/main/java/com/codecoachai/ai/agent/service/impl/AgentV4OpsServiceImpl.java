@@ -600,20 +600,17 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit) {
+    public List<KnowledgeExactDuplicateGroupVO> listExactDuplicateKnowledgeChunks(Long userId, Integer limit,
+                                                                                 Long documentId, String documentType) {
         int size = normalizeDuplicateReviewLimit(limit);
-        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
-                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
-                        .eq(PersonalKnowledgeChunk::getUserId, userId)
-                        .isNotNull(PersonalKnowledgeChunk::getChunkHash)
-                        .orderByAsc(PersonalKnowledgeChunk::getChunkHash)
-                        .orderByAsc(PersonalKnowledgeChunk::getDocumentId)
-                        .orderByAsc(PersonalKnowledgeChunk::getChunkIndex));
-        return chunks.stream()
-                .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
-                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
-                .entrySet()
-                .stream()
+        List<Long> scopedDocumentIds = scopedKnowledgeDocumentIds(userId, documentId, documentType);
+        if (scopedDocumentIds.isEmpty()) {
+            return List.of();
+        }
+        List<PersonalKnowledgeChunk> chunks = exactDuplicateScopeChunks(userId, scopedDocumentIds);
+        Set<Long> scopedDocumentIdSet = new HashSet<>(scopedDocumentIds);
+        return exactDuplicateGroups(chunks).entrySet().stream()
+                .filter(entry -> entry.getValue().stream().anyMatch(chunk -> scopedDocumentIdSet.contains(chunk.getDocumentId())))
                 .filter(entry -> entry.getValue().size() > 1)
                 .sorted((left, right) -> Integer.compare(right.getValue().size(), left.getValue().size()))
                 .limit(size)
@@ -631,12 +628,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit) {
+    public KnowledgeDuplicateCleanupVO cleanupExactDuplicateKnowledgeChunks(Long userId, Boolean dryRun, Integer limit,
+                                                                           Long documentId, String documentType) {
         boolean previewOnly = dryRun == null || dryRun;
-        List<List<PersonalKnowledgeChunk>> duplicateGroups = exactDuplicateChunkGroups(userId, limit);
+        List<List<PersonalKnowledgeChunk>> duplicateGroups = exactDuplicateChunkGroups(userId, limit, documentId, documentType);
+        Set<Long> scopedDocumentIds = new HashSet<>(scopedKnowledgeDocumentIds(userId, documentId, documentType));
         List<PersonalKnowledgeChunk> deleteCandidates = exactDuplicateCleanupCandidates(duplicateGroups.stream()
                 .flatMap(List::stream)
-                .toList());
+                .toList()).stream()
+                .filter(chunk -> scopedDocumentIds.contains(chunk.getDocumentId()))
+                .toList();
         KnowledgeDuplicateCleanupVO vo = new KnowledgeDuplicateCleanupVO();
         vo.setDryRun(previewOnly);
         vo.setDuplicateGroupCount(duplicateGroups.size());
@@ -654,9 +655,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         Set<Long> affectedDocumentIds = deleteCandidates.stream()
                 .map(PersonalKnowledgeChunk::getDocumentId)
                 .collect(Collectors.toSet());
-        for (Long documentId : affectedDocumentIds) {
-            if (chunkCount(documentId) == 0) {
-                PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
+        for (Long affectedDocumentId : affectedDocumentIds) {
+            if (chunkCount(affectedDocumentId) == 0) {
+                PersonalKnowledgeDocument document = ownedDocument(userId, affectedDocumentId);
                 document.setStatus("EMPTY");
                 personalKnowledgeDocumentMapper.updateById(document);
             }
@@ -1162,28 +1163,28 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private List<List<PersonalKnowledgeChunk>> exactDuplicateChunkGroups(Long userId, Integer limit) {
+        return exactDuplicateChunkGroups(userId, limit, null, null);
+    }
+
+    private List<List<PersonalKnowledgeChunk>> exactDuplicateChunkGroups(Long userId, Integer limit,
+                                                                        Long documentId, String documentType) {
         int size = normalizeDuplicateReviewLimit(limit);
-        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
-                        .eq(PersonalKnowledgeChunk::getUserId, userId)
-                        .isNotNull(PersonalKnowledgeChunk::getChunkHash)
-                        .orderByAsc(PersonalKnowledgeChunk::getChunkHash)
-                        .orderByAsc(PersonalKnowledgeChunk::getCreatedAt)
-                        .orderByAsc(PersonalKnowledgeChunk::getId))
-                .stream()
-                .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
-                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
+        List<Long> scopedDocumentIds = scopedKnowledgeDocumentIds(userId, documentId, documentType);
+        if (scopedDocumentIds.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> scopedDocumentIdSet = new HashSet<>(scopedDocumentIds);
+        return exactDuplicateGroups(exactDuplicateScopeChunks(userId, scopedDocumentIds))
                 .values()
                 .stream()
+                .filter(group -> group.stream().anyMatch(chunk -> scopedDocumentIdSet.contains(chunk.getDocumentId())))
                 .filter(group -> group.size() > 1)
                 .sorted((left, right) -> Integer.compare(right.size(), left.size()))
                 .limit(size)
                 .toList();
     }
 
-    private List<PersonalKnowledgeChunk> exactDuplicateCleanupCandidates(List<PersonalKnowledgeChunk> chunks) {
-        if (chunks == null || chunks.isEmpty()) {
-            return List.of();
-        }
+    private Map<String, List<PersonalKnowledgeChunk>> exactDuplicateGroups(List<PersonalKnowledgeChunk> chunks) {
         return chunks.stream()
                 .filter(chunk -> StringUtils.hasText(chunk.getChunkHash()))
                 .sorted(Comparator.comparing(PersonalKnowledgeChunk::getChunkHash)
@@ -1191,7 +1192,47 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                                 Comparator.nullsLast(Comparator.naturalOrder()))
                         .thenComparing(PersonalKnowledgeChunk::getId,
                                 Comparator.nullsLast(Comparator.naturalOrder())))
-                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()))
+                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getChunkHash, LinkedHashMap::new, Collectors.toList()));
+    }
+
+    private List<PersonalKnowledgeChunk> exactDuplicateScopeChunks(Long userId, List<Long> scopedDocumentIds) {
+        List<String> scopedHashes = personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .in(PersonalKnowledgeChunk::getDocumentId, scopedDocumentIds)
+                        .isNotNull(PersonalKnowledgeChunk::getChunkHash)
+                        .select(PersonalKnowledgeChunk::getChunkHash))
+                .stream()
+                .map(PersonalKnowledgeChunk::getChunkHash)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        if (scopedHashes.isEmpty()) {
+            return List.of();
+        }
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                .eq(PersonalKnowledgeChunk::getUserId, userId)
+                .in(PersonalKnowledgeChunk::getChunkHash, scopedHashes)
+                .orderByAsc(PersonalKnowledgeChunk::getChunkHash)
+                .orderByAsc(PersonalKnowledgeChunk::getCreatedAt)
+                .orderByAsc(PersonalKnowledgeChunk::getId));
+    }
+
+    private List<Long> scopedKnowledgeDocumentIds(Long userId, Long documentId, String documentType) {
+        LambdaQueryWrapper<PersonalKnowledgeDocument> query = new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                .eq(PersonalKnowledgeDocument::getUserId, userId)
+                .eq(documentId != null, PersonalKnowledgeDocument::getId, documentId)
+                .eq(StringUtils.hasText(documentType), PersonalKnowledgeDocument::getDocumentType, normalizeKeyword(documentType))
+                .select(PersonalKnowledgeDocument::getId);
+        return personalKnowledgeDocumentMapper.selectList(query).stream()
+                .map(PersonalKnowledgeDocument::getId)
+                .toList();
+    }
+
+    private List<PersonalKnowledgeChunk> exactDuplicateCleanupCandidates(List<PersonalKnowledgeChunk> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        return exactDuplicateGroups(chunks)
                 .values()
                 .stream()
                 .filter(group -> group.size() > 1)
