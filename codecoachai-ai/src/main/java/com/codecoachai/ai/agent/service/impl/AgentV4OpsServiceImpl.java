@@ -55,14 +55,20 @@ import com.codecoachai.common.vector.domain.VectorSearchResult;
 import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -162,28 +168,51 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (dto == null || !StringUtils.hasText(dto.getTitle()) || !StringUtils.hasText(dto.getContent())) {
             throw new IllegalArgumentException("title and content are required");
         }
+        String normalizedContent = normalizeKnowledgeContent(dto.getContent());
+        String contentHash = knowledgeHash(normalizedContent);
+        PersonalKnowledgeDocument duplicateDocument = findExistingKnowledgeDocument(userId, contentHash);
+        if (duplicateDocument != null) {
+            KnowledgeDocumentVO duplicateVO = toKnowledgeDocumentVO(duplicateDocument, chunkCount(duplicateDocument.getId()), false);
+            duplicateVO.setDuplicateDocument(true);
+            duplicateVO.setDuplicateDocumentId(duplicateDocument.getId());
+            duplicateVO.setDuplicateChunkCount(duplicateVO.getChunkCount());
+            return duplicateVO;
+        }
         PersonalKnowledgeDocument document = new PersonalKnowledgeDocument();
         document.setUserId(userId);
         document.setTitle(dto.getTitle().trim());
         document.setDocumentType(firstText(dto.getDocumentType(), "NOTE"));
         document.setContent(dto.getContent());
+        document.setContentHash(contentHash);
         document.setStatus("INDEXED");
         personalKnowledgeDocumentMapper.insert(document);
 
         int index = 0;
+        int duplicateChunkCount = 0;
         List<PersonalKnowledgeChunk> chunks = new ArrayList<>();
-        for (String chunkContent : splitChunks(dto.getContent())) {
+        Set<String> existingChunkHashes = existingChunkHashes(userId);
+        Set<String> seenChunkHashes = new HashSet<>();
+        for (String chunkContent : splitChunks(normalizedContent)) {
+            String chunkHash = knowledgeHash(chunkContent);
+            if (!StringUtils.hasText(chunkHash) || existingChunkHashes.contains(chunkHash) || !seenChunkHashes.add(chunkHash)) {
+                duplicateChunkCount++;
+                continue;
+            }
             PersonalKnowledgeChunk chunk = new PersonalKnowledgeChunk();
             chunk.setUserId(userId);
             chunk.setDocumentId(document.getId());
             chunk.setChunkIndex(index++);
             chunk.setContent(chunkContent);
+            chunk.setChunkHash(chunkHash);
             chunk.setSourceRef(document.getTitle() + "#" + index);
             personalKnowledgeChunkMapper.insert(chunk);
             chunks.add(chunk);
         }
         indexPersonalKnowledgeVectors(userId, document, chunks);
-        return toKnowledgeDocumentVO(document, index, true);
+        KnowledgeDocumentVO vo = toKnowledgeDocumentVO(document, index, true);
+        vo.setDuplicateDocument(false);
+        vo.setDuplicateChunkCount(duplicateChunkCount);
+        return vo;
     }
 
     @Override
@@ -306,12 +335,14 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         boolean vectorEnabled = vectorStoreClient.isEnabled();
         int chunkCount = 0;
         int vectorUpdated = 0;
+        int duplicateChunkCount = 0;
         List<Long> failedDocuments = new ArrayList<>();
         List<String> errors = new ArrayList<>();
 
         for (PersonalKnowledgeDocument document : documents) {
             List<PersonalKnowledgeChunk> chunks = listDocumentChunks(userId, document.getId());
             chunkCount += chunks.size();
+            duplicateChunkCount += duplicateChunkCount(chunks);
             if (!vectorEnabled || chunks.isEmpty()) {
                 continue;
             }
@@ -330,6 +361,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDocumentCount(documents.size());
         vo.setChunkCount(chunkCount);
         vo.setVectorUpdated(vectorUpdated);
+        vo.setDuplicateChunkCount(duplicateChunkCount);
         vo.setFailedDocuments(failedDocuments);
         vo.setErrors(errors);
         return vo;
@@ -577,6 +609,38 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .eq(PersonalKnowledgeChunk::getDocumentId, documentId)).intValue();
     }
 
+    private PersonalKnowledgeDocument findExistingKnowledgeDocument(Long userId, String contentHash) {
+        if (!StringUtils.hasText(contentHash)) {
+            return null;
+        }
+        return personalKnowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                .eq(PersonalKnowledgeDocument::getUserId, userId)
+                .eq(PersonalKnowledgeDocument::getContentHash, contentHash)
+                .last("LIMIT 1"));
+    }
+
+    private Set<String> existingChunkHashes(Long userId) {
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .isNotNull(PersonalKnowledgeChunk::getChunkHash))
+                .stream()
+                .map(PersonalKnowledgeChunk::getChunkHash)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.toSet());
+    }
+
+    private int duplicateChunkCount(List<PersonalKnowledgeChunk> chunks) {
+        Set<String> seen = new HashSet<>();
+        int duplicates = 0;
+        for (PersonalKnowledgeChunk chunk : chunks) {
+            String hash = chunk.getChunkHash();
+            if (StringUtils.hasText(hash) && !seen.add(hash)) {
+                duplicates++;
+            }
+        }
+        return duplicates;
+    }
+
     private List<PersonalKnowledgeDocument> listRebuildDocuments(Long userId, Long documentId) {
         if (documentId != null) {
             return List.of(ownedDocument(userId, documentId));
@@ -630,6 +694,28 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return content.replace("\r\n", "\n")
                 .replace('\r', '\n')
                 .trim();
+    }
+
+    private String normalizeKnowledgeFingerprint(String content) {
+        if (!StringUtils.hasText(content)) {
+            return "";
+        }
+        return normalizeKnowledgeContent(content)
+                .toLowerCase()
+                .replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+    }
+
+    private String knowledgeHash(String content) {
+        String normalized = normalizeKnowledgeFingerprint(content);
+        if (!StringUtils.hasText(normalized)) {
+            return null;
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(normalized.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 algorithm is not available", ex);
+        }
     }
 
     private List<String> splitSemanticBlocks(String content) {
@@ -969,6 +1055,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDocumentType(document.getDocumentType());
         vo.setStatus(document.getStatus());
         vo.setChunkCount(chunkCount);
+        vo.setDuplicateDocument(false);
+        vo.setDuplicateChunkCount(0);
         vo.setContent(includeContent ? document.getContent() : null);
         vo.setCreatedAt(document.getCreatedAt());
         vo.setUpdatedAt(document.getUpdatedAt());

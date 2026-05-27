@@ -10,6 +10,9 @@ public class KnowledgeDocumentVO {
     private String documentType;
     private String status;
     private Integer chunkCount;
+    private Integer duplicateChunkCount;
+    private Long duplicateDocumentId;
+    private Boolean duplicateDocument;
     private String content;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

@@ -9,6 +9,7 @@ public class KnowledgeVectorRebuildVO {
     private Integer documentCount;
     private Integer chunkCount;
     private Integer vectorUpdated;
+    private Integer duplicateChunkCount;
     private List<Long> failedDocuments;
     private List<String> errors;
 }
