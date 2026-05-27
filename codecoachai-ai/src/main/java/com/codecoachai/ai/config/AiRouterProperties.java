@@ -56,6 +56,7 @@ public class AiRouterProperties {
         private String defaultProvider = "deepseek";
         /** 降级 provider 名称；为空则不启用降级 */
         private String fallbackProvider = "";
+        private String embeddingProvider = "dashscope";
         /** 全局是否启用降级 */
         private Boolean fallbackEnabled = true;
     }
@@ -68,6 +69,7 @@ public class AiRouterProperties {
         private String chatModel = "";
         /** 推理/长上下文模型（如 deepseek-reasoner / qwen-max） */
         private String reasonerModel = "";
+        private String embeddingModel = "";
         private Integer timeoutSeconds = 60;
         private Double temperature = 0.3;
         private Integer maxTokens = 2048;

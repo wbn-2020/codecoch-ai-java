@@ -90,17 +90,20 @@ codecoachai:
     router:
       default-provider: deepseek
       fallback-provider: dashscope
+      embedding-provider: dashscope
     providers:
       deepseek:
         base-url: https://api.deepseek.com
         api-key: ${DEEPSEEK_API_KEY:}
         chat-model: deepseek-chat
         reasoner-model: deepseek-reasoner
+        embedding-model:
       dashscope:
         base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
         api-key: ${DASHSCOPE_API_KEY:}
         chat-model: qwen-plus
         reasoner-model: qwen-max
+        embedding-model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v3}
     quota:
       per-user-day: 200
       per-user-minute: 20
