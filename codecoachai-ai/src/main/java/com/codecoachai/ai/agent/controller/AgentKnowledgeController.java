@@ -6,6 +6,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.core.domain.Result;
@@ -38,6 +39,12 @@ public class AgentKnowledgeController {
     public Result<List<KnowledgeDocumentVO>> listDocuments() {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.listKnowledgeDocuments(userId));
+    }
+
+    @GetMapping("/stats")
+    public Result<KnowledgeStatsVO> stats() {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.getKnowledgeStats(userId));
     }
 
     @GetMapping("/documents/{id}")

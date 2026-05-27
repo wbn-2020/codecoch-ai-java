@@ -25,6 +25,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
@@ -224,6 +225,32 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .stream()
                 .map(document -> toKnowledgeDocumentVO(document, chunkCount(document.getId()), false))
                 .toList();
+    }
+
+    @Override
+    public KnowledgeStatsVO getKnowledgeStats(Long userId) {
+        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .select(PersonalKnowledgeChunk::getId, PersonalKnowledgeChunk::getChunkHash));
+        long duplicateCount = chunks.stream()
+                .map(PersonalKnowledgeChunk::getChunkHash)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
+                .values()
+                .stream()
+                .filter(count -> count > 1)
+                .mapToLong(count -> count - 1)
+                .sum();
+        KnowledgeStatsVO vo = new KnowledgeStatsVO();
+        vo.setDocumentCount(personalKnowledgeDocumentMapper.selectCount(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                .eq(PersonalKnowledgeDocument::getUserId, userId)).intValue());
+        vo.setChunkCount(chunks.size());
+        vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
+        vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
+        vo.setChunkStrategy("SEMANTIC_BLOCK_800_OVERLAP_80");
+        return vo;
     }
 
     @Override

@@ -12,6 +12,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
@@ -32,6 +33,8 @@ public interface AgentV4OpsService {
     KnowledgeDocumentVO createKnowledgeDocument(Long userId, KnowledgeDocumentCreateDTO dto);
 
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);
+
+    KnowledgeStatsVO getKnowledgeStats(Long userId);
 
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
 
