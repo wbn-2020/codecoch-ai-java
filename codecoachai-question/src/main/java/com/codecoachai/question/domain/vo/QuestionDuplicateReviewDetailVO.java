@@ -2,6 +2,7 @@ package com.codecoachai.question.domain.vo;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -14,6 +15,7 @@ public class QuestionDuplicateReviewDetailVO {
     private String matchType;
     private BigDecimal similarityScore;
     private String matchReason;
+    private List<QuestionDuplicateReviewListVO.ScorePart> scoreParts;
     private String sourceTitleSnapshot;
     private String targetTitleSnapshot;
     private String sourceContentSnapshot;

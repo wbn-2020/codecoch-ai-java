@@ -336,7 +336,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                     .collectionName(QUESTION_COLLECTION)
                     .vector(sourceVector)
                     .mustMatchPayload(questionVectorFilter(source))
-                    .limit(duplicateProperties.getVectorSearchLimit())
+                    .limit(Math.max(duplicateProperties.getVectorSearchLimit(), duplicateProperties.getVectorSearchLimit() * 2))
                     .build());
             if (hits.isEmpty()) {
                 return List.of();
@@ -453,9 +453,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     private Map<String, Object> questionVectorFilter(Question source) {
         Map<String, Object> filter = new LinkedHashMap<>();
         filter.put("status", CommonConstants.YES);
-        if (source.getCategoryId() != null) {
-            filter.put("categoryId", source.getCategoryId());
-        }
+
         if (StringUtils.hasText(source.getQuestionType())) {
             filter.put("questionType", source.getQuestionType());
         }
@@ -601,6 +599,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         vo.setMatchType(review.getMatchType());
         vo.setSimilarityScore(review.getSimilarityScore());
         vo.setMatchReason(review.getMatchReason());
+        vo.setScoreParts(scoreParts(review));
         vo.setSourceGroupId(review.getSourceGroupId());
         vo.setTargetGroupId(review.getTargetGroupId());
         vo.setRelationId(review.getRelationId());
@@ -619,6 +618,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         vo.setMatchType(review.getMatchType());
         vo.setSimilarityScore(review.getSimilarityScore());
         vo.setMatchReason(review.getMatchReason());
+        vo.setScoreParts(scoreParts(review));
         vo.setSourceTitleSnapshot(review.getSourceTitleSnapshot());
         vo.setTargetTitleSnapshot(review.getTargetTitleSnapshot());
         vo.setSourceContentSnapshot(review.getSourceContentSnapshot());
@@ -637,6 +637,61 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         return vo;
     }
 
+    private List<QuestionDuplicateReviewListVO.ScorePart> scoreParts(QuestionDuplicateReview review) {
+        if (review == null) {
+            return List.of();
+        }
+        List<QuestionDuplicateReviewListVO.ScorePart> parts = new ArrayList<>();
+        String reason = firstText(review.getMatchReason(), "");
+        if (QuestionDuplicateMatchType.SEMANTIC_SIMILAR.name().equals(review.getMatchType())) {
+            addScorePart(parts, "vectorScore", "向量", parseReasonScore(reason, "vectorScore"));
+            addScorePart(parts, "textScore", "文本", parseReasonScore(reason, "textScore"));
+            addScorePart(parts, "finalScore", "综合", parseReasonScore(reason, "finalScore"));
+        } else if (review.getSimilarityScore() != null) {
+            addScorePart(parts, firstText(review.getMatchType(), "similarity"), "匹配", review.getSimilarityScore());
+        }
+        return parts;
+    }
+
+    private void addScorePart(List<QuestionDuplicateReviewListVO.ScorePart> parts, String code, String label,
+                              BigDecimal score) {
+        if (score == null) {
+            return;
+        }
+        QuestionDuplicateReviewListVO.ScorePart part = new QuestionDuplicateReviewListVO.ScorePart();
+        part.setCode(code);
+        part.setLabel(label);
+        part.setScore(score);
+        parts.add(part);
+    }
+
+    private BigDecimal parseReasonScore(String reason, String key) {
+        if (!StringUtils.hasText(reason) || !StringUtils.hasText(key)) {
+            return null;
+        }
+        String marker = key + "=";
+        int index = reason.indexOf(marker);
+        if (index < 0) {
+            return null;
+        }
+        int start = index + marker.length();
+        int end = start;
+        while (end < reason.length()) {
+            char ch = reason.charAt(end);
+            if (!Character.isDigit(ch) && ch != '.') {
+                break;
+            }
+            end++;
+        }
+        if (end <= start) {
+            return null;
+        }
+        try {
+            return score(Double.parseDouble(reason.substring(start, end)));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
     private QuestionRelationVO toRelationVO(QuestionRelation relation) {
         QuestionRelationVO vo = new QuestionRelationVO();
         vo.setId(relation.getId());
