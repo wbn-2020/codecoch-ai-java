@@ -611,13 +611,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit) {
+    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore) {
         if (!StringUtils.hasText(keyword)) {
             return List.of();
         }
         int size = normalizeLimit(limit);
         String value = keyword.trim();
+        Double normalizedMinScore = normalizeScore(minScore);
         List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, size);
+        semanticResults = filterByMinScore(semanticResults, normalizedMinScore);
         if (!semanticResults.isEmpty()) {
             return semanticResults;
         }
@@ -650,7 +652,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), value, 0.75D, "KEYWORD_CHUNK"));
             }
         }
-        return result.stream().limit(size).toList();
+        return filterByMinScore(result, normalizedMinScore).stream().limit(size).toList();
     }
 
     @Override
@@ -662,7 +664,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         String normalizedQuestion = question.trim();
         int limit = dto == null || dto.getLimit() == null ? knowledgeProperties.safeAskDefaultLimit() : normalizeLimit(dto.getLimit());
         double minScore = knowledgeProperties.safeAskMinScore();
-        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit).stream()
+        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit, minScore).stream()
                 .filter(reference -> reference.getScore() != null && reference.getScore() >= minScore)
                 .toList();
 
@@ -1534,6 +1536,22 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return 10;
         }
         return Math.min(limit, 50);
+    }
+
+    private Double normalizeScore(Double score) {
+        if (score == null) {
+            return null;
+        }
+        return Math.min(Math.max(score, 0D), 1D);
+    }
+
+    private List<KnowledgeSearchResultVO> filterByMinScore(List<KnowledgeSearchResultVO> results, Double minScore) {
+        if (minScore == null || results.isEmpty()) {
+            return results;
+        }
+        return results.stream()
+                .filter(result -> result.getScore() != null && result.getScore() >= minScore)
+                .toList();
     }
 
     private int normalizeDuplicateReviewLimit(Integer limit) {

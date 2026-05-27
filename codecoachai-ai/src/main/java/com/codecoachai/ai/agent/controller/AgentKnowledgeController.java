@@ -150,9 +150,10 @@ public class AgentKnowledgeController {
 
     @GetMapping("/search")
     public Result<List<KnowledgeSearchResultVO>> search(@RequestParam String keyword,
-                                                        @RequestParam(required = false) Integer limit) {
+                                                        @RequestParam(required = false) Integer limit,
+                                                        @RequestParam(required = false) Double minScore) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.searchKnowledge(userId, keyword, limit));
+        return Result.success(agentV4OpsService.searchKnowledge(userId, keyword, limit, minScore));
     }
 
     @PostMapping("/ask")
