@@ -11,6 +11,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
 import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionCaseVO;
@@ -38,6 +39,8 @@ public interface AgentV4OpsService {
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit);
 
     KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto);
+
+    KnowledgeVectorRebuildVO rebuildKnowledgeVectors(Long userId, Long documentId);
 
     List<AnalyticsMetricDefinitionVO> listMetrics(String category, Integer enabled);
 

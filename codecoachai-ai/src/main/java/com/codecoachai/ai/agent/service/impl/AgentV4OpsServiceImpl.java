@@ -24,6 +24,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
 import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionCaseVO;
@@ -300,6 +301,41 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    public KnowledgeVectorRebuildVO rebuildKnowledgeVectors(Long userId, Long documentId) {
+        List<PersonalKnowledgeDocument> documents = listRebuildDocuments(userId, documentId);
+        boolean vectorEnabled = vectorStoreClient.isEnabled();
+        int chunkCount = 0;
+        int vectorUpdated = 0;
+        List<Long> failedDocuments = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+
+        for (PersonalKnowledgeDocument document : documents) {
+            List<PersonalKnowledgeChunk> chunks = listDocumentChunks(userId, document.getId());
+            chunkCount += chunks.size();
+            if (!vectorEnabled || chunks.isEmpty()) {
+                continue;
+            }
+            try {
+                vectorUpdated += upsertPersonalKnowledgeVectors(userId, document, chunks);
+            } catch (Exception ex) {
+                failedDocuments.add(document.getId());
+                String error = "documentId=" + document.getId() + ": " + firstText(ex.getMessage(), ex.getClass().getSimpleName());
+                errors.add(error);
+                log.warn("Personal knowledge vector rebuild failed userId={} documentId={}", userId, document.getId(), ex);
+            }
+        }
+
+        KnowledgeVectorRebuildVO vo = new KnowledgeVectorRebuildVO();
+        vo.setVectorEnabled(vectorEnabled);
+        vo.setDocumentCount(documents.size());
+        vo.setChunkCount(chunkCount);
+        vo.setVectorUpdated(vectorUpdated);
+        vo.setFailedDocuments(failedDocuments);
+        vo.setErrors(errors);
+        return vo;
+    }
+
+    @Override
     public List<AnalyticsMetricDefinitionVO> listMetrics(String category, Integer enabled) {
         return analyticsMetricDefinitionMapper.selectList(new LambdaQueryWrapper<AnalyticsMetricDefinition>()
                         .eq(StringUtils.hasText(category), AnalyticsMetricDefinition::getCategory, category)
@@ -541,6 +577,23 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .eq(PersonalKnowledgeChunk::getDocumentId, documentId)).intValue();
     }
 
+    private List<PersonalKnowledgeDocument> listRebuildDocuments(Long userId, Long documentId) {
+        if (documentId != null) {
+            return List.of(ownedDocument(userId, documentId));
+        }
+        return personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                .eq(PersonalKnowledgeDocument::getUserId, userId)
+                .orderByAsc(PersonalKnowledgeDocument::getId));
+    }
+
+    private List<PersonalKnowledgeChunk> listDocumentChunks(Long userId, Long documentId) {
+        return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                .eq(PersonalKnowledgeChunk::getUserId, userId)
+                .eq(PersonalKnowledgeChunk::getDocumentId, documentId)
+                .orderByAsc(PersonalKnowledgeChunk::getChunkIndex)
+                .orderByAsc(PersonalKnowledgeChunk::getId));
+    }
+
     private List<String> splitChunks(String content) {
         if (!StringUtils.hasText(content)) {
             return List.of();
@@ -674,35 +727,40 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return;
         }
         try {
-            List<List<Float>> vectors = embedTexts(chunks.stream()
-                    .map(PersonalKnowledgeChunk::getContent)
-                    .toList());
-            if (vectors.size() != chunks.size() || vectors.isEmpty()) {
-                log.warn("Personal knowledge embedding size mismatch documentId={} chunkCount={} vectorCount={}",
-                        document.getId(), chunks.size(), vectors.size());
-                return;
-            }
-            vectorStoreClient.ensureCollection(KNOWLEDGE_COLLECTION, vectors.get(0).size());
-            List<VectorPoint> points = new ArrayList<>();
-            for (int i = 0; i < chunks.size(); i++) {
-                PersonalKnowledgeChunk chunk = chunks.get(i);
-                points.add(VectorPoint.builder()
-                        .id(knowledgePointId(chunk.getId()))
-                        .vector(vectors.get(i))
-                        .payload(Map.of(
-                                "userId", userId,
-                                "documentId", document.getId(),
-                                "chunkId", chunk.getId(),
-                                "title", document.getTitle(),
-                                "documentType", firstText(document.getDocumentType(), "NOTE"),
-                                "sourceRef", firstText(chunk.getSourceRef(), document.getTitle())
-                        ))
-                        .build());
-            }
-            vectorStoreClient.upsert(KNOWLEDGE_COLLECTION, points);
+            upsertPersonalKnowledgeVectors(userId, document, chunks);
         } catch (Exception ex) {
             log.warn("Personal knowledge vector indexing failed userId={} documentId={}", userId, document.getId(), ex);
         }
+    }
+
+    private int upsertPersonalKnowledgeVectors(Long userId, PersonalKnowledgeDocument document,
+                                               List<PersonalKnowledgeChunk> chunks) {
+        List<List<Float>> vectors = embedTexts(chunks.stream()
+                .map(PersonalKnowledgeChunk::getContent)
+                .toList());
+        if (vectors.size() != chunks.size() || vectors.isEmpty()) {
+            throw new IllegalStateException("embedding size mismatch, chunkCount=" + chunks.size()
+                    + ", vectorCount=" + vectors.size());
+        }
+        vectorStoreClient.ensureCollection(KNOWLEDGE_COLLECTION, vectors.get(0).size());
+        List<VectorPoint> points = new ArrayList<>();
+        for (int i = 0; i < chunks.size(); i++) {
+            PersonalKnowledgeChunk chunk = chunks.get(i);
+            points.add(VectorPoint.builder()
+                    .id(knowledgePointId(chunk.getId()))
+                    .vector(vectors.get(i))
+                    .payload(Map.of(
+                            "userId", userId,
+                            "documentId", document.getId(),
+                            "chunkId", chunk.getId(),
+                            "title", document.getTitle(),
+                            "documentType", firstText(document.getDocumentType(), "NOTE"),
+                            "sourceRef", firstText(chunk.getSourceRef(), document.getTitle())
+                    ))
+                    .build());
+        }
+        vectorStoreClient.upsert(KNOWLEDGE_COLLECTION, points);
+        return points.size();
     }
 
     private void deletePersonalKnowledgeVectors(List<PersonalKnowledgeChunk> chunks) {

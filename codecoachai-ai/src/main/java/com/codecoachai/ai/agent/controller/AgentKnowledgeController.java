@@ -5,6 +5,7 @@ import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
@@ -62,5 +63,11 @@ public class AgentKnowledgeController {
     public Result<KnowledgeAskVO> ask(@RequestBody KnowledgeAskDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.askKnowledge(userId, dto));
+    }
+
+    @PostMapping("/vectors/rebuild")
+    public Result<KnowledgeVectorRebuildVO> rebuildVectors(@RequestParam(required = false) Long documentId) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.rebuildKnowledgeVectors(userId, documentId));
     }
 }
