@@ -26,6 +26,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentOptionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
@@ -291,6 +292,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .map(String::trim)
                 .distinct()
                 .sorted()
+                .toList();
+    }
+
+    @Override
+    public List<KnowledgeDocumentOptionVO> listKnowledgeDocumentOptions(Long userId) {
+        return personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .select(PersonalKnowledgeDocument::getId,
+                                PersonalKnowledgeDocument::getTitle,
+                                PersonalKnowledgeDocument::getDocumentType,
+                                PersonalKnowledgeDocument::getStatus)
+                        .orderByDesc(PersonalKnowledgeDocument::getUpdatedAt))
+                .stream()
+                .map(this::toKnowledgeDocumentOptionVO)
                 .toList();
     }
 
@@ -1764,6 +1779,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setFeedbackType(feedback.getFeedbackType());
         vo.setComment(feedback.getComment());
         vo.setCreatedAt(feedback.getCreatedAt());
+        return vo;
+    }
+
+    private KnowledgeDocumentOptionVO toKnowledgeDocumentOptionVO(PersonalKnowledgeDocument document) {
+        KnowledgeDocumentOptionVO vo = new KnowledgeDocumentOptionVO();
+        vo.setId(document.getId());
+        vo.setTitle(document.getTitle());
+        vo.setDocumentType(document.getDocumentType());
+        vo.setStatus(document.getStatus());
         return vo;
     }
 

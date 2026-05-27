@@ -11,6 +11,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentOptionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
@@ -45,6 +46,8 @@ public interface AgentV4OpsService {
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status);
 
     List<String> listKnowledgeDocumentTypes(Long userId);
+
+    List<KnowledgeDocumentOptionVO> listKnowledgeDocumentOptions(Long userId);
 
     KnowledgeStatsVO getKnowledgeStats(Long userId);
 

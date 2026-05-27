@@ -5,6 +5,7 @@ import com.codecoachai.ai.agent.domain.dto.KnowledgeDocumentCreateDTO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentOptionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
@@ -70,6 +71,12 @@ public class AgentKnowledgeController {
     public Result<List<String>> documentTypes() {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.listKnowledgeDocumentTypes(userId));
+    }
+
+    @GetMapping("/documents/options")
+    public Result<List<KnowledgeDocumentOptionVO>> documentOptions() {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.listKnowledgeDocumentOptions(userId));
     }
 
     @GetMapping("/stats")
