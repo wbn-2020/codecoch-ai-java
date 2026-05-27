@@ -50,11 +50,13 @@ public class QuestionEmbeddingIndexServiceImpl implements QuestionEmbeddingIndex
                 .orderByDesc(Question::getUpdatedAt)
                 .last("LIMIT " + size));
         int metadataUpdated = upsertMetadata(questions);
-        int vectorUpdated = indexQuestions(questions);
+        IndexResult indexResult = indexQuestions(questions);
         return Map.of(
                 "updated", metadataUpdated,
                 "vectorEnabled", vectorStoreClient.isEnabled(),
-                "vectorUpdated", vectorUpdated
+                "vectorUpdated", indexResult.vectorUpdated(),
+                "failedBatches", indexResult.failedBatches(),
+                "errors", indexResult.errors()
         );
     }
 
@@ -113,33 +115,52 @@ public class QuestionEmbeddingIndexServiceImpl implements QuestionEmbeddingIndex
         return updated;
     }
 
-    private int indexQuestions(List<Question> questions) {
+    private IndexResult indexQuestions(List<Question> questions) {
+        List<String> errors = new ArrayList<>();
         if (!vectorStoreClient.isEnabled() || questions.isEmpty()) {
-            return 0;
+            return new IndexResult(0, 0, errors);
         }
-        List<VectorPoint> vectorPoints = buildVectorPoints(questions);
+        List<VectorPoint> vectorPoints = buildVectorPoints(questions, errors);
         if (vectorPoints.isEmpty()) {
-            return 0;
+            return new IndexResult(0, errors.size(), errors);
         }
-        vectorStoreClient.ensureCollection(QUESTION_COLLECTION, vectorPoints.get(0).getVector().size());
-        vectorStoreClient.upsert(QUESTION_COLLECTION, vectorPoints);
-        return vectorPoints.size();
+        try {
+            vectorStoreClient.ensureCollection(QUESTION_COLLECTION, vectorPoints.get(0).getVector().size());
+            vectorStoreClient.upsert(QUESTION_COLLECTION, vectorPoints);
+        } catch (Exception ex) {
+            log.warn("Question vector upsert failed pointCount={}", vectorPoints.size(), ex);
+            errors.add("vector upsert failed: " + trimError(ex.getMessage()));
+            return new IndexResult(0, errors.size(), errors);
+        }
+        return new IndexResult(vectorPoints.size(), errors.size(), errors);
     }
 
-    private List<VectorPoint> buildVectorPoints(List<Question> questions) {
+    private List<VectorPoint> buildVectorPoints(List<Question> questions, List<String> errors) {
         List<VectorPoint> points = new ArrayList<>();
         for (int start = 0; start < questions.size(); start += EMBEDDING_BATCH_SIZE) {
             int end = Math.min(questions.size(), start + EMBEDDING_BATCH_SIZE);
             List<Question> batch = questions.subList(start, end);
             EmbeddingRequestDTO request = new EmbeddingRequestDTO();
             request.setTexts(batch.stream().map(this::questionVectorText).toList());
-            Result<EmbeddingResponseVO> response = aiEmbeddingFeignClient.embeddings(request);
+            Result<EmbeddingResponseVO> response;
+            try {
+                response = aiEmbeddingFeignClient.embeddings(request);
+            } catch (Exception ex) {
+                log.warn("Question embedding request failed batchStart={} batchSize={}", start, batch.size(), ex);
+                errors.add("embedding batch " + start + " failed: " + trimError(ex.getMessage()));
+                continue;
+            }
             if (response == null || !response.isSuccess() || response.getData() == null
                     || response.getData().getVectors() == null) {
                 log.warn("Question embedding response empty batchSize={}", batch.size());
+                errors.add("embedding batch " + start + " returned empty response");
                 continue;
             }
             List<List<Float>> vectors = response.getData().getVectors();
+            if (vectors.size() != batch.size()) {
+                errors.add("embedding batch " + start + " vector count mismatch: expected "
+                        + batch.size() + ", actual " + vectors.size());
+            }
             for (int i = 0; i < batch.size() && i < vectors.size(); i++) {
                 Question question = batch.get(i);
                 points.add(VectorPoint.builder()
@@ -156,7 +177,7 @@ public class QuestionEmbeddingIndexServiceImpl implements QuestionEmbeddingIndex
         if (!vectorStoreClient.isEnabled() || sourceQuestion.getId() == null) {
             return List.of();
         }
-        List<VectorPoint> sourcePoints = buildVectorPoints(List.of(sourceQuestion));
+        List<VectorPoint> sourcePoints = buildVectorPoints(List.of(sourceQuestion), new ArrayList<>());
         if (sourcePoints.isEmpty()) {
             return List.of();
         }
@@ -305,5 +326,15 @@ public class QuestionEmbeddingIndexServiceImpl implements QuestionEmbeddingIndex
 
     private String firstText(String first, String second) {
         return StringUtils.hasText(first) ? first : second;
+    }
+
+    private String trimError(String message) {
+        if (!StringUtils.hasText(message)) {
+            return "unknown error";
+        }
+        return message.length() <= 180 ? message : message.substring(0, 180);
+    }
+
+    private record IndexResult(int vectorUpdated, int failedBatches, List<String> errors) {
     }
 }
