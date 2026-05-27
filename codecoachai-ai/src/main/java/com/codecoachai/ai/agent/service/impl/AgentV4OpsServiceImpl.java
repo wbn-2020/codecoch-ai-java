@@ -72,6 +72,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.MatchResult;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -349,12 +352,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
         List<KnowledgeSearchResultVO> result = new ArrayList<>();
         for (PersonalKnowledgeDocument document : documents) {
-            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), value), 0.6D, "KEYWORD_DOCUMENT"));
+            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), value), value, 0.6D, "KEYWORD_DOCUMENT"));
         }
         for (PersonalKnowledgeChunk chunk : chunks) {
             PersonalKnowledgeDocument document = docMap.get(chunk.getDocumentId());
             if (document != null && Objects.equals(document.getUserId(), userId)) {
-                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), 0.75D, "KEYWORD_CHUNK"));
+                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), value, 0.75D, "KEYWORD_CHUNK"));
             }
         }
         return result.stream().limit(size).toList();
@@ -1012,7 +1015,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                         if (document == null || hit == null) {
                             return null;
                         }
-                        return toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), keyword),
+                        return toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), keyword), keyword,
                                 hit.getScore(), "VECTOR");
                     })
                     .filter(Objects::nonNull)
@@ -1127,6 +1130,35 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return text.substring(start, end);
     }
 
+    private List<String> matchedTerms(String text, String keyword) {
+        if (!StringUtils.hasText(text) || !StringUtils.hasText(keyword)) {
+            return List.of();
+        }
+        String lowerText = text.toLowerCase();
+        return Pattern.compile("[\\p{IsAlphabetic}\\p{IsDigit}\\p{IsHan}]+")
+                .matcher(keyword.toLowerCase())
+                .results()
+                .map(MatchResult::group)
+                .filter(term -> term.length() >= 2)
+                .distinct()
+                .filter(lowerText::contains)
+                .limit(8)
+                .toList();
+    }
+
+    private String highlightedSnippet(String snippet, List<String> terms) {
+        if (!StringUtils.hasText(snippet) || terms == null || terms.isEmpty()) {
+            return snippet;
+        }
+        String highlighted = snippet;
+        for (String term : terms) {
+            highlighted = Pattern.compile(Pattern.quote(term), Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE)
+                    .matcher(highlighted)
+                    .replaceAll(match -> "[[H]]" + Matcher.quoteReplacement(match.group()) + "[[/H]]");
+        }
+        return highlighted;
+    }
+
     private AgentFeedbackVO toFeedbackVO(AgentFeedback feedback) {
         AgentFeedbackVO vo = new AgentFeedbackVO();
         vo.setId(feedback.getId());
@@ -1155,13 +1187,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private KnowledgeSearchResultVO toKnowledgeSearchVO(PersonalKnowledgeDocument document, PersonalKnowledgeChunk chunk,
-                                                        String snippet, Double score, String matchType) {
+                                                        String snippet, String keyword, Double score, String matchType) {
         KnowledgeSearchResultVO vo = new KnowledgeSearchResultVO();
         vo.setDocumentId(document.getId());
         vo.setChunkId(chunk == null ? null : chunk.getId());
         vo.setTitle(document.getTitle());
         vo.setDocumentType(document.getDocumentType());
         vo.setSnippet(snippet);
+        List<String> terms = matchedTerms(snippet, keyword);
+        vo.setMatchedTerms(terms);
+        vo.setHighlightedSnippet(highlightedSnippet(snippet, terms));
         vo.setSourceRef(chunk == null ? document.getTitle() : chunk.getSourceRef());
         vo.setScore(score);
         vo.setMatchType(matchType);
