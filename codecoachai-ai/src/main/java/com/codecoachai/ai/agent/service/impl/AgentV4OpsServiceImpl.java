@@ -684,6 +684,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         KnowledgeAskVO vo = new KnowledgeAskVO();
         vo.setQuestion(normalizedQuestion);
         vo.setReferences(references);
+        vo.setReferenceCount(references.size());
+        vo.setTopReferenceScore(references.stream()
+                .map(KnowledgeSearchResultVO::getScore)
+                .filter(Objects::nonNull)
+                .max(Double::compareTo)
+                .orElse(null));
         vo.setMinReferenceScore(minScore);
         vo.setInsufficientReferences(references.isEmpty());
         vo.setGeneratedAt(LocalDateTime.now());
