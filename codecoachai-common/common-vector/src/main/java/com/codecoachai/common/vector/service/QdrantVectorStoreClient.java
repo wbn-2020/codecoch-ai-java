@@ -1,6 +1,7 @@
 package com.codecoachai.common.vector.service;
 
 import com.codecoachai.common.vector.config.VectorStoreProperties;
+import com.codecoachai.common.vector.domain.VectorCollectionInfo;
 import com.codecoachai.common.vector.domain.VectorPoint;
 import com.codecoachai.common.vector.domain.VectorSearchRequest;
 import com.codecoachai.common.vector.domain.VectorSearchResult;
@@ -45,6 +46,36 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         vectors.put("size", dimension);
         vectors.put("distance", "Cosine");
         send("PUT", "/collections/" + collectionName, Map.of("vectors", vectors));
+    }
+
+    @Override
+    public VectorCollectionInfo collectionInfo(String collectionName) {
+        if (!isEnabled()) {
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(false)
+                    .status("DISABLED")
+                    .build();
+        }
+        try {
+            JsonNode result = send("GET", "/collections/" + collectionName, null).path("result");
+            JsonNode vectors = result.path("config").path("params").path("vectors");
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(true)
+                    .status(result.path("status").asText("UNKNOWN"))
+                    .pointCount(result.path("points_count").isMissingNode() ? null : result.path("points_count").asLong())
+                    .vectorSize(vectors.path("size").isMissingNode() ? null : vectors.path("size").asInt())
+                    .distance(vectors.path("distance").asText(null))
+                    .build();
+        } catch (Exception ex) {
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(false)
+                    .status("ERROR")
+                    .errorMessage(ex.getMessage())
+                    .build();
+        }
     }
 
     @Override
@@ -117,8 +148,10 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
             if (StringUtils.hasText(properties.getApiKey())) {
                 builder.header("api-key", properties.getApiKey());
             }
-            HttpRequest request = builder.method(method,
-                    HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+            HttpRequest.BodyPublisher publisher = body == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body));
+            HttpRequest request = builder.method(method, publisher).build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new VectorStoreException("Qdrant request failed status=" + response.statusCode()
