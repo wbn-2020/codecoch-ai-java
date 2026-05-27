@@ -630,7 +630,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore, String documentType) {
+    public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore,
+                                                         Long documentId, String documentType) {
         if (!StringUtils.hasText(keyword)) {
             return List.of();
         }
@@ -638,16 +639,18 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         String value = keyword.trim();
         Double normalizedMinScore = normalizeScore(minScore);
         String normalizedDocumentType = normalizeKeyword(documentType);
-        List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, size, normalizedDocumentType);
-        List<KnowledgeSearchResultVO> keywordResults = searchKnowledgeByKeyword(userId, value, size, normalizedDocumentType);
+        List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, size, documentId, normalizedDocumentType);
+        List<KnowledgeSearchResultVO> keywordResults = searchKnowledgeByKeyword(userId, value, size, documentId, normalizedDocumentType);
         List<KnowledgeSearchResultVO> mergedResults = mergeKnowledgeSearchResults(semanticResults, keywordResults);
         return filterByMinScore(mergedResults, normalizedMinScore).stream().limit(size).toList();
     }
 
-    private List<KnowledgeSearchResultVO> searchKnowledgeByKeyword(Long userId, String value, int size, String documentType) {
+    private List<KnowledgeSearchResultVO> searchKnowledgeByKeyword(Long userId, String value, int size,
+                                                                   Long documentId, String documentType) {
         List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                         .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .eq(documentId != null, PersonalKnowledgeDocument::getId, documentId)
                         .eq(StringUtils.hasText(documentType), PersonalKnowledgeDocument::getDocumentType, documentType)
                         .and(query -> query.like(PersonalKnowledgeDocument::getTitle, value)
                                 .or()
@@ -659,6 +662,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .eq(documentId != null, PersonalKnowledgeChunk::getDocumentId, documentId)
                         .like(PersonalKnowledgeChunk::getContent, value)
                         .last("LIMIT " + (StringUtils.hasText(documentType) ? Math.max(size * 5, 50) : Math.max(size, 30))));
         for (PersonalKnowledgeChunk chunk : chunks) {
@@ -695,7 +699,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 ? knowledgeProperties.safeAskMinScore()
                 : normalizeScore(dto.getMinScore());
         String documentType = dto == null ? null : normalizeKeyword(dto.getDocumentType());
-        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit, minScore, documentType).stream()
+        Long documentId = dto == null ? null : dto.getDocumentId();
+        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit, minScore, documentId, documentType).stream()
                 .filter(reference -> reference.getScore() != null && reference.getScore() >= minScore)
                 .toList();
 
@@ -1464,7 +1469,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .toList());
     }
 
-    private List<KnowledgeSearchResultVO> searchKnowledgeByVector(Long userId, String keyword, int limit, String documentType) {
+    private List<KnowledgeSearchResultVO> searchKnowledgeByVector(Long userId, String keyword, int limit,
+                                                                  Long documentId, String documentType) {
         if (!vectorStoreClient.isEnabled()) {
             return List.of();
         }
@@ -1475,6 +1481,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             }
             Map<String, Object> payloadFilter = new LinkedHashMap<>();
             payloadFilter.put("userId", userId);
+            if (documentId != null) {
+                payloadFilter.put("documentId", documentId);
+            }
             if (StringUtils.hasText(documentType)) {
                 payloadFilter.put("documentType", documentType);
             }
