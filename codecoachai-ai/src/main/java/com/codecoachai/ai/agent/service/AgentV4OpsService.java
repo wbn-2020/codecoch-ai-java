@@ -10,6 +10,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
@@ -40,6 +41,8 @@ public interface AgentV4OpsService {
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);
 
     KnowledgeStatsVO getKnowledgeStats(Long userId);
+
+    KnowledgeConfigVO getKnowledgeConfig(Long userId);
 
     KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id);
 

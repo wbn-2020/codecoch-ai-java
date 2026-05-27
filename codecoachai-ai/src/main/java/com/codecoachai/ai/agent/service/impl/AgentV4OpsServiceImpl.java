@@ -23,6 +23,7 @@ import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO.Feedback
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
@@ -106,6 +107,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS = 100_000;
     private static final double KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD = 0.88D;
     private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown", "pdf", "docx", "doc");
+    private static final String KNOWLEDGE_CHUNK_STRATEGY = "SEMANTIC_BLOCK_800_OVERLAP_80";
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -294,7 +296,26 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
-        vo.setChunkStrategy("SEMANTIC_BLOCK_800_OVERLAP_80");
+        vo.setChunkStrategy(KNOWLEDGE_CHUNK_STRATEGY);
+        return vo;
+    }
+
+    @Override
+    public KnowledgeConfigVO getKnowledgeConfig(Long userId) {
+        KnowledgeConfigVO vo = new KnowledgeConfigVO();
+        vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setVectorCollection(KNOWLEDGE_COLLECTION);
+        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
+        vo.setChunkStrategy(KNOWLEDGE_CHUNK_STRATEGY);
+        vo.setChunkSize(CHUNK_SIZE);
+        vo.setChunkOverlap(CHUNK_OVERLAP);
+        vo.setMinChunkSize(MIN_CHUNK_SIZE);
+        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        vo.setUploadMaxBytes(KNOWLEDGE_UPLOAD_MAX_BYTES);
+        vo.setUploadMaxTextChars(KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
+        vo.setUploadExtensions(KNOWLEDGE_UPLOAD_EXTENSIONS.stream().sorted().toList());
+        vo.setExactDedupScope("PER_USER_DOCUMENT_AND_CHUNK_HASH");
+        vo.setNearDuplicateAction("WARN_ONLY");
         return vo;
     }
 
