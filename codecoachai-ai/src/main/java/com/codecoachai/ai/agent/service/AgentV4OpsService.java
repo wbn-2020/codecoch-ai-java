@@ -33,6 +33,8 @@ public interface AgentV4OpsService {
 
     KnowledgeDocumentVO createKnowledgeDocument(Long userId, KnowledgeDocumentCreateDTO dto);
 
+    KnowledgeDocumentVO updateKnowledgeDocument(Long userId, Long documentId, KnowledgeDocumentCreateDTO dto);
+
     KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType);
 
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId);

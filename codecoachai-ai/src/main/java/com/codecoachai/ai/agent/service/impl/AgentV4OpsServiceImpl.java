@@ -203,36 +203,33 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setContentHash(contentHash);
         document.setStatus("INDEXED");
         personalKnowledgeDocumentMapper.insert(document);
-
-        int index = 0;
-        int duplicateChunkCount = 0;
-        List<PersonalKnowledgeChunk> chunks = new ArrayList<>();
-        Set<String> existingChunkHashes = existingChunkHashes(userId);
-        Set<String> seenChunkHashes = new HashSet<>();
-        for (String chunkContent : splitChunks(normalizedContent)) {
-            String chunkHash = knowledgeHash(chunkContent);
-            if (!StringUtils.hasText(chunkHash) || existingChunkHashes.contains(chunkHash) || !seenChunkHashes.add(chunkHash)) {
-                duplicateChunkCount++;
-                continue;
-            }
-            PersonalKnowledgeChunk chunk = new PersonalKnowledgeChunk();
-            chunk.setUserId(userId);
-            chunk.setDocumentId(document.getId());
-            chunk.setChunkIndex(index++);
-            chunk.setContent(chunkContent);
-            chunk.setChunkHash(chunkHash);
-            chunk.setSourceRef(document.getTitle() + "#" + index);
-            personalKnowledgeChunkMapper.insert(chunk);
-            chunks.add(chunk);
-        }
-        int nearDuplicateChunkCount = countNearDuplicateChunks(userId, chunks);
-        indexPersonalKnowledgeVectors(userId, document, chunks);
-        KnowledgeDocumentVO vo = toKnowledgeDocumentVO(document, index, true);
+        KnowledgeDocumentVO vo = rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
         vo.setDuplicateDocument(false);
-        vo.setDuplicateChunkCount(duplicateChunkCount);
-        vo.setNearDuplicateChunkCount(nearDuplicateChunkCount);
-        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
         return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public KnowledgeDocumentVO updateKnowledgeDocument(Long userId, Long documentId, KnowledgeDocumentCreateDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getTitle()) || !StringUtils.hasText(dto.getContent())) {
+            throw new IllegalArgumentException("title and content are required");
+        }
+        PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
+        List<PersonalKnowledgeChunk> oldChunks = listDocumentChunks(userId, document.getId());
+        if (!oldChunks.isEmpty()) {
+            personalKnowledgeChunkMapper.delete(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                    .eq(PersonalKnowledgeChunk::getUserId, userId)
+                    .eq(PersonalKnowledgeChunk::getDocumentId, document.getId()));
+            deletePersonalKnowledgeVectors(oldChunks);
+        }
+        String normalizedContent = normalizeKnowledgeContent(dto.getContent());
+        document.setTitle(dto.getTitle().trim());
+        document.setDocumentType(firstText(dto.getDocumentType(), "NOTE"));
+        document.setContent(dto.getContent());
+        document.setContentHash(knowledgeHash(normalizedContent));
+        document.setStatus("INDEXED");
+        personalKnowledgeDocumentMapper.updateById(document);
+        return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
     }
 
     @Override
@@ -828,6 +825,38 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                 .eq(PersonalKnowledgeDocument::getUserId, userId)
                 .orderByAsc(PersonalKnowledgeDocument::getId));
+    }
+
+    private KnowledgeDocumentVO rebuildKnowledgeDocumentChunks(Long userId, PersonalKnowledgeDocument document,
+                                                              String normalizedContent, boolean includeContent) {
+        int index = 0;
+        int duplicateChunkCount = 0;
+        List<PersonalKnowledgeChunk> chunks = new ArrayList<>();
+        Set<String> existingChunkHashes = existingChunkHashes(userId);
+        Set<String> seenChunkHashes = new HashSet<>();
+        for (String chunkContent : splitChunks(normalizedContent)) {
+            String chunkHash = knowledgeHash(chunkContent);
+            if (!StringUtils.hasText(chunkHash) || existingChunkHashes.contains(chunkHash) || !seenChunkHashes.add(chunkHash)) {
+                duplicateChunkCount++;
+                continue;
+            }
+            PersonalKnowledgeChunk chunk = new PersonalKnowledgeChunk();
+            chunk.setUserId(userId);
+            chunk.setDocumentId(document.getId());
+            chunk.setChunkIndex(index++);
+            chunk.setContent(chunkContent);
+            chunk.setChunkHash(chunkHash);
+            chunk.setSourceRef(document.getTitle() + "#" + index);
+            personalKnowledgeChunkMapper.insert(chunk);
+            chunks.add(chunk);
+        }
+        int nearDuplicateChunkCount = countNearDuplicateChunks(userId, chunks);
+        indexPersonalKnowledgeVectors(userId, document, chunks);
+        KnowledgeDocumentVO vo = toKnowledgeDocumentVO(document, index, includeContent);
+        vo.setDuplicateChunkCount(duplicateChunkCount);
+        vo.setNearDuplicateChunkCount(nearDuplicateChunkCount);
+        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        return vo;
     }
 
     private List<PersonalKnowledgeChunk> listDocumentChunks(Long userId, Long documentId) {
