@@ -2,6 +2,7 @@ package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.question.config.QuestionDuplicateProperties;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import java.util.List;
 import java.util.Map;
@@ -18,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class QuestionEmbeddingController {
 
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
+    private final QuestionDuplicateProperties questionDuplicateProperties;
 
     @PostMapping("/admin/questions/embedding/rebuild")
     public Result<Map<String, Object>> rebuild(@RequestBody(required = false) RebuildDTO dto) {
@@ -30,6 +32,12 @@ public class QuestionEmbeddingController {
                                                      @RequestParam(required = false) Integer limit) {
         SecurityAssert.requireLoginUserId();
         return Result.success(questionEmbeddingIndexService.searchSimilar(questionId, limit));
+    }
+
+    @GetMapping("/admin/questions/duplicate/config")
+    public Result<QuestionDuplicateProperties> duplicateConfig() {
+        SecurityAssert.requireAdmin();
+        return Result.success(questionDuplicateProperties);
     }
 
     @Data
