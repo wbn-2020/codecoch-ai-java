@@ -16,6 +16,7 @@ import com.codecoachai.ai.agent.domain.entity.AnalyticsJobLog;
 import com.codecoachai.ai.agent.domain.entity.AnalyticsMetricDefinition;
 import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeChunk;
 import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocument;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocumentVersion;
 import com.codecoachai.ai.agent.domain.entity.PromptRegressionCase;
 import com.codecoachai.ai.agent.domain.entity.PromptRegressionResult;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
@@ -25,6 +26,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeConfigVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVersionVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewItemVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
@@ -41,6 +43,7 @@ import com.codecoachai.ai.agent.mapper.AnalyticsJobLogMapper;
 import com.codecoachai.ai.agent.mapper.AnalyticsMetricDefinitionMapper;
 import com.codecoachai.ai.agent.mapper.PersonalKnowledgeChunkMapper;
 import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentVersionMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionCaseMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
@@ -118,6 +121,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final AgentRunMapper agentRunMapper;
     private final PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
     private final PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
+    private final PersonalKnowledgeDocumentVersionMapper personalKnowledgeDocumentVersionMapper;
     private final AnalyticsMetricDefinitionMapper analyticsMetricDefinitionMapper;
     private final AnalyticsJobLogMapper analyticsJobLogMapper;
     private final PromptRegressionCaseMapper promptRegressionCaseMapper;
@@ -222,6 +226,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
         PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
         List<PersonalKnowledgeChunk> oldChunks = listDocumentChunks(userId, document.getId());
+        snapshotKnowledgeDocumentVersion(userId, document, oldChunks.size());
         if (!oldChunks.isEmpty()) {
             personalKnowledgeChunkMapper.delete(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                     .eq(PersonalKnowledgeChunk::getUserId, userId)
@@ -327,6 +332,19 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public KnowledgeDocumentVO getKnowledgeDocument(Long userId, Long id) {
         PersonalKnowledgeDocument document = ownedDocument(userId, id);
         return toKnowledgeDocumentVO(document, chunkCount(document.getId()), true);
+    }
+
+    @Override
+    public List<KnowledgeDocumentVersionVO> listKnowledgeDocumentVersions(Long userId, Long documentId) {
+        ownedDocument(userId, documentId);
+        return personalKnowledgeDocumentVersionMapper.selectList(
+                        new LambdaQueryWrapper<PersonalKnowledgeDocumentVersion>()
+                                .eq(PersonalKnowledgeDocumentVersion::getUserId, userId)
+                                .eq(PersonalKnowledgeDocumentVersion::getDocumentId, documentId)
+                                .orderByDesc(PersonalKnowledgeDocumentVersion::getVersionNo))
+                .stream()
+                .map(this::toKnowledgeDocumentVersionVO)
+                .toList();
     }
 
     @Override
@@ -864,6 +882,30 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new IllegalArgumentException("Knowledge chunk not found or forbidden");
         }
         return chunk;
+    }
+
+    private void snapshotKnowledgeDocumentVersion(Long userId, PersonalKnowledgeDocument document, int chunkCount) {
+        Integer currentMax = personalKnowledgeDocumentVersionMapper.selectList(
+                        new LambdaQueryWrapper<PersonalKnowledgeDocumentVersion>()
+                                .eq(PersonalKnowledgeDocumentVersion::getUserId, userId)
+                                .eq(PersonalKnowledgeDocumentVersion::getDocumentId, document.getId())
+                                .select(PersonalKnowledgeDocumentVersion::getVersionNo)
+                                .orderByDesc(PersonalKnowledgeDocumentVersion::getVersionNo)
+                                .last("LIMIT 1"))
+                .stream()
+                .findFirst()
+                .map(PersonalKnowledgeDocumentVersion::getVersionNo)
+                .orElse(0);
+        PersonalKnowledgeDocumentVersion version = new PersonalKnowledgeDocumentVersion();
+        version.setUserId(userId);
+        version.setDocumentId(document.getId());
+        version.setVersionNo(currentMax + 1);
+        version.setTitle(document.getTitle());
+        version.setDocumentType(document.getDocumentType());
+        version.setContent(document.getContent());
+        version.setContentHash(document.getContentHash());
+        version.setChunkCount(chunkCount);
+        personalKnowledgeDocumentVersionMapper.insert(version);
     }
 
     private int chunkCount(Long documentId) {
@@ -1496,6 +1538,21 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setContent(includeContent ? document.getContent() : null);
         vo.setCreatedAt(document.getCreatedAt());
         vo.setUpdatedAt(document.getUpdatedAt());
+        return vo;
+    }
+
+    private KnowledgeDocumentVersionVO toKnowledgeDocumentVersionVO(PersonalKnowledgeDocumentVersion version) {
+        KnowledgeDocumentVersionVO vo = new KnowledgeDocumentVersionVO();
+        vo.setId(version.getId());
+        vo.setDocumentId(version.getDocumentId());
+        vo.setVersionNo(version.getVersionNo());
+        vo.setTitle(version.getTitle());
+        vo.setDocumentType(version.getDocumentType());
+        vo.setContent(version.getContent());
+        vo.setContentHash(version.getContentHash());
+        vo.setChunkCount(version.getChunkCount());
+        vo.setCreatedAt(version.getCreatedAt());
+        vo.setUpdatedAt(version.getUpdatedAt());
         return vo;
     }
 
