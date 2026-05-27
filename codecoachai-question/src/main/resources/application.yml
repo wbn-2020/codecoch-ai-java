@@ -16,3 +16,18 @@ spring:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         group: DEFAULT_GROUP
         file-extension: yml
+
+codecoachai:
+  question:
+    duplicate:
+      max-batch-check-count: 100
+      max-rule-candidate-count: 200
+      max-vector-seed-count: 300
+      vector-search-limit: 30
+      embedding-batch-size: 64
+      title-jaccard-threshold: 0.75
+      title-levenshtein-threshold: 0.82
+      content-similarity-threshold: 0.70
+      semantic-similarity-threshold: 0.82
+      semantic-vector-weight: 0.78
+      semantic-text-weight: 0.22

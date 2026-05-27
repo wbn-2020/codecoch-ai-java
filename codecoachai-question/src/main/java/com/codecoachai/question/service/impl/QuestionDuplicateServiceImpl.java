@@ -12,6 +12,7 @@ import com.codecoachai.common.vector.domain.VectorPoint;
 import com.codecoachai.common.vector.domain.VectorSearchRequest;
 import com.codecoachai.common.vector.domain.VectorSearchResult;
 import com.codecoachai.common.vector.service.VectorStoreClient;
+import com.codecoachai.question.config.QuestionDuplicateProperties;
 import com.codecoachai.question.domain.dto.QuestionDuplicateCheckDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateIgnoreDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateMergeDTO;
@@ -61,12 +62,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
 
-    private static final int MAX_BATCH_CHECK_COUNT = 100;
-    private static final int MAX_TARGET_CANDIDATE_COUNT = 200;
-    private static final int MAX_VECTOR_SEED_COUNT = 300;
-    private static final int VECTOR_SEARCH_LIMIT = 30;
-    private static final int EMBEDDING_BATCH_SIZE = 64;
-    private static final double SEMANTIC_SIMILAR_THRESHOLD = 0.82D;
     private static final String QUESTION_COLLECTION = "question_embedding";
 
     private final QuestionMapper questionMapper;
@@ -75,6 +70,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     private final QuestionRelationMapper relationMapper;
     private final AiEmbeddingFeignClient aiEmbeddingFeignClient;
     private final VectorStoreClient vectorStoreClient;
+    private final QuestionDuplicateProperties duplicateProperties;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -84,8 +80,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         if (questionIds.isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "questionId or questionIds is required");
         }
-        if (questionIds.size() > MAX_BATCH_CHECK_COUNT) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "question duplicate check limit is 100");
+        if (questionIds.size() > duplicateProperties.getMaxBatchCheckCount()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "question duplicate check limit is " + duplicateProperties.getMaxBatchCheckCount());
         }
         return checkDuplicate(questionIds, operatorId);
     }
@@ -268,7 +265,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 .eq(StringUtils.hasText(source.getQuestionType()), Question::getQuestionType, source.getQuestionType())
                 .eq(StringUtils.hasText(source.getDifficulty()), Question::getDifficulty, source.getDifficulty())
                 .orderByDesc(Question::getUpdatedAt)
-                .last("limit " + MAX_TARGET_CANDIDATE_COUNT);
+                .last("limit " + duplicateProperties.getMaxRuleCandidateCount());
         return questionMapper.selectList(wrapper);
     }
 
@@ -287,14 +284,15 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         double titleJaccard = QuestionTextNormalizeUtils.jaccard(sourceTitle, targetTitle);
         double titleLevenshtein = QuestionTextNormalizeUtils.levenshteinSimilarity(sourceTitle, targetTitle);
         double titleSimilarity = Math.max(titleJaccard, titleLevenshtein);
-        if (titleJaccard >= 0.75D || titleLevenshtein >= 0.82D) {
+        if (titleJaccard >= duplicateProperties.getTitleJaccardThreshold()
+                || titleLevenshtein >= duplicateProperties.getTitleLevenshteinThreshold()) {
             return new MatchResult(QuestionDuplicateMatchType.TITLE_SIMILAR, score(titleSimilarity * 100D),
                     "title similarity match");
         }
         double contentSimilarity = QuestionTextNormalizeUtils.jaccard(
                 QuestionTextNormalizeUtils.snapshot(source.getContent(), 500),
                 QuestionTextNormalizeUtils.snapshot(target.getContent(), 500));
-        if (contentSimilarity >= 0.70D) {
+        if (contentSimilarity >= duplicateProperties.getContentSimilarityThreshold()) {
             return new MatchResult(QuestionDuplicateMatchType.CONTENT_SIMILAR, score(contentSimilarity * 100D),
                     "content similarity match");
         }
@@ -302,7 +300,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private MatchResult semanticMatch(Question source, Question target, double vectorScore) {
-        if (vectorScore < SEMANTIC_SIMILAR_THRESHOLD) {
+        if (vectorScore < duplicateProperties.getSemanticSimilarityThreshold()) {
             return null;
         }
         double titleSimilarity = Math.max(
@@ -312,7 +310,8 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 QuestionTextNormalizeUtils.snapshot(source.getContent(), 500),
                 QuestionTextNormalizeUtils.snapshot(target.getContent(), 500));
         double textScore = Math.max(titleSimilarity, contentSimilarity);
-        double finalScore = Math.min(1D, vectorScore * 0.78D + textScore * 0.22D);
+        double finalScore = Math.min(1D, vectorScore * duplicateProperties.getSemanticVectorWeight()
+                + textScore * duplicateProperties.getSemanticTextWeight());
         String reason = "semantic vector match; vectorScore=" + score(vectorScore * 100D)
                 + "; textScore=" + score(textScore * 100D)
                 + "; finalScore=" + score(finalScore * 100D);
@@ -337,7 +336,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                     .collectionName(QUESTION_COLLECTION)
                     .vector(sourceVector)
                     .mustMatchPayload(questionVectorFilter(source))
-                    .limit(VECTOR_SEARCH_LIMIT)
+                    .limit(duplicateProperties.getVectorSearchLimit())
                     .build());
             if (hits.isEmpty()) {
                 return List.of();
@@ -379,7 +378,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 .eq(source.getCategoryId() != null, Question::getCategoryId, source.getCategoryId())
                 .eq(StringUtils.hasText(source.getQuestionType()), Question::getQuestionType, source.getQuestionType())
                 .orderByDesc(Question::getUpdatedAt)
-                .last("limit " + MAX_VECTOR_SEED_COUNT));
+                .last("limit " + duplicateProperties.getMaxVectorSeedCount()));
     }
 
     private List<Question> mergeSeedQuestions(Question source, List<Question> ruleCandidates,
@@ -397,8 +396,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
 
     private Map<Long, List<Float>> embedQuestionVectors(List<Question> questions) {
         Map<Long, List<Float>> vectorMap = new LinkedHashMap<>();
-        for (int start = 0; start < questions.size(); start += EMBEDDING_BATCH_SIZE) {
-            int end = Math.min(questions.size(), start + EMBEDDING_BATCH_SIZE);
+        int batchSize = Math.max(1, duplicateProperties.getEmbeddingBatchSize());
+        for (int start = 0; start < questions.size(); start += batchSize) {
+            int end = Math.min(questions.size(), start + batchSize);
             List<Question> batch = questions.subList(start, end);
             EmbeddingRequestDTO request = new EmbeddingRequestDTO();
             request.setTexts(batch.stream().map(this::questionVectorText).toList());
