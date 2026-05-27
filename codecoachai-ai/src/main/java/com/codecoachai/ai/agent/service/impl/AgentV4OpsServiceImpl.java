@@ -2,6 +2,7 @@ package com.codecoachai.ai.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.ai.agent.config.KnowledgeProperties;
 import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
@@ -104,17 +105,6 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
-    private static final int CHUNK_SIZE = 800;
-    private static final int CHUNK_OVERLAP = 80;
-    private static final int MIN_CHUNK_SIZE = 180;
-    private static final int EMBEDDING_BATCH_SIZE = 64;
-    private static final String KNOWLEDGE_COLLECTION = "personal_knowledge_chunk";
-    private static final int ASK_DEFAULT_LIMIT = 5;
-    private static final long KNOWLEDGE_UPLOAD_MAX_BYTES = 8L * 1024 * 1024;
-    private static final int KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS = 100_000;
-    private static final double KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD = 0.88D;
-    private static final Set<String> KNOWLEDGE_UPLOAD_EXTENSIONS = Set.of("txt", "md", "markdown", "pdf", "docx", "doc");
-    private static final String KNOWLEDGE_CHUNK_STRATEGY = "SEMANTIC_BLOCK_800_OVERLAP_80";
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_DEFAULT_LIMIT = 20;
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT = 80;
 
@@ -134,6 +124,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final AiCallLogService aiCallLogService;
     private final EmbeddingService embeddingService;
     private final VectorStoreClient vectorStoreClient;
+    private final KnowledgeProperties knowledgeProperties;
 
     @Override
     public AgentFeedbackVO createFeedback(Long userId, AgentFeedbackCreateDTO dto) {
@@ -250,12 +241,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (file == null || file.isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file is required");
         }
-        if (file.getSize() > KNOWLEDGE_UPLOAD_MAX_BYTES) {
+        if (file.getSize() > knowledgeProperties.getUploadMaxBytes()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file size must be <= 8MB");
         }
         String originalFilename = firstText(file.getOriginalFilename(), "knowledge.txt").trim();
         String extension = fileExtension(originalFilename);
-        if (!KNOWLEDGE_UPLOAD_EXTENSIONS.contains(extension)) {
+        if (!knowledgeProperties.getUploadExtensions().contains(extension)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "only txt, md, markdown, pdf, docx and doc files are supported");
         }
         try {
@@ -307,7 +298,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDuplicateChunkCount(Math.toIntExact(duplicateCount));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
-        vo.setChunkStrategy(KNOWLEDGE_CHUNK_STRATEGY);
+        vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         return vo;
     }
 
@@ -315,16 +306,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public KnowledgeConfigVO getKnowledgeConfig(Long userId) {
         KnowledgeConfigVO vo = new KnowledgeConfigVO();
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setVectorCollection(KNOWLEDGE_COLLECTION);
+        vo.setVectorCollection(knowledgeProperties.getCollection());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "VECTOR_FIRST" : "KEYWORD_FALLBACK");
-        vo.setChunkStrategy(KNOWLEDGE_CHUNK_STRATEGY);
-        vo.setChunkSize(CHUNK_SIZE);
-        vo.setChunkOverlap(CHUNK_OVERLAP);
-        vo.setMinChunkSize(MIN_CHUNK_SIZE);
-        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
-        vo.setUploadMaxBytes(KNOWLEDGE_UPLOAD_MAX_BYTES);
-        vo.setUploadMaxTextChars(KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
-        vo.setUploadExtensions(KNOWLEDGE_UPLOAD_EXTENSIONS.stream().sorted().toList());
+        vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
+        vo.setChunkSize(knowledgeProperties.safeChunkSize());
+        vo.setChunkOverlap(knowledgeProperties.safeChunkOverlap());
+        vo.setMinChunkSize(knowledgeProperties.safeMinChunkSize());
+        vo.setNearDuplicateThreshold(knowledgeProperties.safeNearDuplicateThreshold());
+        vo.setUploadMaxBytes(knowledgeProperties.getUploadMaxBytes());
+        vo.setUploadMaxTextChars(knowledgeProperties.safeUploadMaxTextChars());
+        vo.setUploadExtensions(knowledgeProperties.getUploadExtensions().stream().sorted().toList());
         vo.setExactDedupScope("PER_USER_DOCUMENT_AND_CHUNK_HASH");
         vo.setNearDuplicateAction("WARN_ONLY");
         return vo;
@@ -404,7 +395,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 return List.of();
             }
             List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
-                    .collectionName(KNOWLEDGE_COLLECTION)
+                    .collectionName(knowledgeProperties.getCollection())
                     .vector(vectors.get(0))
                     .mustMatchPayload(Map.of("userId", userId))
                     .limit(size + 1)
@@ -468,7 +459,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         int size = normalizeDuplicateReviewLimit(limit);
         KnowledgeDuplicateReviewVO vo = new KnowledgeDuplicateReviewVO();
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        vo.setThreshold(knowledgeProperties.safeNearDuplicateThreshold());
         vo.setLimit(size);
         vo.setGeneratedAt(LocalDateTime.now());
         if (!vectorStoreClient.isEnabled()) {
@@ -495,7 +486,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 break;
             }
             List<KnowledgeSearchResultVO> matches = listSimilarKnowledgeChunks(userId, chunk.getId(), 3).stream()
-                    .filter(match -> match.getScore() != null && match.getScore() >= KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD)
+                    .filter(match -> match.getScore() != null && match.getScore() >= knowledgeProperties.safeNearDuplicateThreshold())
                     .filter(match -> seenPairs.add(knowledgePairKey(chunk.getId(), match.getChunkId())))
                     .toList();
             if (matches.isEmpty()) {
@@ -668,7 +659,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "question is required");
         }
         String normalizedQuestion = question.trim();
-        int limit = dto == null || dto.getLimit() == null ? ASK_DEFAULT_LIMIT : normalizeLimit(dto.getLimit());
+        int limit = dto == null || dto.getLimit() == null ? knowledgeProperties.safeAskDefaultLimit() : normalizeLimit(dto.getLimit());
         List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit);
 
         KnowledgeAskVO vo = new KnowledgeAskVO();
@@ -1111,7 +1102,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         KnowledgeDocumentVO vo = toKnowledgeDocumentVO(document, index, includeContent);
         vo.setDuplicateChunkCount(duplicateChunkCount);
         vo.setNearDuplicateChunkCount(nearDuplicateChunkCount);
-        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        vo.setNearDuplicateThreshold(knowledgeProperties.safeNearDuplicateThreshold());
         return vo;
     }
 
@@ -1140,7 +1131,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     current.append(part);
                     continue;
                 }
-                if (current.length() + 2 + part.length() <= CHUNK_SIZE) {
+                if (current.length() + 2 + part.length() <= knowledgeProperties.safeChunkSize()) {
                     current.append("\n\n").append(part);
                     continue;
                 }
@@ -1198,10 +1189,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             default -> new String(bytes, StandardCharsets.UTF_8);
         };
         String normalized = normalizeKnowledgeContent(text);
-        if (normalized.length() > KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS) {
+        if (normalized.length() > knowledgeProperties.safeUploadMaxTextChars()) {
             log.warn("Personal knowledge uploaded text truncated, extension={}, originalChars={}, maxChars={}",
-                    extension, normalized.length(), KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
-            return normalized.substring(0, KNOWLEDGE_UPLOAD_MAX_TEXT_CHARS);
+                    extension, normalized.length(), knowledgeProperties.safeUploadMaxTextChars());
+            return normalized.substring(0, knowledgeProperties.safeUploadMaxTextChars());
         }
         return normalized;
     }
@@ -1299,13 +1290,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private List<String> splitOversizedBlock(String block) {
-        if (block.length() <= CHUNK_SIZE) {
+        int chunkSize = knowledgeProperties.safeChunkSize();
+        int chunkOverlap = knowledgeProperties.safeChunkOverlap();
+        if (block.length() <= chunkSize) {
             return List.of(block);
         }
         List<String> chunks = new ArrayList<>();
         int start = 0;
         while (start < block.length()) {
-            int end = Math.min(block.length(), start + CHUNK_SIZE);
+            int end = Math.min(block.length(), start + chunkSize);
             int splitAt = findSemanticSplit(block, start, end);
             if (splitAt <= start) {
                 splitAt = end;
@@ -1314,13 +1307,13 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             if (splitAt >= block.length()) {
                 break;
             }
-            start = Math.max(splitAt - CHUNK_OVERLAP, start + 1);
+            start = Math.max(splitAt - chunkOverlap, start + 1);
         }
         return chunks.stream().filter(StringUtils::hasText).toList();
     }
 
     private int findSemanticSplit(String text, int start, int end) {
-        int min = Math.min(end, start + MIN_CHUNK_SIZE);
+        int min = Math.min(end, start + knowledgeProperties.safeMinChunkSize());
         String delimiters = "。！？.!?\n；;";
         for (int i = end - 1; i >= min; i--) {
             if (delimiters.indexOf(text.charAt(i)) >= 0) {
@@ -1365,12 +1358,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             int count = 0;
             for (List<Float> vector : vectors) {
                 List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
-                        .collectionName(KNOWLEDGE_COLLECTION)
+                        .collectionName(knowledgeProperties.getCollection())
                         .vector(vector)
                         .mustMatchPayload(Map.of("userId", userId))
                         .limit(1)
                         .build());
-                if (!hits.isEmpty() && hits.get(0).getScore() >= KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD) {
+                if (!hits.isEmpty() && hits.get(0).getScore() >= knowledgeProperties.safeNearDuplicateThreshold()) {
                     count++;
                 }
             }
@@ -1390,7 +1383,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new IllegalStateException("embedding size mismatch, chunkCount=" + chunks.size()
                     + ", vectorCount=" + vectors.size());
         }
-        vectorStoreClient.ensureCollection(KNOWLEDGE_COLLECTION, vectors.get(0).size());
+        vectorStoreClient.ensureCollection(knowledgeProperties.getCollection(), vectors.get(0).size());
         List<VectorPoint> points = new ArrayList<>();
         for (int i = 0; i < chunks.size(); i++) {
             PersonalKnowledgeChunk chunk = chunks.get(i);
@@ -1407,7 +1400,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     ))
                     .build());
         }
-        vectorStoreClient.upsert(KNOWLEDGE_COLLECTION, points);
+        vectorStoreClient.upsert(knowledgeProperties.getCollection(), points);
         return points.size();
     }
 
@@ -1415,7 +1408,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
             return;
         }
-        vectorStoreClient.delete(KNOWLEDGE_COLLECTION, chunks.stream()
+        vectorStoreClient.delete(knowledgeProperties.getCollection(), chunks.stream()
                 .map(PersonalKnowledgeChunk::getId)
                 .filter(Objects::nonNull)
                 .map(this::knowledgePointId)
@@ -1432,7 +1425,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 return List.of();
             }
             List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
-                    .collectionName(KNOWLEDGE_COLLECTION)
+                    .collectionName(knowledgeProperties.getCollection())
                     .vector(vectors.get(0))
                     .mustMatchPayload(Map.of("userId", userId))
                     .limit(limit)
@@ -1499,8 +1492,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private List<List<Float>> embedTexts(List<String> texts) {
         List<List<Float>> vectors = new ArrayList<>();
-        for (int start = 0; start < texts.size(); start += EMBEDDING_BATCH_SIZE) {
-            int end = Math.min(texts.size(), start + EMBEDDING_BATCH_SIZE);
+        for (int start = 0; start < texts.size(); start += knowledgeProperties.safeEmbeddingBatchSize()) {
+            int end = Math.min(texts.size(), start + knowledgeProperties.safeEmbeddingBatchSize());
             EmbeddingRequestDTO request = new EmbeddingRequestDTO();
             request.setTexts(texts.subList(start, end));
             EmbeddingResponseVO response = embeddingService.embed(request);
@@ -1663,7 +1656,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(0);
         vo.setNearDuplicateChunkCount(0);
-        vo.setNearDuplicateThreshold(KNOWLEDGE_NEAR_DUPLICATE_THRESHOLD);
+        vo.setNearDuplicateThreshold(knowledgeProperties.safeNearDuplicateThreshold());
         vo.setContent(includeContent ? document.getContent() : null);
         vo.setCreatedAt(document.getCreatedAt());
         vo.setUpdatedAt(document.getUpdatedAt());
