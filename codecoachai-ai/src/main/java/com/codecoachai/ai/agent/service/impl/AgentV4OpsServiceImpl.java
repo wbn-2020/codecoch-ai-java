@@ -313,6 +313,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setChunkOverlap(knowledgeProperties.safeChunkOverlap());
         vo.setMinChunkSize(knowledgeProperties.safeMinChunkSize());
         vo.setNearDuplicateThreshold(knowledgeProperties.safeNearDuplicateThreshold());
+        vo.setAskMinScore(knowledgeProperties.safeAskMinScore());
         vo.setUploadMaxBytes(knowledgeProperties.getUploadMaxBytes());
         vo.setUploadMaxTextChars(knowledgeProperties.safeUploadMaxTextChars());
         vo.setUploadExtensions(knowledgeProperties.getUploadExtensions().stream().sorted().toList());
@@ -660,14 +661,19 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
         String normalizedQuestion = question.trim();
         int limit = dto == null || dto.getLimit() == null ? knowledgeProperties.safeAskDefaultLimit() : normalizeLimit(dto.getLimit());
-        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit);
+        double minScore = knowledgeProperties.safeAskMinScore();
+        List<KnowledgeSearchResultVO> references = searchKnowledge(userId, normalizedQuestion, limit).stream()
+                .filter(reference -> reference.getScore() != null && reference.getScore() >= minScore)
+                .toList();
 
         KnowledgeAskVO vo = new KnowledgeAskVO();
         vo.setQuestion(normalizedQuestion);
         vo.setReferences(references);
+        vo.setMinReferenceScore(minScore);
+        vo.setInsufficientReferences(references.isEmpty());
         vo.setGeneratedAt(LocalDateTime.now());
         if (references.isEmpty()) {
-            vo.setAnswer("No relevant content was found in your personal knowledge base. Add or upload materials first.");
+            vo.setAnswer("No sufficiently relevant content was found in your personal knowledge base. Add or upload more targeted materials first.");
             return vo;
         }
 

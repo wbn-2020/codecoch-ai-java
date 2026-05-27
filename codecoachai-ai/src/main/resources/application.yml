@@ -29,6 +29,7 @@ codecoachai:
     upload-max-bytes: 8388608
     upload-max-text-chars: 100000
     near-duplicate-threshold: 0.88
+    ask-min-score: 0.55
     upload-extensions:
       - txt
       - md

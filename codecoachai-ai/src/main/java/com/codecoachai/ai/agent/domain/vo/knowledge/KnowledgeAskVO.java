@@ -9,6 +9,8 @@ public class KnowledgeAskVO {
     private String question;
     private String answer;
     private List<KnowledgeSearchResultVO> references;
+    private Boolean insufficientReferences;
+    private Double minReferenceScore;
     private Long aiCallLogId;
     private LocalDateTime generatedAt;
 }

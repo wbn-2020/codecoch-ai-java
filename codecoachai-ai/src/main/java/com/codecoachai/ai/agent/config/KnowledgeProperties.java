@@ -20,6 +20,7 @@ public class KnowledgeProperties {
     private long uploadMaxBytes = 8L * 1024 * 1024;
     private int uploadMaxTextChars = 100_000;
     private double nearDuplicateThreshold = 0.88D;
+    private double askMinScore = 0.55D;
     private Set<String> uploadExtensions = new LinkedHashSet<>(Set.of("txt", "md", "markdown", "pdf", "docx", "doc"));
 
     public int safeChunkSize() {
@@ -48,5 +49,9 @@ public class KnowledgeProperties {
 
     public double safeNearDuplicateThreshold() {
         return Math.min(Math.max(nearDuplicateThreshold, 0D), 1D);
+    }
+
+    public double safeAskMinScore() {
+        return Math.min(Math.max(askMinScore, 0D), 1D);
     }
 }

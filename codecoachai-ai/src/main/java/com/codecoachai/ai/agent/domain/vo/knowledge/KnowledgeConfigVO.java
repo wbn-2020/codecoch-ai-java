@@ -13,6 +13,7 @@ public class KnowledgeConfigVO {
     private Integer chunkOverlap;
     private Integer minChunkSize;
     private Double nearDuplicateThreshold;
+    private Double askMinScore;
     private Long uploadMaxBytes;
     private Integer uploadMaxTextChars;
     private List<String> uploadExtensions;
