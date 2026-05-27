@@ -348,6 +348,32 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public KnowledgeDocumentVO restoreKnowledgeDocumentVersion(Long userId, Long documentId, Long versionId) {
+        PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
+        PersonalKnowledgeDocumentVersion version = ownedKnowledgeDocumentVersion(userId, documentId, versionId);
+        List<PersonalKnowledgeChunk> oldChunks = listDocumentChunks(userId, document.getId());
+        snapshotKnowledgeDocumentVersion(userId, document, oldChunks.size());
+        if (!oldChunks.isEmpty()) {
+            personalKnowledgeChunkMapper.delete(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                    .eq(PersonalKnowledgeChunk::getUserId, userId)
+                    .eq(PersonalKnowledgeChunk::getDocumentId, document.getId()));
+            deletePersonalKnowledgeVectors(oldChunks);
+        }
+        String content = firstText(version.getContent(), "");
+        String normalizedContent = normalizeKnowledgeContent(content);
+        document.setTitle(firstText(version.getTitle(), document.getTitle()));
+        document.setDocumentType(firstText(version.getDocumentType(), "NOTE"));
+        document.setContent(content);
+        document.setContentHash(StringUtils.hasText(version.getContentHash())
+                ? version.getContentHash()
+                : knowledgeHash(normalizedContent));
+        document.setStatus("INDEXED");
+        personalKnowledgeDocumentMapper.updateById(document);
+        return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
+    }
+
+    @Override
     public List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId) {
         ownedDocument(userId, documentId);
         List<PersonalKnowledgeChunk> chunks = listDocumentChunks(userId, documentId);
@@ -882,6 +908,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             throw new IllegalArgumentException("Knowledge chunk not found or forbidden");
         }
         return chunk;
+    }
+
+    private PersonalKnowledgeDocumentVersion ownedKnowledgeDocumentVersion(Long userId, Long documentId, Long versionId) {
+        PersonalKnowledgeDocumentVersion version = personalKnowledgeDocumentVersionMapper.selectById(versionId);
+        if (version == null
+                || !Objects.equals(version.getUserId(), userId)
+                || !Objects.equals(version.getDocumentId(), documentId)) {
+            throw new IllegalArgumentException("Knowledge document version not found or forbidden");
+        }
+        return version;
     }
 
     private void snapshotKnowledgeDocumentVersion(Long userId, PersonalKnowledgeDocument document, int chunkCount) {

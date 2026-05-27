@@ -50,6 +50,8 @@ public interface AgentV4OpsService {
 
     List<KnowledgeDocumentVersionVO> listKnowledgeDocumentVersions(Long userId, Long documentId);
 
+    KnowledgeDocumentVO restoreKnowledgeDocumentVersion(Long userId, Long documentId, Long versionId);
+
     List<KnowledgeChunkVO> listKnowledgeChunks(Long userId, Long documentId);
 
     List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit);

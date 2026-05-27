@@ -86,6 +86,13 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.listKnowledgeDocumentVersions(userId, id));
     }
 
+    @PostMapping("/documents/{id}/versions/{versionId}/restore")
+    public Result<KnowledgeDocumentVO> restoreDocumentVersion(@PathVariable Long id,
+                                                              @PathVariable Long versionId) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.restoreKnowledgeDocumentVersion(userId, id, versionId));
+    }
+
     @GetMapping("/documents/{id}/chunks")
     public Result<List<KnowledgeChunkVO>> chunks(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
