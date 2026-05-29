@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.domain.vo.knowledge;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Data;
 
@@ -7,12 +8,18 @@ import lombok.Data;
 public class KnowledgeSearchResultVO {
     private Long documentId;
     private Long chunkId;
+    private Integer chunkIndex;
     private String title;
     private String documentType;
     private String snippet;
     private String highlightedSnippet;
     private List<String> matchedTerms;
     private String sourceRef;
+    private String chunkHash;
+    private String embeddingModel;
+    private Integer embeddingDimension;
+    private LocalDateTime indexedAt;
+    private String indexStatus;
     private Double score;
     private String matchType;
 }

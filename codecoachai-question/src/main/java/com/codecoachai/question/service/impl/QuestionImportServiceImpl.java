@@ -7,6 +7,8 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.service.QuestionDuplicateService;
+import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionImportService;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.io.BufferedReader;
@@ -30,6 +32,8 @@ import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 /**
@@ -47,6 +51,8 @@ import org.springframework.util.StringUtils;
 public class QuestionImportServiceImpl implements QuestionImportService {
 
     private final QuestionMapper questionMapper;
+    private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
+    private final QuestionDuplicateService questionDuplicateService;
 
     private static final Pattern MD_TITLE_PATTERN = Pattern.compile("^#{1,3}\\s+(.+)$");
 
@@ -217,6 +223,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
         Set<String> seenNormalizedTitleHashes = new LinkedHashSet<>();
         Set<String> seenContentHashes = new LinkedHashSet<>();
+        List<Long> importedQuestionIds = new ArrayList<>();
 
         for (int i = 0; i < parsed.size(); i++) {
             ParsedQuestion pq = parsed.get(i);
@@ -302,6 +309,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setAuditStatus("APPROVED");
                 question.setSourceType("IMPORT");
                 questionMapper.insert(question);
+                importedQuestionIds.add(question.getId());
                 if (StringUtils.hasText(normalizedTitleHash)) {
                     seenNormalizedTitleHashes.add(normalizedTitleHash);
                 }
@@ -323,8 +331,42 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         result.setFailCount(fail);
         result.setDuplicateCount(duplicate);
         result.setDuplicateReasonCounts(duplicateReasonCounts);
+        syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIds, importedBy);
         log.info("题目导入完成 total={} success={} fail={} duplicate={}", parsed.size(), success, fail, duplicate);
         return result;
+    }
+
+    private void syncQuestionEmbeddingAndDuplicateCheckAfterCommit(List<Long> questionIds, Long importedBy) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return;
+        }
+        List<Long> ids = questionIds.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        Runnable action = () -> {
+            questionEmbeddingIndexService.indexQuestions(ids);
+            for (Long questionId : ids) {
+                try {
+                    questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy);
+                } catch (Exception ex) {
+                    log.warn("Question duplicate check failed after import questionId={}", questionId, ex);
+                }
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private void incrementDuplicateReason(Map<String, Integer> counts, String reasonCode) {

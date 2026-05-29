@@ -1,4 +1,4 @@
-﻿CREATE DATABASE IF NOT EXISTS codecoachai_v1
+CREATE DATABASE IF NOT EXISTS codecoachai_v1
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
 
@@ -126,13 +126,18 @@ CREATE TABLE IF NOT EXISTS question (
   experience_level VARCHAR(64) DEFAULT NULL,
   is_high_frequency TINYINT NOT NULL DEFAULT 0,
   status TINYINT NOT NULL DEFAULT 1,
+  normalized_title VARCHAR(255) DEFAULT NULL,
+  normalized_title_hash CHAR(64) DEFAULT NULL,
+  content_hash CHAR(64) DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   KEY idx_question_category (category_id),
   KEY idx_question_group (group_id),
-  KEY idx_question_status (status)
+  KEY idx_question_status (status),
+  KEY idx_question_normalized_title_hash (normalized_title_hash),
+  KEY idx_question_content_hash (content_hash)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS question_tag_relation (
@@ -203,7 +208,9 @@ CREATE TABLE IF NOT EXISTS question_relation (
   KEY idx_question_relation_source (source_question_id),
   KEY idx_question_relation_target (target_question_id),
   KEY idx_question_relation_type (relation_type),
-  KEY idx_question_relation_status (relation_status)
+  KEY idx_question_relation_status (relation_status),
+  KEY idx_qr_active_source_type (source_question_id, relation_status, relation_type, target_question_id),
+  KEY idx_qr_active_target_type (target_question_id, relation_status, relation_type, source_question_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Question relation confirmed by admin';
 
 CREATE TABLE IF NOT EXISTS question_duplicate_review (
@@ -214,6 +221,8 @@ CREATE TABLE IF NOT EXISTS question_duplicate_review (
   match_type VARCHAR(32) NOT NULL,
   similarity_score DECIMAL(5,2) DEFAULT NULL,
   match_reason VARCHAR(500) DEFAULT NULL,
+  score_band VARCHAR(32) DEFAULT NULL,
+  score_detail_json LONGTEXT DEFAULT NULL,
   source_title_snapshot VARCHAR(255) DEFAULT NULL,
   target_title_snapshot VARCHAR(255) DEFAULT NULL,
   source_content_snapshot VARCHAR(500) DEFAULT NULL,
@@ -234,8 +243,33 @@ CREATE TABLE IF NOT EXISTS question_duplicate_review (
   KEY idx_question_duplicate_source (source_question_id),
   KEY idx_question_duplicate_target (target_question_id),
   KEY idx_question_duplicate_match (match_type),
-  KEY idx_question_duplicate_relation (relation_id)
+  KEY idx_question_duplicate_relation (relation_id),
+  KEY idx_question_duplicate_score_band (score_band, similarity_score),
+  KEY idx_qdr_pair_status (source_question_id, target_question_id, review_status),
+  KEY idx_qdr_status_score_updated (review_status, score_band, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Question duplicate review candidate';
+
+CREATE TABLE IF NOT EXISTS question_embedding (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  question_id BIGINT NOT NULL,
+  text_hash CHAR(64) NOT NULL,
+  token_count INT NOT NULL DEFAULT 0,
+  normalized_text TEXT NOT NULL,
+  embedding_model VARCHAR(128) DEFAULT NULL,
+  embedding_dimension INT DEFAULT NULL,
+  indexed_at DATETIME DEFAULT NULL,
+  index_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  last_error VARCHAR(512) DEFAULT NULL,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_question_embedding_question (question_id),
+  KEY idx_question_embedding_hash (text_hash),
+  KEY idx_question_embedding_status (index_status, updated_at),
+  KEY idx_question_embedding_deleted_updated (deleted, updated_at),
+  KEY idx_question_embedding_deleted_status_updated (deleted, index_status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Question semantic fingerprint and vector index state';
 
 CREATE TABLE IF NOT EXISTS user_question_record (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -879,6 +913,109 @@ CREATE TABLE IF NOT EXISTS question_recommendation_item (
   KEY idx_qri_practice_status (practice_status, deleted),
   KEY idx_qri_batch_order (batch_id, sort_order, deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 question recommendation item';
+
+CREATE TABLE IF NOT EXISTS personal_knowledge_document (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  title VARCHAR(160) NOT NULL,
+  document_type VARCHAR(50) NOT NULL DEFAULT 'NOTE',
+  content MEDIUMTEXT NOT NULL,
+  content_hash CHAR(64) DEFAULT NULL,
+  status VARCHAR(40) NOT NULL DEFAULT 'INDEXED',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_personal_doc_user (user_id),
+  KEY idx_personal_doc_user_content_hash (user_id, content_hash),
+  FULLTEXT KEY ft_personal_doc_content (title, content)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V4 personal knowledge document';
+
+CREATE TABLE IF NOT EXISTS personal_knowledge_document_version (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  document_id BIGINT NOT NULL,
+  version_no INT NOT NULL DEFAULT 1,
+  title VARCHAR(160) NOT NULL,
+  document_type VARCHAR(50) NOT NULL DEFAULT 'NOTE',
+  content MEDIUMTEXT NOT NULL,
+  content_hash CHAR(64) DEFAULT NULL,
+  chunk_count INT DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_personal_doc_version_doc (document_id, version_no),
+  KEY idx_personal_doc_version_user (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V4 personal knowledge document version snapshot';
+
+CREATE TABLE IF NOT EXISTS personal_knowledge_chunk (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  document_id BIGINT NOT NULL,
+  chunk_index INT NOT NULL,
+  content TEXT NOT NULL,
+  chunk_hash CHAR(64) DEFAULT NULL,
+  source_ref VARCHAR(200) DEFAULT NULL,
+  embedding_model VARCHAR(128) DEFAULT NULL,
+  embedding_dimension INT DEFAULT NULL,
+  indexed_at DATETIME DEFAULT NULL,
+  index_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  last_error VARCHAR(512) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_personal_chunk_doc (document_id),
+  KEY idx_personal_chunk_user_hash (user_id, chunk_hash),
+  KEY idx_personal_chunk_index_status (user_id, index_status, updated_at),
+  KEY idx_pk_chunk_status_updated (index_status, updated_at),
+  KEY idx_pk_chunk_deleted_status_updated (deleted, index_status, updated_at, document_id),
+  FULLTEXT KEY ft_personal_chunk_content (content)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V4 personal knowledge chunk';
+
+CREATE TABLE IF NOT EXISTS vector_delete_outbox (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  collection_name VARCHAR(128) NOT NULL,
+  point_id VARCHAR(128) NOT NULL,
+  biz_type VARCHAR(64) DEFAULT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  retry_count INT NOT NULL DEFAULT 0,
+  last_error VARCHAR(512) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_vector_delete_point (collection_name, point_id),
+  KEY idx_vector_delete_status (status, updated_at),
+  KEY idx_vector_delete_scope_status (collection_name, biz_type, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Vector point delete outbox';
+
+CREATE TABLE IF NOT EXISTS vector_index_job (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  job_no VARCHAR(64) NOT NULL,
+  job_type VARCHAR(64) NOT NULL,
+  scope_type VARCHAR(64) DEFAULT NULL,
+  scope_id VARCHAR(128) DEFAULT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'RUNNING',
+  requested_count INT DEFAULT NULL,
+  total_count INT NOT NULL DEFAULT 0,
+  success_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  vector_updated INT NOT NULL DEFAULT 0,
+  vector_deleted INT NOT NULL DEFAULT 0,
+  started_at DATETIME DEFAULT NULL,
+  finished_at DATETIME DEFAULT NULL,
+  duration_ms BIGINT DEFAULT NULL,
+  last_error VARCHAR(1000) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_vector_index_job_no (job_no),
+  KEY idx_vector_index_job_type_status (job_type, status, created_at),
+  KEY idx_vector_index_job_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Vector index rebuild and retry job history';
 
 CREATE TABLE IF NOT EXISTS system_config (
   id BIGINT NOT NULL AUTO_INCREMENT,

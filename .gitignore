@@ -8,6 +8,7 @@ target/
 *.iml
 
 # Logs and temp files
+logs/
 *.log
 *.tmp
 *.swp

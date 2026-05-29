@@ -6,11 +6,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Slf4j
 @Component
+@ConditionalOnProperty(prefix = "codecoachai.auth.password-reset", name = "delivery-provider", havingValue = "mock", matchIfMissing = true)
 public class MockPasswordResetDeliveryService implements PasswordResetDeliveryService {
 
     @Override

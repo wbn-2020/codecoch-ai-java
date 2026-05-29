@@ -13,6 +13,8 @@ public class KnowledgeStatsVO {
     private String retrievalMode;
     private String chunkStrategy;
     private Map<String, Integer> documentTypeCounts;
+    private Map<String, Integer> indexStatusCounts;
+    private Map<String, Integer> embeddingModelCounts;
     private Map<String, Integer> duplicateTypeCounts;
     private List<DuplicateDocumentHotspot> duplicateDocumentHotspots;
 

@@ -39,6 +39,7 @@ import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
+import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionReviewService;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -51,6 +52,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -60,6 +62,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class QuestionReviewServiceImpl implements QuestionReviewService {
 
@@ -74,6 +77,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
     private final QuestionDuplicateService questionDuplicateService;
+    private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final ObjectMapper objectMapper;
     private final PlatformTransactionManager transactionManager;
     private final QuestionMqDispatcher questionMqDispatcher;
@@ -174,11 +178,8 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         if (affected != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question review status has changed");
         }
-        try {
-            questionDuplicateService.checkDuplicateForQuestion(question.getId(), reviewerId);
-        } catch (Exception ignored) {
-            // Duplicate hints must not break the A7 approve flow.
-        }
+        syncQuestionDuplicateCheckAfterCommit(question.getId(), reviewerId);
+        syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
         syncQuestionSearchAfterCommit(question.getId(), reviewerId, CommonConstants.YES.equals(question.getStatus()));
         return getReview(id);
     }
@@ -279,6 +280,46 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId);
             } else {
                 questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                questionEmbeddingIndexService.indexQuestion(questionId);
+            } else {
+                questionEmbeddingIndexService.deleteQuestion(questionId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void syncQuestionDuplicateCheckAfterCommit(Long questionId, Long userId) {
+        Runnable action = () -> {
+            try {
+                questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
+            } catch (Exception ex) {
+                log.warn("Question duplicate check failed after review approval questionId={}", questionId, ex);
             }
         };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {

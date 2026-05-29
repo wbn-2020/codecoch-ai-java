@@ -7,6 +7,7 @@ public class QuestionQueryDTO {
 
     private Long categoryId;
     private Long tagId;
+    private Long questionId;
     private String difficulty;
     private String questionType;
     private String experienceLevel;

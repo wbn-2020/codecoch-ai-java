@@ -51,6 +51,25 @@ public class AiCallLogService {
         }
     }
 
+    /**
+     * 流式调用 AI 并自动记录日志。逐 token 回调 onDelta，结束后落 ai_call_log（含 token/耗时）。
+     */
+    public RouteResult callStreamAndLog(AiCallContext ctx, java.util.function.Consumer<String> onDelta) {
+        long start = System.currentTimeMillis();
+        RouteResult result = null;
+        Exception error = null;
+        try {
+            result = aiModelRouter.chatStream(ctx, onDelta);
+            return result;
+        } catch (Exception ex) {
+            error = ex;
+            throw ex;
+        } finally {
+            long elapsed = System.currentTimeMillis() - start;
+            saveLog(ctx, result, error, elapsed);
+        }
+    }
+
     private void saveLog(AiCallContext ctx, RouteResult result, Exception error, long elapsed) {
         try {
             AiCallLog logEntry = new AiCallLog();

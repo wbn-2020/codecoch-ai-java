@@ -20,7 +20,7 @@ spring:
 codecoachai:
   knowledge:
     collection: personal_knowledge_chunk
-    chunk-strategy: SEMANTIC_BLOCK_800_OVERLAP_80
+    chunk-strategy: STRUCTURED_MARKDOWN_BLOCK_800_OVERLAP_80
     chunk-size: 800
     chunk-overlap: 80
     min-chunk-size: 180

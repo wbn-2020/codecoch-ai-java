@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codecoachai.task.mapper.NotificationMapper">
+
+    <select id="selectUserNotificationPage" resultType="com.codecoachai.task.domain.entity.Notification">
+        SELECT n.*
+        FROM notification n
+        LEFT JOIN notification_read nr
+          ON nr.notification_id = n.id
+         AND nr.user_id = #{userId}
+         AND nr.deleted = 0
+        WHERE n.deleted = 0
+          AND (n.user_id = #{userId} OR n.user_id = 0)
+        <if test="type != null and type != ''">
+          AND n.type = #{type}
+        </if>
+        <if test="readStatus != null">
+          AND (
+            (n.user_id = #{userId} AND n.read_status = #{readStatus})
+            OR (n.user_id = 0 AND
+                ((#{readStatus} = 1 AND nr.id IS NOT NULL) OR (#{readStatus} = 0 AND nr.id IS NULL)))
+          )
+        </if>
+        ORDER BY n.created_at DESC
+    </select>
+
+    <select id="countUnreadForUser" resultType="java.lang.Long">
+        SELECT COUNT(1)
+        FROM notification n
+        LEFT JOIN notification_read nr
+          ON nr.notification_id = n.id
+         AND nr.user_id = #{userId}
+         AND nr.deleted = 0
+        WHERE n.deleted = 0
+          AND (
+            (n.user_id = #{userId} AND n.read_status = 0)
+            OR (n.user_id = 0 AND nr.id IS NULL)
+          )
+    </select>
+
+    <insert id="insertMissingBroadcastReads">
+        INSERT INTO notification_read (
+            user_id,
+            notification_id,
+            read_at,
+            created_at,
+            updated_at,
+            deleted
+        )
+        SELECT
+            #{userId},
+            n.id,
+            NOW(),
+            NOW(),
+            NOW(),
+            0
+        FROM notification n
+        LEFT JOIN notification_read nr
+          ON nr.notification_id = n.id
+         AND nr.user_id = #{userId}
+         AND nr.deleted = 0
+        WHERE n.deleted = 0
+          AND n.user_id = 0
+          AND nr.id IS NULL
+        ON DUPLICATE KEY UPDATE
+            read_at = VALUES(read_at),
+            updated_at = VALUES(updated_at),
+            deleted = 0
+    </insert>
+
+    <insert id="upsertBroadcastRead">
+        INSERT INTO notification_read (
+            user_id,
+            notification_id,
+            read_at,
+            created_at,
+            updated_at,
+            deleted
+        )
+        SELECT
+            #{userId},
+            n.id,
+            NOW(),
+            NOW(),
+            NOW(),
+            0
+        FROM notification n
+        WHERE n.id = #{notificationId}
+          AND n.user_id = 0
+          AND n.deleted = 0
+        ON DUPLICATE KEY UPDATE
+            read_at = VALUES(read_at),
+            updated_at = VALUES(updated_at),
+            deleted = 0
+    </insert>
+</mapper>

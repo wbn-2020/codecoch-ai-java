@@ -1,11 +1,16 @@
 package com.codecoachai.question.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
+import com.codecoachai.question.domain.enums.QuestionRelationStatus;
+import com.codecoachai.question.domain.enums.QuestionRelationType;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.mapper.QuestionRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -14,8 +19,10 @@ import jakarta.validation.constraints.NotBlank;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -38,6 +45,7 @@ public class QuestionStudyController {
 
     private final QuestionMapper questionMapper;
     private final UserQuestionRecordMapper userQuestionRecordMapper;
+    private final QuestionRelationMapper questionRelationMapper;
 
     // ==================== 每日推荐题目 ====================
 
@@ -46,6 +54,8 @@ public class QuestionStudyController {
     public Result<List<Question>> dailyRecommend(
             @RequestParam(defaultValue = "10") Integer count) {
         Long userId = SecurityAssert.requireLoginUserId();
+        int safeCount = normalizeCount(count);
+        int candidateLimit = Math.max(safeCount * 4, safeCount + 10);
 
         // 策略：优先推荐用户未做过的高频题 + 薄弱知识点相关题
         // 1. 获取用户已做过的题目ID
@@ -53,30 +63,38 @@ public class QuestionStudyController {
                 new LambdaQueryWrapper<UserQuestionRecord>()
                         .eq(UserQuestionRecord::getUserId, userId)
                         .select(UserQuestionRecord::getQuestionId));
-        List<Long> doneIds = records.stream().map(UserQuestionRecord::getQuestionId).toList();
+        List<Long> doneIds = records.stream()
+                .map(UserQuestionRecord::getQuestionId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        Set<Long> blockedIds = loadCanonicalBlockIds(doneIds);
 
         // 2. 查询未做过的高频题
         LambdaQueryWrapper<Question> query = new LambdaQueryWrapper<Question>()
-                .eq(Question::getStatus, 1)
-                .eq(Question::getIsHighFrequency, 1)
-                .notIn(!doneIds.isEmpty(), Question::getId, doneIds)
-                .last("limit " + count);
-        List<Question> recommended = questionMapper.selectList(query);
+                .eq(Question::getStatus, CommonConstants.YES)
+                .eq(Question::getIsHighFrequency, CommonConstants.YES)
+                .notIn(!blockedIds.isEmpty(), Question::getId, blockedIds)
+                .last("limit " + candidateLimit);
+        List<Question> recommended = distinctByCanonicalGroup(questionMapper.selectList(query), safeCount);
 
         // 3. 不够则补充普通题
-        if (recommended.size() < count) {
-            int remaining = count - recommended.size();
-            List<Long> excludeIds = new ArrayList<>(doneIds);
-            excludeIds.addAll(recommended.stream().map(Question::getId).toList());
+        if (recommended.size() < safeCount) {
+            int remaining = safeCount - recommended.size();
+            Set<Long> excludeIds = new HashSet<>(blockedIds);
+            excludeIds.addAll(loadCanonicalBlockIds(recommended.stream()
+                    .map(Question::getId)
+                    .filter(id -> id != null)
+                    .toList()));
             List<Question> extra = questionMapper.selectList(
                     new LambdaQueryWrapper<Question>()
-                            .eq(Question::getStatus, 1)
+                            .eq(Question::getStatus, CommonConstants.YES)
                             .notIn(!excludeIds.isEmpty(), Question::getId, excludeIds)
-                            .last("limit " + remaining));
-            recommended.addAll(extra);
+                            .last("limit " + Math.max(remaining * 4, remaining + 10)));
+            recommended.addAll(distinctByCanonicalGroup(extra, remaining));
         }
 
-        return Result.success(recommended);
+        return Result.success(recommended.size() > safeCount ? recommended.subList(0, safeCount) : recommended);
     }
 
     // ==================== 薄弱知识点分析 ====================
@@ -216,6 +234,86 @@ public class QuestionStudyController {
         List<Question> shuffled = new ArrayList<>(questions);
         Collections.shuffle(shuffled);
         return Result.success(shuffled);
+    }
+
+    private int normalizeCount(Integer count) {
+        if (count == null || count <= 0) {
+            return 10;
+        }
+        return Math.min(count, 50);
+    }
+
+    private Set<Long> loadCanonicalBlockIds(List<Long> seedQuestionIds) {
+        if (seedQuestionIds == null || seedQuestionIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<Long> blockedIds = new HashSet<>(seedQuestionIds);
+        List<Question> seedQuestions = questionMapper.selectBatchIds(seedQuestionIds);
+        List<Long> groupIds = seedQuestions.stream()
+                .map(Question::getGroupId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (!groupIds.isEmpty()) {
+            questionMapper.selectList(new LambdaQueryWrapper<Question>()
+                            .eq(Question::getStatus, CommonConstants.YES)
+                            .in(Question::getGroupId, groupIds))
+                    .stream()
+                    .map(Question::getId)
+                    .filter(id -> id != null)
+                    .forEach(blockedIds::add);
+        }
+        loadSameIntentNeighborIds(seedQuestionIds).forEach(blockedIds::add);
+        return blockedIds;
+    }
+
+    private List<Question> distinctByCanonicalGroup(List<Question> candidates, int limit) {
+        if (candidates == null || candidates.isEmpty() || limit <= 0) {
+            return List.of();
+        }
+        List<Question> result = new ArrayList<>();
+        Set<String> seenCanonicalKeys = new HashSet<>();
+        Set<Long> blockedIds = new HashSet<>();
+        for (Question candidate : candidates) {
+            if (candidate == null || candidate.getId() == null || blockedIds.contains(candidate.getId())) {
+                continue;
+            }
+            String canonicalKey = candidate.getGroupId() != null
+                    ? "G:" + candidate.getGroupId()
+                    : "Q:" + candidate.getId();
+            if (!seenCanonicalKeys.add(canonicalKey)) {
+                continue;
+            }
+            result.add(candidate);
+            blockedIds.addAll(loadSameIntentNeighborIds(List.of(candidate.getId())));
+            if (result.size() >= limit) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private Set<Long> loadSameIntentNeighborIds(List<Long> questionIds) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return Set.of();
+        }
+        List<QuestionRelation> relations = questionRelationMapper.selectList(new LambdaQueryWrapper<QuestionRelation>()
+                .eq(QuestionRelation::getRelationType, QuestionRelationType.SAME_INTENT.name())
+                .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name())
+                .and(wrapper -> wrapper.in(QuestionRelation::getSourceQuestionId, questionIds)
+                        .or()
+                        .in(QuestionRelation::getTargetQuestionId, questionIds)));
+        Set<Long> ids = new HashSet<>();
+        Set<Long> seedIds = new HashSet<>(questionIds);
+        for (QuestionRelation relation : relations) {
+            if (relation.getSourceQuestionId() != null && !seedIds.contains(relation.getSourceQuestionId())) {
+                ids.add(relation.getSourceQuestionId());
+            }
+            if (relation.getTargetQuestionId() != null && !seedIds.contains(relation.getTargetQuestionId())) {
+                ids.add(relation.getTargetQuestionId());
+            }
+        }
+        return ids;
     }
 
     // ==================== DTO / VO ====================

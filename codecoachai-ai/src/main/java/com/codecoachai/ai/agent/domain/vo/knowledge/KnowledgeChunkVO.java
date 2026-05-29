@@ -11,6 +11,11 @@ public class KnowledgeChunkVO {
     private String content;
     private String chunkHash;
     private String sourceRef;
+    private String embeddingModel;
+    private Integer embeddingDimension;
+    private LocalDateTime indexedAt;
+    private String indexStatus;
+    private String lastError;
     private Boolean duplicateInDocument;
     private Boolean cleanupCandidate;
     private LocalDateTime createdAt;
