@@ -73,39 +73,39 @@ public class AdminQuestionDuplicateReviewController {
         return Result.success(duplicateService.evaluate(dto));
     }
 
-    @GetMapping("/admin/question-duplicate-eval/cases")
+    @GetMapping({"/admin/question-duplicate-eval/cases", "/admin/question-duplicate-reviews/eval/cases"})
     public Result<PageResult<QuestionDuplicateEvalCaseVO>> pageEvalCases(QuestionDuplicateEvalCaseQueryDTO query) {
         SecurityAssert.requireAdmin();
         return Result.success(duplicateEvaluationService.pageCases(query));
     }
 
-    @PostMapping("/admin/question-duplicate-eval/cases")
+    @PostMapping({"/admin/question-duplicate-eval/cases", "/admin/question-duplicate-reviews/eval/cases"})
     public Result<QuestionDuplicateEvalCaseVO> saveEvalCase(@RequestBody QuestionDuplicateEvalCaseSaveDTO dto) {
         SecurityAssert.requireAdmin();
         return Result.success(duplicateEvaluationService.saveCase(dto));
     }
 
-    @DeleteMapping("/admin/question-duplicate-eval/cases/{id}")
+    @DeleteMapping({"/admin/question-duplicate-eval/cases/{id}", "/admin/question-duplicate-reviews/eval/cases/{id}"})
     public Result<Void> deleteEvalCase(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         duplicateEvaluationService.deleteCase(id);
         return Result.success();
     }
 
-    @PostMapping("/admin/question-duplicate-eval/runs")
+    @PostMapping({"/admin/question-duplicate-eval/runs", "/admin/question-duplicate-reviews/eval/runs"})
     public Result<QuestionDuplicateEvalRunVO> runEval(@RequestBody(required = false) QuestionDuplicateEvalRunRequestDTO dto) {
         SecurityAssert.requireAdmin();
         return Result.success(duplicateEvaluationService.run(dto));
     }
 
-    @GetMapping("/admin/question-duplicate-eval/runs")
+    @GetMapping({"/admin/question-duplicate-eval/runs", "/admin/question-duplicate-reviews/eval/runs"})
     public Result<PageResult<QuestionDuplicateEvalRunVO>> pageEvalRuns(@RequestParam(required = false) Long pageNo,
                                                                        @RequestParam(required = false) Long pageSize) {
         SecurityAssert.requireAdmin();
         return Result.success(duplicateEvaluationService.pageRuns(pageNo, pageSize));
     }
 
-    @GetMapping("/admin/question-duplicate-eval/runs/{id}")
+    @GetMapping({"/admin/question-duplicate-eval/runs/{id}", "/admin/question-duplicate-reviews/eval/runs/{id}"})
     public Result<QuestionDuplicateEvalRunVO> getEvalRun(@PathVariable Long id) {
         SecurityAssert.requireAdmin();
         return Result.success(duplicateEvaluationService.getRun(id));

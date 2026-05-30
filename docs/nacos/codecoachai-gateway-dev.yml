@@ -67,7 +67,7 @@ spring:
         - id: codecoachai-question-admin-duplicate-reviews
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**
+            - Path=/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/question-duplicate-eval,/admin/question-duplicate-eval/**
         - id: codecoachai-question-admin-categories
           uri: lb://codecoachai-question
           predicates:

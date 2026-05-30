@@ -15,7 +15,10 @@ import com.codecoachai.system.mapper.SlowSqlLogMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDateTime;
+import java.util.Collections;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Admin Log Audit")
 @RestController
 @RequiredArgsConstructor
+@Slf4j
 public class AdminLogController {
 
     private final LoginLogMapper loginLogMapper;
@@ -40,28 +44,32 @@ public class AdminLogController {
     @GetMapping({"/admin/logs/summary", "/admin/audit/log-summary"})
     public Result<AdminLogSummaryVO> summary() {
         SecurityAssert.requireAdmin();
-        LocalDateTime todayStart = LocalDateTime.now().toLocalDate().atStartOfDay();
+        AdminLogSummaryVO vo = emptySummary();
+        try {
+            LocalDateTime todayStart = LocalDateTime.now().toLocalDate().atStartOfDay();
 
-        AdminLogSummaryVO vo = new AdminLogSummaryVO();
-        vo.setTotalOperationLogs(countOperationLogs(new LambdaQueryWrapper<>()));
-        vo.setTodayOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
-                .ge(OperationLog::getCreatedAt, todayStart)));
-        vo.setFailedOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
-                .eq(OperationLog::getStatus, "FAILED")));
-        vo.setTodayFailedOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
-                .eq(OperationLog::getStatus, "FAILED")
-                .ge(OperationLog::getCreatedAt, todayStart)));
-        vo.setLatestOperationAt(latestOperationAt());
+            vo.setTotalOperationLogs(countOperationLogs(new LambdaQueryWrapper<>()));
+            vo.setTodayOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
+                    .ge(OperationLog::getCreatedAt, todayStart)));
+            vo.setFailedOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
+                    .eq(OperationLog::getStatus, "FAILED")));
+            vo.setTodayFailedOperationLogs(countOperationLogs(new LambdaQueryWrapper<OperationLog>()
+                    .eq(OperationLog::getStatus, "FAILED")
+                    .ge(OperationLog::getCreatedAt, todayStart)));
+            vo.setLatestOperationAt(latestOperationAt());
 
-        vo.setTotalLoginLogs(countLoginLogs(new LambdaQueryWrapper<>()));
-        vo.setTodayLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
-                .ge(LoginLog::getLoginTime, todayStart)));
-        vo.setFailedLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
-                .eq(LoginLog::getLoginStatus, "FAILED")));
-        vo.setTodayFailedLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
-                .eq(LoginLog::getLoginStatus, "FAILED")
-                .ge(LoginLog::getLoginTime, todayStart)));
-        vo.setLatestLoginAt(latestLoginAt());
+            vo.setTotalLoginLogs(countLoginLogs(new LambdaQueryWrapper<>()));
+            vo.setTodayLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
+                    .ge(LoginLog::getLoginTime, todayStart)));
+            vo.setFailedLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
+                    .eq(LoginLog::getLoginStatus, "FAILED")));
+            vo.setTodayFailedLoginLogs(countLoginLogs(new LambdaQueryWrapper<LoginLog>()
+                    .eq(LoginLog::getLoginStatus, "FAILED")
+                    .ge(LoginLog::getLoginTime, todayStart)));
+            vo.setLatestLoginAt(latestLoginAt());
+        } catch (DataAccessException ex) {
+            log.warn("Admin log summary degraded because audit schema is not ready", ex);
+        }
         return Result.success(vo);
     }
 
@@ -83,23 +91,28 @@ public class AdminLogController {
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         SecurityAssert.requireAdmin();
         String resolvedStatus = StringUtils.hasText(loginStatus) ? normalizeStatus(loginStatus) : normalizeStatus(status);
-        Page<LoginLog> page = loginLogMapper.selectPage(
-                Page.of(pageNo, pageSize),
-                new LambdaQueryWrapper<LoginLog>()
-                        .eq(userId != null, LoginLog::getUserId, userId)
-                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
-                                .like(LoginLog::getUsername, keyword)
-                                .or().like(LoginLog::getIp, keyword)
-                                .or().like(LoginLog::getUserAgent, keyword)
-                                .or().like(LoginLog::getFailReason, keyword))
-                        .like(StringUtils.hasText(username), LoginLog::getUsername, username)
-                        .eq(StringUtils.hasText(traceId), LoginLog::getTraceId, traceId)
-                        .eq(StringUtils.hasText(resolvedStatus), LoginLog::getLoginStatus, resolvedStatus)
-                        .eq(StringUtils.hasText(loginType), LoginLog::getLoginType, loginType)
-                        .ge(startTime != null, LoginLog::getLoginTime, startTime)
-                        .le(endTime != null, LoginLog::getLoginTime, endTime)
-                        .orderByDesc(LoginLog::getLoginTime));
-        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        try {
+            Page<LoginLog> page = loginLogMapper.selectPage(
+                    Page.of(pageNo, pageSize),
+                    new LambdaQueryWrapper<LoginLog>()
+                            .eq(userId != null, LoginLog::getUserId, userId)
+                            .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                    .like(LoginLog::getUsername, keyword)
+                                    .or().like(LoginLog::getIp, keyword)
+                                    .or().like(LoginLog::getUserAgent, keyword)
+                                    .or().like(LoginLog::getFailReason, keyword))
+                            .like(StringUtils.hasText(username), LoginLog::getUsername, username)
+                            .eq(StringUtils.hasText(traceId), LoginLog::getTraceId, traceId)
+                            .eq(StringUtils.hasText(resolvedStatus), LoginLog::getLoginStatus, resolvedStatus)
+                            .eq(StringUtils.hasText(loginType), LoginLog::getLoginType, loginType)
+                            .ge(startTime != null, LoginLog::getLoginTime, startTime)
+                            .le(endTime != null, LoginLog::getLoginTime, endTime)
+                            .orderByDesc(LoginLog::getLoginTime));
+            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        } catch (DataAccessException ex) {
+            log.warn("Login log page degraded because audit schema is not ready", ex);
+            return Result.success(emptyPage(pageNo, pageSize));
+        }
     }
 
     @Operation(summary = "Page operation logs")
@@ -119,26 +132,31 @@ public class AdminLogController {
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         SecurityAssert.requireAdmin();
-        Page<OperationLog> page = operationLogMapper.selectPage(
-                Page.of(pageNo, pageSize),
-                new LambdaQueryWrapper<OperationLog>()
-                        .eq(userId != null, OperationLog::getUserId, userId)
-                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
-                                .like(OperationLog::getUsername, keyword)
-                                .or().like(OperationLog::getModule, keyword)
-                                .or().like(OperationLog::getAction, keyword)
-                                .or().like(OperationLog::getRequestUri, keyword)
-                                .or().like(OperationLog::getIp, keyword)
-                                .or().like(OperationLog::getErrorMsg, keyword))
-                        .like(StringUtils.hasText(username), OperationLog::getUsername, username)
-                        .eq(StringUtils.hasText(module), OperationLog::getModule, module)
-                        .eq(StringUtils.hasText(action), OperationLog::getAction, action)
-                        .eq(StringUtils.hasText(traceId), OperationLog::getTraceId, traceId)
-                        .eq(StringUtils.hasText(status), OperationLog::getStatus, status)
-                        .ge(startTime != null, OperationLog::getCreatedAt, startTime)
-                        .le(endTime != null, OperationLog::getCreatedAt, endTime)
-                        .orderByDesc(OperationLog::getCreatedAt));
-        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        try {
+            Page<OperationLog> page = operationLogMapper.selectPage(
+                    Page.of(pageNo, pageSize),
+                    new LambdaQueryWrapper<OperationLog>()
+                            .eq(userId != null, OperationLog::getUserId, userId)
+                            .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                    .like(OperationLog::getUsername, keyword)
+                                    .or().like(OperationLog::getModule, keyword)
+                                    .or().like(OperationLog::getAction, keyword)
+                                    .or().like(OperationLog::getRequestUri, keyword)
+                                    .or().like(OperationLog::getIp, keyword)
+                                    .or().like(OperationLog::getErrorMsg, keyword))
+                            .like(StringUtils.hasText(username), OperationLog::getUsername, username)
+                            .eq(StringUtils.hasText(module), OperationLog::getModule, module)
+                            .eq(StringUtils.hasText(action), OperationLog::getAction, action)
+                            .eq(StringUtils.hasText(traceId), OperationLog::getTraceId, traceId)
+                            .eq(StringUtils.hasText(status), OperationLog::getStatus, status)
+                            .ge(startTime != null, OperationLog::getCreatedAt, startTime)
+                            .le(endTime != null, OperationLog::getCreatedAt, endTime)
+                            .orderByDesc(OperationLog::getCreatedAt));
+            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        } catch (DataAccessException ex) {
+            log.warn("Operation log page degraded because audit schema is not ready", ex);
+            return Result.success(emptyPage(pageNo, pageSize));
+        }
     }
 
     @Operation(summary = "Page slow SQL logs")
@@ -155,20 +173,44 @@ public class AdminLogController {
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
         SecurityAssert.requireAdmin();
-        Page<SlowSqlLog> page = slowSqlLogMapper.selectPage(
-                Page.of(pageNo, pageSize),
-                new LambdaQueryWrapper<SlowSqlLog>()
-                        .and(StringUtils.hasText(keyword), wrapper -> wrapper
-                                .like(SlowSqlLog::getMapperId, keyword)
-                                .or().like(SlowSqlLog::getSqlText, keyword)
-                                .or().like(SlowSqlLog::getDatabaseName, keyword))
-                        .like(StringUtils.hasText(mapperId), SlowSqlLog::getMapperId, mapperId)
-                        .eq(StringUtils.hasText(sqlCommandType), SlowSqlLog::getSqlCommandType, sqlCommandType)
-                        .ge(minCostMs != null, SlowSqlLog::getCostMs, minCostMs)
-                        .ge(startTime != null, SlowSqlLog::getCreatedAt, startTime)
-                        .le(endTime != null, SlowSqlLog::getCreatedAt, endTime)
-                        .orderByDesc(SlowSqlLog::getCreatedAt));
-        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        try {
+            Page<SlowSqlLog> page = slowSqlLogMapper.selectPage(
+                    Page.of(pageNo, pageSize),
+                    new LambdaQueryWrapper<SlowSqlLog>()
+                            .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                                    .like(SlowSqlLog::getMapperId, keyword)
+                                    .or().like(SlowSqlLog::getSqlText, keyword)
+                                    .or().like(SlowSqlLog::getDatabaseName, keyword))
+                            .like(StringUtils.hasText(mapperId), SlowSqlLog::getMapperId, mapperId)
+                            .eq(StringUtils.hasText(sqlCommandType), SlowSqlLog::getSqlCommandType, sqlCommandType)
+                            .ge(minCostMs != null, SlowSqlLog::getCostMs, minCostMs)
+                            .ge(startTime != null, SlowSqlLog::getCreatedAt, startTime)
+                            .le(endTime != null, SlowSqlLog::getCreatedAt, endTime)
+                            .orderByDesc(SlowSqlLog::getCreatedAt));
+            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        } catch (DataAccessException ex) {
+            log.warn("Slow SQL log page degraded because slow_sql_log schema is not ready", ex);
+            return Result.success(emptyPage(pageNo, pageSize));
+        }
+    }
+
+    private <T> PageResult<T> emptyPage(Long pageNo, Long pageSize) {
+        long current = pageNo == null || pageNo < 1 ? 1L : pageNo;
+        long size = pageSize == null || pageSize < 1 ? 20L : pageSize;
+        return PageResult.of(Collections.emptyList(), 0L, current, size);
+    }
+
+    private AdminLogSummaryVO emptySummary() {
+        AdminLogSummaryVO vo = new AdminLogSummaryVO();
+        vo.setTotalOperationLogs(0L);
+        vo.setTodayOperationLogs(0L);
+        vo.setFailedOperationLogs(0L);
+        vo.setTodayFailedOperationLogs(0L);
+        vo.setTotalLoginLogs(0L);
+        vo.setTodayLoginLogs(0L);
+        vo.setFailedLoginLogs(0L);
+        vo.setTodayFailedLoginLogs(0L);
+        return vo;
     }
 
     private Long countOperationLogs(LambdaQueryWrapper<OperationLog> wrapper) {

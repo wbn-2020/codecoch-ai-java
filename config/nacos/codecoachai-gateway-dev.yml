@@ -34,7 +34,7 @@ spring:
         - id: question
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-relations,/admin/question-relations/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
+            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-relations,/admin/question-relations/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/question-duplicate-eval,/admin/question-duplicate-eval/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
 
         # ========== 简历 ==========
         - id: resume
