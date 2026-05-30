@@ -6,6 +6,7 @@ import com.codecoachai.common.vector.service.VectorIndexJobService;
 import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.http.HttpClient;
+import javax.sql.DataSource;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -35,9 +36,9 @@ public class VectorStoreAutoConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean(JdbcTemplate.class)
+    @ConditionalOnBean(DataSource.class)
     @ConditionalOnMissingBean
-    public VectorIndexJobService vectorIndexJobService(JdbcTemplate jdbcTemplate) {
-        return new VectorIndexJobService(jdbcTemplate);
+    public VectorIndexJobService vectorIndexJobService(DataSource dataSource) {
+        return new VectorIndexJobService(new JdbcTemplate(dataSource));
     }
 }

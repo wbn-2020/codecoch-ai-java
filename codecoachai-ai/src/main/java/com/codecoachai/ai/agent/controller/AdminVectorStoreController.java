@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @Slf4j
 @RequiredArgsConstructor
-@RequestMapping("/admin/vector-store")
+@RequestMapping({"/admin/vector-store", "/admin/analytics/vector-store"})
 public class AdminVectorStoreController {
 
     private static final String QUESTION_COLLECTION = "question_embedding";
