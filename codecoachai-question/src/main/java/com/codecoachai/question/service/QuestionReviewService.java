@@ -24,6 +24,8 @@ public interface QuestionReviewService {
 
     QuestionReviewDetailVO reject(Long id, QuestionReviewRejectDTO dto);
 
+    QuestionReviewDetailVO cancel(Long id, QuestionReviewRejectDTO dto);
+
     BatchQuestionReviewResultVO batchApprove(BatchQuestionReviewApproveDTO dto);
 
     BatchQuestionReviewResultVO batchReject(BatchQuestionReviewRejectDTO dto);

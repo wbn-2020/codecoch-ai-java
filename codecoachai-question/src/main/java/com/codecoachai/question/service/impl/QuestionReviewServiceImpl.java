@@ -202,6 +202,23 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     }
 
     @Override
+    public QuestionReviewDetailVO cancel(Long id, QuestionReviewRejectDTO dto) {
+        Long reviewerId = SecurityAssert.requireLoginUserId();
+        QuestionReview update = new QuestionReview();
+        update.setReviewStatus(QuestionReviewStatus.CANCELLED.name());
+        update.setRejectReason(resolveCancelReason(dto));
+        update.setReviewerId(reviewerId);
+        update.setReviewedAt(LocalDateTime.now());
+        int affected = questionReviewMapper.update(update, new LambdaUpdateWrapper<QuestionReview>()
+                .eq(QuestionReview::getId, id)
+                .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.PENDING.name()));
+        if (affected != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question review status has changed");
+        }
+        return getReview(id);
+    }
+
+    @Override
     public BatchQuestionReviewResultVO batchApprove(BatchQuestionReviewApproveDTO dto) {
         validateBatchReviewIds(dto == null ? null : dto.getReviewIds());
         BatchQuestionReviewResultVO result = newBatchResult(dto.getReviewIds());
@@ -249,6 +266,18 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         QuestionReviewRejectDTO rejectDTO = new QuestionReviewRejectDTO();
         rejectDTO.setRejectReason(rejectReason);
         return rejectDTO;
+    }
+
+    private String resolveCancelReason(QuestionReviewRejectDTO dto) {
+        String reason = dto == null ? null : dto.getRejectReason();
+        if (!StringUtils.hasText(reason)) {
+            return "Admin cancelled draft";
+        }
+        String trimmed = reason.trim();
+        if (trimmed.length() > 500) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "cancel reason must be at most 500 characters");
+        }
+        return trimmed;
     }
 
     private BatchQuestionReviewResultVO newBatchResult(List<Long> reviewIds) {
