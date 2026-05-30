@@ -7,6 +7,8 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.service.QuestionDuplicateService;
+import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionImportService;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.io.BufferedReader;
@@ -14,7 +16,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -26,6 +32,8 @@ import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 /**
@@ -43,6 +51,8 @@ import org.springframework.util.StringUtils;
 public class QuestionImportServiceImpl implements QuestionImportService {
 
     private final QuestionMapper questionMapper;
+    private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
+    private final QuestionDuplicateService questionDuplicateService;
 
     private static final Pattern MD_TITLE_PATTERN = Pattern.compile("^#{1,3}\\s+(.+)$");
 
@@ -210,6 +220,10 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         int success = 0;
         int fail = 0;
         int duplicate = 0;
+        Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
+        Set<String> seenNormalizedTitleHashes = new LinkedHashSet<>();
+        Set<String> seenContentHashes = new LinkedHashSet<>();
+        List<Long> importedQuestionIds = new ArrayList<>();
 
         for (int i = 0; i < parsed.size(); i++) {
             ParsedQuestion pq = parsed.get(i);
@@ -224,17 +238,56 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                     continue;
                 }
 
-                // 归一化标题去重检测
                 String normalized = QuestionTextNormalizeUtils.normalizeTitle(pq.getTitle());
-                Long existsCount = questionMapper.selectCount(
-                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
-                                .eq(Question::getNormalizedTitle, normalized));
-                if (existsCount > 0) {
+                String normalizedTitleHash = QuestionTextNormalizeUtils.sha256Hex(normalized);
+                String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
+                        pq.getTitle(), pq.getContent(), pq.getReferenceAnswer(), pq.getAnalysis());
+                String contentHash = QuestionTextNormalizeUtils.sha256Hex(normalizedContent);
+
+                if (StringUtils.hasText(normalizedTitleHash) && seenNormalizedTitleHashes.contains(normalizedTitleHash)) {
                     duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "FILE_TITLE_DUPLICATE");
                     ImportError err = new ImportError();
                     err.setRowIndex(i + 1);
                     err.setTitle(pq.getTitle());
-                    err.setReason("疑似重复题目");
+                    err.setReason("FILE_TITLE_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
+                if (StringUtils.hasText(contentHash) && seenContentHashes.contains(contentHash)) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "FILE_CONTENT_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("FILE_CONTENT_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
+
+                Long titleExistsCount = questionMapper.selectCount(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
+                                .eq(StringUtils.hasText(normalizedTitleHash), Question::getNormalizedTitleHash, normalizedTitleHash));
+                if (titleExistsCount > 0) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "BANK_TITLE_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("BANK_TITLE_DUPLICATE");
+                    result.getErrors().add(err);
+                    continue;
+                }
+                Long contentExistsCount = questionMapper.selectCount(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
+                                .eq(StringUtils.hasText(contentHash), Question::getContentHash, contentHash));
+                if (contentExistsCount > 0) {
+                    duplicate++;
+                    incrementDuplicateReason(duplicateReasonCounts, "BANK_CONTENT_DUPLICATE");
+                    ImportError err = new ImportError();
+                    err.setRowIndex(i + 1);
+                    err.setTitle(pq.getTitle());
+                    err.setReason("BANK_CONTENT_DUPLICATE");
                     result.getErrors().add(err);
                     continue;
                 }
@@ -242,6 +295,8 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 Question question = new Question();
                 question.setTitle(pq.getTitle());
                 question.setNormalizedTitle(normalized);
+                question.setNormalizedTitleHash(normalizedTitleHash);
+                question.setContentHash(contentHash);
                 question.setContent(pq.getContent());
                 question.setReferenceAnswer(pq.getReferenceAnswer());
                 question.setAnalysis(pq.getAnalysis());
@@ -254,6 +309,13 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setAuditStatus("APPROVED");
                 question.setSourceType("IMPORT");
                 questionMapper.insert(question);
+                importedQuestionIds.add(question.getId());
+                if (StringUtils.hasText(normalizedTitleHash)) {
+                    seenNormalizedTitleHashes.add(normalizedTitleHash);
+                }
+                if (StringUtils.hasText(contentHash)) {
+                    seenContentHashes.add(contentHash);
+                }
                 success++;
             } catch (Exception ex) {
                 fail++;
@@ -268,8 +330,47 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         result.setSuccessCount(success);
         result.setFailCount(fail);
         result.setDuplicateCount(duplicate);
+        result.setDuplicateReasonCounts(duplicateReasonCounts);
+        syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIds, importedBy);
         log.info("题目导入完成 total={} success={} fail={} duplicate={}", parsed.size(), success, fail, duplicate);
         return result;
+    }
+
+    private void syncQuestionEmbeddingAndDuplicateCheckAfterCommit(List<Long> questionIds, Long importedBy) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return;
+        }
+        List<Long> ids = questionIds.stream()
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return;
+        }
+        Runnable action = () -> {
+            questionEmbeddingIndexService.indexQuestions(ids);
+            for (Long questionId : ids) {
+                try {
+                    questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy);
+                } catch (Exception ex) {
+                    log.warn("Question duplicate check failed after import questionId={}", questionId, ex);
+                }
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void incrementDuplicateReason(Map<String, Integer> counts, String reasonCode) {
+        counts.put(reasonCode, counts.getOrDefault(reasonCode, 0) + 1);
     }
 
     private String getExtension(String fileName) {

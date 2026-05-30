@@ -3,6 +3,7 @@ package com.codecoachai.question.service;
 import com.codecoachai.question.domain.entity.Question;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Map;
 import lombok.Data;
 
 /**
@@ -28,6 +29,7 @@ public interface QuestionImportService {
         private int successCount;
         private int failCount;
         private int duplicateCount;
+        private Map<String, Integer> duplicateReasonCounts;
         private List<ImportError> errors;
     }
 

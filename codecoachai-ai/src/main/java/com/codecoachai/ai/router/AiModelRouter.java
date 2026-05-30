@@ -85,6 +85,31 @@ public class AiModelRouter {
         }
     }
 
+    /**
+     * 流式路由调用。仅使用主 provider（流式中途切换体验差），失败抛出由上层决定是否降级到非流式。
+     * 成功后按汇总 usage 累计配额计费，返回完整 RouteResult。
+     */
+    public RouteResult chatStream(AiCallContext ctx, java.util.function.Consumer<String> onDelta) {
+        if (ctx == null || !StringUtils.hasText(ctx.getPrompt())) {
+            throw new IllegalArgumentException("prompt 不能为空");
+        }
+        if (Boolean.TRUE.equals(ctx.getCheckQuota())) {
+            tokenAccountant.checkQuota(ctx.getUserId());
+        }
+        AiRouterProperties.Router routerCfg = routerProperties.getRouter();
+        String primary = StringUtils.hasText(ctx.getForceProvider())
+                ? ctx.getForceProvider()
+                : routerCfg.getDefaultProvider();
+        String modelType = StringUtils.hasText(ctx.getModelType()) ? ctx.getModelType() : "chat";
+        try {
+            CallResult result = providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, onDelta);
+            return toRouteResult(result, primary, ctx);
+        } catch (AiProviderException ex) {
+            tokenAccountant.rollbackMinuteCount(ctx.getUserId());
+            throw ex;
+        }
+    }
+
     private RouteResult toRouteResult(CallResult call, String trace, AiCallContext ctx) {
         tokenAccountant.accumulate(
                 ctx.getUserId(),

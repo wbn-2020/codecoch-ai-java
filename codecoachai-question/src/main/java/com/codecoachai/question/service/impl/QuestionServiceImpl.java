@@ -18,10 +18,13 @@ import com.codecoachai.question.domain.dto.UpdateStatusDTO;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionGroup;
+import com.codecoachai.question.domain.entity.QuestionRelation;
 import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.MasteryStatusEnum;
+import com.codecoachai.question.domain.enums.QuestionRelationStatus;
+import com.codecoachai.question.domain.enums.QuestionRelationType;
 import com.codecoachai.question.domain.vo.InnerQuestionVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionListVO;
@@ -31,17 +34,23 @@ import com.codecoachai.question.domain.vo.WrongQuestionVO;
 import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.mapper.QuestionRelationMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
+import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionService;
+import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -49,6 +58,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.StringUtils;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class QuestionServiceImpl implements QuestionService {
 
@@ -57,10 +67,12 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionMapper questionMapper;
     private final QuestionCategoryMapper categoryMapper;
     private final QuestionGroupMapper groupMapper;
+    private final QuestionRelationMapper relationMapper;
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
     private final QuestionDuplicateService questionDuplicateService;
+    private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionMqDispatcher questionMqDispatcher;
 
     @Override
@@ -175,7 +187,8 @@ public class QuestionServiceImpl implements QuestionService {
         questionMapper.insert(question);
         replaceTags(question.getId(), dto.getTagIds());
         Long userId = requireCurrentUserId();
-        questionDuplicateService.checkDuplicateForQuestion(question.getId(), userId);
+        syncQuestionDuplicateCheckAfterCommit(question.getId(), userId);
+        syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
         syncQuestionSearchAfterCommit(question.getId(), userId, CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(question);
     }
@@ -187,6 +200,8 @@ public class QuestionServiceImpl implements QuestionService {
         applyQuestion(question, dto);
         questionMapper.updateById(question);
         replaceTags(question.getId(), dto.getTagIds());
+        syncQuestionDuplicateCheckAfterCommit(question.getId(), LoginUserContext.getUserId());
+        syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
         syncQuestionSearchAfterCommit(question.getId(), LoginUserContext.getUserId(),
                 CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(getQuestionOrThrow(id));
@@ -195,8 +210,11 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteQuestion(Long id) {
+        Long userId = LoginUserContext.getUserId();
         questionMapper.deleteById(id);
-        syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), false);
+        questionDuplicateService.invalidatePendingReviewsForQuestion(id, userId, "Question deleted, duplicate review auto ignored");
+        syncQuestionEmbeddingAfterCommit(id, false);
+        syncQuestionSearchAfterCommit(id, userId, false);
     }
 
     @Override
@@ -205,6 +223,13 @@ public class QuestionServiceImpl implements QuestionService {
         Question question = getQuestionOrThrow(id);
         question.setStatus(dto.getStatus());
         questionMapper.updateById(question);
+        if (CommonConstants.YES.equals(dto.getStatus())) {
+            syncQuestionDuplicateCheckAfterCommit(id, LoginUserContext.getUserId());
+        } else {
+            questionDuplicateService.invalidatePendingReviewsForQuestion(id, LoginUserContext.getUserId(),
+                    "Question disabled, duplicate review auto ignored");
+        }
+        syncQuestionEmbeddingAfterCommit(id, CommonConstants.YES.equals(dto.getStatus()));
         syncQuestionSearchAfterCommit(id, LoginUserContext.getUserId(), CommonConstants.YES.equals(dto.getStatus()));
     }
 
@@ -247,7 +272,8 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     public List<InnerQuestionVO> recommend(RecommendQuestionDTO dto) {
-        long limit = dto == null || dto.getLimit() == null ? 5L : dto.getLimit();
+        long limit = normalizeRecommendLimit(dto == null ? null : dto.getLimit());
+        long candidateLimit = Math.max(limit * 4, limit + 10);
         List<String> weakTags = dto == null || dto.getWeakTags() == null
                 ? Collections.emptyList()
                 : dto.getWeakTags().stream()
@@ -283,18 +309,18 @@ public class QuestionServiceImpl implements QuestionService {
                 }
             });
         }
-        List<Question> records = questionMapper.selectPage(Page.of(1, limit), wrapper
+        List<Question> records = questionMapper.selectPage(Page.of(1, candidateLimit), wrapper
                         .orderByDesc(Question::getIsHighFrequency)
                         .orderByDesc(Question::getUpdatedAt))
                 .getRecords();
         if (records.isEmpty() && !weakTags.isEmpty()) {
-            records = questionMapper.selectPage(Page.of(1, limit), new LambdaQueryWrapper<Question>()
+            records = questionMapper.selectPage(Page.of(1, candidateLimit), new LambdaQueryWrapper<Question>()
                             .eq(Question::getStatus, CommonConstants.YES)
                             .orderByDesc(Question::getIsHighFrequency)
                             .orderByDesc(Question::getUpdatedAt))
                     .getRecords();
         }
-        return new ArrayList<>(records).stream()
+        return distinctByCanonicalGroup(records, (int) limit).stream()
                 .map(QuestionConvert::toInnerVO)
                 .toList();
     }
@@ -302,6 +328,7 @@ public class QuestionServiceImpl implements QuestionService {
     private LambdaQueryWrapper<Question> buildQuestionWrapper(QuestionQueryDTO query, boolean includeStatusFilter) {
         List<Long> questionIds = findQuestionIdsByTag(query.getTagId());
         return new LambdaQueryWrapper<Question>()
+                .eq(query.getQuestionId() != null, Question::getId, query.getQuestionId())
                 .eq(query.getCategoryId() != null, Question::getCategoryId, query.getCategoryId())
                 .eq(StringUtils.hasText(query.getDifficulty()), Question::getDifficulty, query.getDifficulty())
                 .eq(StringUtils.hasText(query.getQuestionType()), Question::getQuestionType, query.getQuestionType())
@@ -330,12 +357,71 @@ public class QuestionServiceImpl implements QuestionService {
                 .toList();
     }
 
+    private long normalizeRecommendLimit(Long rawLimit) {
+        if (rawLimit == null || rawLimit <= 0) {
+            return 5L;
+        }
+        return Math.min(rawLimit, 50L);
+    }
+
+    private List<Question> distinctByCanonicalGroup(List<Question> candidates, int limit) {
+        if (candidates == null || candidates.isEmpty() || limit <= 0) {
+            return Collections.emptyList();
+        }
+        List<Question> result = new ArrayList<>();
+        Set<String> seenCanonicalKeys = new HashSet<>();
+        Set<Long> selectedQuestionIds = new HashSet<>();
+        Set<Long> blockedQuestionIds = new HashSet<>();
+        for (Question candidate : candidates) {
+            if (candidate == null || candidate.getId() == null || blockedQuestionIds.contains(candidate.getId())) {
+                continue;
+            }
+            String canonicalKey = candidate.getGroupId() != null
+                    ? "G:" + candidate.getGroupId()
+                    : "Q:" + candidate.getId();
+            if (!seenCanonicalKeys.add(canonicalKey)) {
+                continue;
+            }
+            result.add(candidate);
+            selectedQuestionIds.add(candidate.getId());
+            blockedQuestionIds.addAll(findSameIntentNeighborIds(candidate.getId()));
+            blockedQuestionIds.removeAll(selectedQuestionIds);
+            if (result.size() >= limit) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private Set<Long> findSameIntentNeighborIds(Long questionId) {
+        if (questionId == null) {
+            return Set.of();
+        }
+        List<QuestionRelation> relations = relationMapper.selectList(new LambdaQueryWrapper<QuestionRelation>()
+                .eq(QuestionRelation::getRelationType, QuestionRelationType.SAME_INTENT.name())
+                .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name())
+                .and(wrapper -> wrapper.eq(QuestionRelation::getSourceQuestionId, questionId)
+                        .or()
+                        .eq(QuestionRelation::getTargetQuestionId, questionId)));
+        Set<Long> ids = new HashSet<>();
+        for (QuestionRelation relation : relations) {
+            if (relation.getSourceQuestionId() != null && !relation.getSourceQuestionId().equals(questionId)) {
+                ids.add(relation.getSourceQuestionId());
+            }
+            if (relation.getTargetQuestionId() != null && !relation.getTargetQuestionId().equals(questionId)) {
+                ids.add(relation.getTargetQuestionId());
+            }
+        }
+        return ids;
+    }
+
     private void applyQuestion(Question question, AdminQuestionSaveDTO dto) {
         validateQuestionRefs(dto);
         question.setTitle(dto.getTitle());
         question.setContent(dto.getContent());
         question.setReferenceAnswer(StringUtils.hasText(dto.getReferenceAnswer()) ? dto.getReferenceAnswer() : dto.getAnswer());
         question.setAnalysis(dto.getAnalysis());
+        applyQuestionFingerprints(question);
         question.setCategoryId(dto.getCategoryId());
         question.setGroupId(dto.getGroupId());
         question.setDifficulty(StringUtils.hasText(dto.getDifficulty()) ? dto.getDifficulty() : "MEDIUM");
@@ -345,6 +431,14 @@ public class QuestionServiceImpl implements QuestionService {
         question.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
     }
 
+    private void applyQuestionFingerprints(Question question) {
+        String normalizedTitle = QuestionTextNormalizeUtils.normalizeTitle(question.getTitle());
+        String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
+                question.getTitle(), question.getContent(), question.getReferenceAnswer(), question.getAnalysis());
+        question.setNormalizedTitle(normalizedTitle);
+        question.setNormalizedTitleHash(QuestionTextNormalizeUtils.sha256Hex(normalizedTitle));
+        question.setContentHash(QuestionTextNormalizeUtils.sha256Hex(normalizedContent));
+    }
     private void replaceTags(Long questionId, List<Long> tagIds) {
         tagRelationMapper.delete(new LambdaQueryWrapper<QuestionTagRelation>()
                 .eq(QuestionTagRelation::getQuestionId, questionId));
@@ -460,6 +554,46 @@ public class QuestionServiceImpl implements QuestionService {
         } else {
             recordMapper.updateById(record);
         }
+    }
+
+    private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
+        Runnable action = () -> {
+            if (upsert) {
+                questionEmbeddingIndexService.indexQuestion(questionId);
+            } else {
+                questionEmbeddingIndexService.deleteQuestion(questionId);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void syncQuestionDuplicateCheckAfterCommit(Long questionId, Long userId) {
+        Runnable action = () -> {
+            try {
+                questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
+            } catch (Exception ex) {
+                log.warn("Question duplicate check failed after commit questionId={}", questionId, ex);
+            }
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {

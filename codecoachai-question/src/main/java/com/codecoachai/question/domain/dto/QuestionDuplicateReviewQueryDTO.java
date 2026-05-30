@@ -8,6 +8,7 @@ public class QuestionDuplicateReviewQueryDTO {
     private Long questionId;
     private String reviewStatus;
     private String matchType;
+    private String scoreBand;
     private String keyword;
     private Long pageNo = 1L;
     private Long pageSize = 10L;

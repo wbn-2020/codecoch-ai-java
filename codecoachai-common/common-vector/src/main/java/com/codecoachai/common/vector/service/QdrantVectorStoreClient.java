@@ -1,6 +1,7 @@
 package com.codecoachai.common.vector.service;
 
 import com.codecoachai.common.vector.config.VectorStoreProperties;
+import com.codecoachai.common.vector.domain.VectorCollectionInfo;
 import com.codecoachai.common.vector.domain.VectorPoint;
 import com.codecoachai.common.vector.domain.VectorSearchRequest;
 import com.codecoachai.common.vector.domain.VectorSearchResult;
@@ -8,6 +9,7 @@ import com.codecoachai.common.vector.exception.VectorStoreException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigInteger;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -16,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
@@ -41,10 +44,71 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
 
     @Override
     public void ensureCollection(String collectionName, int dimension) {
+        VectorCollectionInfo info = collectionInfo(collectionName);
+        if (Boolean.TRUE.equals(info.getExists())) {
+            if (info.getVectorSize() != null && info.getVectorSize() != dimension) {
+                throw new VectorStoreException("Qdrant collection dimension mismatch collection=" + collectionName
+                        + " expected=" + dimension + " actual=" + info.getVectorSize());
+            }
+            return;
+        }
         Map<String, Object> vectors = new LinkedHashMap<>();
         vectors.put("size", dimension);
         vectors.put("distance", "Cosine");
         send("PUT", "/collections/" + collectionName, Map.of("vectors", vectors));
+    }
+
+    @Override
+    public void ensurePayloadIndexes(String collectionName, Map<String, String> fieldSchemas) {
+        if (!isEnabled() || CollectionUtils.isEmpty(fieldSchemas)) {
+            return;
+        }
+        for (Map.Entry<String, String> entry : fieldSchemas.entrySet()) {
+            if (!StringUtils.hasText(entry.getKey()) || !StringUtils.hasText(entry.getValue())) {
+                continue;
+            }
+            try {
+                send("PUT", "/collections/" + collectionName + "/index", Map.of(
+                        "field_name", entry.getKey(),
+                        "field_schema", entry.getValue()
+                ));
+            } catch (VectorStoreException ex) {
+                String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+                if (!message.contains("already") && !message.contains("exists")) {
+                    throw ex;
+                }
+            }
+        }
+    }
+
+    @Override
+    public VectorCollectionInfo collectionInfo(String collectionName) {
+        if (!isEnabled()) {
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(false)
+                    .status("DISABLED")
+                    .build();
+        }
+        try {
+            JsonNode result = send("GET", "/collections/" + collectionName, null).path("result");
+            JsonNode vectors = result.path("config").path("params").path("vectors");
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(true)
+                    .status(result.path("status").asText("UNKNOWN"))
+                    .pointCount(result.path("points_count").isMissingNode() ? null : result.path("points_count").asLong())
+                    .vectorSize(vectors.path("size").isMissingNode() ? null : vectors.path("size").asInt())
+                    .distance(vectors.path("distance").asText(null))
+                    .build();
+        } catch (Exception ex) {
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(false)
+                    .status("ERROR")
+                    .errorMessage(ex.getMessage())
+                    .build();
+        }
     }
 
     @Override
@@ -54,7 +118,7 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         }
         List<Map<String, Object>> payloadPoints = points.stream().map(point -> {
             Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", point.getId());
+            item.put("id", qdrantPointIdValue(point.getId()));
             item.put("vector", point.getVector());
             item.put("payload", point.getPayload() == null ? Map.of() : point.getPayload());
             return item;
@@ -69,7 +133,8 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         body.put("limit", request.getLimit() == null ? properties.getDefaultLimit() : request.getLimit());
         body.put("with_payload", true);
         if (request.getScoreThreshold() != null) {
-            body.put("score_threshold", request.getScoreThreshold());
+            // 调用方阈值按归一化后的口径（[0,1]），传给 Qdrant 前需还原为原始分数口径，二者保持一致
+            body.put("score_threshold", denormalizeScore(request.getScoreThreshold()));
         }
         Map<String, Object> filter = buildFilter(request.getMustMatchPayload());
         if (!filter.isEmpty()) {
@@ -80,11 +145,32 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         for (JsonNode item : root.path("result")) {
             results.add(VectorSearchResult.builder()
                     .id(item.path("id").asText())
-                    .score(item.path("score").asDouble())
+                    .score(normalizeScore(item.path("score").asDouble()))
                     .payload(objectMapper.convertValue(item.path("payload"), MAP_TYPE))
                     .build());
         }
         return results;
+    }
+
+    /**
+     * 将向量库返回的原始分数按配置归一化。COSINE_TO_UNIT 时把余弦 [-1,1] 映射到 [0,1]，并裁剪到合法区间。
+     */
+    private double normalizeScore(double rawScore) {
+        if (properties.getScoreNormalization() == VectorStoreProperties.ScoreNormalization.COSINE_TO_UNIT) {
+            double unit = (rawScore + 1.0d) / 2.0d;
+            return Math.max(0.0d, Math.min(1.0d, unit));
+        }
+        return rawScore;
+    }
+
+    /**
+     * 将归一化口径的阈值还原为原始分数口径，用于下发给向量库的 score_threshold。
+     */
+    private double denormalizeScore(double normalizedThreshold) {
+        if (properties.getScoreNormalization() == VectorStoreProperties.ScoreNormalization.COSINE_TO_UNIT) {
+            return normalizedThreshold * 2.0d - 1.0d;
+        }
+        return normalizedThreshold;
     }
 
     @Override
@@ -92,7 +178,34 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         if (CollectionUtils.isEmpty(pointIds)) {
             return;
         }
-        send("POST", "/collections/" + collectionName + "/points/delete?wait=true", Map.of("points", pointIds));
+        send("POST", "/collections/" + collectionName + "/points/delete?wait=true",
+                Map.of("points", pointIds.stream().map(this::qdrantPointIdValue).toList()));
+    }
+
+    private Object qdrantPointIdValue(String pointId) {
+        if (!StringUtils.hasText(pointId)) {
+            throw new VectorStoreException("Qdrant point id must not be blank");
+        }
+        if (isUnsignedIntegerPointId(pointId)) {
+            return new BigInteger(pointId);
+        }
+        if (isUuidPointId(pointId)) {
+            return pointId;
+        }
+        throw new VectorStoreException("Qdrant point id must be an unsigned integer or UUID: " + pointId);
+    }
+
+    private boolean isUnsignedIntegerPointId(String pointId) {
+        return pointId.chars().allMatch(Character::isDigit);
+    }
+
+    private boolean isUuidPointId(String pointId) {
+        try {
+            UUID.fromString(pointId);
+            return true;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
     }
 
     private Map<String, Object> buildFilter(Map<String, Object> mustMatchPayload) {
@@ -117,8 +230,10 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
             if (StringUtils.hasText(properties.getApiKey())) {
                 builder.header("api-key", properties.getApiKey());
             }
-            HttpRequest request = builder.method(method,
-                    HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body))).build();
+            HttpRequest.BodyPublisher publisher = body == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body));
+            HttpRequest request = builder.method(method, publisher).build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new VectorStoreException("Qdrant request failed status=" + response.statusCode()

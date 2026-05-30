@@ -136,7 +136,13 @@ public class AuthServiceImpl implements AuthService {
             String token = newResetToken();
             // 重置 token 只落 Redis，过期自动失效；不要持久化明文 token 到数据库或日志。
             redisCacheHelper.set(resetTokenKey(token), String.valueOf(user.getId()), Duration.ofSeconds(RESET_TOKEN_TTL_SECONDS));
-            passwordResetDeliveryService.sendResetToken(user.getId(), email, token, RESET_TOKEN_TTL_SECONDS);
+            try {
+                passwordResetDeliveryService.sendResetToken(user.getId(), email, token, RESET_TOKEN_TTL_SECONDS);
+            } catch (RuntimeException ex) {
+                redisCacheHelper.delete(resetTokenKey(token));
+                passwordResetSecurityLogRecorder.recordRequested(email, "DELIVERY_FAILED");
+                throw ex;
+            }
             passwordResetSecurityLogRecorder.recordRequested(email, "TOKEN_ISSUED");
             log.info("Password reset request accepted userId={} email={} ttlSeconds={}", user.getId(), maskEmail(email), RESET_TOKEN_TTL_SECONDS);
         } catch (BusinessException ex) {

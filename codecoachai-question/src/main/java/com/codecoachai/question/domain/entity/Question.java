@@ -23,6 +23,8 @@ public class Question extends BaseEntity {
     private Integer status;
     /** 归一化标题（用于去重检测） */
     private String normalizedTitle;
+    private String normalizedTitleHash;
+    private String contentHash;
     /** 审核状态：PENDING / APPROVED / REJECTED */
     private String auditStatus;
     /** 来源类型：MANUAL / AI_GENERATED / IMPORT */

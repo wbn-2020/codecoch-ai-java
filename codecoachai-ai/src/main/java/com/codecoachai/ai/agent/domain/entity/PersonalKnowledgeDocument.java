@@ -13,5 +13,6 @@ public class PersonalKnowledgeDocument extends BaseEntity {
     private String title;
     private String documentType;
     private String content;
+    private String contentHash;
     private String status;
 }

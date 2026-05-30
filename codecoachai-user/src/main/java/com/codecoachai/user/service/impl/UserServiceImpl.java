@@ -30,7 +30,10 @@ import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.RoleService;
 import com.codecoachai.user.service.UserService;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -136,20 +139,13 @@ public class UserServiceImpl implements UserService {
     @Override
     public PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query) {
         requireAdmin();
-        LambdaQueryWrapper<SysUser> wrapper = new LambdaQueryWrapper<SysUser>()
-                .eq(query.getStatus() != null, SysUser::getStatus, query.getStatus())
-                .and(StringUtils.hasText(query.getKeyword()), condition -> condition
-                        .like(SysUser::getUsername, query.getKeyword())
-                        .or()
-                        .like(SysUser::getNickname, query.getKeyword())
-                        .or()
-                        .like(SysUser::getEmail, query.getKeyword()))
-                .orderByDesc(SysUser::getCreatedAt);
-        Page<SysUser> page = sysUserMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()), wrapper);
+        Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(query.getPageNo(), query.getPageSize()),
+                normalizeKeyword(query.getKeyword()), query.getStatus(), normalizeKeyword(query.getRoleCode()));
+        Map<Long, List<String>> roleMap = listRoleCodesByUserIds(page.getRecords().stream()
+                .map(SysUser::getId)
+                .toList());
         List<AdminUserPageVO> records = page.getRecords().stream()
-                .filter(user -> !StringUtils.hasText(query.getRoleCode())
-                        || roleService.listRoleCodesByUserId(user.getId()).contains(query.getRoleCode()))
-                .map(user -> UserConvert.toAdminUserPageVO(user, roleService.listRoleCodesByUserId(user.getId())))
+                .map(user -> UserConvert.toAdminUserPageVO(user, roleMap.getOrDefault(user.getId(), List.of())))
                 .toList();
         return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -271,6 +267,34 @@ public class UserServiceImpl implements UserService {
         if (!LoginUserContext.isAdmin()) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+    }
+
+    private String normalizeKeyword(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private Map<Long, List<String>> listRoleCodesByUserIds(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        String placeholders = String.join(",", Collections.nCopies(userIds.size(), "?"));
+        String sql = """
+                SELECT ur.user_id, r.role_code
+                FROM sys_user_role ur
+                JOIN sys_role r ON r.id = ur.role_id
+                WHERE ur.deleted = 0
+                  AND r.deleted = 0
+                  AND r.status = 1
+                  AND ur.user_id IN (%s)
+                ORDER BY ur.user_id ASC, r.id ASC
+                """.formatted(placeholders);
+        Map<Long, List<String>> result = new LinkedHashMap<>();
+        jdbcTemplate.query(sql, userIds.toArray(), rs -> {
+            Long userId = rs.getLong("user_id");
+            String roleCode = rs.getString("role_code");
+            result.computeIfAbsent(userId, ignored -> new java.util.ArrayList<>()).add(roleCode);
+        });
+        return result;
     }
 
     private UserDashboardOverviewVO.RecentResumeParseVO recentResumeParse(Long userId) {

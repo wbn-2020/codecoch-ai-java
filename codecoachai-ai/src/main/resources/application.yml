@@ -16,3 +16,24 @@ spring:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         group: DEFAULT_GROUP
         file-extension: yml
+
+codecoachai:
+  knowledge:
+    collection: personal_knowledge_chunk
+    chunk-strategy: STRUCTURED_MARKDOWN_BLOCK_800_OVERLAP_80
+    chunk-size: 800
+    chunk-overlap: 80
+    min-chunk-size: 180
+    embedding-batch-size: 64
+    ask-default-limit: 5
+    upload-max-bytes: 8388608
+    upload-max-text-chars: 100000
+    near-duplicate-threshold: 0.88
+    ask-min-score: 0.55
+    upload-extensions:
+      - txt
+      - md
+      - markdown
+      - pdf
+      - docx
+      - doc

@@ -52,7 +52,7 @@ spring:
         - id: ai
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**
+            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**
           filters:
             - name: RequestRateLimiter
               args:
@@ -65,7 +65,7 @@ spring:
         - id: file
           uri: lb://codecoachai-file
           predicates:
-            - Path=/files,/files/**,/admin/files,/admin/files/**,/knowledge,/knowledge/**
+            - Path=/files,/files/**,/admin/files,/admin/files/**
 
         # ========== 异步任务中心（V3 新增） ==========
         - id: task

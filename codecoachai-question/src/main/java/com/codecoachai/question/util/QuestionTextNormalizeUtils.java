@@ -1,6 +1,10 @@
 package com.codecoachai.question.util;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
@@ -29,7 +33,31 @@ public final class QuestionTextNormalizeUtils {
                 }
             }
         }
-        return normalized.replaceAll("[\\s\\p{Punct}，。！？、；：“”‘’（）【】《》]+", "");
+        return normalized.replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+    }
+
+    public static String normalizeContent(String... parts) {
+        if (parts == null || parts.length == 0) {
+            return "";
+        }
+        return Arrays.stream(parts)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .map(String::toLowerCase)
+                .collect(Collectors.joining("\n"))
+                .replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+    }
+
+    public static String sha256Hex(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 algorithm is not available", ex);
+        }
     }
 
     public static Set<String> tokens(String text) {

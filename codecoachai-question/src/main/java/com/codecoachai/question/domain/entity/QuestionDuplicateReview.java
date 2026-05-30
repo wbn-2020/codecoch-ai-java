@@ -18,6 +18,8 @@ public class QuestionDuplicateReview extends BaseEntity {
     private String matchType;
     private BigDecimal similarityScore;
     private String matchReason;
+    private String scoreBand;
+    private String scoreDetailJson;
     private String sourceTitleSnapshot;
     private String targetTitleSnapshot;
     private String sourceContentSnapshot;

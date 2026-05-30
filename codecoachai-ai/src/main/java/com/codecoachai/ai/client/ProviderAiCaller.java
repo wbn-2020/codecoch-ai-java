@@ -9,10 +9,18 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.ConnectException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.net.SocketTimeoutException;
 import java.time.Duration;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -185,6 +193,115 @@ public class ProviderAiCaller {
         } catch (Exception ex) {
             throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
                     "Provider " + providerName + " embedding failed: " + ex.getMessage(), null, ex);
+        }
+    }
+
+    /**
+     * 按 provider 名以流式（SSE）方式调用 chat 接口。逐 token 回调 onDelta，并返回汇总结果。
+     * 走 OpenAI 兼容的 stream=true 协议，解析 data: 行。失败抛 {@link AiProviderException}。
+     *
+     * @param onDelta 每个增量 token 片段的回调（非空、非 [DONE]）
+     */
+    public CallResult chatStream(String providerName, String prompt, String modelType, Consumer<String> onDelta) {
+        AiRouterProperties.ProviderConfig cfg = resolveProvider(providerName);
+        if (cfg == null) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider not configured: " + providerName);
+        }
+        if (!StringUtils.hasText(cfg.getBaseUrl()) || !StringUtils.hasText(cfg.getApiKey())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider base-url or api-key empty: " + providerName);
+        }
+        String model = "reasoner".equalsIgnoreCase(modelType)
+                ? (StringUtils.hasText(cfg.getReasonerModel()) ? cfg.getReasonerModel() : cfg.getChatModel())
+                : cfg.getChatModel();
+        String url = normalizeUrl(cfg.getBaseUrl());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("temperature", cfg.getTemperature());
+        body.put("max_tokens", cfg.getMaxTokens());
+        body.put("stream", true);
+        body.put("stream_options", Map.of("include_usage", true));
+        body.put("messages", List.of(Map.of("role", "user", "content", prompt)));
+
+        long started = System.currentTimeMillis();
+        StringBuilder fullContent = new StringBuilder();
+        int[] usage = new int[]{0, 0, 0}; // prompt, completion, total
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(cfg.timeout())
+                    .build();
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(cfg.timeout())
+                    .header("Authorization", "Bearer " + cfg.getApiKey())
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                    .build();
+            HttpResponse<Stream<String>> response = client.send(request, HttpResponse.BodyHandlers.ofLines());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new AiProviderException(AiFailureType.HTTP_ERROR,
+                        "Provider " + providerName + " stream HTTP " + response.statusCode(), response.statusCode(), null);
+            }
+            Iterator<String> lines = response.body().iterator();
+            while (lines.hasNext()) {
+                String line = lines.next();
+                if (line == null || line.isBlank() || !line.startsWith("data:")) {
+                    continue;
+                }
+                String payload = line.substring("data:".length()).trim();
+                if ("[DONE]".equals(payload)) {
+                    break;
+                }
+                try {
+                    JsonNode node = objectMapper.readTree(payload);
+                    JsonNode delta = node.path("choices").path(0).path("delta").path("content");
+                    if (delta.isTextual() && !delta.asText().isEmpty()) {
+                        String piece = delta.asText();
+                        fullContent.append(piece);
+                        if (onDelta != null) {
+                            onDelta.accept(piece);
+                        }
+                    }
+                    JsonNode usageNode = node.path("usage");
+                    if (usageNode.isObject()) {
+                        usage[0] = intOrZero(usageNode.path("prompt_tokens"));
+                        usage[1] = intOrZero(usageNode.path("completion_tokens"));
+                        usage[2] = intOrZero(usageNode.path("total_tokens"));
+                    }
+                } catch (AiProviderException ex) {
+                    throw ex;
+                } catch (Exception ignore) {
+                    // 单帧解析失败不致命，跳过
+                }
+            }
+            if (fullContent.length() == 0) {
+                throw new AiProviderException(AiFailureType.EMPTY_RESPONSE,
+                        "Provider " + providerName + " empty stream response");
+            }
+            CallResult result = new CallResult();
+            result.setProvider(providerName);
+            result.setModel(model);
+            result.setContent(fullContent.toString());
+            result.setPromptTokens(usage[0]);
+            result.setCompletionTokens(usage[1]);
+            result.setTotalTokens(usage[2]);
+            result.setElapsedMs(System.currentTimeMillis() - started);
+            result.setEstimatedCost(estimateCost(cfg, usage[0], usage[1]));
+            return result;
+        } catch (AiProviderException ex) {
+            throw ex;
+        } catch (java.net.http.HttpConnectTimeoutException ex) {
+            throw new AiProviderException(AiFailureType.TIMEOUT,
+                    "Provider " + providerName + " stream timeout: " + ex.getMessage(), null, ex);
+        } catch (Exception ex) {
+            AiFailureType type = containsCause(ex, SocketTimeoutException.class)
+                    || containsCause(ex, ConnectException.class)
+                    ? AiFailureType.TIMEOUT
+                    : AiFailureType.UNKNOWN_ERROR;
+            throw new AiProviderException(type,
+                    "Provider " + providerName + " stream failed: " + ex.getMessage(), null, ex);
         }
     }
 
