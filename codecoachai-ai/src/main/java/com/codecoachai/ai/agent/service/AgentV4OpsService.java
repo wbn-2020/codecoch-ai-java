@@ -20,6 +20,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeEvaluationVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchTraceVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
@@ -81,6 +82,9 @@ public interface AgentV4OpsService {
 
     List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore,
                                                   Long documentId, String documentType);
+
+    KnowledgeSearchTraceVO traceKnowledgeSearch(Long userId, String keyword, Integer limit, Double minScore,
+                                                Long documentId, String documentType);
 
     KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto);
 

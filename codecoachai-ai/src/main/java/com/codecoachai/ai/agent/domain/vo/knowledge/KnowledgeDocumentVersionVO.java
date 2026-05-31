@@ -12,6 +12,7 @@ public class KnowledgeDocumentVersionVO {
     private String documentType;
     private String content;
     private String contentHash;
+    private String normalizationVersion;
     private Integer chunkCount;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

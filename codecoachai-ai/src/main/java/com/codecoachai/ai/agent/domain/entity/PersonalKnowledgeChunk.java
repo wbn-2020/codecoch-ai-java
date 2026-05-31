@@ -15,6 +15,7 @@ public class PersonalKnowledgeChunk extends BaseEntity {
     private Integer chunkIndex;
     private String content;
     private String chunkHash;
+    private String normalizationVersion;
     private String sourceRef;
     private String embeddingModel;
     private Integer embeddingDimension;

@@ -10,6 +10,7 @@ import com.codecoachai.question.domain.dto.QuestionDuplicateEvalCaseQueryDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateEvalCaseSaveDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateEvalRunRequestDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateEvaluationDTO;
+import com.codecoachai.question.domain.dto.QuestionDuplicateThresholdSweepDTO;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionDuplicateEvalCase;
 import com.codecoachai.question.domain.entity.QuestionDuplicateEvalResult;
@@ -17,6 +18,7 @@ import com.codecoachai.question.domain.entity.QuestionDuplicateEvalRun;
 import com.codecoachai.question.domain.vo.QuestionDuplicateEvalCaseVO;
 import com.codecoachai.question.domain.vo.QuestionDuplicateEvalRunVO;
 import com.codecoachai.question.domain.vo.QuestionDuplicateEvaluationVO;
+import com.codecoachai.question.domain.vo.QuestionDuplicateThresholdSweepVO;
 import com.codecoachai.question.mapper.QuestionDuplicateEvalCaseMapper;
 import com.codecoachai.question.mapper.QuestionDuplicateEvalResultMapper;
 import com.codecoachai.question.mapper.QuestionDuplicateEvalRunMapper;
@@ -24,8 +26,12 @@ import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.service.QuestionDuplicateEvaluationService;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -105,7 +111,6 @@ public class QuestionDuplicateEvaluationServiceImpl implements QuestionDuplicate
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public QuestionDuplicateEvalRunVO run(QuestionDuplicateEvalRunRequestDTO dto) {
         List<QuestionDuplicateEvalCase> cases = loadRunCases(dto);
         QuestionDuplicateEvalRun run = new QuestionDuplicateEvalRun();
@@ -145,6 +150,156 @@ public class QuestionDuplicateEvaluationServiceImpl implements QuestionDuplicate
             evalRunMapper.updateById(run);
             throw ex;
         }
+    }
+
+    @Override
+    public QuestionDuplicateThresholdSweepVO thresholdSweep(QuestionDuplicateThresholdSweepDTO dto) {
+        QuestionDuplicateEvalRunRequestDTO request = new QuestionDuplicateEvalRunRequestDTO();
+        if (dto != null) {
+            request.setCaseIds(dto.getCaseIds());
+            request.setOnlyEnabled(dto.getOnlyEnabled());
+            request.setLimit(dto.getLimit());
+        }
+        List<QuestionDuplicateEvalCase> cases = loadRunCases(request);
+        QuestionDuplicateEvaluationDTO evaluationDTO = new QuestionDuplicateEvaluationDTO();
+        evaluationDTO.setSamples(cases.stream().map(this::toEvaluationSample).toList());
+        QuestionDuplicateEvaluationVO evaluation = duplicateService.evaluate(evaluationDTO);
+        List<QuestionDuplicateEvaluationVO.Item> items = evaluation.getItems() == null ? List.of() : evaluation.getItems();
+
+        int min = clampThreshold(dto == null ? null : dto.getMinThreshold(), 70);
+        int max = clampThreshold(dto == null ? null : dto.getMaxThreshold(), 95);
+        int step = dto == null || dto.getStep() == null ? 5 : Math.max(1, Math.min(dto.getStep(), 20));
+        if (min > max) {
+            int temp = min;
+            min = max;
+            max = temp;
+        }
+
+        List<QuestionDuplicateThresholdSweepVO.Bucket> buckets = new ArrayList<>();
+        for (int threshold = min; threshold <= max; threshold += step) {
+            buckets.add(buildThresholdBucket(items, threshold));
+        }
+        QuestionDuplicateThresholdSweepVO.Bucket best = buckets.stream()
+                .max(Comparator
+                        .comparing(QuestionDuplicateThresholdSweepVO.Bucket::getF1, Comparator.nullsFirst(BigDecimal::compareTo))
+                        .thenComparing(QuestionDuplicateThresholdSweepVO.Bucket::getPrecision, Comparator.nullsFirst(BigDecimal::compareTo))
+                        .thenComparing(QuestionDuplicateThresholdSweepVO.Bucket::getRecall, Comparator.nullsFirst(BigDecimal::compareTo)))
+                .orElse(null);
+
+        QuestionDuplicateThresholdSweepVO vo = new QuestionDuplicateThresholdSweepVO();
+        vo.setSampleCount(evaluation.getSampleCount());
+        vo.setEvaluatedCount(evaluation.getEvaluatedCount());
+        vo.setPositiveExpectedCount((int) items.stream().filter(item -> expectedPositive(item.getExpected())).count());
+        vo.setNegativeExpectedCount((int) items.stream().filter(item -> !expectedPositive(item.getExpected())).count());
+        if (best != null) {
+            vo.setBestThreshold(best.getThreshold());
+            vo.setBestPrecision(best.getPrecision());
+            vo.setBestRecall(best.getRecall());
+            vo.setBestF1(best.getF1());
+            vo.setBestAccuracy(best.getAccuracy());
+        }
+        vo.setBuckets(buckets);
+        vo.setGeneratedAt(LocalDateTime.now());
+        return vo;
+    }
+
+    private QuestionDuplicateThresholdSweepVO.Bucket buildThresholdBucket(
+            List<QuestionDuplicateEvaluationVO.Item> items, int threshold) {
+        int truePositive = 0;
+        int falsePositive = 0;
+        int trueNegative = 0;
+        int falseNegative = 0;
+        for (QuestionDuplicateEvaluationVO.Item item : items) {
+            boolean expectedPositive = expectedPositive(item.getExpected());
+            boolean predictedPositive = predictedPositiveAt(item, threshold);
+            if (expectedPositive && predictedPositive) {
+                truePositive++;
+            } else if (!expectedPositive && predictedPositive) {
+                falsePositive++;
+            } else if (!expectedPositive) {
+                trueNegative++;
+            } else {
+                falseNegative++;
+            }
+        }
+        int predictedPositiveCount = truePositive + falsePositive;
+        int total = truePositive + falsePositive + trueNegative + falseNegative;
+        BigDecimal precision = percent(truePositive, predictedPositiveCount);
+        BigDecimal recall = percent(truePositive, truePositive + falseNegative);
+        BigDecimal f1 = f1(precision, recall);
+
+        QuestionDuplicateThresholdSweepVO.Bucket bucket = new QuestionDuplicateThresholdSweepVO.Bucket();
+        bucket.setThreshold(threshold);
+        bucket.setTruePositive(truePositive);
+        bucket.setFalsePositive(falsePositive);
+        bucket.setTrueNegative(trueNegative);
+        bucket.setFalseNegative(falseNegative);
+        bucket.setPredictedPositiveCount(predictedPositiveCount);
+        bucket.setPrecision(precision);
+        bucket.setRecall(recall);
+        bucket.setF1(f1);
+        bucket.setAccuracy(percent(truePositive + trueNegative, total));
+        bucket.setReviewWorkloadRate(percent(predictedPositiveCount, total));
+        return bucket;
+    }
+
+    private boolean expectedPositive(String expected) {
+        String value = normalizeExpectedForSweep(expected);
+        return "DUPLICATE".equals(value) || "REVIEW".equals(value);
+    }
+
+    private boolean predictedPositiveAt(QuestionDuplicateEvaluationVO.Item item, int threshold) {
+        if (item == null || item.getScore() == null) {
+            return false;
+        }
+        return item.getScore().compareTo(BigDecimal.valueOf(threshold)) >= 0;
+    }
+
+    private int clampThreshold(Integer value, int defaultValue) {
+        int actual = value == null ? defaultValue : value;
+        return Math.max(0, Math.min(actual, 100));
+    }
+
+    private String normalizeExpectedForSweep(String expected) {
+        if (!StringUtils.hasText(expected)) {
+            return "NOT_DUPLICATE";
+        }
+        String value = expected.trim().toUpperCase().replace('-', '_');
+        if ("DUPLICATE".equals(value) || "REVIEW".equals(value) || "NOT_DUPLICATE".equals(value)) {
+            return value;
+        }
+        if ("TRUE".equals(value) || "YES".equals(value)) {
+            return "DUPLICATE";
+        }
+        if ("FALSE".equals(value) || "NO".equals(value)) {
+            return "NOT_DUPLICATE";
+        }
+        return value;
+    }
+
+    private BigDecimal percent(long numerator, long denominator) {
+        if (denominator <= 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return BigDecimal.valueOf(numerator)
+                .multiply(BigDecimal.valueOf(100))
+                .divide(BigDecimal.valueOf(denominator), 2, RoundingMode.HALF_UP);
+    }
+
+    private BigDecimal f1(BigDecimal precisionPercent, BigDecimal recallPercent) {
+        if (precisionPercent == null || recallPercent == null
+                || BigDecimal.ZERO.compareTo(precisionPercent.add(recallPercent)) == 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        BigDecimal precision = precisionPercent.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        BigDecimal recall = recallPercent.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        if (BigDecimal.ZERO.compareTo(precision.add(recall)) == 0) {
+            return BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        }
+        return precision.multiply(recall).multiply(BigDecimal.valueOf(2))
+                .divide(precision.add(recall), 6, RoundingMode.HALF_UP)
+                .multiply(BigDecimal.valueOf(100))
+                .setScale(2, RoundingMode.HALF_UP);
     }
 
     @Override

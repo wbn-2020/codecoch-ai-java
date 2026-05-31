@@ -37,6 +37,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateReviewVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeEvaluationVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchTraceVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO.DuplicateDocumentHotspot;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
@@ -65,6 +66,7 @@ import com.codecoachai.ai.service.EmbeddingService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.vector.domain.VectorPoint;
 import com.codecoachai.common.vector.domain.VectorSearchRequest;
 import com.codecoachai.common.vector.domain.VectorSearchResult;
@@ -73,16 +75,16 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -117,7 +119,18 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT = 80;
     private static final String VECTOR_DELETE_COLLECTION_KNOWLEDGE = "personal_knowledge_chunk";
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
+    private static final String KNOWLEDGE_NORMALIZATION_VERSION = TextFingerprintUtils.NORMALIZATION_VERSION;
+    private static final Pattern KNOWLEDGE_QUERY_TOKEN_PATTERN = Pattern.compile("[\\p{IsAlphabetic}\\p{IsDigit}]+|[\\p{IsHan}]+");
     private static final Pattern MARKDOWN_LIST_ITEM_PATTERN = Pattern.compile("^\\s*(?:[-*+]\\s+|\\d+[.)]\\s+).+");
+    private static final Set<String> KNOWLEDGE_QUERY_STOP_WORDS = Set.of(
+            "什么", "哪些", "哪个", "如何", "怎么", "怎样", "为什么", "一下", "这个", "那个", "里面",
+            "关于", "请问", "帮我", "介绍", "说明", "知识库", "上传", "我的", "是否", "有没有"
+    );
+    private static final List<String> KNOWLEDGE_QUERY_DOMAIN_TERMS = List.of(
+            "Java", "Spring", "Spring Boot", "Spring Cloud", "MySQL", "Redis", "JVM", "GC", "Kafka",
+            "RocketMQ", "Docker", "Kubernetes", "微服务", "分布式", "高并发", "线程池", "索引",
+            "缓存", "简历", "项目", "后端", "前端", "面试", "题目", "答案", "解析", "难点"
+    );
     private static final Map<String, String> KNOWLEDGE_PAYLOAD_INDEXES = Map.of(
             "userId", "integer",
             "documentId", "integer",
@@ -226,6 +239,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setDocumentType(firstText(dto.getDocumentType(), "NOTE"));
         document.setContent(dto.getContent());
         document.setContentHash(contentHash);
+        document.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
         document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.insert(document);
         KnowledgeDocumentVO vo = rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
@@ -262,6 +276,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setDocumentType(firstText(dto.getDocumentType(), "NOTE"));
         document.setContent(dto.getContent());
         document.setContentHash(contentHash);
+        document.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
         document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.updateById(document);
         return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
@@ -431,6 +446,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setVectorCollection(knowledgeProperties.getCollection());
         vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
+        vo.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         vo.setChunkSize(knowledgeProperties.safeChunkSize());
         vo.setChunkOverlap(knowledgeProperties.safeChunkOverlap());
@@ -494,6 +510,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setDocumentType(firstText(version.getDocumentType(), "NOTE"));
         document.setContent(content);
         document.setContentHash(contentHash);
+        document.setNormalizationVersion(firstText(version.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.updateById(document);
         return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
@@ -751,19 +768,80 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Override
     public List<KnowledgeSearchResultVO> searchKnowledge(Long userId, String keyword, Integer limit, Double minScore,
                                                          Long documentId, String documentType) {
+        return searchKnowledgePipeline(userId, keyword, limit, minScore, documentId, documentType).finalResults();
+    }
+
+    @Override
+    public KnowledgeSearchTraceVO traceKnowledgeSearch(Long userId, String keyword, Integer limit, Double minScore,
+                                                       Long documentId, String documentType) {
+        KnowledgeSearchPipeline pipeline = searchKnowledgePipeline(userId, keyword, limit, minScore, documentId, documentType);
+        KnowledgeSearchTraceVO vo = new KnowledgeSearchTraceVO();
+        vo.setQuery(pipeline.query());
+        vo.setExpandedTerms(pipeline.expandedTerms());
+        vo.setLimit(pipeline.limit());
+        vo.setRecallLimit(pipeline.recallLimit());
+        vo.setMinScore(pipeline.minScore());
+        vo.setDocumentId(documentId);
+        vo.setDocumentType(pipeline.documentType());
+        vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
+        vo.setVectorCandidates(pipeline.vectorCandidates());
+        vo.setKeywordCandidates(pipeline.keywordCandidates());
+        vo.setMergedCandidates(pipeline.mergedCandidates());
+        vo.setFinalResults(pipeline.finalResults());
+        vo.setVectorCandidateCount(pipeline.vectorCandidates().size());
+        vo.setKeywordCandidateCount(pipeline.keywordCandidates().size());
+        vo.setMergedCandidateCount(pipeline.mergedCandidates().size());
+        vo.setFilteredCandidateCount(pipeline.filteredCandidates().size());
+        vo.setFinalCandidateCount(pipeline.finalResults().size());
+        List<String> warnings = new ArrayList<>();
+        if (!vectorStoreClient.isEnabled()) {
+            warnings.add("Vector store is disabled; search used keyword fallback only.");
+        }
+        if (pipeline.finalResults().isEmpty()) {
+            warnings.add("No candidate passed the current minScore and rerank filters.");
+        }
+        vo.setWarnings(warnings);
+        vo.setGeneratedAt(LocalDateTime.now());
+        return vo;
+    }
+
+    private KnowledgeSearchPipeline searchKnowledgePipeline(Long userId, String keyword, Integer limit, Double minScore,
+                                                            Long documentId, String documentType) {
         if (!StringUtils.hasText(keyword)) {
-            return List.of();
+            int size = normalizeLimit(limit);
+            Double normalizedMinScore = normalizeScore(minScore);
+            String normalizedDocumentType = normalizeKeyword(documentType);
+            return new KnowledgeSearchPipeline("", List.of(), size, 0, normalizedMinScore, normalizedDocumentType,
+                    List.of(), List.of(), List.of(), List.of(), List.of());
         }
         int size = normalizeLimit(limit);
         String value = keyword.trim();
         Double normalizedMinScore = normalizeScore(minScore);
         String normalizedDocumentType = normalizeKeyword(documentType);
         int recallSize = Math.min(size * knowledgeProperties.safeRecallMultiplier(), 50);
+        List<String> expandedTerms = knowledgeQueryTerms(value);
         List<KnowledgeSearchResultVO> semanticResults = searchKnowledgeByVector(userId, value, recallSize, documentId, normalizedDocumentType);
-        List<KnowledgeSearchResultVO> keywordResults = searchKnowledgeByKeyword(userId, value, recallSize, documentId, normalizedDocumentType);
+        List<KnowledgeSearchResultVO> keywordResults = searchKnowledgeByKeyword(userId, value, expandedTerms, recallSize,
+                documentId, normalizedDocumentType);
         List<KnowledgeSearchResultVO> mergedResults = mergeKnowledgeSearchResults(semanticResults, keywordResults);
         List<KnowledgeSearchResultVO> scoped = filterByMinScore(mergedResults, normalizedMinScore);
-        return rerankWithMmr(scoped, size);
+        List<KnowledgeSearchResultVO> finalResults = rerankWithMmr(scoped, size);
+        return new KnowledgeSearchPipeline(value, expandedTerms, size, recallSize, normalizedMinScore,
+                normalizedDocumentType, semanticResults, keywordResults, mergedResults, scoped, finalResults);
+    }
+
+    private record KnowledgeSearchPipeline(String query,
+                                           List<String> expandedTerms,
+                                           int limit,
+                                           int recallLimit,
+                                           Double minScore,
+                                           String documentType,
+                                           List<KnowledgeSearchResultVO> vectorCandidates,
+                                           List<KnowledgeSearchResultVO> keywordCandidates,
+                                           List<KnowledgeSearchResultVO> mergedCandidates,
+                                           List<KnowledgeSearchResultVO> filteredCandidates,
+                                           List<KnowledgeSearchResultVO> finalResults) {
     }
 
     /**
@@ -839,31 +917,143 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return tokens;
     }
 
-    private List<KnowledgeSearchResultVO> searchKnowledgeByKeyword(Long userId, String value, int size,
+    private List<String> knowledgeQueryTerms(String query) {
+        if (!StringUtils.hasText(query)) {
+            return List.of();
+        }
+        String value = query.trim();
+        String lower = value.toLowerCase(Locale.ROOT);
+        LinkedHashSet<String> terms = new LinkedHashSet<>();
+        for (String domainTerm : KNOWLEDGE_QUERY_DOMAIN_TERMS) {
+            if (lower.contains(domainTerm.toLowerCase(Locale.ROOT))) {
+                terms.add(domainTerm);
+            }
+        }
+        Matcher matcher = KNOWLEDGE_QUERY_TOKEN_PATTERN.matcher(value);
+        while (matcher.find()) {
+            String token = matcher.group();
+            if (!StringUtils.hasText(token)) {
+                continue;
+            }
+            if (token.codePoints().allMatch(codePoint -> Character.UnicodeScript.of(codePoint) == Character.UnicodeScript.HAN)) {
+                addChineseQueryTerms(token, terms);
+            } else {
+                String normalized = token.toLowerCase(Locale.ROOT);
+                if (normalized.length() >= 2 && !KNOWLEDGE_QUERY_STOP_WORDS.contains(normalized)) {
+                    terms.add(normalized);
+                }
+            }
+        }
+        if (terms.isEmpty()) {
+            terms.add(value);
+        }
+        return terms.stream()
+                .filter(StringUtils::hasText)
+                .limit(16)
+                .toList();
+    }
+
+    private void addChineseQueryTerms(String token, LinkedHashSet<String> terms) {
+        if (token.length() < 2) {
+            return;
+        }
+        if (token.length() <= 6 && !KNOWLEDGE_QUERY_STOP_WORDS.contains(token)) {
+            terms.add(token);
+        }
+        for (int gramSize = 2; gramSize <= Math.min(4, token.length()); gramSize++) {
+            for (int i = 0; i <= token.length() - gramSize; i++) {
+                String gram = token.substring(i, i + gramSize);
+                if (!KNOWLEDGE_QUERY_STOP_WORDS.contains(gram) && !gram.contains("的")) {
+                    terms.add(gram);
+                }
+                if (terms.size() >= 32) {
+                    return;
+                }
+            }
+        }
+    }
+
+    private String bestKeywordTerm(String text, List<String> terms, String fallback) {
+        if (!StringUtils.hasText(text) || terms == null || terms.isEmpty()) {
+            return fallback;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        return terms.stream()
+                .filter(StringUtils::hasText)
+                .filter(term -> lower.contains(term.toLowerCase(Locale.ROOT)))
+                .max(Comparator.comparingInt(String::length))
+                .orElse(fallback);
+    }
+
+    private double keywordScore(String text, List<String> terms, String fullQuery, boolean chunkLevel) {
+        if (!StringUtils.hasText(text)) {
+            return 0D;
+        }
+        String lower = text.toLowerCase(Locale.ROOT);
+        long matched = terms == null ? 0L : terms.stream()
+                .filter(StringUtils::hasText)
+                .map(term -> term.toLowerCase(Locale.ROOT))
+                .distinct()
+                .filter(lower::contains)
+                .count();
+        boolean fullQueryMatched = StringUtils.hasText(fullQuery)
+                && fullQuery.trim().length() <= 64
+                && lower.contains(fullQuery.trim().toLowerCase(Locale.ROOT));
+        double base = chunkLevel ? 0.62D : 0.55D;
+        double termBoost = Math.min(0.2D, matched * 0.04D);
+        double exactBoost = fullQueryMatched ? 0.08D : 0D;
+        double cap = chunkLevel ? 0.86D : 0.78D;
+        return Math.min(cap, base + termBoost + exactBoost);
+    }
+
+    private List<KnowledgeSearchResultVO> searchKnowledgeByKeyword(Long userId, String value, List<String> expandedTerms,
+                                                                    int size,
                                                                     Long documentId, String documentType) {
+        List<String> terms = expandedTerms == null || expandedTerms.isEmpty() ? List.of(value) : expandedTerms;
         List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                         .eq(PersonalKnowledgeDocument::getUserId, userId)
                         .eq(documentId != null, PersonalKnowledgeDocument::getId, documentId)
                         .eq(StringUtils.hasText(documentType), PersonalKnowledgeDocument::getDocumentType, documentType)
-                        .and(query -> query.like(PersonalKnowledgeDocument::getTitle, value)
-                                .or()
-                                .like(PersonalKnowledgeDocument::getContent, value))
-                        .last("LIMIT " + size));
+                        .and(query -> {
+                            for (int i = 0; i < terms.size(); i++) {
+                                if (i > 0) {
+                                    query.or();
+                                }
+                                String term = terms.get(i);
+                                query.like(PersonalKnowledgeDocument::getTitle, term)
+                                        .or()
+                                        .like(PersonalKnowledgeDocument::getContent, term);
+                            }
+                        })
+                        .last("LIMIT " + Math.max(size, 20)));
         Map<Long, PersonalKnowledgeDocument> docMap = documents.stream()
                 .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity(), (left, right) -> left, LinkedHashMap::new));
 
         List<Long> scopedDocumentIds = scopedKnowledgeDocumentIds(userId, documentId, documentType);
         if (scopedDocumentIds.isEmpty()) {
             return documents.stream()
-                    .map(document -> toKnowledgeSearchVO(document, null, snippet(document.getContent(), value), value, 0.6D, "KEYWORD_DOCUMENT"))
+                    .map(document -> toKnowledgeSearchVO(document, null,
+                            snippet(document.getContent(), bestKeywordTerm(document.getTitle() + "\n" + document.getContent(), terms, value)),
+                            String.join(" ", terms), keywordScore(document.getTitle() + "\n" + document.getContent(), terms, value, false),
+                            "KEYWORD_DOCUMENT"))
                     .toList();
         }
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
                         .in(PersonalKnowledgeChunk::getDocumentId, scopedDocumentIds)
-                        .like(PersonalKnowledgeChunk::getContent, value)
+                        .and(query -> {
+                            for (int i = 0; i < terms.size(); i++) {
+                                if (i > 0) {
+                                    query.or();
+                                }
+                                String term = terms.get(i);
+                                query.like(PersonalKnowledgeChunk::getContent, term)
+                                        .or()
+                                        .like(PersonalKnowledgeChunk::getSourceRef, term);
+                            }
+                        })
                         .last("LIMIT " + Math.max(size, 30)));
         for (PersonalKnowledgeChunk chunk : chunks) {
             docMap.computeIfAbsent(chunk.getDocumentId(), personalKnowledgeDocumentMapper::selectById);
@@ -871,13 +1061,19 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
         List<KnowledgeSearchResultVO> result = new ArrayList<>();
         for (PersonalKnowledgeDocument document : documents) {
-            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), value), value, 0.6D, "KEYWORD_DOCUMENT"));
+            String searchable = document.getTitle() + "\n" + document.getContent();
+            String bestTerm = bestKeywordTerm(searchable, terms, value);
+            result.add(toKnowledgeSearchVO(document, null, snippet(document.getContent(), bestTerm),
+                    String.join(" ", terms), keywordScore(searchable, terms, value, false), "KEYWORD_DOCUMENT"));
         }
         for (PersonalKnowledgeChunk chunk : chunks) {
             PersonalKnowledgeDocument document = docMap.get(chunk.getDocumentId());
             if (document != null && Objects.equals(document.getUserId(), userId)
                     && (!StringUtils.hasText(documentType) || Objects.equals(document.getDocumentType(), documentType))) {
-                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), value), value, 0.75D, "KEYWORD_CHUNK"));
+                String searchable = document.getTitle() + "\n" + firstText(chunk.getSourceRef(), "") + "\n" + chunk.getContent();
+                String bestTerm = bestKeywordTerm(searchable, terms, value);
+                result.add(toKnowledgeSearchVO(document, chunk, snippet(chunk.getContent(), bestTerm),
+                        String.join(" ", terms), keywordScore(searchable, terms, value, true), "KEYWORD_CHUNK"));
             }
         }
         return result.stream()
@@ -895,12 +1091,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         item.setExpectedDocumentId(sample.getExpectedDocumentId());
         item.setExpectedDocumentTitle(sample.getExpectedDocumentTitle());
         item.setExpectedDocumentType(sample.getExpectedDocumentType());
+        item.setRetrievalDocumentId(sample.getRetrievalDocumentId());
+        item.setRetrievalDocumentType(sample.getRetrievalDocumentType());
         item.setExpectNoAnswer(Boolean.TRUE.equals(sample.getExpectNoAnswer()));
         item.setNote(sample.getNote());
         KnowledgeAskDTO askDTO = new KnowledgeAskDTO();
         askDTO.setQuestion(sample.getQuery());
         askDTO.setLimit(limit);
         askDTO.setMinScore(minScore);
+        askDTO.setDocumentId(sample.getRetrievalDocumentId());
+        askDTO.setDocumentType(sample.getRetrievalDocumentType());
         KnowledgeAskVO askResult = askKnowledge(userId, askDTO);
         List<KnowledgeSearchResultVO> references = askResult.getReferences() == null ? List.of() : askResult.getReferences();
         item.setReferences(references);
@@ -1553,6 +1753,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         version.setDocumentType(document.getDocumentType());
         version.setContent(document.getContent());
         version.setContentHash(document.getContentHash());
+        version.setNormalizationVersion(firstText(document.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         version.setChunkCount(chunkCount);
         personalKnowledgeDocumentVersionMapper.insert(version);
     }
@@ -1612,19 +1813,49 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (!StringUtils.hasText(contentHash)) {
             return null;
         }
-        return personalKnowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+        PersonalKnowledgeDocument matched = personalKnowledgeDocumentMapper.selectOne(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                 .eq(PersonalKnowledgeDocument::getUserId, userId)
                 .eq(PersonalKnowledgeDocument::getContentHash, contentHash)
                 .ne(excludeDocumentId != null, PersonalKnowledgeDocument::getId, excludeDocumentId)
                 .last("LIMIT 1"));
+        if (matched != null) {
+            return matched;
+        }
+        List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .ne(excludeDocumentId != null, PersonalKnowledgeDocument::getId, excludeDocumentId)
+                        .select(PersonalKnowledgeDocument::getId,
+                                PersonalKnowledgeDocument::getUserId,
+                                PersonalKnowledgeDocument::getTitle,
+                                PersonalKnowledgeDocument::getDocumentType,
+                                PersonalKnowledgeDocument::getContent,
+                                PersonalKnowledgeDocument::getContentHash,
+                                PersonalKnowledgeDocument::getNormalizationVersion,
+                                PersonalKnowledgeDocument::getStatus)
+                        .orderByAsc(PersonalKnowledgeDocument::getId));
+        for (PersonalKnowledgeDocument document : documents) {
+            String canonicalHash = knowledgeHash(document.getContent());
+            if (!contentHash.equals(canonicalHash)) {
+                continue;
+            }
+            if (!contentHash.equals(document.getContentHash())
+                    || !KNOWLEDGE_NORMALIZATION_VERSION.equals(document.getNormalizationVersion())) {
+                document.setContentHash(contentHash);
+                document.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
+                personalKnowledgeDocumentMapper.updateById(document);
+            }
+            return document;
+        }
+        return null;
     }
 
     private Set<String> existingChunkHashes(Long userId) {
         return personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
-                        .isNotNull(PersonalKnowledgeChunk::getChunkHash))
+                        .select(PersonalKnowledgeChunk::getChunkHash, PersonalKnowledgeChunk::getContent))
                 .stream()
-                .map(PersonalKnowledgeChunk::getChunkHash)
+                .map(chunk -> firstText(chunk.getChunkHash(), knowledgeHash(chunk.getContent())))
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toSet());
     }
@@ -1751,6 +1982,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             chunk.setChunkIndex(index++);
             chunk.setContent(chunkContent);
             chunk.setChunkHash(chunkHash);
+            chunk.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
             chunk.setSourceRef(truncateText(firstText(draft.sourceRef(), document.getTitle() + "#" + index), 200));
             chunk.setIndexStatus(vectorStoreClient.isEnabled() ? "PENDING" : "DISABLED");
             personalKnowledgeChunkMapper.insert(chunk);
@@ -1832,9 +2064,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return chunks;
     }
     private String normalizeKnowledgeContent(String content) {
-        return content.replace("\r\n", "\n")
-                .replace('\r', '\n')
-                .trim();
+        return TextFingerprintUtils.normalizeContent(content);
     }
 
     private String normalizeKeyword(String value) {
@@ -1909,25 +2139,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private String normalizeKnowledgeFingerprint(String content) {
-        if (!StringUtils.hasText(content)) {
-            return "";
-        }
-        return normalizeKnowledgeContent(content)
-                .toLowerCase()
-                .replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+        return TextFingerprintUtils.normalizeFingerprint(content);
     }
 
     private String knowledgeHash(String content) {
-        String normalized = normalizeKnowledgeFingerprint(content);
-        if (!StringUtils.hasText(normalized)) {
-            return null;
-        }
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(normalized.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("SHA-256 algorithm is not available", ex);
-        }
+        return TextFingerprintUtils.sha256Hex(normalizeKnowledgeFingerprint(content));
     }
 
     private List<SemanticBlockDraft> splitSemanticBlockDrafts(String documentTitle, String content) {
@@ -2900,6 +3116,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setTitle(document.getTitle());
         vo.setDocumentType(document.getDocumentType());
         vo.setStatus(aggregateDocumentIndexStatus(document.getId(), chunkCount, document.getStatus()));
+        vo.setNormalizationVersion(firstText(document.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         vo.setChunkCount(chunkCount);
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(0);
@@ -2920,6 +3137,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDocumentType(version.getDocumentType());
         vo.setContent(version.getContent());
         vo.setContentHash(version.getContentHash());
+        vo.setNormalizationVersion(firstText(version.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         vo.setChunkCount(version.getChunkCount());
         vo.setCreatedAt(version.getCreatedAt());
         vo.setUpdatedAt(version.getUpdatedAt());
@@ -2941,6 +3159,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (chunk != null) {
             vo.setChunkIndex(chunk.getChunkIndex());
             vo.setChunkHash(chunk.getChunkHash());
+            vo.setNormalizationVersion(firstText(chunk.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
             vo.setEmbeddingModel(chunk.getEmbeddingModel());
             vo.setEmbeddingDimension(chunk.getEmbeddingDimension());
             vo.setIndexedAt(chunk.getIndexedAt());
@@ -2963,6 +3182,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setChunkIndex(chunk.getChunkIndex());
         vo.setContent(chunk.getContent());
         vo.setChunkHash(chunk.getChunkHash());
+        vo.setNormalizationVersion(firstText(chunk.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         vo.setSourceRef(chunk.getSourceRef());
         vo.setEmbeddingModel(chunk.getEmbeddingModel());
         vo.setEmbeddingDimension(chunk.getEmbeddingDimension());

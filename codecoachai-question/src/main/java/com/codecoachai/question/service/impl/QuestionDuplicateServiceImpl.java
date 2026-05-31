@@ -468,11 +468,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private List<Question> findHardFingerprintCandidates(Question source) {
-        String titleHash = firstText(source.getNormalizedTitleHash(),
-                QuestionTextNormalizeUtils.sha256Hex(QuestionTextNormalizeUtils.normalizeTitle(source.getTitle())));
-        String contentHash = firstText(source.getContentHash(), QuestionTextNormalizeUtils.sha256Hex(
-                QuestionTextNormalizeUtils.normalizeContent(source.getTitle(), source.getContent(),
-                        source.getReferenceAnswer(), source.getAnalysis())));
+        String titleHash = questionTitleHash(source);
+        String contentHash = questionContentHash(source);
+        String normalizedTitle = QuestionTextNormalizeUtils.normalizeTitle(source.getTitle());
         if (!StringUtils.hasText(titleHash) && !StringUtils.hasText(contentHash)) {
             return List.of();
         }
@@ -484,6 +482,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                     boolean hasContentHash = StringUtils.hasText(contentHash);
                     if (hasTitleHash) {
                         query.eq(Question::getNormalizedTitleHash, titleHash);
+                        if (StringUtils.hasText(normalizedTitle)) {
+                            query.or().eq(Question::getNormalizedTitle, normalizedTitle);
+                        }
                     }
                     if (hasTitleHash && hasContentHash) {
                         query.or();
@@ -498,23 +499,30 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private MatchResult hardFingerprintMatch(Question source, Question target) {
-        String sourceContentHash = firstText(source.getContentHash(), QuestionTextNormalizeUtils.sha256Hex(
-                QuestionTextNormalizeUtils.normalizeContent(source.getTitle(), source.getContent(),
-                        source.getReferenceAnswer(), source.getAnalysis())));
-        String targetContentHash = firstText(target.getContentHash(), QuestionTextNormalizeUtils.sha256Hex(
-                QuestionTextNormalizeUtils.normalizeContent(target.getTitle(), target.getContent(),
-                        target.getReferenceAnswer(), target.getAnalysis())));
+        String sourceContentHash = questionContentHash(source);
+        String targetContentHash = questionContentHash(target);
         if (StringUtils.hasText(sourceContentHash) && sourceContentHash.equals(targetContentHash)) {
             return hardMatch(QuestionDuplicateMatchType.HARD_CONTENT_HASH, score(100D), "content fingerprint exact match");
         }
-        String sourceTitleHash = firstText(source.getNormalizedTitleHash(),
-                QuestionTextNormalizeUtils.sha256Hex(QuestionTextNormalizeUtils.normalizeTitle(source.getTitle())));
-        String targetTitleHash = firstText(target.getNormalizedTitleHash(),
-                QuestionTextNormalizeUtils.sha256Hex(QuestionTextNormalizeUtils.normalizeTitle(target.getTitle())));
+        String sourceTitleHash = questionTitleHash(source);
+        String targetTitleHash = questionTitleHash(target);
         if (StringUtils.hasText(sourceTitleHash) && sourceTitleHash.equals(targetTitleHash)) {
             return hardMatch(QuestionDuplicateMatchType.HARD_TITLE_HASH, score(98D), "normalized title fingerprint exact match");
         }
         return null;
+    }
+
+    private String questionTitleHash(Question question) {
+        return question == null ? null : QuestionTextNormalizeUtils.sha256Hex(
+                QuestionTextNormalizeUtils.normalizeTitle(question.getTitle()));
+    }
+
+    private String questionContentHash(Question question) {
+        if (question == null) {
+            return null;
+        }
+        return QuestionTextNormalizeUtils.sha256Hex(QuestionTextNormalizeUtils.normalizeContent(
+                question.getTitle(), question.getContent(), question.getReferenceAnswer(), question.getAnalysis()));
     }
 
     private MatchResult hardMatch(QuestionDuplicateMatchType matchType, BigDecimal score, String reason) {
@@ -780,11 +788,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private LambdaQueryWrapper<QuestionDuplicateReview> buildReviewWrapper(QuestionDuplicateReviewQueryDTO query) {
-        String status = StringUtils.hasText(query.getReviewStatus())
-                ? query.getReviewStatus()
-                : QuestionDuplicateReviewStatus.PENDING.name();
+        String status = normalizeReviewStatus(firstText(query.getStatus(), query.getReviewStatus()));
         return new LambdaQueryWrapper<QuestionDuplicateReview>()
-                .eq(QuestionDuplicateReview::getReviewStatus, status)
+                .eq(StringUtils.hasText(status), QuestionDuplicateReview::getReviewStatus, status)
                 .eq(StringUtils.hasText(query.getMatchType()), QuestionDuplicateReview::getMatchType, query.getMatchType())
                 .eq(StringUtils.hasText(query.getScoreBand()), QuestionDuplicateReview::getScoreBand, query.getScoreBand())
                 .and(query.getQuestionId() != null, wrapper -> wrapper
@@ -798,6 +804,23 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                         .or()
                         .like(QuestionDuplicateReview::getMatchReason, query.getKeyword()))
                 .orderByDesc(QuestionDuplicateReview::getCreatedAt);
+    }
+
+    private String normalizeReviewStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return QuestionDuplicateReviewStatus.PENDING.name();
+        }
+        String value = status.trim().toUpperCase();
+        if ("ALL".equals(value) || "*".equals(value) || "全部".equals(status.trim())) {
+            return null;
+        }
+        if ("MERGED".equals(value)) {
+            return QuestionDuplicateReviewStatus.CONFIRMED.name();
+        }
+        if ("PENDING".equals(value) || "CONFIRMED".equals(value) || "IGNORED".equals(value)) {
+            return value;
+        }
+        return value;
     }
 
     private QuestionRelation createOrGetRelation(Long leftQuestionId, Long rightQuestionId,

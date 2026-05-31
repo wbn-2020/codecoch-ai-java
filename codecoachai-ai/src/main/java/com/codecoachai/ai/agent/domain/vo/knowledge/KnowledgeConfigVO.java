@@ -8,6 +8,7 @@ public class KnowledgeConfigVO {
     private Boolean vectorEnabled;
     private String vectorCollection;
     private String retrievalMode;
+    private String normalizationVersion;
     private String chunkStrategy;
     private Integer chunkSize;
     private Integer chunkOverlap;

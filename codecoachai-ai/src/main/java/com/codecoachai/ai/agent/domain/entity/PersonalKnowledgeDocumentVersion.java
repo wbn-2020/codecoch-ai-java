@@ -16,5 +16,6 @@ public class PersonalKnowledgeDocumentVersion extends BaseEntity {
     private String documentType;
     private String content;
     private String contentHash;
+    private String normalizationVersion;
     private Integer chunkCount;
 }

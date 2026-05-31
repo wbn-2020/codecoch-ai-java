@@ -16,6 +16,7 @@ public class KnowledgeSearchResultVO {
     private List<String> matchedTerms;
     private String sourceRef;
     private String chunkHash;
+    private String normalizationVersion;
     private String embeddingModel;
     private Integer embeddingDimension;
     private LocalDateTime indexedAt;
