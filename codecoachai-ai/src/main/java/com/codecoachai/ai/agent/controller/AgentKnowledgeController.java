@@ -19,6 +19,7 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeEvalRunVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeEvaluationVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeExactDuplicateGroupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchTraceVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
@@ -186,6 +187,16 @@ public class AgentKnowledgeController {
                                                         @RequestParam(required = false) String documentType) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.searchKnowledge(userId, keyword, limit, minScore, documentId, documentType));
+    }
+
+    @GetMapping("/search/trace")
+    public Result<KnowledgeSearchTraceVO> searchTrace(@RequestParam String keyword,
+                                                      @RequestParam(required = false) Integer limit,
+                                                      @RequestParam(required = false) Double minScore,
+                                                      @RequestParam(required = false) Long documentId,
+                                                      @RequestParam(required = false) String documentType) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentV4OpsService.traceKnowledgeSearch(userId, keyword, limit, minScore, documentId, documentType));
     }
 
     @PostMapping("/ask")

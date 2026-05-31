@@ -35,6 +35,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Slf4j
@@ -51,6 +52,7 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
     private final AgentV4OpsService agentV4OpsService;
     private final KnowledgeProperties knowledgeProperties;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
 
     @Override
     public PageResult<KnowledgeEvalCaseVO> pageCases(Long userId, KnowledgeEvalCaseQueryDTO query) {
@@ -73,6 +75,12 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "Expected knowledge document not found");
             }
         }
+        if (dto.getRetrievalDocumentId() != null) {
+            PersonalKnowledgeDocument document = personalKnowledgeDocumentMapper.selectById(dto.getRetrievalDocumentId());
+            if (document == null || !Objects.equals(document.getUserId(), userId)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Retrieval knowledge document not found");
+            }
+        }
         PersonalKnowledgeEvalCase item = dto.getId() == null ? new PersonalKnowledgeEvalCase() : ownedCase(userId, dto.getId());
         item.setUserId(userId);
         item.setCaseId(firstText(dto.getCaseId(), defaultCaseId(dto.getQuery())));
@@ -80,6 +88,8 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         item.setExpectedDocumentId(dto.getExpectedDocumentId());
         item.setExpectedDocumentTitle(trimToNull(dto.getExpectedDocumentTitle()));
         item.setExpectedDocumentType(trimToNull(dto.getExpectedDocumentType()));
+        item.setRetrievalDocumentId(dto.getRetrievalDocumentId());
+        item.setRetrievalDocumentType(trimToNull(dto.getRetrievalDocumentType()));
         item.setExpectNoAnswer(Boolean.TRUE.equals(dto.getExpectNoAnswer()) ? 1 : 0);
         item.setNote(dto.getNote());
         item.setEnabled(dto.getEnabled() == null ? 1 : dto.getEnabled());
@@ -102,7 +112,6 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public KnowledgeEvalRunVO run(Long userId, KnowledgeEvalRunRequestDTO dto) {
         KnowledgeEvalRunRequestDTO request = dto == null ? new KnowledgeEvalRunRequestDTO() : dto;
         List<PersonalKnowledgeEvalCase> cases = loadRunCases(userId, request);
@@ -121,30 +130,33 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         run.setLimitCount(limit);
         run.setMinScore(minScore);
         run.setStartedAt(startedAt);
-        evalRunMapper.insert(run);
+        transactionTemplate.executeWithoutResult(status -> evalRunMapper.insert(run));
         try {
             KnowledgeEvaluationDTO evaluationDTO = new KnowledgeEvaluationDTO();
             evaluationDTO.setLimit(limit);
             evaluationDTO.setMinScore(minScore);
             evaluationDTO.setSamples(cases.stream().map(this::toEvaluationSample).toList());
             KnowledgeEvaluationVO evaluation = agentV4OpsService.evaluateKnowledge(userId, evaluationDTO);
+            List<KnowledgeEvaluationVO.Item> items = evaluation.getItems() == null ? List.of() : evaluation.getItems();
             Map<String, PersonalKnowledgeEvalCase> caseMap = caseIdMap(cases);
-            for (KnowledgeEvaluationVO.Item item : evaluation.getItems()) {
-                evalResultMapper.insert(toResult(userId, run.getId(), caseMap.get(item.getCaseId()), item));
-            }
             run.setStatus("SUCCESS");
             run.setEvaluatedCount(evaluation.getEvaluatedCount());
             run.setPassedCount(evaluation.getPassedCount());
             run.setFailedCount(evaluation.getFailedCount());
             run.setPassRate(evaluation.getPassRate());
             run.setFinishedAt(LocalDateTime.now());
-            evalRunMapper.updateById(run);
+            transactionTemplate.executeWithoutResult(status -> {
+                for (KnowledgeEvaluationVO.Item item : items) {
+                    evalResultMapper.insert(toResult(userId, run.getId(), caseMap.get(item.getCaseId()), item));
+                }
+                evalRunMapper.updateById(run);
+            });
             return getRun(userId, run.getId());
         } catch (Exception ex) {
             run.setStatus("FAILED");
             run.setFinishedAt(LocalDateTime.now());
             run.setErrorMessage(truncate(ex.getMessage(), 512));
-            evalRunMapper.updateById(run);
+            transactionTemplate.executeWithoutResult(status -> evalRunMapper.updateById(run));
             throw ex;
         }
     }
@@ -190,7 +202,9 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
     }
 
     private List<PersonalKnowledgeEvalCase> loadRunCases(Long userId, KnowledgeEvalRunRequestDTO request) {
-        int size = request.getLimit() == null ? 100 : Math.max(1, Math.min(request.getLimit(), 500));
+        int size = request.getCaseLimit() != null
+                ? Math.max(1, Math.min(request.getCaseLimit(), 500))
+                : request.getLimit() == null ? 100 : Math.max(1, Math.min(request.getLimit(), 500));
         List<PersonalKnowledgeEvalCase> cases = evalCaseMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeEvalCase>()
                 .eq(PersonalKnowledgeEvalCase::getUserId, userId)
                 .in(request.getCaseIds() != null && !request.getCaseIds().isEmpty(), PersonalKnowledgeEvalCase::getId, request.getCaseIds())
@@ -210,6 +224,8 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         sample.setExpectedDocumentId(item.getExpectedDocumentId());
         sample.setExpectedDocumentTitle(item.getExpectedDocumentTitle());
         sample.setExpectedDocumentType(item.getExpectedDocumentType());
+        sample.setRetrievalDocumentId(item.getRetrievalDocumentId());
+        sample.setRetrievalDocumentType(item.getRetrievalDocumentType());
         sample.setExpectNoAnswer(item.getExpectNoAnswer() != null && item.getExpectNoAnswer() == 1);
         sample.setNote(item.getNote());
         return sample;
@@ -226,6 +242,8 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         result.setExpectedDocumentId(item.getExpectedDocumentId());
         result.setExpectedDocumentTitle(item.getExpectedDocumentTitle());
         result.setExpectedDocumentType(item.getExpectedDocumentType());
+        result.setRetrievalDocumentId(item.getRetrievalDocumentId());
+        result.setRetrievalDocumentType(item.getRetrievalDocumentType());
         result.setExpectNoAnswer(Boolean.TRUE.equals(item.getExpectNoAnswer()) ? 1 : 0);
         result.setPassed(Boolean.TRUE.equals(item.getPassed()) ? 1 : 0);
         result.setTopDocumentId(item.getTopDocumentId());
@@ -270,6 +288,8 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         vo.setExpectedDocumentId(item.getExpectedDocumentId());
         vo.setExpectedDocumentTitle(item.getExpectedDocumentTitle());
         vo.setExpectedDocumentType(item.getExpectedDocumentType());
+        vo.setRetrievalDocumentId(item.getRetrievalDocumentId());
+        vo.setRetrievalDocumentType(item.getRetrievalDocumentType());
         vo.setExpectNoAnswer(item.getExpectNoAnswer() != null && item.getExpectNoAnswer() == 1);
         vo.setNote(item.getNote());
         vo.setEnabled(item.getEnabled());
@@ -316,6 +336,8 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         vo.setExpectedDocumentId(result.getExpectedDocumentId());
         vo.setExpectedDocumentTitle(result.getExpectedDocumentTitle());
         vo.setExpectedDocumentType(result.getExpectedDocumentType());
+        vo.setRetrievalDocumentId(result.getRetrievalDocumentId());
+        vo.setRetrievalDocumentType(result.getRetrievalDocumentType());
         vo.setExpectNoAnswer(result.getExpectNoAnswer() != null && result.getExpectNoAnswer() == 1);
         vo.setPassed(result.getPassed() != null && result.getPassed() == 1);
         vo.setTopDocumentId(result.getTopDocumentId());

@@ -1,10 +1,7 @@
 package com.codecoachai.question.util;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import java.util.Arrays;
-import java.util.HexFormat;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.util.StringUtils;
@@ -33,7 +30,7 @@ public final class QuestionTextNormalizeUtils {
                 }
             }
         }
-        return normalized.replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+        return TextFingerprintUtils.normalizeFingerprint(normalized);
     }
 
     public static String normalizeContent(String... parts) {
@@ -43,21 +40,11 @@ public final class QuestionTextNormalizeUtils {
         return Arrays.stream(parts)
                 .filter(StringUtils::hasText)
                 .map(String::trim)
-                .map(String::toLowerCase)
-                .collect(Collectors.joining("\n"))
-                .replaceAll("[\\s\\p{Punct}\\u3000-\\u303F\\uFF00-\\uFFEF]+", "");
+                .collect(Collectors.joining("\n"));
     }
 
     public static String sha256Hex(String value) {
-        if (!StringUtils.hasText(value)) {
-            return null;
-        }
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("SHA-256 algorithm is not available", ex);
-        }
+        return TextFingerprintUtils.sha256Hex(TextFingerprintUtils.normalizeFingerprint(value));
     }
 
     public static Set<String> tokens(String text) {

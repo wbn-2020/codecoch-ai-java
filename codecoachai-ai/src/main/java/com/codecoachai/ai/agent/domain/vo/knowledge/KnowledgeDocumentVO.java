@@ -9,6 +9,7 @@ public class KnowledgeDocumentVO {
     private String title;
     private String documentType;
     private String status;
+    private String normalizationVersion;
     private Integer chunkCount;
     private Integer duplicateChunkCount;
     private Integer nearDuplicateChunkCount;

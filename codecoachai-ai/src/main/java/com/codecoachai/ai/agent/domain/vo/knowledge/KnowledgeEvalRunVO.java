@@ -33,6 +33,8 @@ public class KnowledgeEvalRunVO {
         private Long expectedDocumentId;
         private String expectedDocumentTitle;
         private String expectedDocumentType;
+        private Long retrievalDocumentId;
+        private String retrievalDocumentType;
         private Boolean expectNoAnswer;
         private Boolean passed;
         private Long topDocumentId;

@@ -45,7 +45,7 @@ $env:DASHSCOPE_EMBEDDING_MODEL = "text-embedding-v3"
 $env:DASHSCOPE_API_KEY = "<your DashScope key>"
 ```
 
-`CODECOACHAI_VECTOR_ENABLED=false` is still the safe default in `.env.example`; enable it only for vector validation.
+`CODECOACHAI_VECTOR_ENABLED=true` is the project default for RAG and semantic dedupe validation. Set it to `false` only when intentionally running without Qdrant; the app will then fall back to keyword-only retrieval and skip semantic dedupe.
 
 ## Database Migration
 

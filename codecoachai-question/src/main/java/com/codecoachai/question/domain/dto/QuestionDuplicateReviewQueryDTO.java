@@ -6,6 +6,10 @@ import lombok.Data;
 public class QuestionDuplicateReviewQueryDTO {
 
     private Long questionId;
+    /**
+     * Public status alias. Supports ALL/全部, PENDING, MERGED, CONFIRMED and IGNORED.
+     */
+    private String status;
     private String reviewStatus;
     private String matchType;
     private String scoreBand;
