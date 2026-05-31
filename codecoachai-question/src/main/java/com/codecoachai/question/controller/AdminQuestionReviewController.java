@@ -81,6 +81,15 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.reject(id, dto));
     }
 
+    @OperationLog(module = "question", action = "CANCEL_QUESTION_REVIEW", description = "Cancel AI question draft")
+    @PostMapping("/admin/question-reviews/{id}/cancel")
+    @Operation(summary = "Cancel AI question draft", description = "Admin endpoint. Cancelled drafts stay out of the formal question table and are kept for audit.")
+    public Result<QuestionReviewDetailVO> cancel(@PathVariable Long id,
+                                                 @RequestBody(required = false) QuestionReviewRejectDTO dto) {
+        SecurityAssert.requireAdmin();
+        return Result.success(questionReviewService.cancel(id, dto));
+    }
+
     @OperationLog(module = "question", action = "BATCH_REJECT_QUESTION_REVIEW", description = "Batch reject AI question drafts", logResponse = false)
     @PostMapping("/admin/question-reviews/batch-reject")
     @Operation(summary = "Batch reject AI question drafts", description = "Admin endpoint. Each draft reuses the single reject flow; failed items are returned without stopping the batch.")

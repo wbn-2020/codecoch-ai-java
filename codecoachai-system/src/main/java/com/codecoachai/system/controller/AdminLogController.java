@@ -18,7 +18,6 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataAccessException;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -67,8 +66,8 @@ public class AdminLogController {
                     .eq(LoginLog::getLoginStatus, "FAILED")
                     .ge(LoginLog::getLoginTime, todayStart)));
             vo.setLatestLoginAt(latestLoginAt());
-        } catch (DataAccessException ex) {
-            log.warn("Admin log summary degraded because audit schema is not ready", ex);
+        } catch (RuntimeException ex) {
+            log.warn("Admin log summary degraded because audit log query failed", ex);
         }
         return Result.success(vo);
     }
@@ -109,8 +108,8 @@ public class AdminLogController {
                             .le(endTime != null, LoginLog::getLoginTime, endTime)
                             .orderByDesc(LoginLog::getLoginTime));
             return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
-        } catch (DataAccessException ex) {
-            log.warn("Login log page degraded because audit schema is not ready", ex);
+        } catch (RuntimeException ex) {
+            log.warn("Login log page degraded because audit log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
         }
     }
@@ -153,8 +152,8 @@ public class AdminLogController {
                             .le(endTime != null, OperationLog::getCreatedAt, endTime)
                             .orderByDesc(OperationLog::getCreatedAt));
             return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
-        } catch (DataAccessException ex) {
-            log.warn("Operation log page degraded because audit schema is not ready", ex);
+        } catch (RuntimeException ex) {
+            log.warn("Operation log page degraded because audit log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
         }
     }
@@ -188,8 +187,8 @@ public class AdminLogController {
                             .le(endTime != null, SlowSqlLog::getCreatedAt, endTime)
                             .orderByDesc(SlowSqlLog::getCreatedAt));
             return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
-        } catch (DataAccessException ex) {
-            log.warn("Slow SQL log page degraded because slow_sql_log schema is not ready", ex);
+        } catch (RuntimeException ex) {
+            log.warn("Slow SQL log page degraded because slow SQL log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
         }
     }
