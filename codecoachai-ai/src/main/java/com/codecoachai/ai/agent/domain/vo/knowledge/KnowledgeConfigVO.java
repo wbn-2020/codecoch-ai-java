@@ -6,6 +6,9 @@ import lombok.Data;
 @Data
 public class KnowledgeConfigVO {
     private Boolean vectorEnabled;
+    private Boolean embeddingEnabled;
+    private Boolean semanticEnabled;
+    private String embeddingDisabledReason;
     private String vectorCollection;
     private String retrievalMode;
     private String normalizationVersion;

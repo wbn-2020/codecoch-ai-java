@@ -115,10 +115,12 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
     @Override
     public AdminAgentOverviewVO adminAgentOverview(Integer days) {
         LocalDateTime startTime = LocalDate.now().minusDays(normalizeDays(days) - 1L).atStartOfDay();
-        List<AgentRun> runs = agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
-                .ge(AgentRun::getCreatedAt, startTime));
-        List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
-                .ge(AgentTask::getCreatedAt, startTime));
+        List<AgentRun> runs = safeList(() -> agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+                .select(AgentRun::getId, AgentRun::getStatus, AgentRun::getDurationMs, AgentRun::getCreatedAt)
+                .ge(AgentRun::getCreatedAt, startTime)));
+        List<AgentTask> tasks = safeList(() -> agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+                .select(AgentTask::getId, AgentTask::getStatus, AgentTask::getCreatedAt)
+                .ge(AgentTask::getCreatedAt, startTime)));
         AdminAgentOverviewVO vo = new AdminAgentOverviewVO();
         vo.setTotalAgentRuns((long) runs.size());
         vo.setSuccessAgentRuns(countRuns(runs, AgentRunStatusEnum.SUCCESS.name()));
@@ -137,9 +139,10 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
         int range = normalizeDays(days);
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusDays(range - 1L);
-        List<AgentRun> runs = agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+        List<AgentRun> runs = safeList(() -> agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+                .select(AgentRun::getId, AgentRun::getPlanDate, AgentRun::getStatus)
                 .ge(AgentRun::getPlanDate, start)
-                .le(AgentRun::getPlanDate, end));
+                .le(AgentRun::getPlanDate, end)));
         Map<LocalDate, List<AgentRun>> byDate = runs.stream()
                 .filter(run -> run.getPlanDate() != null)
                 .collect(Collectors.groupingBy(AgentRun::getPlanDate));
@@ -159,8 +162,10 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
     @Override
     public AdminAgentTaskStatsVO adminAgentTasks(Integer days) {
         LocalDateTime startTime = LocalDate.now().minusDays(normalizeDays(days) - 1L).atStartOfDay();
-        List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
-                .ge(AgentTask::getCreatedAt, startTime));
+        List<AgentTask> tasks = safeList(() -> agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+                .select(AgentTask::getId, AgentTask::getStatus, AgentTask::getTaskType,
+                        AgentTask::getPriority, AgentTask::getEstimatedMinutes, AgentTask::getCreatedAt)
+                .ge(AgentTask::getCreatedAt, startTime)));
         AdminAgentTaskStatsVO vo = new AdminAgentTaskStatsVO();
         vo.setTotalAgentTasks((long) tasks.size());
         vo.setDoneTaskCount(countTasks(tasks, AgentTaskStatusEnum.DONE.name()));
@@ -174,8 +179,11 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
     @Override
     public AdminAiOverviewVO adminAiOverview(Integer days) {
         LocalDateTime startTime = LocalDate.now().minusDays(normalizeDays(days) - 1L).atStartOfDay();
-        List<AiCallLog> logs = aiCallLogMapper.selectList(new LambdaQueryWrapper<AiCallLog>()
-                .ge(AiCallLog::getCreatedAt, startTime));
+        List<AiCallLog> logs = safeList(() -> aiCallLogMapper.selectList(new LambdaQueryWrapper<AiCallLog>()
+                .select(AiCallLog::getId, AiCallLog::getCreatedAt, AiCallLog::getSuccess,
+                        AiCallLog::getElapsedMs, AiCallLog::getPromptTokens,
+                        AiCallLog::getCompletionTokens, AiCallLog::getTotalTokens)
+                .ge(AiCallLog::getCreatedAt, startTime)));
         long success = logs.stream().filter(log -> Integer.valueOf(1).equals(log.getSuccess())).count();
         AdminAiOverviewVO vo = new AdminAiOverviewVO();
         vo.setTotalAiCalls((long) logs.size());
@@ -192,14 +200,30 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
     @Override
     public List<MetricPointVO> adminAiFailures(Integer days) {
         LocalDateTime startTime = LocalDate.now().minusDays(normalizeDays(days) - 1L).atStartOfDay();
-        List<String> failures = aiCallLogMapper.selectList(new LambdaQueryWrapper<AiCallLog>()
+        List<String> failures = safeList(() -> aiCallLogMapper.selectList(new LambdaQueryWrapper<AiCallLog>()
+                        .select(AiCallLog::getId, AiCallLog::getCreatedAt, AiCallLog::getSuccess,
+                                AiCallLog::getErrorMessage)
                         .ge(AiCallLog::getCreatedAt, startTime)
-                        .eq(AiCallLog::getSuccess, 0))
+                        .eq(AiCallLog::getSuccess, 0)))
                 .stream()
                 .map(log -> firstText(log.getErrorMessage(), "UNKNOWN"))
                 .map(message -> message.length() > 80 ? message.substring(0, 80) : message)
                 .toList();
         return topMetrics(failures, 10);
+    }
+
+    private <T> List<T> safeList(QuerySupplier<T> supplier) {
+        try {
+            List<T> result = supplier.get();
+            return result == null ? List.of() : result;
+        } catch (RuntimeException ex) {
+            return List.of();
+        }
+    }
+
+    @FunctionalInterface
+    private interface QuerySupplier<T> {
+        List<T> get();
     }
 
     private List<AgentTask> userTasks(Long userId, LocalDate start, LocalDate end) {

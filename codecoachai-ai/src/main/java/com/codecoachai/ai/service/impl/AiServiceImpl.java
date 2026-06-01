@@ -1482,24 +1482,78 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateReportVO parseReport(String raw) {
-        JsonNode json = parseJson(raw);
-        GenerateReportVO vo = new GenerateReportVO();
-        if (json.path("totalScore").isNumber()) {
-            vo.setTotalScore(json.path("totalScore").asInt());
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (RuntimeException ex) {
+            GenerateReportVO fallback = new GenerateReportVO();
+            fallback.setReportContent(StringUtils.hasText(raw) ? raw.trim() : null);
+            return fallback;
         }
-        vo.setSummary(json.path("summary").asText(null));
-        vo.setStageScores(jsonOrDefault(json.path("stageScores"), null));
-        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), null));
-        vo.setStrengths(jsonOrDefault(json.path("strengths"), null));
-        vo.setWeaknesses(json.path("weaknesses").asText(null));
-        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), null));
-        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), null));
-        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), null));
-        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), null));
-        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), null));
-        vo.setQaReview(jsonOrDefault(json.path("qaReview"), null));
-        vo.setReportContent(json.path("reportContent").asText(null));
+        GenerateReportVO vo = new GenerateReportVO();
+        if (json == null || !json.isObject()) {
+            vo.setReportContent(jsonOrDefault(json, null));
+            return vo;
+        }
+        JsonNode score = firstNode(json, "totalScore", "overallScore", "score", "finalScore");
+        if (score != null && score.isNumber()) {
+            vo.setTotalScore(clampScore(score.asInt()));
+        } else if (score != null && score.isTextual()) {
+            vo.setTotalScore(parseScore(score.asText(null)));
+        }
+        vo.setSummary(firstText(jsonText(json, "summary", "overallSummary", "conclusion", "comment", "overview"),
+                summarizeReportContent(jsonOrDefault(firstNode(json, "reportContent", "content", "report", "markdown"), null))));
+        vo.setStageScores(jsonOrDefault(firstNode(json, "stageScores", "stageReports", "dimensionScores", "scores"), null));
+        vo.setWeakPoints(jsonOrDefault(firstNode(json, "weakPoints", "weaknessPoints", "weaknessTags", "knowledgeGaps"), null));
+        vo.setStrengths(jsonOrDefault(firstNode(json, "strengths", "advantages", "highlights"), null));
+        vo.setWeaknesses(firstText(jsonText(json, "weaknesses", "weaknessSummary", "problemsSummary"),
+                jsonOrDefault(firstNode(json, "weaknessPoints", "knowledgeGaps"), null)));
+        vo.setMainProblems(jsonOrDefault(firstNode(json, "mainProblems", "problems", "keyProblems", "issues"), null));
+        vo.setProjectProblems(jsonOrDefault(firstNode(json, "projectProblems", "projectIssues", "projectWeaknesses"), null));
+        vo.setSuggestions(jsonOrDefault(firstNode(json, "suggestions", "advice", "improvementSuggestions"), null));
+        vo.setReviewSuggestions(jsonOrDefault(firstNode(json, "reviewSuggestions", "studySuggestions", "learningSuggestions", "nextSteps"), null));
+        vo.setRecommendedQuestions(jsonOrDefault(firstNode(json, "recommendedQuestions", "recommendQuestions", "practiceQuestions", "questionRecommendations"), null));
+        vo.setQaReview(jsonOrDefault(firstNode(json, "qaReview", "questionReviews", "answerReviews", "qaReviews"), null));
+        vo.setReportContent(firstText(jsonText(json, "reportContent", "content", "report", "markdown"),
+                vo.getSummary()));
         return vo;
+    }
+
+    private JsonNode firstNode(JsonNode json, String... fieldNames) {
+        if (json == null || fieldNames == null) {
+            return null;
+        }
+        for (String fieldName : fieldNames) {
+            JsonNode node = json.path(fieldName);
+            if (node != null && !node.isMissingNode() && !node.isNull()) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    private String jsonText(JsonNode json, String... fieldNames) {
+        JsonNode node = firstNode(json, fieldNames);
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        return node.isTextual() ? node.asText(null) : node.toString();
+    }
+
+    private Integer parseScore(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("\\d+").matcher(value);
+        return matcher.find() ? clampScore(Integer.parseInt(matcher.group())) : null;
+    }
+
+    private String summarizeReportContent(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String text = value.trim().replaceAll("\\s+", " ");
+        return text.length() <= 160 ? text : text.substring(0, 160);
     }
 
     private GenerateLearningPlanVO parseLearningPlan(String raw, GenerateLearningPlanDTO dto) {

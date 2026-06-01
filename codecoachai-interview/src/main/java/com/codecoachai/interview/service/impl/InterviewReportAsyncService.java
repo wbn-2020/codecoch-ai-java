@@ -41,6 +41,7 @@ public class InterviewReportAsyncService {
 
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
+    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "; fallback report content used";
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。";
     private static final String DEFAULT_REPORT_STRENGTHS = "[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]";
     private static final String DEFAULT_REPORT_WEAKNESSES = "部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。";
@@ -76,7 +77,6 @@ public class InterviewReportAsyncService {
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport);
             applyLearningFeedback(report, messages);
-            report.setFailureReason(null);
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
@@ -174,10 +174,11 @@ public class InterviewReportAsyncService {
     }
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
-        if (aiReport == null) {
-            throw new IllegalStateException(REPORT_AI_EMPTY_MESSAGE);
+        if (aiReportMissingDisplayContent(aiReport)) {
+            applyDefaultReportContent(report);
+            report.setFailureReason(REPORT_FALLBACK_REASON);
+            return;
         }
-        validateAiReport(aiReport);
         report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
         report.setSummary(firstText(aiReport.getSummary(), DEFAULT_REPORT_SUMMARY));
         report.setStageScores(aiReport.getStageScores());
@@ -192,6 +193,14 @@ public class InterviewReportAsyncService {
         report.setReportContent(firstText(aiReport.getReportContent(), report.getSummary()));
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(firstText(aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
+        report.setFailureReason(null);
+    }
+
+    private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
+        return aiReport == null
+                || aiReport.getTotalScore() == null
+                || !StringUtils.hasText(aiReport.getSummary())
+                || !StringUtils.hasText(aiReport.getReportContent());
     }
 
     private void applyLearningFeedback(InterviewReport report, List<InterviewMessage> messages) {
@@ -427,14 +436,6 @@ public class InterviewReportAsyncService {
                 action.run();
             }
         });
-    }
-
-    private void validateAiReport(GenerateReportVO aiReport) {
-        if (aiReport.getTotalScore() == null
-                || !StringUtils.hasText(aiReport.getSummary())
-                || !StringUtils.hasText(aiReport.getReportContent())) {
-            throw new IllegalStateException(REPORT_AI_EMPTY_MESSAGE);
-        }
     }
 
     private String toJson(Object value) {

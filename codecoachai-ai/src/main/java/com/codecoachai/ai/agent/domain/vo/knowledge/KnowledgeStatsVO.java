@@ -10,6 +10,9 @@ public class KnowledgeStatsVO {
     private Integer chunkCount;
     private Integer duplicateChunkCount;
     private Boolean vectorEnabled;
+    private Boolean embeddingEnabled;
+    private Boolean semanticEnabled;
+    private String embeddingDisabledReason;
     private String retrievalMode;
     private String chunkStrategy;
     private Map<String, Integer> documentTypeCounts;

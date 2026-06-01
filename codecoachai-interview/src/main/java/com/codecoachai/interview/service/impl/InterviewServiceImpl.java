@@ -71,6 +71,7 @@ public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
     private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
+    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "; fallback report content used";
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
@@ -494,7 +495,6 @@ public class InterviewServiceImpl implements InterviewService {
             progress(progressConsumer, "SAVE_REPORT");
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport);
-            report.setFailureReason(null);
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
@@ -638,7 +638,6 @@ public class InterviewServiceImpl implements InterviewService {
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport);
-            report.setFailureReason(null);
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
             session.setReportStatus(ReportStatusEnum.GENERATED.name());
             session.setTotalScore(report.getTotalScore());
@@ -1000,10 +999,11 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
-        if (aiReport == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
+        if (aiReportMissingDisplayContent(aiReport)) {
+            applyDefaultReportContent(report);
+            report.setFailureReason(REPORT_FALLBACK_REASON);
+            return;
         }
-        validateAiReport(aiReport);
         report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
         report.setSummary(StringUtils.hasText(aiReport.getSummary()) ? aiReport.getSummary() : DEFAULT_REPORT_SUMMARY);
         report.setStageScores(aiReport.getStageScores());
@@ -1020,7 +1020,15 @@ public class InterviewServiceImpl implements InterviewService {
         report.setReportContent(StringUtils.hasText(aiReport.getReportContent()) ? aiReport.getReportContent() : report.getSummary());
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(StringUtils.hasText(aiReport.getSuggestions()) ? aiReport.getSuggestions() : DEFAULT_REPORT_SUGGESTIONS);
+        report.setFailureReason(null);
         normalizeReportContent(report);
+    }
+
+    private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
+        return aiReport == null
+                || aiReport.getTotalScore() == null
+                || !StringUtils.hasText(aiReport.getSummary())
+                || !StringUtils.hasText(aiReport.getReportContent());
     }
 
     private void normalizeReportContent(InterviewReport report) {
@@ -1066,14 +1074,6 @@ public class InterviewServiceImpl implements InterviewService {
             reportMapper.insert(report);
         } else {
             reportMapper.updateById(report);
-        }
-    }
-
-    private void validateAiReport(GenerateReportVO aiReport) {
-        if (aiReport.getTotalScore() == null
-                || !StringUtils.hasText(aiReport.getSummary())
-                || !StringUtils.hasText(aiReport.getReportContent())) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, REPORT_AI_EMPTY_MESSAGE);
         }
     }
 
