@@ -101,6 +101,22 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
                     .vectorSize(vectors.path("size").isMissingNode() ? null : vectors.path("size").asInt())
                     .distance(vectors.path("distance").asText(null))
                     .build();
+        } catch (VectorStoreException ex) {
+            String message = ex.getMessage() == null ? "" : ex.getMessage().toLowerCase();
+            if (message.contains("status=404")) {
+                return VectorCollectionInfo.builder()
+                        .collectionName(collectionName)
+                        .exists(false)
+                        .status("NOT_FOUND")
+                        .errorMessage("Qdrant collection not found")
+                        .build();
+            }
+            return VectorCollectionInfo.builder()
+                    .collectionName(collectionName)
+                    .exists(false)
+                    .status("ERROR")
+                    .errorMessage(ex.getMessage())
+                    .build();
         } catch (Exception ex) {
             return VectorCollectionInfo.builder()
                     .collectionName(collectionName)

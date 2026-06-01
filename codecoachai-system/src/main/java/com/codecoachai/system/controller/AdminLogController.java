@@ -9,6 +9,7 @@ import com.codecoachai.system.domain.entity.LoginLog;
 import com.codecoachai.system.domain.entity.OperationLog;
 import com.codecoachai.system.domain.entity.SlowSqlLog;
 import com.codecoachai.system.domain.vo.AdminLogSummaryVO;
+import com.codecoachai.system.domain.vo.LoginLogVO;
 import com.codecoachai.system.mapper.LoginLogMapper;
 import com.codecoachai.system.mapper.OperationLogMapper;
 import com.codecoachai.system.mapper.SlowSqlLogMapper;
@@ -16,6 +17,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -76,7 +78,7 @@ public class AdminLogController {
     @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_LOGIN_LOG",
             description = "Query login logs", logArgs = false)
     @GetMapping({"/admin/login-logs", "/admin/logs/logins"})
-    public Result<PageResult<LoginLog>> pageLoginLogs(
+    public Result<PageResult<LoginLogVO>> pageLoginLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String keyword,
@@ -107,7 +109,8 @@ public class AdminLogController {
                             .ge(startTime != null, LoginLog::getLoginTime, startTime)
                             .le(endTime != null, LoginLog::getLoginTime, endTime)
                             .orderByDesc(LoginLog::getLoginTime));
-            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+            List<LoginLogVO> records = page.getRecords().stream().map(this::toLoginLogVO).toList();
+            return Result.success(PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize()));
         } catch (RuntimeException ex) {
             log.warn("Login log page degraded because audit log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
@@ -248,5 +251,78 @@ public class AdminLogController {
             return "FAILED";
         }
         return value;
+    }
+
+    private LoginLogVO toLoginLogVO(LoginLog log) {
+        LoginLogVO vo = new LoginLogVO();
+        vo.setId(log.getId());
+        vo.setUserId(log.getUserId());
+        vo.setUsername(log.getUsername());
+        vo.setLoginType(log.getLoginType());
+        vo.setLoginStatus(log.getLoginStatus());
+        vo.setIpMasked(maskIp(log.getIp()));
+        vo.setMaskedIp(vo.getIpMasked());
+        vo.setIp(vo.getIpMasked());
+        vo.setUserAgentSummary(summarizeUserAgent(log.getUserAgent()));
+        vo.setUserAgent(vo.getUserAgentSummary());
+        vo.setFailReason(log.getFailReason());
+        vo.setTraceIdShort(shortId(log.getTraceId()));
+        vo.setShortTraceId(vo.getTraceIdShort());
+        vo.setTraceId(vo.getTraceIdShort());
+        vo.setLoginTime(log.getLoginTime());
+        vo.setCreatedAt(log.getCreatedAt());
+        return vo;
+    }
+
+    private String maskIp(String ip) {
+        if (!StringUtils.hasText(ip)) {
+            return ip;
+        }
+        String value = ip.trim();
+        if (value.contains(":")) {
+            int index = value.indexOf(':');
+            return index <= 0 ? "***" : value.substring(0, index) + ":***";
+        }
+        String[] parts = value.split("\\.");
+        if (parts.length == 4) {
+            return parts[0] + "." + parts[1] + ".*.*";
+        }
+        return "***";
+    }
+
+    private String summarizeUserAgent(String userAgent) {
+        if (!StringUtils.hasText(userAgent)) {
+            return userAgent;
+        }
+        String value = userAgent.trim();
+        String browser = containsAny(value, "Edg/") ? "Edge"
+                : containsAny(value, "Chrome/") ? "Chrome"
+                : containsAny(value, "Firefox/") ? "Firefox"
+                : containsAny(value, "Safari/") ? "Safari"
+                : "Browser";
+        String platform = containsAny(value, "Windows") ? "Windows"
+                : containsAny(value, "Mac OS X", "Macintosh") ? "macOS"
+                : containsAny(value, "Android") ? "Android"
+                : containsAny(value, "iPhone", "iPad") ? "iOS"
+                : containsAny(value, "Linux") ? "Linux"
+                : "Unknown OS";
+        return browser + " on " + platform;
+    }
+
+    private boolean containsAny(String value, String... candidates) {
+        for (String candidate : candidates) {
+            if (value.contains(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String shortId(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= 12 ? trimmed : trimmed.substring(0, 12);
     }
 }

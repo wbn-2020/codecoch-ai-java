@@ -60,15 +60,24 @@ public final class AiConvert {
         vo.setPromptTemplateVersionId(log.getPromptTemplateVersionId());
         vo.setPromptVersion(log.getPromptVersion());
         vo.setRequestId(log.getRequestId());
+        vo.setShortRequestId(shortId(log.getRequestId()));
         vo.setTraceId(log.getTraceId());
+        vo.setTraceIdShort(shortId(log.getTraceId()));
+        vo.setShortTraceId(vo.getTraceIdShort());
         vo.setRouteTrace(log.getRouteTrace());
         vo.setEstimatedCost(log.getEstimatedCost() == null ? log.getTokenCost() : log.getEstimatedCost());
         vo.setInputVariablesJson(log.getInputVariablesJson());
+        vo.setInputVariablesPreview(preview(log.getInputVariablesJson()));
         vo.setModelParamsJson(log.getModelParamsJson());
+        vo.setModelParamsPreview(preview(log.getModelParamsJson()));
         vo.setPromptHash(log.getPromptHash());
         vo.setResponseFormat(log.getResponseFormat());
         vo.setRequestPrompt(log.getRequestPrompt());
+        vo.setRequestPromptPreview(preview(log.getRequestPrompt()));
+        vo.setRequestPreview(vo.getRequestPromptPreview());
         vo.setResponseContent(log.getResponseContent());
+        vo.setResponseContentPreview(preview(log.getResponseContent()));
+        vo.setResponsePreview(vo.getResponseContentPreview());
         vo.setBusinessId(log.getBusinessId());
         vo.setElapsedMs(log.getElapsedMs());
         vo.setCostMillis(log.getCostMillis());
@@ -78,9 +87,28 @@ public final class AiConvert {
         vo.setTotalTokens(log.getTotalTokens());
         vo.setStatus(log.getStatus());
         vo.setErrorMessage(log.getErrorMessage());
+        vo.setErrorMessagePreview(preview(log.getErrorMessage()));
         vo.setRequestBody(log.getRequestBody());
+        vo.setRequestBodyPreview(preview(log.getRequestBody()));
         vo.setResponseBody(log.getResponseBody());
+        vo.setResponseBodyPreview(preview(log.getResponseBody()));
         vo.setCreatedAt(log.getCreatedAt());
         return vo;
+    }
+
+    private static String preview(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 120 ? normalized : normalized.substring(0, 120) + "...";
+    }
+
+    private static String shortId(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= 12 ? trimmed : trimmed.substring(0, 12);
     }
 }

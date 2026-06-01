@@ -14,15 +14,24 @@ public class AiCallLogVO {
     private Long promptTemplateVersionId;
     private String promptVersion;
     private String requestId;
+    private String shortRequestId;
     private String traceId;
+    private String traceIdShort;
+    private String shortTraceId;
     private String routeTrace;
     private Double estimatedCost;
     private String inputVariablesJson;
+    private String inputVariablesPreview;
     private String modelParamsJson;
+    private String modelParamsPreview;
     private String promptHash;
     private String responseFormat;
     private String requestPrompt;
+    private String requestPromptPreview;
+    private String requestPreview;
     private String responseContent;
+    private String responseContentPreview;
+    private String responsePreview;
     private String businessId;
     private Long elapsedMs;
     private Long costMillis;
@@ -32,7 +41,10 @@ public class AiCallLogVO {
     private Integer totalTokens;
     private Integer status;
     private String errorMessage;
+    private String errorMessagePreview;
     private String requestBody;
+    private String requestBodyPreview;
     private String responseBody;
+    private String responseBodyPreview;
     private LocalDateTime createdAt;
 }
