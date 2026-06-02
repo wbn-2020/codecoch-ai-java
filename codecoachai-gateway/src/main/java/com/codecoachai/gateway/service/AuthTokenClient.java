@@ -35,7 +35,7 @@ public class AuthTokenClient {
 
     public Mono<Result<TokenInfo>> tokenInfo(String authorization) {
         if (internalAuthEnabled && !StringUtils.hasText(internalSecret)) {
-            return Mono.just(Result.fail(41001, "Token invalid or expired"));
+            return Mono.just(authServiceUnavailable());
         }
         InternalSignatureHeaders internalSignatureHeaders = buildInternalSignatureHeaders();
         return webClientBuilder.build()
@@ -50,7 +50,11 @@ public class AuthTokenClient {
                 .retrieve()
                 .bodyToMono(TOKEN_INFO_TYPE)
                 .timeout(Duration.ofSeconds(3))
-                .onErrorResume(ex -> Mono.just(Result.fail(41001, "Token invalid or expired")));
+                .onErrorResume(ex -> Mono.just(authServiceUnavailable()));
+    }
+
+    private Result<TokenInfo> authServiceUnavailable() {
+        return Result.fail(50300, "认证服务暂不可用，请稍后重试");
     }
 
     private InternalSignatureHeaders buildInternalSignatureHeaders() {

@@ -32,7 +32,14 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
-    private static final List<String> WHITE_PATHS = List.of("/health", "/ai/health", "/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password");
+    private static final List<String> WHITE_PATHS = List.of(
+            "/health",
+            "/ai/health",
+            "/auth/login",
+            "/auth/register",
+            "/auth/forgot-password",
+            "/auth/reset-password",
+            "/auth/refresh-token");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuthTokenClient authTokenClient;
@@ -76,7 +83,13 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
         return authTokenClient.tokenInfo(authorization)
                 .flatMap(result -> {
-                    if (result == null || !result.isSuccess() || result.getData() == null) {
+                    if (result == null) {
+                        return writeError(exchange, ErrorCode.SYSTEM_ERROR);
+                    }
+                    if (!result.isSuccess()) {
+                        return writeError(exchange, result);
+                    }
+                    if (result.getData() == null) {
                         return writeError(exchange, ErrorCode.TOKEN_INVALID);
                     }
                     if (path.startsWith("/admin/") && !hasAdminRole(result.getData())) {
@@ -146,14 +159,18 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, ErrorCode errorCode) {
+        return writeError(exchange, Result.fail(errorCode));
+    }
+
+    private Mono<Void> writeError(ServerWebExchange exchange, Result<?> result) {
         exchange.getResponse().setStatusCode(HttpStatus.OK);
         exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        byte[] bytes = toJsonBytes(Result.fail(errorCode));
+        byte[] bytes = toJsonBytes(result);
         DataBuffer buffer = exchange.getResponse().bufferFactory().wrap(bytes);
         return exchange.getResponse().writeWith(Mono.just(buffer));
     }
 
-    private byte[] toJsonBytes(Result<Void> result) {
+    private byte[] toJsonBytes(Result<?> result) {
         try {
             return objectMapper.writeValueAsBytes(result);
         } catch (JsonProcessingException ex) {
