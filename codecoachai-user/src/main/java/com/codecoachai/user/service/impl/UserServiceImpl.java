@@ -66,7 +66,7 @@ public class UserServiceImpl implements UserService {
         user.setAvatarUrl(dto.getAvatarUrl());
         user.setEmail(dto.getEmail());
         sysUserMapper.updateById(user);
-        return getCurrentUserProfile();
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
     }
 
     @Override
@@ -89,7 +89,7 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(userId);
         user.setAvatarUrl(avatarUrl);
         sysUserMapper.updateById(user);
-        return getCurrentUserProfile();
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
     }
 
     @Override

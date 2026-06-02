@@ -10,12 +10,14 @@ import org.springframework.web.bind.annotation.PathVariable;
 @FeignClient(name = "codecoachai-resume", contextId = "resumeAgentContextFeignClient")
 public interface ResumeAgentContextFeignClient {
 
-    @GetMapping("/job-targets/current")
-    Result<TargetJobContextVO> currentTargetJob();
+    @GetMapping("/inner/job-targets/users/{userId}/current")
+    Result<TargetJobContextVO> currentTargetJob(@PathVariable("userId") Long userId);
 
-    @GetMapping("/job-targets/{id}")
-    Result<TargetJobContextVO> getTargetJob(@PathVariable("id") Long id);
+    @GetMapping("/inner/job-targets/users/{userId}/{id}")
+    Result<TargetJobContextVO> getTargetJob(@PathVariable("userId") Long userId,
+                                            @PathVariable("id") Long id);
 
-    @GetMapping("/job-targets/{id}/analysis")
-    Result<JobDescriptionAnalysisContextVO> getAnalysis(@PathVariable("id") Long id);
+    @GetMapping("/inner/job-targets/users/{userId}/{id}/analysis")
+    Result<JobDescriptionAnalysisContextVO> getAnalysis(@PathVariable("userId") Long userId,
+                                                        @PathVariable("id") Long id);
 }

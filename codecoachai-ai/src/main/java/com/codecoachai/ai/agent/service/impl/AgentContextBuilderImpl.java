@@ -33,7 +33,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
 
     @Override
     public JobCoachAgentContext build(Long userId, Long targetJobId, LocalDate planDate) {
-        TargetJobContextVO targetJob = resolveTargetJob(targetJobId);
+        TargetJobContextVO targetJob = resolveTargetJob(userId, targetJobId);
         if (targetJob == null || targetJob.getId() == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TARGET_JOB_REQUIRED);
         }
@@ -41,23 +41,23 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setUserId(userId);
         context.setTargetJobId(targetJob.getId());
         context.setPlanDate(planDate);
-        context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(targetJob.getId())));
+        context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(userId, targetJob.getId())));
         context.setRecentMemories(recentMemories(userId));
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
         context.getContextWarnings().add("Context currently includes target job, JD analysis, recent Agent task history, and enabled memories.");
         return context;
     }
 
-    private TargetJobContextVO resolveTargetJob(Long targetJobId) {
+    private TargetJobContextVO resolveTargetJob(Long userId, Long targetJobId) {
         if (targetJobId != null) {
-            return FeignResultUtils.unwrap(resumeFeignClient.getTargetJob(targetJobId));
+            return FeignResultUtils.unwrap(resumeFeignClient.getTargetJob(userId, targetJobId));
         }
-        return FeignResultUtils.unwrap(resumeFeignClient.currentTargetJob());
+        return FeignResultUtils.unwrap(resumeFeignClient.currentTargetJob(userId));
     }
 
-    private JobDescriptionAnalysisContextVO resolveAnalysis(Long targetJobId) {
+    private JobDescriptionAnalysisContextVO resolveAnalysis(Long userId, Long targetJobId) {
         try {
-            return FeignResultUtils.unwrap(resumeFeignClient.getAnalysis(targetJobId));
+            return FeignResultUtils.unwrap(resumeFeignClient.getAnalysis(userId, targetJobId));
         } catch (RuntimeException ex) {
             log.info("Target job analysis unavailable targetJobId={}, reason={}", targetJobId, ex.getMessage());
             return null;
