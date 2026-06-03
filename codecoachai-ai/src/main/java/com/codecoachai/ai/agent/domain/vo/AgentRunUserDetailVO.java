@@ -7,20 +7,20 @@ import java.util.List;
 import lombok.Data;
 
 @Data
-public class DailyPlanVO {
+public class AgentRunUserDetailVO {
 
-    private Long runId;
+    private Long id;
+    private String agentType;
     private Long targetJobId;
-    private LocalDate date;
-    private String summary;
+    private LocalDate planDate;
+    private String triggerType;
     private String status;
+    private String summary;
+    private List<SkillTagVO> focusSkills = new ArrayList<>();
+    private Long durationMs;
     private String errorCode;
     private String errorMessage;
-    private Long durationMs;
-    private List<SkillTagVO> focusSkills = new ArrayList<>();
     private List<AgentTaskVO> tasks = new ArrayList<>();
-    private Boolean empty = false;
-    private String emptyMessage;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime createdAt;

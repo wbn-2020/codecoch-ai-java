@@ -4,7 +4,7 @@ import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
-import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
+import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
@@ -91,7 +91,7 @@ public class AgentController {
     }
 
     @GetMapping("/runs/{id}")
-    public Result<AgentRunDetailVO> runDetail(@PathVariable Long id) {
+    public Result<AgentRunUserDetailVO> runDetail(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(jobCoachAgentService.getRunDetail(userId, id));
     }
