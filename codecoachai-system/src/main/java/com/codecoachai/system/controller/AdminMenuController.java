@@ -5,7 +5,8 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.dto.RoleMenuAssignDTO;
 import com.codecoachai.system.domain.dto.SysMenuSaveDTO;
 import com.codecoachai.system.domain.entity.SysMenu;
@@ -36,13 +37,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminMenuController {
 
     private static final String MENU_TYPE_BUTTON = "BUTTON";
+    private static final String PERM_MENU_LIST = "admin:menu:list";
+    private static final String PERM_MENU_WRITE = "admin:menu:write";
+    private static final String PERM_ROLE_LIST = "admin:role:list";
+    private static final String PERM_ROLE_ASSIGN = "admin:role:assign";
 
     private final SysMenuMapper menuMapper;
     private final SysRoleMenuMapper roleMenuMapper;
+    private final AdminPermissionGuard permissionGuard;
 
     @GetMapping("/admin/menus")
     public Result<List<SysMenuTreeVO>> tree() {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MENU_LIST);
         List<SysMenu> menus = menuMapper.selectList(new LambdaQueryWrapper<SysMenu>()
                 .and(wrapper -> wrapper.eq(SysMenu::getStatus, 1).or().isNull(SysMenu::getStatus))
                 .orderByAsc(SysMenu::getSortOrder)
@@ -51,8 +57,9 @@ public class AdminMenuController {
     }
 
     @PostMapping("/admin/menus")
+    @OperationLog(module = "system", action = "CREATE_MENU", description = "新增菜单权限")
     public Result<SysMenu> create(@RequestBody SysMenuSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MENU_WRITE);
         SysMenu menu = new SysMenu();
         apply(menu, dto);
         menuMapper.insert(menu);
@@ -60,8 +67,9 @@ public class AdminMenuController {
     }
 
     @PutMapping("/admin/menus/{id}")
+    @OperationLog(module = "system", action = "UPDATE_MENU", description = "编辑菜单权限")
     public Result<SysMenu> update(@PathVariable Long id, @RequestBody SysMenuSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MENU_WRITE);
         SysMenu menu = get(id);
         apply(menu, dto);
         menuMapper.updateById(menu);
@@ -69,8 +77,9 @@ public class AdminMenuController {
     }
 
     @DeleteMapping("/admin/menus/{id}")
+    @OperationLog(module = "system", action = "DELETE_MENU", description = "删除菜单权限")
     public Result<Void> delete(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MENU_WRITE);
         roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getMenuId, id));
         menuMapper.deleteById(id);
         return Result.success();
@@ -78,7 +87,7 @@ public class AdminMenuController {
 
     @GetMapping("/admin/roles/{roleId}/menus")
     public Result<List<Long>> roleMenus(@PathVariable Long roleId) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.requireAny(PERM_ROLE_LIST, PERM_MENU_LIST);
         return Result.success(roleMenuMapper.selectList(new LambdaQueryWrapper<SysRoleMenu>()
                         .eq(SysRoleMenu::getRoleId, roleId))
                 .stream().map(SysRoleMenu::getMenuId).toList());
@@ -86,16 +95,18 @@ public class AdminMenuController {
 
     @PutMapping("/admin/roles/{roleId}/menus")
     @Transactional(rollbackFor = Exception.class)
+    @OperationLog(module = "system", action = "ASSIGN_ROLE_MENU", description = "分配角色菜单权限")
     public Result<Void> assignRoleMenus(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_ROLE_ASSIGN);
         doAssignRoleMenus(roleId, dto);
         return Result.success();
     }
 
     @PostMapping("/admin/roles/{roleId}/menus")
     @Transactional(rollbackFor = Exception.class)
+    @OperationLog(module = "system", action = "ASSIGN_ROLE_MENU_COMPAT", description = "兼容入口分配角色菜单权限")
     public Result<Void> assignRoleMenusByPost(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_ROLE_ASSIGN);
         doAssignRoleMenus(roleId, dto);
         return Result.success();
     }

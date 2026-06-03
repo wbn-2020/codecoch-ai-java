@@ -4,7 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.mapper.NotificationMapper;
 import com.codecoachai.task.service.NotificationService;
@@ -35,8 +36,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminNotificationController {
 
+    private static final String PERM_NOTICE_LIST = "admin:notice:list";
+    private static final String PERM_NOTICE_WRITE = "admin:notice:write";
+
     private final NotificationMapper notificationMapper;
     private final NotificationService notificationService;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @Operation(summary = "分页查询所有通知")
     @GetMapping
@@ -48,7 +53,7 @@ public class AdminNotificationController {
             @RequestParam(required = false) String type,
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) Integer readStatus) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_NOTICE_LIST);
         // status 是早期前端筛选字段，readStatus 是新字段；两者都保留，避免旧管理页筛选失效。
         Integer resolvedReadStatus = readStatus != null ? readStatus : status;
         Page<Notification> page = notificationMapper.selectPage(
@@ -68,16 +73,18 @@ public class AdminNotificationController {
     }
 
     @Operation(summary = "发送系统通知给指定用户")
+    @OperationLog(module = "notification", action = "SEND_NOTICE", description = "发送系统通知", logArgs = false)
     @PostMapping("/send")
     public Result<Void> send(@Valid @RequestBody SendNotificationDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_NOTICE_WRITE);
         doSend(dto);
         return Result.success();
     }
 
+    @OperationLog(module = "notification", action = "SEND_NOTICE_COMPAT", description = "兼容入口发送系统通知", logArgs = false)
     @PostMapping
     public Result<Void> sendCompat(@Valid @RequestBody SendNotificationDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_NOTICE_WRITE);
         // 兼容旧管理端直接 POST /admin/notifications 的发送入口，实际发送规则统一收口到 doSend。
         doSend(dto);
         return Result.success();
@@ -97,18 +104,20 @@ public class AdminNotificationController {
     }
 
     @Operation(summary = "发送系统通知给全体用户（写入 userId=0 的广播通知）")
+    @OperationLog(module = "notification", action = "BROADCAST_NOTICE", description = "广播系统通知", logArgs = false)
     @PostMapping("/broadcast")
     public Result<Void> broadcast(@Valid @RequestBody BroadcastNotificationDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_NOTICE_WRITE);
         // userId=0 表示广播通知
         notificationService.notifySystem(0L, dto.getTitle(), dto.getContent());
         return Result.success();
     }
 
     @Operation(summary = "删除通知")
+    @OperationLog(module = "notification", action = "DELETE_NOTICE", description = "删除通知")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_NOTICE_WRITE);
         notificationMapper.deleteById(id);
         return Result.success();
     }

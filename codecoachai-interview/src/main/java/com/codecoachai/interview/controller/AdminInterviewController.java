@@ -2,7 +2,7 @@ package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -17,7 +17,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminInterviewController {
 
+    private static final String PERM_INTERVIEW_LIST = "admin:interview:list";
+    private static final String PERM_INTERVIEW_REPORT = "admin:interview:report";
+
     private final JdbcTemplate jdbcTemplate;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @GetMapping("/admin/interviews")
     public Result<PageResult<Map<String, Object>>> interviews(@RequestParam(required = false) Long pageNo,
@@ -26,7 +30,7 @@ public class AdminInterviewController {
                                                               @RequestParam(required = false) String status,
                                                               @RequestParam(required = false) String reportStatus,
                                                               @RequestParam(required = false) String keyword) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INTERVIEW_LIST);
         long pn = pageNo == null || pageNo < 1 ? 1 : pageNo;
         long ps = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
         QueryParts parts = interviewWhere(userId, status, reportStatus, keyword);
@@ -45,7 +49,7 @@ public class AdminInterviewController {
 
     @GetMapping("/admin/interviews/{id}")
     public Result<Map<String, Object>> interviewDetail(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INTERVIEW_LIST);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("SELECT * FROM interview_session WHERE deleted = 0 AND id = ?", id);
         return Result.success(rows.isEmpty() ? null : rows.get(0));
     }
@@ -56,7 +60,7 @@ public class AdminInterviewController {
                                                            @RequestParam(required = false) Long userId,
                                                            @RequestParam(required = false) String status,
                                                            @RequestParam(required = false) String keyword) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INTERVIEW_REPORT);
         long pn = pageNo == null || pageNo < 1 ? 1 : pageNo;
         long ps = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
         QueryParts parts = reportWhere(userId, status, keyword);
@@ -89,7 +93,7 @@ public class AdminInterviewController {
 
     @GetMapping("/admin/interview-reports/{id}")
     public Result<Map<String, Object>> reportDetail(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INTERVIEW_REPORT);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT r.*, r.id AS reportId, r.session_id AS sessionId, r.session_id AS interviewId,
                        r.user_id AS userId, r.status AS reportStatus, r.total_score AS totalScore,

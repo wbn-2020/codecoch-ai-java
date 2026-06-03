@@ -1,7 +1,8 @@
 package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.interview.domain.dto.IndustryTemplateCreateDTO;
 import com.codecoachai.interview.domain.dto.IndustryTemplateQueryDTO;
 import com.codecoachai.interview.domain.dto.IndustryTemplateUpdateDTO;
@@ -22,50 +23,59 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminIndustryTemplateController {
 
+    private static final String PERM_INDUSTRY_TEMPLATE_LIST = "admin:industry-template:list";
+    private static final String PERM_INDUSTRY_TEMPLATE_WRITE = "admin:industry-template:write";
+
     private final IndustryTemplateService industryTemplateService;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @GetMapping("/admin/industry-templates")
     public Result<List<IndustryTemplateVO>> list(IndustryTemplateQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_LIST);
         return Result.success(industryTemplateService.adminList(query));
     }
 
     @GetMapping("/admin/industry-templates/{id}")
     public Result<IndustryTemplateVO> detail(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_LIST);
         return Result.success(industryTemplateService.adminDetail(id));
     }
 
     @PostMapping("/admin/industry-templates")
+    @OperationLog(module = "interview", action = "CREATE_INDUSTRY_TEMPLATE", description = "创建行业模板", logArgs = false)
     public Result<IndustryTemplateVO> create(@Valid @RequestBody IndustryTemplateCreateDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_WRITE);
         return Result.success(industryTemplateService.create(dto));
     }
 
     @PutMapping("/admin/industry-templates/{id}")
+    @OperationLog(module = "interview", action = "UPDATE_INDUSTRY_TEMPLATE", description = "编辑行业模板", logArgs = false)
     public Result<IndustryTemplateVO> update(@PathVariable Long id,
                                              @Valid @RequestBody IndustryTemplateUpdateDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_WRITE);
         return Result.success(industryTemplateService.update(id, dto));
     }
 
     @PostMapping("/admin/industry-templates/{id}/enable")
+    @OperationLog(module = "interview", action = "ENABLE_INDUSTRY_TEMPLATE", description = "启用行业模板")
     public Result<Void> enable(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_WRITE);
         industryTemplateService.enable(id);
         return Result.success();
     }
 
     @PostMapping("/admin/industry-templates/{id}/disable")
+    @OperationLog(module = "interview", action = "DISABLE_INDUSTRY_TEMPLATE", description = "停用行业模板")
     public Result<Void> disable(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_WRITE);
         industryTemplateService.disable(id);
         return Result.success();
     }
 
     @DeleteMapping("/admin/industry-templates/{id}")
+    @OperationLog(module = "interview", action = "DELETE_INDUSTRY_TEMPLATE", description = "删除行业模板")
     public Result<Void> delete(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_INDUSTRY_TEMPLATE_WRITE);
         industryTemplateService.delete(id);
         return Result.success();
     }

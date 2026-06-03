@@ -14,10 +14,10 @@ import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
 import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
 import com.codecoachai.ai.service.PromptTemplateService;
-import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -36,7 +36,15 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Admin AI", description = "AI 管理端接口")
 public class AdminAiController {
 
+    private static final String PERM_PROMPT_LIST = "admin:ai:prompt:list";
+    private static final String PERM_PROMPT_WRITE = "admin:ai:prompt:write";
+    private static final String PERM_PROMPT_PUBLISH = "admin:ai:prompt:publish";
+    private static final String PERM_PROMPT_TEST = "admin:ai:prompt:test";
+    private static final String PERM_LOG_LIST = "admin:ai:log:list";
+    private static final String PERM_LOG_RAW_VIEW = "admin:ai:log:raw:view";
+
     private final PromptTemplateService promptTemplateService;
+    private final AdminPermissionGuard permissionGuard;
 
     @GetMapping("/admin/ai/prompts")
     public Result<PageResult<PromptTemplateVO>> pagePrompts(@RequestParam(required = false) Long pageNo,
@@ -44,13 +52,13 @@ public class AdminAiController {
                                                             @RequestParam(required = false) String keyword,
                                                             @RequestParam(required = false) String scene,
                                                             @RequestParam(required = false) Integer status) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize, keyword, scene, status));
     }
 
     @GetMapping("/admin/ai/prompt-templates")
     public Result<PageResult<PromptTemplateVO>> pagePromptTemplates(PromptTemplateQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.pagePrompts(query));
     }
 
@@ -60,26 +68,26 @@ public class AdminAiController {
                                                                  @RequestParam(required = false) String keyword,
                                                                  @RequestParam(required = false) String scene,
                                                                  @RequestParam(required = false) Integer status) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.pagePrompts(pageNo, pageSize, keyword, scene, status));
     }
 
     @OperationLog(module = "ai", action = "CREATE_PROMPT", description = "新增 Prompt 模板")
     @PostMapping("/admin/ai/prompts")
     public Result<PromptTemplateVO> createPrompt(@Valid @RequestBody PromptTemplateSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_WRITE);
         return Result.success(promptTemplateService.createPrompt(dto));
     }
 
     @GetMapping("/admin/ai/prompts/{id}")
     public Result<PromptTemplateVO> getPrompt(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.getPrompt(id));
     }
 
     @GetMapping("/admin/ai/prompt-templates/{id}")
     public Result<PromptTemplateDetailVO> getPromptTemplate(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.getPromptDetail(id));
     }
 
@@ -87,14 +95,14 @@ public class AdminAiController {
     @PutMapping("/admin/ai/prompts/{id}")
     public Result<PromptTemplateVO> updatePrompt(@PathVariable Long id,
                                                  @Valid @RequestBody PromptTemplateSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_WRITE);
         return Result.success(promptTemplateService.updatePrompt(id, dto));
     }
 
     @OperationLog(module = "ai", action = "DELETE_PROMPT", description = "删除 Prompt 模板")
     @DeleteMapping("/admin/ai/prompts/{id}")
     public Result<Void> deletePrompt(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_WRITE);
         promptTemplateService.deletePrompt(id);
         return Result.success();
     }
@@ -103,7 +111,7 @@ public class AdminAiController {
     @PutMapping("/admin/ai/prompts/{id}/status")
     public Result<Void> updatePromptStatus(@PathVariable Long id,
                                            @Valid @RequestBody UpdatePromptStatusDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_WRITE);
         promptTemplateService.updateStatus(id, dto);
         return Result.success();
     }
@@ -111,7 +119,7 @@ public class AdminAiController {
     @GetMapping("/admin/ai/prompt-templates/{id}/versions")
     public Result<PageResult<PromptTemplateVersionVO>> pagePromptVersions(@PathVariable Long id,
                                                                           PromptTemplateVersionQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_LIST);
         return Result.success(promptTemplateService.pageVersions(id, query));
     }
 
@@ -119,7 +127,7 @@ public class AdminAiController {
     @PostMapping("/admin/ai/prompt-templates/{id}/versions")
     public Result<PromptTemplateVersionVO> createPromptVersion(@PathVariable Long id,
                                                                @Valid @RequestBody PromptTemplateVersionCreateDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_WRITE);
         return Result.success(promptTemplateService.createVersion(id, dto));
     }
 
@@ -129,7 +137,7 @@ public class AdminAiController {
     public Result<PromptTemplateVersionVO> activatePromptVersion(@PathVariable Long versionId,
                                                                  @RequestBody(required = false)
                                                                  PromptVersionActionDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_PUBLISH);
         return Result.success(promptTemplateService.activateVersion(versionId, dto));
     }
 
@@ -139,7 +147,7 @@ public class AdminAiController {
     public Result<PromptTemplateVersionVO> rollbackPromptVersion(@PathVariable Long versionId,
                                                                  @RequestBody(required = false)
                                                                  PromptVersionActionDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_PUBLISH);
         return Result.success(promptTemplateService.rollbackVersion(versionId, dto));
     }
 
@@ -148,7 +156,7 @@ public class AdminAiController {
     @Operation(summary = "禁用 Prompt 版本", description = "管理端接口：禁用非激活状态的 Prompt 版本。")
     public Result<Void> disablePromptVersion(@PathVariable Long versionId,
                                              @RequestBody(required = false) PromptVersionActionDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_PUBLISH);
         promptTemplateService.disableVersion(versionId, dto);
         return Result.success();
     }
@@ -158,7 +166,7 @@ public class AdminAiController {
     @Operation(summary = "测试 Prompt 版本", description = "管理端接口：渲染或调用 AI 测试指定 Prompt 版本。")
     public Result<PromptVersionTestVO> testPromptVersion(@PathVariable Long versionId,
                                                          @RequestBody(required = false) PromptVersionTestDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_PROMPT_TEST);
         return Result.success(promptTemplateService.testVersion(versionId, dto));
     }
 
@@ -166,7 +174,7 @@ public class AdminAiController {
     @Operation(summary = "查询模板调用记录", description = "管理端接口：按 Prompt 模板查询 AI 调用日志。")
     public Result<PageResult<AiCallLogVO>> pageTemplateCallLogs(@PathVariable Long templateId,
                                                                 AiCallLogQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_LOG_LIST);
         return Result.success(promptTemplateService.pageTemplateLogs(templateId, query));
     }
 
@@ -174,7 +182,7 @@ public class AdminAiController {
     @Operation(summary = "查询版本调用记录", description = "管理端接口：按 Prompt 版本查询 AI 调用日志。")
     public Result<PageResult<AiCallLogVO>> pageVersionCallLogs(@PathVariable Long versionId,
                                                                AiCallLogQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_LOG_LIST);
         return Result.success(promptTemplateService.pageVersionLogs(versionId, query));
     }
 
@@ -182,7 +190,7 @@ public class AdminAiController {
     public Result<PageResult<AiCallLogVO>> pageLogs(AiCallLogQueryDTO query,
                                                     @RequestParam(required = false) Long pageNo,
                                                     @RequestParam(required = false) Long pageSize) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_LOG_LIST);
         if (pageNo != null) {
             query.setPageNo(pageNo);
         }
@@ -194,13 +202,20 @@ public class AdminAiController {
 
     @GetMapping("/admin/ai/logs/page")
     public Result<PageResult<AiCallLogVO>> pageLogsAlias(AiCallLogQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_LOG_LIST);
         return Result.success(promptTemplateService.pageLogs(query));
     }
 
     @GetMapping({"/admin/ai/call-logs/{id}", "/admin/ai/logs/{id}"})
     public Result<AiCallLogVO> getLog(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_LOG_LIST);
         return Result.success(promptTemplateService.getLog(id));
+    }
+
+    @OperationLog(module = "ai", action = "VIEW_AI_LOG_RAW", description = "查看 AI 调用日志原文", logResponse = false)
+    @GetMapping({"/admin/ai/call-logs/{id}/raw", "/admin/ai/logs/{id}/raw"})
+    public Result<AiCallLogVO> getLogRaw(@PathVariable Long id) {
+        permissionGuard.require(PERM_LOG_RAW_VIEW);
+        return Result.success(promptTemplateService.getLogRaw(id));
     }
 }

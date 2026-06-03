@@ -54,4 +54,6 @@ public interface PromptTemplateService {
     PageResult<AiCallLogVO> pageVersionLogs(Long versionId, AiCallLogQueryDTO query);
 
     AiCallLogVO getLog(Long id);
+
+    AiCallLogVO getLogRaw(Long id);
 }

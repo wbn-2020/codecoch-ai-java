@@ -22,15 +22,18 @@ public class AiCallLogVO {
     private Double estimatedCost;
     private String inputVariablesJson;
     private String inputVariablesPreview;
+    private String inputVariablesHash;
     private String modelParamsJson;
     private String modelParamsPreview;
     private String promptHash;
     private String responseFormat;
     private String requestPrompt;
     private String requestPromptPreview;
+    private String requestPromptHash;
     private String requestPreview;
     private String responseContent;
     private String responseContentPreview;
+    private String responseContentHash;
     private String responsePreview;
     private String businessId;
     private Long elapsedMs;
@@ -44,7 +47,12 @@ public class AiCallLogVO {
     private String errorMessagePreview;
     private String requestBody;
     private String requestBodyPreview;
+    private String requestBodyHash;
     private String responseBody;
     private String responseBodyPreview;
+    private String responseBodyHash;
+    private Boolean rawFieldsAvailable;
+    private Boolean rawFieldsIncluded;
+    private String rawAccessPermission;
     private LocalDateTime createdAt;
 }

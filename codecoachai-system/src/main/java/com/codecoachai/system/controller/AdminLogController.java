@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.system.domain.entity.LoginLog;
 import com.codecoachai.system.domain.entity.OperationLog;
 import com.codecoachai.system.domain.entity.SlowSqlLog;
@@ -15,9 +15,15 @@ import com.codecoachai.system.mapper.OperationLogMapper;
 import com.codecoachai.system.mapper.SlowSqlLogMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.List;
+import java.util.regex.Pattern;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -35,16 +41,26 @@ import org.springframework.web.bind.annotation.RestController;
 @Slf4j
 public class AdminLogController {
 
+    private static final String PERM_OPERATION_LOG = "admin:audit:operation-log";
+    private static final String PERM_LOGIN_LOG = "admin:audit:login-log";
+    private static final String PERM_SLOW_SQL_LOG = "admin:audit:slow-sql-log";
+    private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
+    private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
+    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
+    private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;]+)");
+
     private final LoginLogMapper loginLogMapper;
     private final OperationLogMapper operationLogMapper;
     private final SlowSqlLogMapper slowSqlLogMapper;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @Operation(summary = "Query log audit summary")
     @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_LOG_SUMMARY",
             description = "Query log audit summary", logArgs = false)
     @GetMapping({"/admin/logs/summary", "/admin/audit/log-summary"})
     public Result<AdminLogSummaryVO> summary() {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.requireAny(PERM_OPERATION_LOG, PERM_LOGIN_LOG, PERM_SLOW_SQL_LOG);
         AdminLogSummaryVO vo = emptySummary();
         try {
             LocalDateTime todayStart = LocalDateTime.now().toLocalDate().atStartOfDay();
@@ -90,7 +106,7 @@ public class AdminLogController {
             @RequestParam(required = false) String loginType,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_LOGIN_LOG);
         String resolvedStatus = StringUtils.hasText(loginStatus) ? normalizeStatus(loginStatus) : normalizeStatus(status);
         try {
             Page<LoginLog> page = loginLogMapper.selectPage(
@@ -121,7 +137,7 @@ public class AdminLogController {
     @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_OPERATION_LOG",
             description = "Query operation logs", logArgs = false)
     @GetMapping({"/admin/operation-logs", "/admin/logs/operations"})
-    public Result<PageResult<OperationLog>> pageOperationLogs(
+    public Result<PageResult<OperationLogAuditVO>> pageOperationLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String keyword,
@@ -133,7 +149,7 @@ public class AdminLogController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_OPERATION_LOG);
         try {
             Page<OperationLog> page = operationLogMapper.selectPage(
                     Page.of(pageNo, pageSize),
@@ -154,7 +170,8 @@ public class AdminLogController {
                             .ge(startTime != null, OperationLog::getCreatedAt, startTime)
                             .le(endTime != null, OperationLog::getCreatedAt, endTime)
                             .orderByDesc(OperationLog::getCreatedAt));
-            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+            List<OperationLogAuditVO> records = page.getRecords().stream().map(this::toOperationLogVO).toList();
+            return Result.success(PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize()));
         } catch (RuntimeException ex) {
             log.warn("Operation log page degraded because audit log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
@@ -165,7 +182,7 @@ public class AdminLogController {
     @com.codecoachai.common.web.log.OperationLog(module = "system", action = "QUERY_SLOW_SQL_LOG",
             description = "Query slow SQL logs", logArgs = false)
     @GetMapping({"/admin/slow-sql-logs", "/admin/logs/slow-sql"})
-    public Result<PageResult<SlowSqlLog>> pageSlowSqlLogs(
+    public Result<PageResult<SlowSqlLogAuditVO>> pageSlowSqlLogs(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String keyword,
@@ -174,7 +191,7 @@ public class AdminLogController {
             @RequestParam(required = false) Long minCostMs,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime startTime,
             @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime endTime) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_SLOW_SQL_LOG);
         try {
             Page<SlowSqlLog> page = slowSqlLogMapper.selectPage(
                     Page.of(pageNo, pageSize),
@@ -189,7 +206,8 @@ public class AdminLogController {
                             .ge(startTime != null, SlowSqlLog::getCreatedAt, startTime)
                             .le(endTime != null, SlowSqlLog::getCreatedAt, endTime)
                             .orderByDesc(SlowSqlLog::getCreatedAt));
-            return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+            List<SlowSqlLogAuditVO> records = page.getRecords().stream().map(this::toSlowSqlLogVO).toList();
+            return Result.success(PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize()));
         } catch (RuntimeException ex) {
             log.warn("Slow SQL log page degraded because slow SQL log query failed", ex);
             return Result.success(emptyPage(pageNo, pageSize));
@@ -274,6 +292,54 @@ public class AdminLogController {
         return vo;
     }
 
+    private OperationLogAuditVO toOperationLogVO(OperationLog log) {
+        OperationLogAuditVO vo = new OperationLogAuditVO();
+        vo.setId(log.getId());
+        vo.setTraceId(shortId(log.getTraceId()));
+        vo.setUserId(log.getUserId());
+        vo.setUsername(log.getUsername());
+        vo.setModule(log.getModule());
+        vo.setAction(log.getAction());
+        vo.setOperation(log.getAction());
+        vo.setTargetType(log.getTargetType());
+        vo.setTargetId(log.getTargetId());
+        vo.setMethod(log.getMethod());
+        vo.setRequestUri(log.getRequestUri());
+        vo.setRequestArgsPreview(safePreview(log.getRequestArgs(), 160));
+        vo.setRequestArgsHash(sha256Prefix(log.getRequestArgs()));
+        vo.setResponsePreview(safePreview(log.getResponse(), 160));
+        vo.setResponseHash(sha256Prefix(log.getResponse()));
+        vo.setRawAvailable(false);
+        vo.setStatus(log.getStatus());
+        vo.setErrorMessage(safePreview(log.getErrorMsg(), 160));
+        vo.setErrorMsg(vo.getErrorMessage());
+        vo.setIp(maskIp(log.getIp()));
+        vo.setUserAgentSummary(summarizeUserAgent(log.getUserAgent()));
+        vo.setCostTime(log.getCostMs());
+        vo.setCostMs(log.getCostMs());
+        vo.setCreatedAt(log.getCreatedAt());
+        return vo;
+    }
+
+    private SlowSqlLogAuditVO toSlowSqlLogVO(SlowSqlLog log) {
+        SlowSqlLogAuditVO vo = new SlowSqlLogAuditVO();
+        vo.setId(log.getId());
+        vo.setMapperId(log.getMapperId());
+        vo.setSqlCommandType(log.getSqlCommandType());
+        vo.setSqlText(safePreview(log.getSqlText(), 240));
+        vo.setSqlTextPreview(vo.getSqlText());
+        vo.setSqlTextHash(sha256Prefix(log.getSqlText()));
+        vo.setParameterSummary(safePreview(log.getParameterSummary(), 200));
+        vo.setParameterSummaryHash(sha256Prefix(log.getParameterSummary()));
+        vo.setRawAvailable(false);
+        vo.setDatabaseName(log.getDatabaseName());
+        vo.setCostMs(log.getCostMs());
+        vo.setThresholdMs(log.getThresholdMs());
+        vo.setResultSize(log.getResultSize());
+        vo.setCreatedAt(log.getCreatedAt());
+        return vo;
+    }
+
     private String maskIp(String ip) {
         if (!StringUtils.hasText(ip)) {
             return ip;
@@ -324,5 +390,85 @@ public class AdminLogController {
         }
         String trimmed = value.trim();
         return trimmed.length() <= 12 ? trimmed : trimmed.substring(0, 12);
+    }
+
+    private String safePreview(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        String preview = normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength) + "...";
+        return maskText(preview);
+    }
+
+    private String maskText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String masked = EMAIL.matcher(value).replaceAll("***@***");
+        masked = CHINA_MOBILE.matcher(masked).replaceAll("1**********");
+        masked = ID_CARD.matcher(masked).replaceAll("******************");
+        masked = JSON_SECRET.matcher(masked).replaceAll("$1******$2");
+        return KV_SECRET.matcher(masked).replaceAll("$1=******");
+    }
+
+    private String sha256Prefix(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of()
+                    .formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)))
+                    .substring(0, 16);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
+    }
+
+    @Data
+    public static class OperationLogAuditVO {
+        private Long id;
+        private String traceId;
+        private Long userId;
+        private String username;
+        private String module;
+        private String action;
+        private String operation;
+        private String targetType;
+        private String targetId;
+        private String method;
+        private String requestUri;
+        private String requestArgsPreview;
+        private String requestArgsHash;
+        private String responsePreview;
+        private String responseHash;
+        private Boolean rawAvailable;
+        private String status;
+        private String errorMessage;
+        private String errorMsg;
+        private String ip;
+        private String userAgentSummary;
+        private Long costTime;
+        private Long costMs;
+        private LocalDateTime createdAt;
+    }
+
+    @Data
+    public static class SlowSqlLogAuditVO {
+        private Long id;
+        private String mapperId;
+        private String sqlCommandType;
+        private String sqlText;
+        private String sqlTextPreview;
+        private String sqlTextHash;
+        private String parameterSummary;
+        private String parameterSummaryHash;
+        private Boolean rawAvailable;
+        private String databaseName;
+        private Long costMs;
+        private Long thresholdMs;
+        private Integer resultSize;
+        private LocalDateTime createdAt;
     }
 }

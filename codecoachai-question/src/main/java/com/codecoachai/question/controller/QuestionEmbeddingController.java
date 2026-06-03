@@ -1,7 +1,9 @@
 package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.common.vector.service.VectorIndexJobService;
 import com.codecoachai.question.config.QuestionDuplicateProperties;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
@@ -20,13 +22,19 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class QuestionEmbeddingController {
 
+    private static final String PERM_QUESTION_LIST = "admin:question:list";
+    private static final String PERM_QUESTION_DEDUPE = "admin:question:dedupe";
+    private static final String PERM_QUESTION_EMBEDDING_REBUILD = "admin:question:embedding:rebuild";
+
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionDuplicateProperties questionDuplicateProperties;
     private final VectorIndexJobService vectorIndexJobService;
+    private final AdminPermissionGuard adminPermissionGuard;
 
+    @OperationLog(module = "question", action = "REBUILD_QUESTION_EMBEDDING", description = "重建题目向量", logArgs = false, logResponse = false)
     @PostMapping("/admin/questions/embedding/rebuild")
     public Result<Map<String, Object>> rebuild(@RequestBody(required = false) RebuildDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
         Long jobId = vectorIndexJobService.start("QUESTION_REBUILD", "QUESTION", null, limit);
         try {
@@ -42,13 +50,14 @@ public class QuestionEmbeddingController {
 
     @GetMapping("/admin/questions/embedding/stats")
     public Result<Map<String, Object>> stats() {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
         return Result.success(questionEmbeddingIndexService.stats());
     }
 
+    @OperationLog(module = "question", action = "RETRY_QUESTION_EMBEDDING", description = "重试失败题目向量", logArgs = false, logResponse = false)
     @PostMapping("/admin/questions/embedding/retry-failed")
     public Result<Map<String, Object>> retryFailed(@RequestBody(required = false) RebuildDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
         Long jobId = vectorIndexJobService.start("QUESTION_RETRY", "QUESTION", "FAILED_OR_STALE", limit);
         try {
@@ -71,7 +80,7 @@ public class QuestionEmbeddingController {
 
     @GetMapping("/admin/questions/duplicate/config")
     public Result<QuestionDuplicateProperties> duplicateConfig() {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
         return Result.success(questionDuplicateProperties);
     }
 

@@ -6,6 +6,7 @@ import com.codecoachai.ai.domain.entity.PromptTemplateVersion;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.security.SensitiveTextMasker;
 
 public final class AiConvert {
 
@@ -51,6 +52,10 @@ public final class AiConvert {
     }
 
     public static AiCallLogVO toLogVO(AiCallLog log) {
+        return toLogVO(log, false);
+    }
+
+    public static AiCallLogVO toLogVO(AiCallLog log, boolean includeRawFields) {
         AiCallLogVO vo = new AiCallLogVO();
         vo.setId(log.getId());
         vo.setUserId(log.getUserId());
@@ -66,17 +71,20 @@ public final class AiConvert {
         vo.setShortTraceId(vo.getTraceIdShort());
         vo.setRouteTrace(log.getRouteTrace());
         vo.setEstimatedCost(log.getEstimatedCost() == null ? log.getTokenCost() : log.getEstimatedCost());
-        vo.setInputVariablesJson(log.getInputVariablesJson());
+        vo.setInputVariablesJson(includeRawFields ? log.getInputVariablesJson() : null);
         vo.setInputVariablesPreview(preview(log.getInputVariablesJson()));
+        vo.setInputVariablesHash(SensitiveTextMasker.sha256Prefix(log.getInputVariablesJson()));
         vo.setModelParamsJson(log.getModelParamsJson());
         vo.setModelParamsPreview(preview(log.getModelParamsJson()));
         vo.setPromptHash(log.getPromptHash());
         vo.setResponseFormat(log.getResponseFormat());
-        vo.setRequestPrompt(log.getRequestPrompt());
+        vo.setRequestPrompt(includeRawFields ? log.getRequestPrompt() : null);
         vo.setRequestPromptPreview(preview(log.getRequestPrompt()));
+        vo.setRequestPromptHash(SensitiveTextMasker.sha256Prefix(log.getRequestPrompt()));
         vo.setRequestPreview(vo.getRequestPromptPreview());
-        vo.setResponseContent(log.getResponseContent());
+        vo.setResponseContent(includeRawFields ? log.getResponseContent() : null);
         vo.setResponseContentPreview(preview(log.getResponseContent()));
+        vo.setResponseContentHash(SensitiveTextMasker.sha256Prefix(log.getResponseContent()));
         vo.setResponsePreview(vo.getResponseContentPreview());
         vo.setBusinessId(log.getBusinessId());
         vo.setElapsedMs(log.getElapsedMs());
@@ -86,12 +94,18 @@ public final class AiConvert {
         vo.setCompletionTokens(log.getCompletionTokens());
         vo.setTotalTokens(log.getTotalTokens());
         vo.setStatus(log.getStatus());
-        vo.setErrorMessage(log.getErrorMessage());
+        vo.setErrorMessage(SensitiveTextMasker.maskText(log.getErrorMessage()));
         vo.setErrorMessagePreview(preview(log.getErrorMessage()));
-        vo.setRequestBody(log.getRequestBody());
+        vo.setRequestBody(includeRawFields ? log.getRequestBody() : null);
         vo.setRequestBodyPreview(preview(log.getRequestBody()));
-        vo.setResponseBody(log.getResponseBody());
+        vo.setRequestBodyHash(SensitiveTextMasker.sha256Prefix(log.getRequestBody()));
+        vo.setResponseBody(includeRawFields ? log.getResponseBody() : null);
         vo.setResponseBodyPreview(preview(log.getResponseBody()));
+        vo.setResponseBodyHash(SensitiveTextMasker.sha256Prefix(log.getResponseBody()));
+        vo.setRawFieldsAvailable(hasText(log.getInputVariablesJson()) || hasText(log.getRequestPrompt())
+                || hasText(log.getResponseContent()) || hasText(log.getRequestBody()) || hasText(log.getResponseBody()));
+        vo.setRawFieldsIncluded(includeRawFields);
+        vo.setRawAccessPermission("admin:ai:log:raw:view");
         vo.setCreatedAt(log.getCreatedAt());
         return vo;
     }
@@ -100,8 +114,7 @@ public final class AiConvert {
         if (value == null) {
             return null;
         }
-        String normalized = value.replaceAll("\\s+", " ").trim();
-        return normalized.length() <= 120 ? normalized : normalized.substring(0, 120) + "...";
+        return SensitiveTextMasker.safePreview(value);
     }
 
     private static String shortId(String value) {
@@ -110,5 +123,9 @@ public final class AiConvert {
         }
         String trimmed = value.trim();
         return trimmed.length() <= 12 ? trimmed : trimmed.substring(0, 12);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
     }
 }

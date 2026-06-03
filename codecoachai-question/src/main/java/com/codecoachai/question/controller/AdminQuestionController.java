@@ -2,7 +2,7 @@ package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.dto.AdminQuestionSaveDTO;
 import com.codecoachai.question.domain.dto.QuestionQueryDTO;
@@ -24,30 +24,34 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminQuestionController {
 
+    private static final String PERM_QUESTION_LIST = "admin:question:list";
+    private static final String PERM_QUESTION_WRITE = "admin:question:write";
+
     private final QuestionService questionService;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @GetMapping("/admin/questions")
     public Result<PageResult<QuestionListVO>> pageQuestions(QuestionQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
         return Result.success(questionService.pageAdminQuestions(query));
     }
 
     @GetMapping("/admin/questions/page")
     public Result<PageResult<QuestionListVO>> pageQuestionsAlias(QuestionQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
         return Result.success(questionService.pageAdminQuestions(query));
     }
 
     @GetMapping("/admin/questions/{id}")
     public Result<QuestionDetailVO> getQuestion(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
         return Result.success(questionService.getQuestion(id));
     }
 
     @PostMapping("/admin/questions")
     @OperationLog(module = "question", action = "CREATE_QUESTION", description = "Create question")
     public Result<QuestionDetailVO> createQuestion(@Valid @RequestBody AdminQuestionSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_WRITE);
         return Result.success(questionService.createQuestion(dto));
     }
 
@@ -55,14 +59,14 @@ public class AdminQuestionController {
     @OperationLog(module = "question", action = "UPDATE_QUESTION", description = "Update question")
     public Result<QuestionDetailVO> updateQuestion(@PathVariable Long id,
                                                    @Valid @RequestBody AdminQuestionSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_WRITE);
         return Result.success(questionService.updateQuestion(id, dto));
     }
 
     @DeleteMapping("/admin/questions/{id}")
     @OperationLog(module = "question", action = "DELETE_QUESTION", description = "Delete question", logResponse = false)
     public Result<Void> deleteQuestion(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_WRITE);
         questionService.deleteQuestion(id);
         return Result.success();
     }
@@ -70,7 +74,7 @@ public class AdminQuestionController {
     @PutMapping("/admin/questions/{id}/status")
     @OperationLog(module = "question", action = "UPDATE_QUESTION_STATUS", description = "Update question status")
     public Result<Void> updateStatus(@PathVariable Long id, @Valid @RequestBody UpdateStatusDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_WRITE);
         questionService.updateStatus(id, dto);
         return Result.success();
     }
