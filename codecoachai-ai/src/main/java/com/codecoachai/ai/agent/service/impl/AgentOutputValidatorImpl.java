@@ -23,6 +23,7 @@ public class AgentOutputValidatorImpl implements AgentOutputValidator {
         if (result == null || !StringUtils.hasText(result.getSummary())) {
             invalid();
         }
+        validateUserText(result.getSummary());
         List<PlanTask> tasks = result.getTasks();
         if (tasks == null || tasks.isEmpty() || tasks.size() > 5 || tasks.size() > taskCount) {
             invalid();
@@ -46,6 +47,9 @@ public class AgentOutputValidatorImpl implements AgentOutputValidator {
         if (task == null || !StringUtils.hasText(task.getTitle()) || !StringUtils.hasText(task.getReason())) {
             invalid();
         }
+        validateUserText(task.getTitle());
+        validateUserText(task.getDescription());
+        validateUserText(task.getReason());
         if (task.getEstimatedMinutes() == null || task.getEstimatedMinutes() < 5 || task.getEstimatedMinutes() > 180) {
             invalid();
         }
@@ -58,6 +62,46 @@ public class AgentOutputValidatorImpl implements AgentOutputValidator {
         if (!seen.add(duplicateKey)) {
             invalid();
         }
+    }
+
+    private void validateUserText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return;
+        }
+        String text = value.trim();
+        if (!containsChinese(text)) {
+            invalid();
+        }
+        String lower = text.toLowerCase();
+        if (lower.contains("fallback")
+                || lower.contains("aicalllogid")
+                || lower.contains("deepseek")
+                || lower.contains("rest api")
+                || lower.contains("candidate task")
+                || lower.contains("candidateid")
+                || text.contains("AGENT_")
+                || text.contains("DTO")
+                || text.contains("后端接口")
+                || text.contains("调用日志")) {
+            invalid();
+        }
+        if (text.contains("Java Backend")
+                || text.startsWith("Practice ")
+                || text.startsWith("Improve resume evidence")
+                || text.startsWith("Run a target-job")
+                || text.startsWith("Review core")) {
+            invalid();
+        }
+    }
+
+    private boolean containsChinese(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            Character.UnicodeScript script = Character.UnicodeScript.of(value.charAt(i));
+            if (Character.UnicodeScript.HAN.equals(script)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private <E extends Enum<E>> void enumValue(Class<E> enumClass, String value) {

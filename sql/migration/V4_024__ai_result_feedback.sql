@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS ai_result_feedback (
+  id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+  user_id BIGINT NOT NULL COMMENT '反馈用户ID',
+  scene VARCHAR(64) NOT NULL DEFAULT 'GENERAL' COMMENT 'AI结果场景',
+  biz_type VARCHAR(64) DEFAULT NULL COMMENT '业务类型',
+  biz_id BIGINT DEFAULT NULL COMMENT '业务ID',
+  ai_call_log_id BIGINT DEFAULT NULL COMMENT 'AI调用日志ID',
+  feedback_type VARCHAR(40) NOT NULL COMMENT '反馈类型',
+  rating TINYINT DEFAULT NULL COMMENT '评分，1-5',
+  comment VARCHAR(500) DEFAULT NULL COMMENT '用户补充说明',
+  page_path VARCHAR(255) DEFAULT NULL COMMENT '前端页面路径',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  deleted TINYINT DEFAULT 0 COMMENT '逻辑删除',
+  KEY idx_ai_result_feedback_user (user_id),
+  KEY idx_ai_result_feedback_scene (scene),
+  KEY idx_ai_result_feedback_biz (biz_type, biz_id),
+  KEY idx_ai_result_feedback_ai_call_log (ai_call_log_id),
+  KEY idx_ai_result_feedback_type (feedback_type),
+  KEY idx_ai_result_feedback_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通用AI结果用户反馈';

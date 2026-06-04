@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Import;
  * 索引：cc_question / cc_resume / cc_interview
  * 同步：监听 codecoachai-search Topic（question / resume / interview tag）
  */
-@SpringBootApplication
+@SpringBootApplication(scanBasePackages = "com.codecoachai")
 @EnableDiscoveryClient
 @EnableFeignClients(basePackages = "com.codecoachai")
 @Import({CommonSecurityAutoConfiguration.class, GlobalExceptionHandler.class})

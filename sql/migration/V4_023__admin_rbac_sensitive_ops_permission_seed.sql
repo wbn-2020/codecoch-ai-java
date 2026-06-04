@@ -1,5 +1,6 @@
 -- V4_023: seed fine-grained permissions for sensitive admin operations.
--- Idempotent: only inserts missing sys_menu rows and ADMIN role bindings.
+-- Idempotent: only inserts missing sys_menu rows and baseline ADMIN role bindings.
+-- Raw AI prompt/response viewing is intentionally not granted to baseline ADMIN by default.
 
 SET @admin_root_id := (
     SELECT id FROM `sys_menu`
@@ -133,7 +134,6 @@ WHERE r.role_code = 'ADMIN'
       'admin:ai:prompt:write',
       'admin:ai:prompt:publish',
       'admin:ai:prompt:test',
-      'admin:ai:log:raw:view',
       'admin:ai:model:write',
       'admin:ai:model:publish',
       'admin:task:retry',

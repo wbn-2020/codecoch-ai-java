@@ -47,6 +47,7 @@ import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
+import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -70,8 +71,8 @@ import org.springframework.util.StringUtils;
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
-    private static final String REPORT_AI_EMPTY_MESSAGE = "AI report response is empty or incomplete";
-    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "; fallback report content used";
+    private static final String REPORT_AI_EMPTY_MESSAGE = "AI 报告内容暂时不完整";
+    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "，已生成可用于复习的基础报告。";
     private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
@@ -92,36 +93,44 @@ public class InterviewServiceImpl implements InterviewService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CreateInterviewVO create(CreateInterviewDTO dto) {
+        CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
-        String mode = normalizeMode(StringUtils.hasText(dto.getInterviewMode()) ? dto.getInterviewMode() : dto.getMode());
-        validateResumeOwnership(userId, mode, dto);
-        IndustryTemplateSnapshot industrySnapshot = resolveIndustrySnapshot(dto);
+        String mode = normalizeMode(StringUtils.hasText(request.getInterviewMode()) ? request.getInterviewMode() : request.getMode());
+        InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
+        resolveDefaultResumeIfNeeded(mode, request);
+        validateResumeOwnership(userId, mode, request);
+        IndustryTemplateSnapshot industrySnapshot = resolveIndustrySnapshot(request);
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
-        session.setResumeId(dto.getResumeId());
-        session.setTargetJobId(dto.getTargetJobId());
-        session.setSkillProfileId(dto.getSkillProfileId());
-        session.setMatchReportId(dto.getMatchReportId());
+        session.setResumeId(request.getResumeId());
+        session.setTargetJobId(request.getTargetJobId());
+        session.setSkillProfileId(request.getSkillProfileId());
+        session.setMatchReportId(request.getMatchReportId());
         session.setMode(mode);
-        session.setTitle(StringUtils.hasText(dto.getTitle()) ? dto.getTitle() : "CodeCoachAI V1 模拟面试");
-        session.setTargetPosition(dto.getTargetPosition());
-        session.setExperienceLevel(dto.getExperienceLevel());
+        session.setTitle(StringUtils.hasText(request.getTitle()) ? request.getTitle() : "CodeCoachAI V1 模拟面试");
+        session.setTargetPosition(firstText(request.getTargetPosition(), targetJob == null ? null : targetJob.getJobTitle()));
+        session.setExperienceLevel(request.getExperienceLevel());
         session.setIndustryTemplateId(industrySnapshot.industryTemplateId());
         session.setIndustryDirection(industrySnapshot.industryDirection());
         session.setIndustryContext(industrySnapshot.industryContext());
-        session.setDifficulty(dto.getDifficulty());
-        session.setInterviewerStyle(dto.getInterviewerStyle());
-        session.setBasedOnResume(Boolean.TRUE.equals(dto.getBasedOnResume()));
+        session.setDifficulty(request.getDifficulty());
+        session.setInterviewerStyle(request.getInterviewerStyle());
+        session.setBasedOnResume(Boolean.TRUE.equals(request.getBasedOnResume()));
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
         session.setAnsweredQuestionCount(0);
-        session.setMaxQuestionCount(dto.getMaxQuestionCount() == null ? 8 : dto.getMaxQuestionCount());
+        session.setMaxQuestionCount(normalizeQuestionCount(request.getMaxQuestionCount()));
         session.setCurrentFollowUpCount(0);
         session.setTotalScore(0);
         sessionMapper.insert(session);
 
         List<InterviewStage> stages = createStages(session);
+        int totalQuestionCount = totalExpectedQuestionCount(stages);
+        if (!Integer.valueOf(totalQuestionCount).equals(session.getMaxQuestionCount())) {
+            session.setMaxQuestionCount(totalQuestionCount);
+            sessionMapper.updateById(session);
+        }
         CreateInterviewVO vo = new CreateInterviewVO();
         vo.setId(session.getId());
         vo.setTargetJobId(session.getTargetJobId());
@@ -139,6 +148,10 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setBasedOnResume(session.getBasedOnResume());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
+        vo.setMaxQuestionCount(session.getMaxQuestionCount());
+        vo.setTotalQuestionCount(totalQuestionCount);
+        vo.setAnsweredQuestionCount(session.getAnsweredQuestionCount());
+        vo.setOverallProgress(overallProgress(session));
         vo.setStages(stages.stream().map(InterviewConvert::toStageVO).toList());
         return vo;
     }
@@ -174,8 +187,13 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         CurrentInterviewVO vo = new CurrentInterviewVO();
         vo.setId(session.getId());
+        vo.setTargetJobId(session.getTargetJobId());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
+        vo.setCurrentQuestionIndex(currentQuestionIndex(session));
+        vo.setTotalQuestionCount(totalQuestionCount(session));
+        vo.setAnsweredQuestionCount(safeInt(session.getAnsweredQuestionCount()));
+        vo.setOverallProgress(overallProgress(session));
         vo.setCurrentStage(InterviewConvert.toStageVO(session.getCurrentStageId() == null
                 ? null
                 : stageMapper.selectById(session.getCurrentStageId())));
@@ -196,6 +214,9 @@ public class InterviewServiceImpl implements InterviewService {
             vo.setSessionId(session.getId());
             vo.setInterviewStatus(session.getStatus());
             vo.setStageProgress("COMPLETED");
+            vo.setCurrentQuestionIndex(totalQuestionCount(session));
+            vo.setTotalQuestionCount(totalQuestionCount(session));
+            vo.setOverallProgress(overallProgress(session));
             return vo;
         }
         InterviewStage stage = session.getCurrentStageId() == null
@@ -703,7 +724,7 @@ public class InterviewServiceImpl implements InterviewService {
         GenerateInterviewQuestionVO aiQuestion = FeignResultUtils.unwrap(aiFeignClient.generateQuestion(aiDTO));
         if (!StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionContent())
                 && !StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionText())
-                && !StringUtils.hasText(question.getContent())) {
+                && !StringUtils.hasText(question == null ? null : question.getContent())) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
         }
         String questionContent = firstText(aiQuestion == null ? null : aiQuestion.getQuestionContent(),
@@ -774,10 +795,28 @@ public class InterviewServiceImpl implements InterviewService {
             addStage(stages, session, "SCENARIO", "场景设计", 7, "业务建模、容量和异常场景");
             addStage(stages, session, "SUMMARY", "总结报告", 8, "面试总结和改进建议");
         }
+        rebalanceExpectedQuestionCounts(stages, session.getMaxQuestionCount());
         for (InterviewStage stage : stages) {
             stageMapper.insert(stage);
         }
         return stages;
+    }
+
+    private void rebalanceExpectedQuestionCounts(List<InterviewStage> stages, int totalQuestionCount) {
+        if (stages == null || stages.isEmpty()) {
+            return;
+        }
+        int remaining = normalizeQuestionCount(totalQuestionCount);
+        for (InterviewStage stage : stages) {
+            stage.setExpectedQuestionCount(0);
+        }
+        int index = 0;
+        while (remaining > 0) {
+            InterviewStage stage = stages.get(index % stages.size());
+            stage.setExpectedQuestionCount(safeInt(stage.getExpectedQuestionCount()) + 1);
+            remaining--;
+            index++;
+        }
     }
 
     private void addStage(List<InterviewStage> stages, InterviewSession session, String type, String name, int sort, String focusPoints) {
@@ -917,7 +956,12 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setIsFollowUp(Boolean.TRUE.equals(message.getIsFollowUp()));
         vo.setParentMessageId(message.getParentMessageId());
         vo.setFollowUpCount(message.getFollowUpCount());
+        vo.setCurrentQuestionIndex(currentQuestionIndex(session));
+        vo.setTotalQuestionCount(totalQuestionCount(session));
+        vo.setStageAnsweredCount(safeInt(stage == null ? null : stage.getAskedQuestionCount()));
+        vo.setStageExpectedQuestionCount(Math.max(0, safeInt(stage == null ? null : stage.getExpectedQuestionCount())));
         vo.setStageProgress(stageProgress(stage));
+        vo.setOverallProgress(overallProgress(session));
         vo.setInterviewStatus(session.getStatus());
         return vo;
     }
@@ -1027,6 +1071,7 @@ public class InterviewServiceImpl implements InterviewService {
     private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
         return aiReport == null
                 || aiReport.getTotalScore() == null
+                || aiReport.getTotalScore() <= 0
                 || !StringUtils.hasText(aiReport.getSummary())
                 || !StringUtils.hasText(aiReport.getReportContent());
     }
@@ -1091,6 +1136,42 @@ public class InterviewServiceImpl implements InterviewService {
         }
     }
 
+    private InnerTargetJobVO resolveTargetJob(Long userId, CreateInterviewDTO request) {
+        if (request.getTargetJobId() != null) {
+            InnerTargetJobVO targetJob = FeignResultUtils.unwrap(resumeFeignClient.getTargetJob(userId, request.getTargetJobId()));
+            if (targetJob == null || !userId.equals(targetJob.getUserId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job not found");
+            }
+            if (!StringUtils.hasText(request.getTargetPosition())) {
+                request.setTargetPosition(targetJob.getJobTitle());
+            }
+            return targetJob;
+        }
+        InnerTargetJobVO currentTargetJob = FeignResultUtils.unwrap(resumeFeignClient.getCurrentTargetJob(userId));
+        if (currentTargetJob == null) {
+            return null;
+        }
+        request.setTargetJobId(currentTargetJob.getId());
+        if (!StringUtils.hasText(request.getTargetPosition())) {
+            request.setTargetPosition(currentTargetJob.getJobTitle());
+        }
+        return currentTargetJob;
+    }
+
+    private void resolveDefaultResumeIfNeeded(String mode, CreateInterviewDTO request) {
+        if (request.getResumeId() != null || !Boolean.TRUE.equals(request.getBasedOnResume())) {
+            return;
+        }
+        try {
+            InnerResumeDetailVO resume = FeignResultUtils.unwrap(resumeFeignClient.getDefaultResume());
+            if (resume != null) {
+                request.setResumeId(resume.getId());
+            }
+        } catch (BusinessException ignored) {
+            // Keep the original validation path so the API returns the existing resume-required message.
+        }
+    }
+
     private IndustryTemplateSnapshot resolveIndustrySnapshot(CreateInterviewDTO dto) {
         if (dto == null || dto.getIndustryTemplateId() == null) {
             String direction = normalizeText(dto == null ? null : dto.getIndustryDirection());
@@ -1150,7 +1231,43 @@ public class InterviewServiceImpl implements InterviewService {
         if (stage == null) {
             return null;
         }
-        return safeInt(stage.getAskedQuestionCount()) + "/" + Math.max(1, safeInt(stage.getExpectedQuestionCount()));
+        return safeInt(stage.getAskedQuestionCount()) + "/" + Math.max(0, safeInt(stage.getExpectedQuestionCount()));
+    }
+
+    private int totalExpectedQuestionCount(List<InterviewStage> stages) {
+        if (stages == null || stages.isEmpty()) {
+            return 0;
+        }
+        return stages.stream()
+                .map(InterviewStage::getExpectedQuestionCount)
+                .mapToInt(this::safeInt)
+                .sum();
+    }
+
+    private int totalQuestionCount(InterviewSession session) {
+        if (safeInt(session.getMaxQuestionCount()) > 0) {
+            return session.getMaxQuestionCount();
+        }
+        int total = totalExpectedQuestionCount(stages(session.getId()));
+        return total > 0 ? total : normalizeQuestionCount(null);
+    }
+
+    private int currentQuestionIndex(InterviewSession session) {
+        int total = totalQuestionCount(session);
+        if (total <= 0) {
+            return 0;
+        }
+        if (InterviewStatusEnum.COMPLETED.name().equals(session.getStatus())
+                || InterviewStatusEnum.REPORT_GENERATING.name().equals(session.getStatus())) {
+            return total;
+        }
+        return Math.min(total, safeInt(session.getAnsweredQuestionCount()) + 1);
+    }
+
+    private String overallProgress(InterviewSession session) {
+        int total = totalQuestionCount(session);
+        int answered = Math.min(safeInt(session.getAnsweredQuestionCount()), total);
+        return answered + "/" + total;
     }
 
     private InnerResumeDetailVO loadResume(InterviewSession session) {
@@ -1237,6 +1354,13 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
+    }
+
+    private int normalizeQuestionCount(Integer value) {
+        if (value == null || value <= 0) {
+            return 8;
+        }
+        return Math.min(20, Math.max(1, value));
     }
 
     private int safeInt(Integer value) {

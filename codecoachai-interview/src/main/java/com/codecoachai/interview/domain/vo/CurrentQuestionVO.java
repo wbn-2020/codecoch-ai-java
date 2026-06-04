@@ -16,6 +16,11 @@ public class CurrentQuestionVO {
     private Boolean isFollowUp;
     private Long parentMessageId;
     private Integer followUpCount;
+    private Integer currentQuestionIndex;
+    private Integer totalQuestionCount;
+    private Integer stageAnsweredCount;
+    private Integer stageExpectedQuestionCount;
     private String stageProgress;
+    private String overallProgress;
     private String interviewStatus;
 }

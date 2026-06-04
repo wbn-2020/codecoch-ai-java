@@ -78,7 +78,7 @@ public class TargetJobServiceImpl implements TargetJobService {
         TargetJob job = new TargetJob();
         job.setUserId(userId);
         applyTargetJob(job, dto);
-        job.setCurrentFlag(CommonConstants.NO);
+        job.setCurrentFlag(hasCurrentTargetJob(userId) ? CommonConstants.NO : CommonConstants.YES);
         job.setStatus(CommonConstants.YES);
         job.setParseStatus(JobDescriptionParseStatus.NOT_PARSED.getCode());
         targetJobMapper.insert(job);
@@ -315,6 +315,13 @@ public class TargetJobServiceImpl implements TargetJobService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job not found");
         }
         return job;
+    }
+
+    private boolean hasCurrentTargetJob(Long userId) {
+        return targetJobMapper.selectCount(new LambdaQueryWrapper<TargetJob>()
+                .eq(TargetJob::getUserId, userId)
+                .eq(TargetJob::getCurrentFlag, CommonConstants.YES)
+                .eq(TargetJob::getDeleted, CommonConstants.NO)) > 0;
     }
 
     private JobDescriptionAnalysis latestAnalysis(Long targetJobId, Long userId) {

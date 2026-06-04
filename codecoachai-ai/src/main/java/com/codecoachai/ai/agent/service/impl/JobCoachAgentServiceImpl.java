@@ -114,12 +114,14 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             markSuccess(run, planResult, routeResult, System.currentTimeMillis() - start);
             return toDailyPlan(agentRunMapper.selectById(run.getId()));
         } catch (BusinessException ex) {
-            markFailed(run, firstText(ex.getMessage(), AgentErrorCode.AI_CALL_FAILED), ex.getMessage(), System.currentTimeMillis() - start);
-            throw ex;
+            String errorCode = agentErrorCode(ex.getMessage());
+            markFailed(run, errorCode, ex.getMessage(), System.currentTimeMillis() - start);
+            throw new BusinessException(ex.getCode(), friendlyAgentErrorMessage(errorCode, ex.getMessage()));
         } catch (RuntimeException ex) {
             markFailed(run, AgentErrorCode.AI_CALL_FAILED, firstText(ex.getMessage(), "AI call failed"),
                     System.currentTimeMillis() - start);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, AgentErrorCode.AI_CALL_FAILED);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    friendlyAgentErrorMessage(AgentErrorCode.AI_CALL_FAILED, ex.getMessage()));
         }
     }
 
@@ -132,14 +134,13 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                     durationFromStart(run));
             run = agentRunMapper.selectById(run.getId());
         }
+        DailyPlanVO recovered = recoverableMissingTargetFailure(run, userId, targetJobId, planDate);
+        if (recovered != null) {
+            return recovered;
+        }
         if (run == null) {
-            DailyPlanVO vo = new DailyPlanVO();
-            vo.setTargetJobId(targetJobId);
-            vo.setDate(planDate);
-            vo.setEmpty(true);
-            vo.setStatus(AgentRunStatusEnum.PENDING.name());
-            vo.setEmptyMessage("今天还没有 Agent 计划。先确认目标岗位和默认简历；如果缺少弱点证据，可以先完成一次题目练习或模拟面试，再生成今日计划。");
-            return vo;
+            return emptyDailyPlan(targetJobId, planDate,
+                    "今天还没有 Agent 计划。先确认目标岗位和默认简历；如果缺少弱点证据，可以先完成一次题目练习或模拟面试，再生成今日计划。");
         }
         return toDailyPlan(run);
     }
@@ -385,7 +386,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setCreatedAt(run.getCreatedAt());
         vo.setStatus(run.getStatus());
         vo.setErrorCode(run.getErrorCode());
-        vo.setErrorMessage(run.getErrorMessage());
+        vo.setErrorMessage(friendlyAgentErrorMessage(run.getErrorCode(), run.getErrorMessage()));
         vo.setDurationMs(run.getDurationMs());
         vo.setStartedAt(run.getStartedAt());
         vo.setFinishedAt(run.getFinishedAt());
@@ -427,7 +428,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setStatus(run.getStatus());
         vo.setDurationMs(run.getDurationMs());
         vo.setErrorCode(run.getErrorCode());
-        vo.setErrorMessage(run.getErrorMessage());
+        vo.setErrorMessage(friendlyAgentErrorMessage(run.getErrorCode(), run.getErrorMessage()));
         vo.setStartedAt(run.getStartedAt());
         vo.setFinishedAt(run.getFinishedAt());
         vo.setCreatedAt(run.getCreatedAt());
@@ -459,6 +460,37 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         AgentRunStatusEnum.FAILED.name())
                 .orderByDesc(AgentRun::getCreatedAt)
                 .last("limit 1"));
+    }
+
+    private DailyPlanVO recoverableMissingTargetFailure(AgentRun run, Long userId, Long requestedTargetJobId, LocalDate planDate) {
+        if (run == null
+                || !AgentRunStatusEnum.FAILED.name().equals(run.getStatus())
+                || !AgentErrorCode.TARGET_JOB_REQUIRED.equals(run.getErrorCode())) {
+            return null;
+        }
+        try {
+            JobCoachAgentContext context = agentContextBuilder.build(userId, requestedTargetJobId, planDate);
+            if (context == null || context.getTargetJobId() == null) {
+                return null;
+            }
+            DailyPlanVO vo = emptyDailyPlan(context.getTargetJobId(), planDate,
+                    "目标岗位资料已补齐。之前的失败记录已保留为历史，请重新生成今日计划。");
+            vo.setErrorCode(run.getErrorCode());
+            vo.setErrorMessage("目标岗位资料已补齐，请重新生成今日计划。");
+            return vo;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private DailyPlanVO emptyDailyPlan(Long targetJobId, LocalDate planDate, String message) {
+        DailyPlanVO vo = new DailyPlanVO();
+        vo.setTargetJobId(targetJobId);
+        vo.setDate(planDate);
+        vo.setEmpty(true);
+        vo.setStatus(AgentRunStatusEnum.PENDING.name());
+        vo.setEmptyMessage(message);
+        return vo;
     }
 
     private boolean isStaleRunning(AgentRun run) {
@@ -568,6 +600,53 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             }
         }
         return null;
+    }
+
+    private String agentErrorCode(String message) {
+        if (!StringUtils.hasText(message)) {
+            return AgentErrorCode.AI_CALL_FAILED;
+        }
+        String value = message.trim();
+        if (AgentErrorCode.TARGET_JOB_REQUIRED.equals(value)
+                || AgentErrorCode.AI_CALL_FAILED.equals(value)
+                || AgentErrorCode.OUTPUT_PARSE_FAILED.equals(value)
+                || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(value)
+                || AgentErrorCode.RUN_NOT_FOUND.equals(value)
+                || AgentErrorCode.RUN_TIMEOUT.equals(value)
+                || AgentErrorCode.TASK_NOT_FOUND.equals(value)
+                || AgentErrorCode.TASK_STATUS_INVALID.equals(value)) {
+            return value;
+        }
+        return AgentErrorCode.AI_CALL_FAILED;
+    }
+
+    private String friendlyAgentErrorMessage(String errorCode, String rawMessage) {
+        if (AgentErrorCode.TARGET_JOB_REQUIRED.equals(errorCode)) {
+            return "还没有当前目标岗位。请先创建或设置一个目标岗位，再生成今日计划。";
+        }
+        if (AgentErrorCode.OUTPUT_PARSE_FAILED.equals(errorCode)
+                || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(errorCode)) {
+            return "今日计划内容暂时不可用，请重新生成。";
+        }
+        if (AgentErrorCode.RUN_TIMEOUT.equals(errorCode)) {
+            return "计划生成超时，请重新生成今日计划。";
+        }
+        if (AgentErrorCode.RUN_NOT_FOUND.equals(errorCode)) {
+            return "没有找到这次计划记录，请刷新后重试。";
+        }
+        if (AgentErrorCode.TASK_NOT_FOUND.equals(errorCode)) {
+            return "没有找到这条训练任务，请刷新后重试。";
+        }
+        if (AgentErrorCode.TASK_STATUS_INVALID.equals(errorCode)) {
+            return "任务状态已经变化，请刷新后重试。";
+        }
+        if (StringUtils.hasText(rawMessage) && !rawMessage.trim().startsWith("AGENT_")) {
+            String value = rawMessage.trim();
+            if (!value.equalsIgnoreCase("AI call failed") && !value.equalsIgnoreCase("JSON serialize failed")) {
+                return value;
+            }
+        }
+        return "AI 生成暂时失败，请稍后重试。";
     }
 
     private String truncate(String text, int max) {

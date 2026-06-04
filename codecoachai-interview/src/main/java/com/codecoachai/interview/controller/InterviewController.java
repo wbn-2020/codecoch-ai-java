@@ -2,8 +2,6 @@ package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.core.enums.ErrorCode;
-import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.CreateInterviewVO;
@@ -46,12 +44,6 @@ public class InterviewController {
 
     @PostMapping("/create-by-job-target")
     public Result<CreateInterviewVO> createByJobTarget(@Valid @RequestBody CreateInterviewDTO dto) {
-        if (dto.getTargetJobId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
-        }
-        if (dto.getResumeId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
-        }
         dto.setMode(dto.getMode() == null ? "COMPREHENSIVE" : dto.getMode());
         dto.setInterviewMode(dto.getInterviewMode() == null ? dto.getMode() : dto.getInterviewMode());
         dto.setBasedOnResume(dto.getBasedOnResume() == null ? Boolean.TRUE : dto.getBasedOnResume());
