@@ -6,6 +6,9 @@ import lombok.Data;
 @Data
 public class KnowledgeVectorRebuildVO {
     private Boolean vectorEnabled;
+    private Boolean embeddingEnabled;
+    private Boolean semanticEnabled;
+    private String embeddingDisabledReason;
     private Integer documentCount;
     private Integer chunkCount;
     private Integer vectorUpdated;

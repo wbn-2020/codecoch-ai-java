@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -38,7 +39,7 @@ public class AdminAnalyticsOpsController {
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("agent", agentAnalyticsService.adminAgentOverview(days));
         data.put("ai", agentAnalyticsService.adminAiOverview(days));
-        data.put("feedback", agentV4OpsService.feedbackStats(days));
+        data.put("feedback", safeFeedbackStats(days));
         return Result.success(data);
     }
 
@@ -52,10 +53,27 @@ public class AdminAnalyticsOpsController {
     }
 
     @GetMapping("/metrics")
-    public Result<List<AnalyticsMetricDefinitionVO>> metrics(@RequestParam(required = false) String category,
-                                                             @RequestParam(required = false) Integer enabled) {
+    public Result<PageResult<AnalyticsMetricDefinitionVO>> metrics(@RequestParam(required = false) String category,
+                                                                   @RequestParam(required = false) Integer enabled,
+                                                                   @RequestParam(required = false) String keyword,
+                                                                   @RequestParam(required = false) Long pageNo,
+                                                                   @RequestParam(required = false) Long pageSize) {
         permissionGuard.require("admin:analytics:agent");
-        return Result.success(agentV4OpsService.listMetrics(category, enabled));
+        long actualPageNo = pageNo(pageNo);
+        long actualPageSize = pageSize(pageSize);
+        try {
+            List<AnalyticsMetricDefinitionVO> all = agentV4OpsService.listMetrics(category, enabled).stream()
+                    .filter(item -> !StringUtils.hasText(keyword)
+                            || containsIgnoreCase(item.getMetricCode(), keyword)
+                            || containsIgnoreCase(item.getMetricName(), keyword)
+                            || containsIgnoreCase(item.getDefinition(), keyword))
+                    .toList();
+            int fromIndex = (int) Math.min((actualPageNo - 1) * actualPageSize, all.size());
+            int toIndex = (int) Math.min(fromIndex + actualPageSize, all.size());
+            return Result.success(PageResult.of(all.subList(fromIndex, toIndex), all.size(), actualPageNo, actualPageSize));
+        } catch (RuntimeException ex) {
+            return Result.success(PageResult.empty(actualPageNo, actualPageSize));
+        }
     }
 
     @PostMapping("/metrics")
@@ -78,7 +96,11 @@ public class AdminAnalyticsOpsController {
                                                       @RequestParam(required = false) Long pageNo,
                                                       @RequestParam(required = false) Long pageSize) {
         permissionGuard.require("admin:analytics:agent");
-        return Result.success(agentV4OpsService.pageJobs(jobCode, status, pageNo, pageSize));
+        try {
+            return Result.success(agentV4OpsService.pageJobs(jobCode, status, pageNo, pageSize));
+        } catch (RuntimeException ex) {
+            return Result.success(PageResult.empty(pageNo(pageNo), pageSize(pageSize)));
+        }
     }
 
     @PostMapping("/jobs/{id}/rerun")
@@ -96,6 +118,28 @@ public class AdminAnalyticsOpsController {
     @GetMapping("/agent/feedback")
     public Result<AgentFeedbackStatsVO> agentFeedback(@RequestParam(required = false) Integer days) {
         permissionGuard.require("admin:analytics:agent");
-        return Result.success(agentV4OpsService.feedbackStats(days));
+        return Result.success(safeFeedbackStats(days));
+    }
+
+    private AgentFeedbackStatsVO safeFeedbackStats(Integer days) {
+        try {
+            return agentV4OpsService.feedbackStats(days);
+        } catch (RuntimeException ex) {
+            return new AgentFeedbackStatsVO();
+        }
+    }
+
+    private boolean containsIgnoreCase(String value, String keyword) {
+        return StringUtils.hasText(value)
+                && StringUtils.hasText(keyword)
+                && value.toLowerCase().contains(keyword.toLowerCase());
+    }
+
+    private long pageNo(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long pageSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 10L : Math.min(pageSize, 100L);
     }
 }

@@ -1,6 +1,7 @@
 package com.codecoachai.ai.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.agent.convert.AgentConvert;
 import com.codecoachai.ai.agent.domain.context.CandidateTask;
@@ -20,6 +21,7 @@ import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.domain.enums.AgentRunStatusEnum;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskStatusEnum;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
+import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
@@ -41,10 +43,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Duration;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -55,6 +61,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String TRIGGER_MANUAL = "MANUAL";
     private static final int DEFAULT_TASK_COUNT = 3;
     private static final int DEFAULT_MAX_TOTAL_MINUTES = 120;
+    private static final long RUNNING_REUSE_WINDOW_MINUTES = 15L;
 
     private final AgentRunMapper agentRunMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -73,9 +80,16 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         int taskCount = valueOrDefault(request.getTaskCount(), DEFAULT_TASK_COUNT);
         int maxTotalMinutes = valueOrDefault(request.getMaxTotalMinutes(), DEFAULT_MAX_TOTAL_MINUTES);
         if (!Boolean.TRUE.equals(request.getForceRegenerate())) {
-            AgentRun existing = latestSuccessRun(userId, request.getTargetJobId(), planDate);
-            if (existing != null) {
+            AgentRun existing = latestVisibleRun(userId, request.getTargetJobId(), planDate);
+            if (existing != null && AgentRunStatusEnum.SUCCESS.name().equals(existing.getStatus())) {
                 return toDailyPlan(existing);
+            }
+            if (existing != null && AgentRunStatusEnum.RUNNING.name().equals(existing.getStatus())) {
+                if (!isStaleRunning(existing)) {
+                    return toDailyPlan(existing);
+                }
+                markFailed(existing, AgentErrorCode.RUN_TIMEOUT, "计划生成超时，请重新生成今日计划。",
+                        durationFromStart(existing));
             }
         }
 
@@ -100,26 +114,33 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             markSuccess(run, planResult, routeResult, System.currentTimeMillis() - start);
             return toDailyPlan(agentRunMapper.selectById(run.getId()));
         } catch (BusinessException ex) {
-            markFailed(run, firstText(ex.getMessage(), AgentErrorCode.AI_CALL_FAILED), ex.getMessage(), System.currentTimeMillis() - start);
-            throw ex;
+            String errorCode = agentErrorCode(ex.getMessage());
+            markFailed(run, errorCode, ex.getMessage(), System.currentTimeMillis() - start);
+            throw new BusinessException(ex.getCode(), friendlyAgentErrorMessage(errorCode, ex.getMessage()));
         } catch (RuntimeException ex) {
             markFailed(run, AgentErrorCode.AI_CALL_FAILED, firstText(ex.getMessage(), "AI call failed"),
                     System.currentTimeMillis() - start);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, AgentErrorCode.AI_CALL_FAILED);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    friendlyAgentErrorMessage(AgentErrorCode.AI_CALL_FAILED, ex.getMessage()));
         }
     }
 
     @Override
     public DailyPlanVO latestDailyPlan(Long userId, Long targetJobId, LocalDate date) {
         LocalDate planDate = date == null ? LocalDate.now() : date;
-        AgentRun run = latestSuccessRun(userId, targetJobId, planDate);
+        AgentRun run = latestVisibleRun(userId, targetJobId, planDate);
+        if (run != null && AgentRunStatusEnum.RUNNING.name().equals(run.getStatus()) && isStaleRunning(run)) {
+            markFailed(run, AgentErrorCode.RUN_TIMEOUT, "计划生成超时，请重新生成今日计划。",
+                    durationFromStart(run));
+            run = agentRunMapper.selectById(run.getId());
+        }
+        DailyPlanVO recovered = recoverableMissingTargetFailure(run, userId, targetJobId, planDate);
+        if (recovered != null) {
+            return recovered;
+        }
         if (run == null) {
-            DailyPlanVO vo = new DailyPlanVO();
-            vo.setTargetJobId(targetJobId);
-            vo.setDate(planDate);
-            vo.setEmpty(true);
-            vo.setEmptyMessage("No daily plan has been generated for this date.");
-            return vo;
+            return emptyDailyPlan(targetJobId, planDate,
+                    "今天还没有 Agent 计划。先确认目标岗位和默认简历；如果缺少弱点证据，可以先完成一次题目练习或模拟面试，再生成今日计划。");
         }
         return toDailyPlan(run);
     }
@@ -157,70 +178,73 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AgentTaskVO startTask(Long userId, Long taskId) {
         AgentTask task = requireUserTask(userId, taskId);
-        if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())
-                || AgentTaskStatusEnum.SKIPPED.name().equals(task.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_STATUS_INVALID);
+        if (AgentTaskStatusEnum.DOING.name().equals(task.getStatus())) {
+            return AgentConvert.toTaskVO(task);
         }
-        task.setStatus(AgentTaskStatusEnum.DOING.name());
-        if (task.getStartedAt() == null) {
-            task.setStartedAt(LocalDateTime.now());
-        }
-        agentTaskMapper.updateById(task);
-        return AgentConvert.toTaskVO(agentTaskMapper.selectById(taskId));
+        transitionTask(userId, taskId, AgentTaskStatusEnum.DOING.name(),
+                List.of(AgentTaskStatusEnum.TODO.name()),
+                wrapper -> wrapper.set(AgentTask::getStartedAt, LocalDateTime.now()));
+        return taskAfterTransition(userId, taskId, AgentTaskStatusEnum.DOING.name());
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AgentTaskVO completeTask(Long userId, Long taskId, AgentTaskCompleteDTO dto) {
         AgentTask task = requireUserTask(userId, taskId);
         if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())) {
             return AgentConvert.toTaskVO(task);
         }
-        task.setStatus(AgentTaskStatusEnum.DONE.name());
-        if (task.getStartedAt() == null) {
-            task.setStartedAt(LocalDateTime.now());
-        }
-        task.setCompletedAt(LocalDateTime.now());
-        task.setSkippedAt(null);
-        task.setSkipReason(null);
-        agentTaskMapper.updateById(task);
-        return AgentConvert.toTaskVO(agentTaskMapper.selectById(taskId));
+        LocalDateTime now = LocalDateTime.now();
+        transitionTask(userId, taskId, AgentTaskStatusEnum.DONE.name(),
+                List.of(AgentTaskStatusEnum.TODO.name(), AgentTaskStatusEnum.DOING.name()),
+                wrapper -> wrapper
+                        .set(AgentTask::getStartedAt, task.getStartedAt() == null ? now : task.getStartedAt())
+                        .set(AgentTask::getCompletedAt, now)
+                        .set(AgentTask::getSkippedAt, null)
+                        .set(AgentTask::getSkipReason, null));
+        return taskAfterTransition(userId, taskId, AgentTaskStatusEnum.DONE.name());
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AgentTaskVO skipTask(Long userId, Long taskId, AgentTaskSkipDTO dto) {
         AgentTask task = requireUserTask(userId, taskId);
-        if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_STATUS_INVALID);
+        if (AgentTaskStatusEnum.SKIPPED.name().equals(task.getStatus())) {
+            return AgentConvert.toTaskVO(task);
         }
-        task.setStatus(AgentTaskStatusEnum.SKIPPED.name());
-        task.setSkippedAt(LocalDateTime.now());
-        task.setSkipReason(dto == null ? null : dto.getSkipReason());
-        agentTaskMapper.updateById(task);
-        return AgentConvert.toTaskVO(agentTaskMapper.selectById(taskId));
+        transitionTask(userId, taskId, AgentTaskStatusEnum.SKIPPED.name(),
+                List.of(AgentTaskStatusEnum.TODO.name(), AgentTaskStatusEnum.DOING.name()),
+                wrapper -> wrapper
+                        .set(AgentTask::getSkippedAt, LocalDateTime.now())
+                        .set(AgentTask::getSkipReason, dto == null ? null : dto.getSkipReason()));
+        return taskAfterTransition(userId, taskId, AgentTaskStatusEnum.SKIPPED.name());
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public AgentTaskVO restoreTask(Long userId, Long taskId) {
         AgentTask task = requireUserTask(userId, taskId);
-        if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_STATUS_INVALID);
+        if (AgentTaskStatusEnum.TODO.name().equals(task.getStatus())) {
+            return AgentConvert.toTaskVO(task);
         }
-        task.setStatus(AgentTaskStatusEnum.TODO.name());
-        task.setSkippedAt(null);
-        task.setSkipReason(null);
-        agentTaskMapper.updateById(task);
-        return AgentConvert.toTaskVO(agentTaskMapper.selectById(taskId));
+        transitionTask(userId, taskId, AgentTaskStatusEnum.TODO.name(),
+                List.of(AgentTaskStatusEnum.SKIPPED.name()),
+                wrapper -> wrapper
+                        .set(AgentTask::getSkippedAt, null)
+                        .set(AgentTask::getSkipReason, null));
+        return taskAfterTransition(userId, taskId, AgentTaskStatusEnum.TODO.name());
     }
 
     @Override
-    public AgentRunDetailVO getRunDetail(Long userId, Long runId) {
+    public AgentRunUserDetailVO getRunDetail(Long userId, Long runId) {
         AgentRun run = agentRunMapper.selectById(runId);
         if (run == null || !userId.equals(run.getUserId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.RUN_NOT_FOUND);
         }
-        return toRunDetail(run);
+        return toUserRunDetail(run);
     }
 
     @Override
@@ -360,6 +384,12 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setTargetJobId(run.getTargetJobId());
         vo.setDate(run.getPlanDate());
         vo.setCreatedAt(run.getCreatedAt());
+        vo.setStatus(run.getStatus());
+        vo.setErrorCode(run.getErrorCode());
+        vo.setErrorMessage(friendlyAgentErrorMessage(run.getErrorCode(), run.getErrorMessage()));
+        vo.setDurationMs(run.getDurationMs());
+        vo.setStartedAt(run.getStartedAt());
+        vo.setFinishedAt(run.getFinishedAt());
         DailyPlanResult result = readPlanResult(run.getOutputJson());
         if (result != null) {
             vo.setSummary(result.getSummary());
@@ -368,6 +398,8 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         }
         vo.setTasks(agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                         .eq(AgentTask::getAgentRunId, run.getId())
+                        .eq(AgentTask::getUserId, run.getUserId())
+                        .eq(AgentTask::getDeleted, 0)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
                 .stream().map(AgentConvert::toTaskVO).toList());
@@ -378,20 +410,101 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         AgentRunDetailVO vo = AgentConvert.toRunDetailVO(run);
         vo.setTasks(agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                         .eq(AgentTask::getAgentRunId, run.getId())
+                        .eq(AgentTask::getUserId, run.getUserId())
+                        .eq(AgentTask::getDeleted, 0)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
                 .stream().map(AgentConvert::toTaskVO).toList());
         return vo;
     }
 
-    private AgentRun latestSuccessRun(Long userId, Long targetJobId, LocalDate planDate) {
+    private AgentRunUserDetailVO toUserRunDetail(AgentRun run) {
+        AgentRunUserDetailVO vo = new AgentRunUserDetailVO();
+        vo.setId(run.getId());
+        vo.setAgentType(run.getAgentType());
+        vo.setTargetJobId(run.getTargetJobId());
+        vo.setPlanDate(run.getPlanDate());
+        vo.setTriggerType(run.getTriggerType());
+        vo.setStatus(run.getStatus());
+        vo.setDurationMs(run.getDurationMs());
+        vo.setErrorCode(run.getErrorCode());
+        vo.setErrorMessage(friendlyAgentErrorMessage(run.getErrorCode(), run.getErrorMessage()));
+        vo.setStartedAt(run.getStartedAt());
+        vo.setFinishedAt(run.getFinishedAt());
+        vo.setCreatedAt(run.getCreatedAt());
+
+        DailyPlanResult result = readPlanResult(run.getOutputJson());
+        if (result != null) {
+            vo.setSummary(result.getSummary());
+            List<FocusSkill> focusSkills = result.getFocusSkills() == null ? Collections.emptyList() : result.getFocusSkills();
+            vo.setFocusSkills(focusSkills.stream().map(AgentConvert::toSkillTagVO).toList());
+        }
+        vo.setTasks(agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+                        .eq(AgentTask::getAgentRunId, run.getId())
+                        .eq(AgentTask::getUserId, run.getUserId())
+                        .eq(AgentTask::getDeleted, 0)
+                        .orderByAsc(AgentTask::getSortOrder)
+                        .orderByAsc(AgentTask::getId))
+                .stream().map(AgentConvert::toTaskVO).toList());
+        return vo;
+    }
+
+    private AgentRun latestVisibleRun(Long userId, Long targetJobId, LocalDate planDate) {
         return agentRunMapper.selectOne(new LambdaQueryWrapper<AgentRun>()
                 .eq(AgentRun::getUserId, userId)
                 .eq(AgentRun::getPlanDate, planDate)
                 .eq(targetJobId != null, AgentRun::getTargetJobId, targetJobId)
-                .eq(AgentRun::getStatus, AgentRunStatusEnum.SUCCESS.name())
+                .in(AgentRun::getStatus,
+                        AgentRunStatusEnum.RUNNING.name(),
+                        AgentRunStatusEnum.SUCCESS.name(),
+                        AgentRunStatusEnum.FAILED.name())
                 .orderByDesc(AgentRun::getCreatedAt)
                 .last("limit 1"));
+    }
+
+    private DailyPlanVO recoverableMissingTargetFailure(AgentRun run, Long userId, Long requestedTargetJobId, LocalDate planDate) {
+        if (run == null
+                || !AgentRunStatusEnum.FAILED.name().equals(run.getStatus())
+                || !AgentErrorCode.TARGET_JOB_REQUIRED.equals(run.getErrorCode())) {
+            return null;
+        }
+        try {
+            JobCoachAgentContext context = agentContextBuilder.build(userId, requestedTargetJobId, planDate);
+            if (context == null || context.getTargetJobId() == null) {
+                return null;
+            }
+            DailyPlanVO vo = emptyDailyPlan(context.getTargetJobId(), planDate,
+                    "目标岗位资料已补齐。之前的失败记录已保留为历史，请重新生成今日计划。");
+            vo.setErrorCode(run.getErrorCode());
+            vo.setErrorMessage("目标岗位资料已补齐，请重新生成今日计划。");
+            return vo;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private DailyPlanVO emptyDailyPlan(Long targetJobId, LocalDate planDate, String message) {
+        DailyPlanVO vo = new DailyPlanVO();
+        vo.setTargetJobId(targetJobId);
+        vo.setDate(planDate);
+        vo.setEmpty(true);
+        vo.setStatus(AgentRunStatusEnum.PENDING.name());
+        vo.setEmptyMessage(message);
+        return vo;
+    }
+
+    private boolean isStaleRunning(AgentRun run) {
+        if (run == null || !AgentRunStatusEnum.RUNNING.name().equals(run.getStatus()) || run.getStartedAt() == null) {
+            return false;
+        }
+        return Duration.between(run.getStartedAt(), LocalDateTime.now()).toMinutes() >= RUNNING_REUSE_WINDOW_MINUTES;
+    }
+
+    private long durationFromStart(AgentRun run) {
+        if (run == null || run.getStartedAt() == null) {
+            return 0L;
+        }
+        return Math.max(0L, Duration.between(run.getStartedAt(), LocalDateTime.now()).toMillis());
     }
 
     private AgentTask requireUserTask(Long userId, Long taskId) {
@@ -400,6 +513,33 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_NOT_FOUND);
         }
         return task;
+    }
+
+    private void transitionTask(Long userId, Long taskId, String nextStatus, Collection<String> allowedStatuses,
+                                Consumer<LambdaUpdateWrapper<AgentTask>> customizer) {
+        LambdaUpdateWrapper<AgentTask> wrapper = new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getId, taskId)
+                .eq(AgentTask::getUserId, userId)
+                .eq(AgentTask::getDeleted, 0)
+                .in(AgentTask::getStatus, allowedStatuses)
+                .set(AgentTask::getStatus, nextStatus)
+                .set(AgentTask::getUpdatedAt, LocalDateTime.now());
+        customizer.accept(wrapper);
+        int rows = agentTaskMapper.update(null, wrapper);
+        if (rows <= 0) {
+            AgentTask latest = requireUserTask(userId, taskId);
+            if (!nextStatus.equals(latest.getStatus())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_STATUS_INVALID);
+            }
+        }
+    }
+
+    private AgentTaskVO taskAfterTransition(Long userId, Long taskId, String expectedStatus) {
+        AgentTask latest = requireUserTask(userId, taskId);
+        if (!expectedStatus.equals(latest.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.TASK_STATUS_INVALID);
+        }
+        return AgentConvert.toTaskVO(latest);
     }
 
     private CandidateTask matchCandidate(String candidateId, List<CandidateTask> candidates) {
@@ -460,6 +600,53 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             }
         }
         return null;
+    }
+
+    private String agentErrorCode(String message) {
+        if (!StringUtils.hasText(message)) {
+            return AgentErrorCode.AI_CALL_FAILED;
+        }
+        String value = message.trim();
+        if (AgentErrorCode.TARGET_JOB_REQUIRED.equals(value)
+                || AgentErrorCode.AI_CALL_FAILED.equals(value)
+                || AgentErrorCode.OUTPUT_PARSE_FAILED.equals(value)
+                || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(value)
+                || AgentErrorCode.RUN_NOT_FOUND.equals(value)
+                || AgentErrorCode.RUN_TIMEOUT.equals(value)
+                || AgentErrorCode.TASK_NOT_FOUND.equals(value)
+                || AgentErrorCode.TASK_STATUS_INVALID.equals(value)) {
+            return value;
+        }
+        return AgentErrorCode.AI_CALL_FAILED;
+    }
+
+    private String friendlyAgentErrorMessage(String errorCode, String rawMessage) {
+        if (AgentErrorCode.TARGET_JOB_REQUIRED.equals(errorCode)) {
+            return "还没有当前目标岗位。请先创建或设置一个目标岗位，再生成今日计划。";
+        }
+        if (AgentErrorCode.OUTPUT_PARSE_FAILED.equals(errorCode)
+                || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(errorCode)) {
+            return "今日计划内容暂时不可用，请重新生成。";
+        }
+        if (AgentErrorCode.RUN_TIMEOUT.equals(errorCode)) {
+            return "计划生成超时，请重新生成今日计划。";
+        }
+        if (AgentErrorCode.RUN_NOT_FOUND.equals(errorCode)) {
+            return "没有找到这次计划记录，请刷新后重试。";
+        }
+        if (AgentErrorCode.TASK_NOT_FOUND.equals(errorCode)) {
+            return "没有找到这条训练任务，请刷新后重试。";
+        }
+        if (AgentErrorCode.TASK_STATUS_INVALID.equals(errorCode)) {
+            return "任务状态已经变化，请刷新后重试。";
+        }
+        if (StringUtils.hasText(rawMessage) && !rawMessage.trim().startsWith("AGENT_")) {
+            String value = rawMessage.trim();
+            if (!value.equalsIgnoreCase("AI call failed") && !value.equalsIgnoreCase("JSON serialize failed")) {
+                return value;
+            }
+        }
+        return "AI 生成暂时失败，请稍后重试。";
     }
 
     private String truncate(String text, int max) {

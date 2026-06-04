@@ -66,7 +66,7 @@ public class UserServiceImpl implements UserService {
         user.setAvatarUrl(dto.getAvatarUrl());
         user.setEmail(dto.getEmail());
         sysUserMapper.updateById(user);
-        return getCurrentUserProfile();
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
     }
 
     @Override
@@ -89,7 +89,7 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(userId);
         user.setAvatarUrl(avatarUrl);
         sysUserMapper.updateById(user);
-        return getCurrentUserProfile();
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
     }
 
     @Override
@@ -159,6 +159,9 @@ public class UserServiceImpl implements UserService {
         Long currentUserId = requireCurrentUserId();
         if (currentUserId.equals(id) && CommonConstants.NO.equals(dto.getStatus())) {
             throw new BusinessException(ErrorCode.DISABLE_SELF_NOT_ALLOWED);
+        }
+        if (CommonConstants.NO.equals(dto.getStatus())) {
+            ensureNotDisablingLastAdmin(id);
         }
         SysUser user = getUserOrThrow(id);
         user.setStatus(dto.getStatus());
@@ -456,6 +459,28 @@ public class UserServiceImpl implements UserService {
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
         Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
         return count != null && count > 0;
+    }
+
+    private void ensureNotDisablingLastAdmin(Long userId) {
+        boolean targetIsAdmin = roleService.listRoleCodesByUserId(userId).stream()
+                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
+        if (!targetIsAdmin) {
+            return;
+        }
+        Long activeOtherAdmins = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1)
+                FROM sys_user u
+                JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+                JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
+                WHERE u.deleted = 0
+                  AND u.status = 1
+                  AND r.status = 1
+                  AND UPPER(r.role_code) = UPPER(?)
+                  AND u.id <> ?
+                """, Long.class, SecurityConstants.ROLE_ADMIN, userId);
+        if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
+        }
     }
 
     private int toInt(long value) {

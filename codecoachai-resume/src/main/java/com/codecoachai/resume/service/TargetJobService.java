@@ -15,6 +15,8 @@ public interface TargetJobService {
 
     TargetJobVO getTargetJob(Long id);
 
+    TargetJobVO getTargetJobForUser(Long id, Long userId);
+
     TargetJobVO updateTargetJob(Long id, TargetJobSaveDTO dto);
 
     void deleteTargetJob(Long id);
@@ -23,7 +25,11 @@ public interface TargetJobService {
 
     TargetJobVO getCurrent();
 
+    TargetJobVO getCurrentForUser(Long userId);
+
     JobDescriptionAnalysisVO parseJobDescription(Long id, JobDescriptionParseDTO dto);
 
     JobDescriptionAnalysisVO getAnalysis(Long id);
+
+    JobDescriptionAnalysisVO getAnalysisForUser(Long id, Long userId);
 }

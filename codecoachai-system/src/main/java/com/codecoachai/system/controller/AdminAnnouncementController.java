@@ -6,7 +6,9 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.entity.SysAnnouncement;
 import com.codecoachai.system.mapper.SysAnnouncementMapper;
 import io.swagger.v3.oas.annotations.Operation;
@@ -37,7 +39,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminAnnouncementController {
 
+    private static final String PERM_ANNOUNCEMENT_LIST = "admin:announcement:list";
+    private static final String PERM_ANNOUNCEMENT_WRITE = "admin:announcement:write";
+    private static final String PERM_ANNOUNCEMENT_PUBLISH = "admin:announcement:publish";
+
     private final SysAnnouncementMapper announcementMapper;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     // ==================== 管理端 ====================
 
@@ -48,7 +55,7 @@ public class AdminAnnouncementController {
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) String keyword) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_LIST);
         Page<SysAnnouncement> page = announcementMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<SysAnnouncement>()
@@ -61,16 +68,17 @@ public class AdminAnnouncementController {
     @Operation(summary = "公告详情（管理端）")
     @GetMapping("/admin/announcements/{id}")
     public Result<SysAnnouncement> detail(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_LIST);
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         return Result.success(a);
     }
 
     @Operation(summary = "新增公告")
+    @OperationLog(module = "system", action = "CREATE_ANNOUNCEMENT", description = "新增公告", logArgs = false)
     @PostMapping("/admin/announcements")
     public Result<Long> create(@Valid @RequestBody AnnouncementSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
         SysAnnouncement a = new SysAnnouncement();
         a.setTitle(dto.getTitle());
         a.setContent(dto.getContent());
@@ -87,9 +95,10 @@ public class AdminAnnouncementController {
     }
 
     @Operation(summary = "编辑公告")
+    @OperationLog(module = "system", action = "UPDATE_ANNOUNCEMENT", description = "编辑公告", logArgs = false)
     @PutMapping("/admin/announcements/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody AnnouncementSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setTitle(dto.getTitle());
@@ -103,9 +112,10 @@ public class AdminAnnouncementController {
     }
 
     @Operation(summary = "发布公告")
+    @OperationLog(module = "system", action = "PUBLISH_ANNOUNCEMENT", description = "发布公告")
     @PostMapping("/admin/announcements/{id}/publish")
     public Result<Void> publish(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_PUBLISH);
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setStatus(1);
@@ -116,9 +126,10 @@ public class AdminAnnouncementController {
     }
 
     @Operation(summary = "下线公告")
+    @OperationLog(module = "system", action = "OFFLINE_ANNOUNCEMENT", description = "下线公告")
     @PostMapping("/admin/announcements/{id}/offline")
     public Result<Void> offline(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_PUBLISH);
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setStatus(2);
@@ -128,9 +139,10 @@ public class AdminAnnouncementController {
     }
 
     @Operation(summary = "删除公告")
+    @OperationLog(module = "system", action = "DELETE_ANNOUNCEMENT", description = "删除公告")
     @DeleteMapping("/admin/announcements/{id}")
     public Result<Void> delete(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
         announcementMapper.deleteById(id);
         return Result.success();
     }

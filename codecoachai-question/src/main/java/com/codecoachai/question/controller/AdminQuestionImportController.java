@@ -4,7 +4,9 @@ import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.annotation.ExcelProperty;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.service.QuestionImportService;
@@ -39,14 +41,20 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class AdminQuestionImportController {
 
+    private static final String PERM_QUESTION_LIST = "admin:question:list";
+    private static final String PERM_QUESTION_IMPORT = "admin:question:import";
+    private static final String PERM_QUESTION_EXPORT = "admin:question:export";
+
     private final QuestionImportService questionImportService;
     private final QuestionMapper questionMapper;
     private final ObjectMapper objectMapper;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @Operation(summary = "批量导入题目（支持 xlsx/md/docx/pdf）")
+    @OperationLog(module = "question", action = "IMPORT_QUESTIONS", description = "批量导入题目", logArgs = false, logResponse = false)
     @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<ImportResult> importQuestions(@RequestPart("file") MultipartFile file) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_IMPORT);
         if (file.isEmpty()) {
             return Result.fail(400, "文件不能为空");
         }
@@ -72,7 +80,7 @@ public class AdminQuestionImportController {
             exportJson(response, categoryId, difficulty, questionType);
             return;
         }
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_EXPORT);
         List<Question> questions = queryForExport(categoryId, difficulty, questionType);
 
         List<QuestionExportRow> rows = questions.stream().map(q -> {
@@ -100,7 +108,7 @@ public class AdminQuestionImportController {
                            @RequestParam(required = false) Long categoryId,
                            @RequestParam(required = false) String difficulty,
                            @RequestParam(required = false) String questionType) throws Exception {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_EXPORT);
         List<Question> questions = queryForExport(categoryId, difficulty, questionType);
 
         response.setContentType("application/json;charset=UTF-8");
@@ -112,7 +120,7 @@ public class AdminQuestionImportController {
     @Operation(summary = "Download question import template")
     @GetMapping({"/template", "/template/excel", "/import/template", "/download/template"})
     public void downloadTemplate(HttpServletResponse response) throws Exception {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment;filename="
                 + URLEncoder.encode("question-import-template.xlsx", StandardCharsets.UTF_8));

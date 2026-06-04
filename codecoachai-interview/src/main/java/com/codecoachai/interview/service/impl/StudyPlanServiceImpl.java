@@ -63,12 +63,14 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class StudyPlanServiceImpl implements StudyPlanService {
 
     private static final String SOURCE_TYPE_REPORT = "REPORT";
@@ -225,6 +227,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         int completed = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         int skipped = (int) tasks.stream().filter(task -> TASK_SKIPPED.equals(task.getTaskStatus())).count();
         int pending = Math.max(0, total - completed - skipped);
+        log.info("Daily study view loaded userId={} planId={} date={} dayIndex={} taskCount={}",
+                userId, planId, targetDate, dayIndex, total);
 
         StudyPlanDailyViewVO vo = new StudyPlanDailyViewVO();
         vo.setPlanId(plan.getId());
@@ -828,7 +832,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
         LocalDate startDate = plan.getCreatedAt().toLocalDate();
         long days = ChronoUnit.DAYS.between(startDate, targetDate);
-        return days < 0 ? 1 : Math.toIntExact(days + 1);
+        if (days < 0) {
+            return 1;
+        }
+        if (days >= Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) days + 1;
     }
 
     private int normalizeTaskDayIndex(Integer stageNo) {

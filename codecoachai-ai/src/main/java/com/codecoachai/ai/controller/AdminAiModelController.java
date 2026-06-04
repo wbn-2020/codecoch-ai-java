@@ -10,7 +10,7 @@ import com.codecoachai.ai.security.SensitiveTextMasker;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -30,15 +30,20 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminAiModelController {
 
+    private static final String PERM_MODEL_LIST = "admin:ai:model:list";
+    private static final String PERM_MODEL_WRITE = "admin:ai:model:write";
+    private static final String PERM_MODEL_PUBLISH = "admin:ai:model:publish";
+
     private final AiModelConfigMapper mapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
+    private final AdminPermissionGuard permissionGuard;
 
     @GetMapping("/admin/ai/models")
     public Result<List<AiModelConfig>> list(@RequestParam(required = false) String keyword,
                                             @RequestParam(required = false) String provider,
                                             @RequestParam(required = false) Integer enabled,
                                             @RequestParam(required = false) Integer status) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_LIST);
         Integer resolvedEnabled = enabled != null ? enabled : status;
         List<AiModelConfig> rows = mapper.selectList(new LambdaQueryWrapper<AiModelConfig>()
                 .and(StringUtils.hasText(keyword), wrapper -> wrapper
@@ -57,14 +62,14 @@ public class AdminAiModelController {
 
     @GetMapping("/admin/ai/models/{id}")
     public Result<AiModelConfig> detail(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_LIST);
         return Result.success(maskApiKey(get(id)));
     }
 
     @PostMapping("/admin/ai/models")
-    @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logResponse = false)
+    @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logArgs = false, logResponse = false)
     public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_WRITE);
         AiModelConfig entity = new AiModelConfig();
         apply(entity, dto);
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
@@ -76,9 +81,9 @@ public class AdminAiModelController {
     }
 
     @PutMapping("/admin/ai/models/{id}")
-    @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logResponse = false)
+    @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logArgs = false, logResponse = false)
     public Result<AiModelConfig> update(@PathVariable Long id, @RequestBody AiModelConfigSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_WRITE);
         AiModelConfig entity = get(id);
         apply(entity, dto);
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
@@ -92,7 +97,7 @@ public class AdminAiModelController {
     @PostMapping("/admin/ai/models/{id}/set-default")
     @OperationLog(module = "ai", action = "SET_DEFAULT_AI_MODEL", description = "Set default AI model", logResponse = false)
     public Result<AiModelConfig> setDefault(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_PUBLISH);
         AiModelConfig entity = get(id);
         clearDefault(entity.getProvider(), id);
         entity.setDefaultModel(1);
@@ -103,6 +108,7 @@ public class AdminAiModelController {
     }
 
     @PutMapping("/admin/ai/models/{id}/default")
+    @OperationLog(module = "ai", action = "SET_DEFAULT_AI_MODEL_COMPAT", description = "Set default AI model via compatibility endpoint", logResponse = false)
     public Result<AiModelConfig> setDefaultCompat(@PathVariable Long id) {
         return setDefault(id);
     }
@@ -110,7 +116,7 @@ public class AdminAiModelController {
     @PutMapping("/admin/ai/models/{id}/status")
     @OperationLog(module = "ai", action = "UPDATE_AI_MODEL_STATUS", description = "Update AI model status", logResponse = false)
     public Result<AiModelConfig> updateStatus(@PathVariable Long id, @RequestBody ModelStatusDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_PUBLISH);
         AiModelConfig entity = get(id);
         Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
         entity.setEnabled(enabled == null ? 1 : enabled);
@@ -122,7 +128,7 @@ public class AdminAiModelController {
     @DeleteMapping("/admin/ai/models/{id}")
     @OperationLog(module = "ai", action = "DELETE_AI_MODEL", description = "Delete AI model config", logResponse = false)
     public Result<Void> delete(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_MODEL_WRITE);
         mapper.deleteById(id);
         return Result.success();
     }

@@ -7,6 +7,7 @@ import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
+import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.common.core.domain.PageResult;
@@ -31,7 +32,7 @@ public interface JobCoachAgentService {
 
     AgentTaskVO restoreTask(Long userId, Long taskId);
 
-    AgentRunDetailVO getRunDetail(Long userId, Long runId);
+    AgentRunUserDetailVO getRunDetail(Long userId, Long runId);
 
     AgentRunDetailVO adminGetRunDetail(Long runId);
 

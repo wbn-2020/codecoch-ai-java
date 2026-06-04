@@ -10,6 +10,9 @@ public class ResumeListVO {
     private String title;
     private String realName;
     private String targetPosition;
+    private String skillStack;
+    private String summary;
+    private Long projectCount;
     private Integer isDefault;
     private Integer status;
     private LocalDateTime updatedAt;

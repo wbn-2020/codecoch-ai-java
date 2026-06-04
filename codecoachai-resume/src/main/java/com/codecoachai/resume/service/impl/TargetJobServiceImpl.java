@@ -78,7 +78,7 @@ public class TargetJobServiceImpl implements TargetJobService {
         TargetJob job = new TargetJob();
         job.setUserId(userId);
         applyTargetJob(job, dto);
-        job.setCurrentFlag(CommonConstants.NO);
+        job.setCurrentFlag(hasCurrentTargetJob(userId) ? CommonConstants.NO : CommonConstants.YES);
         job.setStatus(CommonConstants.YES);
         job.setParseStatus(JobDescriptionParseStatus.NOT_PARSED.getCode());
         targetJobMapper.insert(job);
@@ -88,6 +88,12 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Override
     public TargetJobVO getTargetJob(Long id) {
         Long userId = requireCurrentUserId();
+        return getTargetJobForUser(id, userId);
+    }
+
+    @Override
+    public TargetJobVO getTargetJobForUser(Long id, Long userId) {
+        requireUserId(userId);
         TargetJob job = getOwnedTargetJob(id, userId);
         return toTargetJobVO(job, latestAnalysis(job.getId(), userId));
     }
@@ -146,6 +152,12 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Override
     public TargetJobVO getCurrent() {
         Long userId = requireCurrentUserId();
+        return getCurrentForUser(userId);
+    }
+
+    @Override
+    public TargetJobVO getCurrentForUser(Long userId) {
+        requireUserId(userId);
         TargetJob job = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
                 .eq(TargetJob::getUserId, userId)
                 .eq(TargetJob::getCurrentFlag, CommonConstants.YES)
@@ -192,6 +204,12 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Override
     public JobDescriptionAnalysisVO getAnalysis(Long id) {
         Long userId = requireCurrentUserId();
+        return getAnalysisForUser(id, userId);
+    }
+
+    @Override
+    public JobDescriptionAnalysisVO getAnalysisForUser(Long id, Long userId) {
+        requireUserId(userId);
         getOwnedTargetJob(id, userId);
         JobDescriptionAnalysis analysis = latestAnalysis(id, userId);
         return analysis == null ? null : toAnalysisVO(analysis);
@@ -297,6 +315,13 @@ public class TargetJobServiceImpl implements TargetJobService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job not found");
         }
         return job;
+    }
+
+    private boolean hasCurrentTargetJob(Long userId) {
+        return targetJobMapper.selectCount(new LambdaQueryWrapper<TargetJob>()
+                .eq(TargetJob::getUserId, userId)
+                .eq(TargetJob::getCurrentFlag, CommonConstants.YES)
+                .eq(TargetJob::getDeleted, CommonConstants.NO)) > 0;
     }
 
     private JobDescriptionAnalysis latestAnalysis(Long targetJobId, Long userId) {
@@ -422,6 +447,12 @@ public class TargetJobServiceImpl implements TargetJobService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return userId;
+    }
+
+    private void requireUserId(Long userId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "user id is required");
+        }
     }
 
     private boolean sameText(String left, String right) {

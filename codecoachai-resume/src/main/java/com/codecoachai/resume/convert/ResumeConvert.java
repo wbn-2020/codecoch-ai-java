@@ -14,11 +14,18 @@ public final class ResumeConvert {
     }
 
     public static ResumeListVO toListVO(Resume resume) {
+        return toListVO(resume, null);
+    }
+
+    public static ResumeListVO toListVO(Resume resume, Long projectCount) {
         ResumeListVO vo = new ResumeListVO();
         vo.setId(resume.getId());
         vo.setTitle(resume.getTitle());
         vo.setRealName(resume.getRealName());
         vo.setTargetPosition(resume.getTargetPosition());
+        vo.setSkillStack(resume.getSkillStack());
+        vo.setSummary(resume.getSummary());
+        vo.setProjectCount(projectCount);
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setUpdatedAt(resume.getUpdatedAt());

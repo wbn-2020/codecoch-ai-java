@@ -78,6 +78,11 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
     private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
     private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
+    private static final List<String> RESUME_MATCH_FACT_TERMS = List.of(
+            "PostgreSQL", "MongoDB", "Jenkins", "GitHub Actions", "GitHub Action", "AWS", "Kubernetes",
+            "K8s", "WebFlux", "Docker", "RabbitMQ", "RocketMQ", "Kafka", "Nacos", "Seata",
+            "Elasticsearch", "ElasticSearch", "Flink", "ClickHouse", "CI/CD", "CICD",
+            "云原生", "容器化", "空窗", "6个月", "六个月");
     private static final String SCENE_TARGETED_QUESTION_RECOMMEND = "TARGETED_QUESTION_RECOMMEND";
 
     private final AiCallLogMapper aiCallLogMapper;
@@ -514,7 +519,7 @@ public class AiServiceImpl implements AiService {
             } else {
                 RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getReportId()));
                 rawResponse = routeResult.getContent();
-                resultJson = parseResumeJobMatchJson(rawResponse);
+                resultJson = parseResumeJobMatchJson(rawResponse, dto);
                 logId = routeResult.getAiCallLogId();
             }
             AnalyzeResumeJobMatchVO vo = new AnalyzeResumeJobMatchVO();
@@ -1482,24 +1487,82 @@ public class AiServiceImpl implements AiService {
     }
 
     private GenerateReportVO parseReport(String raw) {
-        JsonNode json = parseJson(raw);
-        GenerateReportVO vo = new GenerateReportVO();
-        if (json.path("totalScore").isNumber()) {
-            vo.setTotalScore(json.path("totalScore").asInt());
+        JsonNode json;
+        try {
+            json = parseJson(raw);
+        } catch (RuntimeException ex) {
+            GenerateReportVO fallback = new GenerateReportVO();
+            fallback.setReportContent(StringUtils.hasText(raw) ? raw.trim() : null);
+            return fallback;
         }
-        vo.setSummary(json.path("summary").asText(null));
-        vo.setStageScores(jsonOrDefault(json.path("stageScores"), null));
-        vo.setWeakPoints(jsonOrDefault(json.path("weakPoints"), null));
-        vo.setStrengths(jsonOrDefault(json.path("strengths"), null));
-        vo.setWeaknesses(json.path("weaknesses").asText(null));
-        vo.setMainProblems(jsonOrDefault(json.path("mainProblems"), null));
-        vo.setProjectProblems(jsonOrDefault(json.path("projectProblems"), null));
-        vo.setSuggestions(jsonOrDefault(json.path("suggestions"), null));
-        vo.setReviewSuggestions(jsonOrDefault(json.path("reviewSuggestions"), null));
-        vo.setRecommendedQuestions(jsonOrDefault(json.path("recommendedQuestions"), null));
-        vo.setQaReview(jsonOrDefault(json.path("qaReview"), null));
-        vo.setReportContent(json.path("reportContent").asText(null));
+        GenerateReportVO vo = new GenerateReportVO();
+        if (json == null || !json.isObject()) {
+            vo.setReportContent(jsonOrDefault(json, null));
+            return vo;
+        }
+        JsonNode score = firstNode(json, "totalScore", "overallScore", "score", "finalScore");
+        Integer parsedScore = null;
+        if (score != null && score.isNumber()) {
+            parsedScore = clampScore(score.asInt());
+        } else if (score != null && score.isTextual()) {
+            parsedScore = parseScore(score.asText(null));
+        }
+        if (parsedScore != null && parsedScore > 0) {
+            vo.setTotalScore(parsedScore);
+        }
+        vo.setSummary(firstText(jsonText(json, "summary", "overallSummary", "conclusion", "comment", "overview"),
+                summarizeReportContent(jsonOrDefault(firstNode(json, "reportContent", "content", "report", "markdown"), null))));
+        vo.setStageScores(jsonOrDefault(firstNode(json, "stageScores", "stageReports", "dimensionScores", "scores"), null));
+        vo.setWeakPoints(jsonOrDefault(firstNode(json, "weakPoints", "weaknessPoints", "weaknessTags", "knowledgeGaps"), null));
+        vo.setStrengths(jsonOrDefault(firstNode(json, "strengths", "advantages", "highlights"), null));
+        vo.setWeaknesses(firstText(jsonText(json, "weaknesses", "weaknessSummary", "problemsSummary"),
+                jsonOrDefault(firstNode(json, "weaknessPoints", "knowledgeGaps"), null)));
+        vo.setMainProblems(jsonOrDefault(firstNode(json, "mainProblems", "problems", "keyProblems", "issues"), null));
+        vo.setProjectProblems(jsonOrDefault(firstNode(json, "projectProblems", "projectIssues", "projectWeaknesses"), null));
+        vo.setSuggestions(jsonOrDefault(firstNode(json, "suggestions", "advice", "improvementSuggestions"), null));
+        vo.setReviewSuggestions(jsonOrDefault(firstNode(json, "reviewSuggestions", "studySuggestions", "learningSuggestions", "nextSteps"), null));
+        vo.setRecommendedQuestions(jsonOrDefault(firstNode(json, "recommendedQuestions", "recommendQuestions", "practiceQuestions", "questionRecommendations"), null));
+        vo.setQaReview(jsonOrDefault(firstNode(json, "qaReview", "questionReviews", "answerReviews", "qaReviews"), null));
+        vo.setReportContent(firstText(jsonText(json, "reportContent", "content", "report", "markdown"),
+                vo.getSummary()));
         return vo;
+    }
+
+    private JsonNode firstNode(JsonNode json, String... fieldNames) {
+        if (json == null || fieldNames == null) {
+            return null;
+        }
+        for (String fieldName : fieldNames) {
+            JsonNode node = json.path(fieldName);
+            if (node != null && !node.isMissingNode() && !node.isNull()) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    private String jsonText(JsonNode json, String... fieldNames) {
+        JsonNode node = firstNode(json, fieldNames);
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        return node.isTextual() ? node.asText(null) : node.toString();
+    }
+
+    private Integer parseScore(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        Matcher matcher = Pattern.compile("\\d+").matcher(value);
+        return matcher.find() ? clampScore(Integer.parseInt(matcher.group())) : null;
+    }
+
+    private String summarizeReportContent(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String text = value.trim().replaceAll("\\s+", " ");
+        return text.length() <= 160 ? text : text.substring(0, 160);
     }
 
     private GenerateLearningPlanVO parseLearningPlan(String raw, GenerateLearningPlanDTO dto) {
@@ -1595,9 +1658,9 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
-    private String parseResumeJobMatchJson(String raw) {
+    private String parseResumeJobMatchJson(String raw, AnalyzeResumeJobMatchDTO dto) {
         JsonNode json = parseJson(raw);
-        validateResumeJobMatchJson(json);
+        validateResumeJobMatchJson(json, dto);
         return json.toString();
     }
 
@@ -1639,7 +1702,7 @@ public class AiServiceImpl implements AiService {
         requireJobDescriptionField(json, "summary");
     }
 
-    private void validateResumeJobMatchJson(JsonNode json) {
+    private void validateResumeJobMatchJson(JsonNode json, AnalyzeResumeJobMatchDTO dto) {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI resume job match response must be a JSON object");
@@ -1648,7 +1711,24 @@ public class AiServiceImpl implements AiService {
         requireResumeJobMatchField(json, "dimensionScores");
         requireResumeJobMatchField(json, "strengths");
         requireResumeJobMatchField(json, "gaps");
+        requireResumeJobMatchField(json, "resumeRisks");
+        requireResumeJobMatchField(json, "optimizationSuggestions");
+        requireResumeJobMatchField(json, "recommendedLearningTopics");
+        requireResumeJobMatchField(json, "recommendedInterviewTopics");
         requireResumeJobMatchField(json, "summary");
+        requireResumeJobMatchScore(json, "overallScore");
+        JsonNode dimensionScores = requireResumeJobMatchObject(json, "dimensionScores");
+        for (String dimension : List.of("techStack", "projectExperience", "businessFit", "communication")) {
+            requireResumeJobMatchScore(dimensionScores, dimension);
+        }
+        validateResumeJobMatchStrengths(requireResumeJobMatchArray(json, "strengths"));
+        validateResumeJobMatchGaps(requireResumeJobMatchArray(json, "gaps"));
+        requireResumeJobMatchArray(json, "resumeRisks");
+        requireResumeJobMatchArray(json, "optimizationSuggestions");
+        requireResumeJobMatchArray(json, "recommendedLearningTopics");
+        requireResumeJobMatchArray(json, "recommendedInterviewTopics");
+        requireResumeJobMatchText(json, "summary");
+        validateResumeJobMatchEvidence(json, dto);
     }
 
     private void validateSkillGapAnalyzeJson(JsonNode json) {
@@ -1679,6 +1759,137 @@ public class AiServiceImpl implements AiService {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI resume job match response missing field: " + fieldName);
         }
+    }
+
+    private JsonNode requireResumeJobMatchObject(JsonNode json, String fieldName) {
+        JsonNode node = json.path(fieldName);
+        if (!node.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response field must be an object: " + fieldName);
+        }
+        return node;
+    }
+
+    private JsonNode requireResumeJobMatchArray(JsonNode json, String fieldName) {
+        JsonNode node = json.path(fieldName);
+        if (!node.isArray()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response field must be an array: " + fieldName);
+        }
+        return node;
+    }
+
+    private void requireResumeJobMatchScore(JsonNode json, String fieldName) {
+        Integer score = readInteger(json.path(fieldName));
+        if (score == null || score < 0 || score > 100) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response score must be 0-100: " + fieldName);
+        }
+    }
+
+    private void requireResumeJobMatchText(JsonNode json, String fieldName) {
+        if (!StringUtils.hasText(json.path(fieldName).asText(null))) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match response text field is empty: " + fieldName);
+        }
+    }
+
+    private void validateResumeJobMatchStrengths(JsonNode strengths) {
+        for (JsonNode item : strengths) {
+            if (item.isObject()) {
+                requireResumeJobMatchText(item, "evidence");
+            }
+        }
+    }
+
+    private void validateResumeJobMatchGaps(JsonNode gaps) {
+        for (JsonNode item : gaps) {
+            if (item.isObject()) {
+                requireResumeJobMatchText(item, "skillName");
+                requireResumeJobMatchText(item, "description");
+                requireResumeJobMatchText(item, "evidence");
+            }
+        }
+    }
+
+    private void validateResumeJobMatchEvidence(JsonNode json, AnalyzeResumeJobMatchDTO dto) {
+        String resumeEvidence = normalizeEvidenceText(
+                dto == null ? null : dto.getResumeAnalysisJson(),
+                dto == null ? null : dto.getResumeSnapshotJson());
+        String allEvidence = normalizeEvidenceText(
+                dto == null ? null : dto.getResumeAnalysisJson(),
+                dto == null ? null : dto.getResumeSnapshotJson(),
+                dto == null ? null : dto.getJobDescriptionAnalysisJson(),
+                dto == null ? null : dto.getTargetJobJson());
+        String output = normalizeEvidenceText(json.toString());
+        for (String term : RESUME_MATCH_FACT_TERMS) {
+            if (containsEvidenceTerm(output, term) && !containsEvidenceTerm(allEvidence, term)) {
+                throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                        "AI resume job match response contains unsupported fact: " + term);
+            }
+        }
+
+        JsonNode strengths = json.path("strengths");
+        if (strengths.isArray()) {
+            for (JsonNode item : strengths) {
+                validateStrengthEvidence(item, resumeEvidence);
+            }
+        }
+    }
+
+    private void validateStrengthEvidence(JsonNode item, String resumeEvidence) {
+        if (item == null || !item.isObject()) {
+            return;
+        }
+        String evidence = item.path("evidence").asText(null);
+        if (containsAny(evidence, "未提供", "没有直接证据", "无直接证据", "不足")) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI resume job match strength cannot be based on missing evidence");
+        }
+        String strengthText = normalizeEvidenceText(item.toString());
+        for (String term : RESUME_MATCH_FACT_TERMS) {
+            if (containsEvidenceTerm(strengthText, term) && !containsEvidenceTerm(resumeEvidence, term)) {
+                throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                        "AI resume job match strength contains unsupported resume fact: " + term);
+            }
+        }
+    }
+
+    private String normalizeEvidenceText(String... values) {
+        if (values == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                builder.append(value).append('\n');
+            }
+        }
+        return builder.toString().toLowerCase().replaceAll("\\s+", "");
+    }
+
+    private boolean containsEvidenceTerm(String text, String term) {
+        if (!StringUtils.hasText(text) || !StringUtils.hasText(term)) {
+            return false;
+        }
+        return text.contains(term.toLowerCase().replaceAll("\\s+", ""));
+    }
+
+    private Integer readInteger(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        if (node.isIntegralNumber() && node.canConvertToInt()) {
+            return node.asInt();
+        }
+        if (node.isTextual()) {
+            try {
+                return Integer.parseInt(node.asText().trim());
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private void requireSkillGapAnalyzeField(JsonNode json, String fieldName) {
@@ -2158,76 +2369,76 @@ public class AiServiceImpl implements AiService {
         json.put("overallScore", 78);
         json.put("dimensionScores", dimensionScores);
         json.put("strengths", List.of(
-                Map.of("title", "Spring Boot project experience matches",
-                        "evidence", "Resume snapshot contains Java backend project experience",
+                Map.of("title", "Spring Boot 项目经历与目标岗位相关",
+                        "evidence", "简历快照中出现 Java 后端项目经历，并包含 Spring Boot 相关技术栈。",
                         "relatedSkills", List.of("Spring Boot", "Java"))
         ));
         json.put("gaps", List.of(
                 Map.of("skillName", "Redis",
-                        "category", "Middleware",
+                        "category", "中间件",
                         "severity", "HIGH",
                         "targetLevel", 4,
                         "currentLevel", 2,
-                        "description", "Resume evidence for cache consistency and distributed locks is weak",
-                        "evidence", "JD requires high-concurrency backend capability; resume lacks detailed Redis practice",
-                        "recommendedActions", List.of("Add Redis project evidence", "Practice Redis scenario questions"))
+                        "description", "简历中缓存一致性、分布式锁等 Redis 项目证据不足。",
+                        "evidence", "JD 要求高并发后端能力；简历未提供 Redis 场景的直接实践细节。",
+                        "recommendedActions", List.of("补充 Redis 项目证据", "练习 Redis 场景题"))
         ));
         json.put("resumeRisks", List.of(
                 Map.of("riskType", "PROJECT_DEPTH",
-                        "description", "Project descriptions need stronger technical depth and measurable results")
+                        "description", "项目描述需要补充技术难点、排障过程和可量化结果。")
         ));
         json.put("optimizationSuggestions", List.of(
-                Map.of("section", "Project experience",
-                        "suggestion", "Add cache design, troubleshooting steps, and optimization outcomes")
+                Map.of("section", "项目经历",
+                        "suggestion", "补充缓存设计、故障处理步骤和优化前后的指标变化。")
         ));
-        json.put("recommendedLearningTopics", List.of("Redis cache consistency", "MySQL index optimization"));
-        json.put("recommendedInterviewTopics", List.of("Distributed locks", "API idempotency"));
-        json.put("summary", "Overall fit is medium. Prioritize Redis and project-depth expression before interviews.");
+        json.put("recommendedLearningTopics", List.of("Redis 缓存一致性", "MySQL 索引优化"));
+        json.put("recommendedInterviewTopics", List.of("分布式锁", "接口幂等"));
+        json.put("summary", "综合匹配度中等。面试前优先补齐 Redis 与项目深度表达证据。");
         return toJson(json);
     }
 
     private String mockSkillGapAnalyzeJson() {
         Map<String, Object> json = new LinkedHashMap<>();
         json.put("profileSummary",
-                "The candidate has stable Java and Spring Boot fundamentals, with visible gaps in Redis and project-depth evidence.");
+                "候选人的 Java 与 Spring Boot 基础较稳定，但 Redis 场景和项目深度证据仍需要补齐。");
         json.put("overallLevel", 2);
         json.put("overallScore", 68);
         List<Map<String, Object>> skillGaps = new java.util.ArrayList<>();
         Map<String, Object> redisGap = new LinkedHashMap<>();
         redisGap.put("skillName", "Redis");
-        redisGap.put("category", "Middleware");
+        redisGap.put("category", "中间件");
         redisGap.put("targetLevel", 4);
         redisGap.put("currentLevel", 2);
         redisGap.put("gapLevel", 2);
         redisGap.put("confidence", 0.82);
         redisGap.put("severity", "HIGH");
         redisGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
-        redisGap.put("gapDescription", "Resume lacks cache consistency and distributed lock project evidence");
-        redisGap.put("recommendedActions", List.of("Study cache consistency patterns",
-                "Practice Redis scenario questions",
-                "Run a Redis-focused mock interview"));
+        redisGap.put("gapDescription", "简历缺少缓存一致性和分布式锁的项目证据。");
+        redisGap.put("recommendedActions", List.of("复习缓存一致性常见方案",
+                "练习 Redis 场景题",
+                "进行一次 Redis 专项模拟面试"));
         redisGap.put("priority", 1);
         skillGaps.add(redisGap);
 
         Map<String, Object> projectDepthGap = new LinkedHashMap<>();
-        projectDepthGap.put("skillName", "Project Depth");
-        projectDepthGap.put("category", "Project Experience");
+        projectDepthGap.put("skillName", "项目深度表达");
+        projectDepthGap.put("category", "项目经历");
         projectDepthGap.put("targetLevel", 4);
         projectDepthGap.put("currentLevel", 3);
         projectDepthGap.put("gapLevel", 1);
         projectDepthGap.put("confidence", 0.76);
         projectDepthGap.put("severity", "MEDIUM");
         projectDepthGap.put("evidenceSources", List.of("RESUME_JOB_MATCH"));
-        projectDepthGap.put("gapDescription", "Project descriptions need stronger metrics and troubleshooting evidence");
-        projectDepthGap.put("recommendedActions", List.of("Add measurable project outcomes",
-                "Prepare troubleshooting stories"));
+        projectDepthGap.put("gapDescription", "项目描述需要补充可量化结果和排障细节。");
+        projectDepthGap.put("recommendedActions", List.of("补充可量化项目结果",
+                "准备线上排障案例"));
         projectDepthGap.put("priority", 2);
         skillGaps.add(projectDepthGap);
         json.put("skillGaps", skillGaps);
-        json.put("nextPrioritySkills", List.of("Redis", "Project Depth"));
-        json.put("nextActions", List.of("Complete Redis cache consistency study",
-                "Practice 5 Redis scenario questions",
-                "Improve project description with measurable outcomes"));
+        json.put("nextPrioritySkills", List.of("Redis", "项目深度表达"));
+        json.put("nextActions", List.of("完成 Redis 缓存一致性复盘",
+                "练习 5 道 Redis 场景题",
+                "用可量化结果改写一段项目经历"));
         return toJson(json);
     }
 
@@ -2577,7 +2788,7 @@ public class AiServiceImpl implements AiService {
     }
 
     private String markFallback(String reason) {
-        return "[fallback] " + firstText(reason, "使用本地兜底追问");
+        return firstText(reason, "已为你生成一条更贴近当前回答的追问");
     }
 
     private String mergeRawAndFinal(String rawResponse, Object finalResponse) {
@@ -2614,11 +2825,11 @@ public class AiServiceImpl implements AiService {
     }
 
     private boolean containsAny(String value, String... keywords) {
-        if (!StringUtils.hasText(value)) {
+        if (!StringUtils.hasText(value) || keywords == null) {
             return false;
         }
         for (String keyword : keywords) {
-            if (value.contains(keyword)) {
+            if (StringUtils.hasText(keyword) && value.contains(keyword)) {
                 return true;
             }
         }
@@ -2866,7 +3077,7 @@ public class AiServiceImpl implements AiService {
 
     private String defaultResumeJobMatchPrompt() {
         return """
-                You are a senior Java backend career coach. Generate a resume-to-target-job match report in JSON.
+                你是资深 Java 后端求职教练。请基于简历与目标岗位生成匹配分析 JSON。
                 reportId: {{reportId}}
                 userId: {{userId}}
                 resumeId: {{resumeId}}
@@ -2882,27 +3093,33 @@ public class AiServiceImpl implements AiService {
                 jobDescriptionAnalysisJson:
                 {{jobDescriptionAnalysisJson}}
 
-                Output only one JSON object. Do not output Markdown, code fences, or explanations.
-                Do not invent candidate experience beyond the resume. If evidence is weak, mark it as a gap or risk.
-                Scores must be integers from 0 to 100.
-                Top-level fields must be:
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或额外解释。
+                所有给用户看的标题、描述、摘要、建议必须使用中文。
+                严格事实约束：
+                1. 只能使用 resumeAnalysisJson、resumeSnapshotJson、jobDescriptionAnalysisJson 和 targetJob 中出现的信息。
+                2. 不得编造候选人项目、公司、年限、空窗、技术栈、云平台、CI/CD、数据库、框架、指标或职责。
+                3. 如果简历没有直接证据，不要写成优势；请写入 gaps 或 resumeRisks，并在 evidence 中说明“简历未提供直接证据”。
+                4. strengths、gaps、resumeRisks、optimizationSuggestions 中的每一项都必须能追溯到简历或 JD 证据。
+                5. evidence 字段必须引用或概括输入中的具体事实；不能只写泛泛判断。
+                分数必须是 0 到 100 的整数；证据弱或缺失时必须降低相关维度分。
+                顶层字段固定为：
                 overallScore, dimensionScores, strengths, gaps, resumeRisks, optimizationSuggestions,
                 recommendedLearningTopics, recommendedInterviewTopics, summary.
-                dimensionScores must contain techStack, projectExperience, businessFit, communication.
-                strengths items should contain title, evidence, relatedSkills.
-                gaps items should contain skillName, category, severity, targetLevel, currentLevel, description,
+                dimensionScores 必须包含 techStack, projectExperience, businessFit, communication。
+                strengths 每项必须包含 title, evidence, relatedSkills。
+                gaps 每项必须包含 skillName, category, severity, targetLevel, currentLevel, description,
                 evidence, recommendedActions.
-                resumeRisks items should contain riskType and description.
-                optimizationSuggestions items should contain section and suggestion.
-                recommendedLearningTopics and recommendedInterviewTopics must be arrays of strings.
-                Example:
-                {"overallScore":78,"dimensionScores":{"techStack":82,"projectExperience":75,"businessFit":68,"communication":80},"strengths":[{"title":"Spring Boot project experience matches","evidence":"Resume project includes Spring Boot backend development","relatedSkills":["Spring Boot"]}],"gaps":[{"skillName":"Redis","category":"Middleware","severity":"HIGH","targetLevel":4,"currentLevel":2,"description":"Resume lacks cache consistency or distributed lock evidence","evidence":"JD requires Redis; resume lacks related details","recommendedActions":["Add Redis project practice","Practice Redis questions"]}],"resumeRisks":[{"riskType":"PROJECT_DEPTH","description":"Project description lacks technical metrics"}],"optimizationSuggestions":[{"section":"Project experience","suggestion":"Add cache design and optimization outcomes"}],"recommendedLearningTopics":["Redis cache consistency"],"recommendedInterviewTopics":["Distributed locks"],"summary":"Overall fit is medium."}
+                resumeRisks 每项必须包含 riskType 和 description。
+                optimizationSuggestions 每项必须包含 section 和 suggestion。
+                recommendedLearningTopics 和 recommendedInterviewTopics 必须是字符串数组。
+                示例：
+                {"overallScore":78,"dimensionScores":{"techStack":82,"projectExperience":75,"businessFit":68,"communication":80},"strengths":[{"title":"Spring Boot 项目经历与目标岗位相关","evidence":"简历项目经历中出现 Spring Boot 后端开发内容。","relatedSkills":["Spring Boot"]}],"gaps":[{"skillName":"Redis","category":"中间件","severity":"HIGH","targetLevel":4,"currentLevel":2,"description":"简历未提供 Redis 缓存一致性或分布式锁的直接项目证据。","evidence":"JD 要求 Redis；简历未提供 Redis 场景细节。","recommendedActions":["补充 Redis 项目证据","练习 Redis 场景题"]}],"resumeRisks":[{"riskType":"PROJECT_DEPTH","description":"项目描述缺少可量化结果和故障处理过程。"}],"optimizationSuggestions":[{"section":"项目经历","suggestion":"补充缓存设计、排障过程和优化指标。"}],"recommendedLearningTopics":["Redis 缓存一致性"],"recommendedInterviewTopics":["分布式锁"],"summary":"综合匹配度中等，优先补齐 Redis 与项目深度证据。"}
                 """;
     }
 
     private String defaultSkillGapAnalyzePrompt() {
         return """
-                You are a senior Java backend career coach. Generate a target-job skill profile from the match report.
+                你是资深 Java 后端求职教练。请根据匹配报告生成目标岗位能力画像 JSON。
                 profileId: {{profileId}}
                 matchReportId: {{matchReportId}}
                 userId: {{userId}}
@@ -2928,20 +3145,20 @@ public class AiServiceImpl implements AiService {
                 recommendedInterviewTopics:
                 {{recommendedInterviewTopicsJson}}
 
-                Output only one JSON object. Do not output Markdown, code fences, or explanations.
-                Do not invent candidate experience beyond the resume and match report evidence.
-                Top-level fields must be:
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或解释文字。
+                所有给用户看的摘要、短板说明、建议动作必须使用中文，可保留 Redis、Spring Boot、Kafka、MySQL 等技术名。
+                不要编造简历和匹配报告证据之外的候选人经历；如果证据不足，请写成能力短板或风险。
+                顶层字段固定为：
                 profileSummary, overallLevel, overallScore, skillGaps, nextPrioritySkills, nextActions.
-                overallLevel must be an integer from 1 to 5. overallScore must be an integer from 0 to 100.
-                skillGaps must be a non-empty array. Each skillGaps item must contain:
+                overallLevel 必须是 1 到 5 的整数；overallScore 必须是 0 到 100 的整数。
+                skillGaps 必须是非空数组。每个 skillGaps item 必须包含：
                 skillName, category, targetLevel, currentLevel, gapLevel, confidence, severity,
                 evidenceSources, gapDescription, recommendedActions, priority.
-                severity must be one of HIGH, MEDIUM, LOW.
-                evidenceSources and recommendedActions must be arrays of strings.
-                Prefer evidence from RESUME_JOB_MATCH and keep recommended actions practical for learning,
-                question practice, resume improvement, and targeted mock interviews.
-                Example:
-                {"profileSummary":"Java and Spring Boot are stable; Redis has clear gaps.","overallLevel":2,"overallScore":68,"skillGaps":[{"skillName":"Redis","category":"Middleware","targetLevel":4,"currentLevel":2,"gapLevel":2,"confidence":0.82,"severity":"HIGH","evidenceSources":["RESUME_JOB_MATCH"],"gapDescription":"Resume lacks cache consistency evidence","recommendedActions":["Study cache consistency","Practice Redis scenario questions"],"priority":1}],"nextPrioritySkills":["Redis"],"nextActions":["Complete Redis cache consistency study"]}
+                severity 只能是 HIGH、MEDIUM、LOW。
+                evidenceSources 和 recommendedActions 必须是字符串数组。
+                优先引用 RESUME_JOB_MATCH 证据；建议动作要能落到学习、刷题、简历优化或定向模拟面试。
+                示例：
+                {"profileSummary":"Java 和 Spring Boot 基础较稳定，Redis 场景证据仍有明显缺口。","overallLevel":2,"overallScore":68,"skillGaps":[{"skillName":"Redis","category":"中间件","targetLevel":4,"currentLevel":2,"gapLevel":2,"confidence":0.82,"severity":"HIGH","evidenceSources":["RESUME_JOB_MATCH"],"gapDescription":"简历缺少缓存一致性项目证据。","recommendedActions":["复习缓存一致性方案","练习 Redis 场景题"],"priority":1}],"nextPrioritySkills":["Redis"],"nextActions":["完成 Redis 缓存一致性复盘"]}
                 """;
     }
 

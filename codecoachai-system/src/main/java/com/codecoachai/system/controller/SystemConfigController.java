@@ -1,7 +1,7 @@
 package com.codecoachai.system.controller;
 
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.dto.SystemConfigStatusDTO;
@@ -24,33 +24,38 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class SystemConfigController {
 
+    private static final String PERM_CONFIG_LIST = "admin:system:config:list";
+    private static final String PERM_CONFIG_WRITE = "admin:system:config:write";
+    private static final String PERM_SYSTEM_OVERVIEW = "admin:system:overview";
+
     private final SystemConfigService systemConfigService;
+    private final AdminPermissionGuard permissionGuard;
 
     @GetMapping("/admin/configs")
     @OperationLog(module = "system", action = "QUERY_CONFIG", description = "查询系统配置", logArgs = false)
     public Result<List<SystemConfigVO>> listConfigs() {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_LIST);
         return Result.success(systemConfigService.listConfigs());
     }
 
     @PostMapping("/admin/configs")
-    @OperationLog(module = "system", action = "CREATE_CONFIG", description = "新增系统配置")
+    @OperationLog(module = "system", action = "CREATE_CONFIG", description = "新增系统配置", logArgs = false)
     public Result<SystemConfigVO> createConfig(@Valid @RequestBody SystemConfigSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_WRITE);
         return Result.success(systemConfigService.createConfig(dto));
     }
 
     @GetMapping("/admin/configs/{key}")
     @OperationLog(module = "system", action = "GET_CONFIG", description = "查看系统配置详情", logArgs = false)
     public Result<SystemConfigVO> getConfig(@PathVariable String key) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_LIST);
         return Result.success(systemConfigService.getConfig(key));
     }
 
     @PutMapping("/admin/configs/{key}")
-    @OperationLog(module = "system", action = "UPDATE_CONFIG", description = "编辑系统配置")
+    @OperationLog(module = "system", action = "UPDATE_CONFIG", description = "编辑系统配置", logArgs = false)
     public Result<SystemConfigVO> updateConfig(@PathVariable String key, @RequestBody SystemConfigSaveDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_WRITE);
         return Result.success(systemConfigService.updateConfig(key, dto));
     }
 
@@ -58,14 +63,14 @@ public class SystemConfigController {
     @OperationLog(module = "system", action = "UPDATE_CONFIG_STATUS", description = "切换系统配置状态")
     public Result<SystemConfigVO> updateConfigStatus(@PathVariable String key,
                                                      @Valid @RequestBody SystemConfigStatusDTO dto) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_WRITE);
         return Result.success(systemConfigService.updateConfigStatus(key, dto));
     }
 
     @DeleteMapping("/admin/configs/{id}")
     @OperationLog(module = "system", action = "DELETE_CONFIG", description = "删除系统配置")
     public Result<Void> deleteConfig(@PathVariable String id) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_CONFIG_WRITE);
         systemConfigService.deleteConfig(id);
         return Result.success();
     }
@@ -73,14 +78,14 @@ public class SystemConfigController {
     @GetMapping("/admin/system/overview")
     @OperationLog(module = "system", action = "QUERY_SYSTEM_OVERVIEW", description = "查询系统概览", logArgs = false)
     public Result<AdminSystemOverviewVO> overview() {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_SYSTEM_OVERVIEW);
         return Result.success(systemConfigService.overview());
     }
 
     @GetMapping("/admin/dashboard/overview")
     @OperationLog(module = "system", action = "QUERY_DASHBOARD", description = "查询管理首页概览", logArgs = false)
     public Result<AdminDashboardOverviewVO> dashboardOverview() {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_SYSTEM_OVERVIEW);
         return Result.success(systemConfigService.dashboardOverview());
     }
 }

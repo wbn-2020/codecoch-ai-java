@@ -50,15 +50,16 @@ public class AdminVectorStoreController {
                 .map(vectorStoreClient::collectionInfo)
                 .toList();
         Map<String, Object> deleteOutbox = vectorDeleteOutboxStats();
+        boolean collectionsPresent = collections.stream().allMatch(item -> Boolean.TRUE.equals(item.getExists()));
         boolean dimensionMatched = collections.stream()
                 .filter(item -> Boolean.TRUE.equals(item.getExists()))
                 .map(VectorCollectionInfo::getVectorSize)
                 .filter(size -> size != null && size > 0)
                 .distinct()
-                .count() <= 1;
+                .count() <= 1 && collectionsPresent;
         Map<String, Object> checks = new LinkedHashMap<>();
         checks.put("enabled", vectorStoreClient.isEnabled());
-        checks.put("collectionsPresent", collections.stream().allMatch(item -> Boolean.TRUE.equals(item.getExists())));
+        checks.put("collectionsPresent", collectionsPresent);
         checks.put("dimensionMatched", dimensionMatched);
         checks.put("deleteOutboxClear", Boolean.TRUE.equals(deleteOutbox.get("clear")));
         return Result.success(Map.of(

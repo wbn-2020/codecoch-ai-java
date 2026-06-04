@@ -4,6 +4,19 @@ server:
 spring:
   application:
     name: codecoachai-search
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
+    hikari:
+      maximum-pool-size: ${MYSQL_POOL_MAX_SIZE:3}
+      minimum-idle: ${MYSQL_POOL_MIN_IDLE:1}
+      connection-timeout: 30000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
   profiles:
     active: dev
   config:
@@ -25,3 +38,7 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+
+codecoachai:
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}

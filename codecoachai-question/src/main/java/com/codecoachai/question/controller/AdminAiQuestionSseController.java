@@ -2,7 +2,7 @@ package com.codecoachai.question.controller;
 
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
 import com.codecoachai.question.service.QuestionReviewService;
@@ -31,21 +31,25 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 public class AdminAiQuestionSseController {
 
     private static final long TIMEOUT_MILLIS = 120_000L;
+    private static final String PERM_QUESTION_GENERATE = "admin:question:generate";
 
     private final QuestionReviewService questionReviewService;
     private final Executor questionSseStreamExecutor;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     public AdminAiQuestionSseController(QuestionReviewService questionReviewService,
-                                        @Qualifier("questionSseStreamExecutor") Executor questionSseStreamExecutor) {
+                                        @Qualifier("questionSseStreamExecutor") Executor questionSseStreamExecutor,
+                                        AdminPermissionGuard adminPermissionGuard) {
         this.questionReviewService = questionReviewService;
         this.questionSseStreamExecutor = questionSseStreamExecutor;
+        this.adminPermissionGuard = adminPermissionGuard;
     }
 
     @Operation(summary = "Stream AI question generation progress",
             description = "Admin SSE endpoint. Emits start/progress/result/done/error events for AI question generation. POST /admin/ai/questions/generate remains the synchronous fallback.")
     @GetMapping(value = "/generate", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter generate(@ModelAttribute AiQuestionGenerateRequestDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_GENERATE);
         LoginUser loginUser = LoginUserContext.getLoginUser();
         String requestId = UUID.randomUUID().toString();
         AtomicBoolean active = new AtomicBoolean(true);

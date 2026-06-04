@@ -13,9 +13,15 @@ public class DailyPlanVO {
     private Long targetJobId;
     private LocalDate date;
     private String summary;
+    private String status;
+    private String errorCode;
+    private String errorMessage;
+    private Long durationMs;
     private List<SkillTagVO> focusSkills = new ArrayList<>();
     private List<AgentTaskVO> tasks = new ArrayList<>();
     private Boolean empty = false;
     private String emptyMessage;
+    private LocalDateTime startedAt;
+    private LocalDateTime finishedAt;
     private LocalDateTime createdAt;
 }

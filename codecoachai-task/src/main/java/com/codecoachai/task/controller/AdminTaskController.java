@@ -15,23 +15,34 @@ import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import com.codecoachai.common.security.context.LoginUserContext;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
+import com.codecoachai.task.domain.dto.AdminTaskActionDTO;
 import com.codecoachai.task.domain.entity.AsyncTask;
 import com.codecoachai.task.domain.entity.MessageDeadLetter;
+import com.codecoachai.task.domain.vo.AdminAsyncTaskVO;
+import com.codecoachai.task.domain.vo.AdminDeadLetterVO;
+import com.codecoachai.task.domain.vo.AdminTaskImpactPreviewVO;
 import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.codecoachai.task.mapper.MessageDeadLetterMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,6 +57,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AdminTaskController {
 
+    private static final String PERM_TASK_LIST = "admin:task:list";
+    private static final String PERM_TASK_RETRY = "admin:task:retry";
+    private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
+    private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
+    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
     private static final String BIZ_RESUME_PARSE = "resume.parse";
     private static final String BIZ_QUESTION_GENERATE = "question.generate";
     private static final String BIZ_QUESTION_AI_GENERATE = "question.ai-generate";
@@ -59,10 +76,11 @@ public class AdminTaskController {
     private final MessageDeadLetterMapper deadLetterMapper;
     private final Optional<MqProducer> mqProducer;
     private final ObjectMapper objectMapper;
+    private final AdminPermissionGuard permissionGuard;
 
     @Operation(summary = "Page async tasks")
     @GetMapping
-    public Result<PageResult<AsyncTask>> pageTasks(
+    public Result<PageResult<AdminAsyncTaskVO>> pageTasks(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String keyword,
@@ -70,7 +88,7 @@ public class AdminTaskController {
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long userId) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_TASK_LIST);
         // type 是早期管理页字段，bizType 是当前实体字段；统一解析后再查询。
         String resolvedBizType = StringUtils.hasText(bizType) ? bizType : type;
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
@@ -86,36 +104,37 @@ public class AdminTaskController {
                         .eq(StringUtils.hasText(status), AsyncTask::getStatus, status)
                         .eq(userId != null, AsyncTask::getUserId, userId)
                         .orderByDesc(AsyncTask::getCreatedAt));
-        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        return Result.success(PageResult.of(page.getRecords().stream().map(this::toTaskVO).toList(),
+                page.getTotal(), page.getCurrent(), page.getSize()));
     }
 
     @Operation(summary = "Get async task")
     @GetMapping("/{id}")
-    public Result<AsyncTask> getTask(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+    public Result<AdminAsyncTaskVO> getTask(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_LIST);
         AsyncTask task = asyncTaskMapper.selectById(id);
         if (task == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
         }
-        return Result.success(task);
+        return Result.success(toTaskVO(task));
     }
 
     @Operation(summary = "Get async task by message id")
     @GetMapping("/by-message-id/{messageId}")
-    public Result<AsyncTask> getByMessageId(@PathVariable String messageId) {
-        SecurityAssert.requireAdmin();
+    public Result<AdminAsyncTaskVO> getByMessageId(@PathVariable String messageId) {
+        permissionGuard.require(PERM_TASK_LIST);
         AsyncTask task = asyncTaskMapper.selectOne(
                 new LambdaQueryWrapper<AsyncTask>().eq(AsyncTask::getMessageId, messageId).last("limit 1"));
         if (task == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
         }
-        return Result.success(task);
+        return Result.success(toTaskVO(task));
     }
 
     @Operation(summary = "Task status stats")
     @GetMapping("/stats")
     public Result<List<Map<String, Object>>> stats() {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_TASK_LIST);
         List<Map<String, Object>> counts = asyncTaskMapper.selectMaps(
                 new QueryWrapper<AsyncTask>()
                         .select("status", "COUNT(*) AS count")
@@ -123,15 +142,23 @@ public class AdminTaskController {
         return Result.success(counts);
     }
 
+    @Operation(summary = "Preview failed async task retry impact")
+    @GetMapping("/{id}/retry-preview")
+    public Result<AdminTaskImpactPreviewVO> retryTaskPreview(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        AsyncTask task = getTaskEntity(id);
+        return Result.success(taskRetryPreview(task));
+    }
+
     @Operation(summary = "Retry failed async task")
     @PostMapping("/{id}/retry")
-    public Result<Void> retryTask(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
-        AsyncTask task = asyncTaskMapper.selectById(id);
-        if (task == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
-        }
-        if (!"FAILED".equals(task.getStatus()) && !"DEAD".equals(task.getStatus())) {
+    @OperationLog(module = "task", action = "RETRY_ASYNC_TASK", description = "重试失败异步任务")
+    public Result<Void> retryTask(@PathVariable Long id,
+                                  @RequestBody(required = false) AdminTaskActionDTO dto) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        requireActionNote(dto);
+        AsyncTask task = getTaskEntity(id);
+        if (!isRetryableTaskStatus(task.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Only FAILED/DEAD tasks can be retried");
         }
         // 这里仅把任务状态退回 PENDING；真正重新投递由对应业务补偿入口或死信恢复流程触发。
@@ -147,67 +174,229 @@ public class AdminTaskController {
 
     @Operation(summary = "Page dead letters")
     @GetMapping("/dead-letters")
-    public Result<PageResult<MessageDeadLetter>> pageDeadLetters(
+    public Result<PageResult<AdminDeadLetterVO>> pageDeadLetters(
             @RequestParam(defaultValue = "1") Long pageNo,
             @RequestParam(defaultValue = "20") Long pageSize,
             @RequestParam(required = false) String handleStatus,
             @RequestParam(required = false) String bizType) {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_TASK_LIST);
         Page<MessageDeadLetter> page = deadLetterMapper.selectPage(
                 Page.of(pageNo, pageSize),
                 new LambdaQueryWrapper<MessageDeadLetter>()
                         .eq(StringUtils.hasText(handleStatus), MessageDeadLetter::getHandleStatus, handleStatus)
                         .eq(StringUtils.hasText(bizType), MessageDeadLetter::getBizType, bizType)
                         .orderByDesc(MessageDeadLetter::getCreatedAt));
-        return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+        return Result.success(PageResult.of(page.getRecords().stream().map(this::toDeadLetterVO).toList(),
+                page.getTotal(), page.getCurrent(), page.getSize()));
     }
 
     @Operation(summary = "Get dead letter")
     @GetMapping("/dead-letters/{id}")
-    public Result<MessageDeadLetter> getDeadLetter(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+    public Result<AdminDeadLetterVO> getDeadLetter(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_LIST);
         MessageDeadLetter dl = deadLetterMapper.selectById(id);
         if (dl == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
         }
-        return Result.success(dl);
+        return Result.success(toDeadLetterVO(dl));
+    }
+
+    @Operation(summary = "Preview dead letter recover impact")
+    @GetMapping("/dead-letters/{id}/recover-preview")
+    public Result<AdminTaskImpactPreviewVO> recoverDeadLetterPreview(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        MessageDeadLetter dl = getRecoverableDeadLetter(id);
+        return Result.success(deadLetterRecoverPreview(dl));
     }
 
     @Operation(summary = "Recover dead letter")
     @PostMapping("/dead-letters/{id}/recover")
+    @OperationLog(module = "task", action = "RECOVER_DEAD_LETTER", description = "恢复死信消息")
     public Result<Void> recoverDeadLetter(@PathVariable Long id,
-                                          @RequestParam(required = false) String note) {
-        SecurityAssert.requireAdmin();
+                                          @RequestParam(required = false) String note,
+                                          @RequestBody(required = false) AdminTaskActionDTO dto) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        String actionNote = requireActionNote(note, dto);
         MessageDeadLetter dl = getRecoverableDeadLetter(id);
         replayDeadLetter(dl);
-        updateDeadLetterStatus(id, "RECOVERED", note);
+        updateDeadLetterStatus(id, "RECOVERED", actionNote);
         return Result.success();
     }
 
     @Operation(summary = "Ignore dead letter")
     @PostMapping("/dead-letters/{id}/ignore")
+    @OperationLog(module = "task", action = "IGNORE_DEAD_LETTER", description = "忽略死信消息")
     public Result<Void> ignoreDeadLetter(@PathVariable Long id,
-                                         @RequestParam(required = false) String note) {
-        SecurityAssert.requireAdmin();
-        updateDeadLetterStatus(id, "IGNORED", note);
+                                         @RequestParam(required = false) String note,
+                                         @RequestBody(required = false) AdminTaskActionDTO dto) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        updateDeadLetterStatus(id, "IGNORED", requireActionNote(note, dto));
         return Result.success();
+    }
+
+    @Operation(summary = "Compatibility endpoint for dead letter retry preview")
+    @GetMapping("/{id}/dead-letter/retry-preview")
+    public Result<AdminTaskImpactPreviewVO> recoverDeadLetterCompatPreview(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        MessageDeadLetter dl = getRecoverableDeadLetterCompat(id);
+        return Result.success(deadLetterRecoverPreview(dl));
     }
 
     @Operation(summary = "Compatibility endpoint for dead letter retry")
     @PostMapping("/{id}/dead-letter/retry")
+    @OperationLog(module = "task", action = "RECOVER_DEAD_LETTER_COMPAT", description = "兼容入口恢复死信消息")
     public Result<Void> recoverDeadLetterCompat(@PathVariable Long id,
-                                                @RequestParam(required = false) String note) {
-        SecurityAssert.requireAdmin();
-        MessageDeadLetter dl = getRecoverableDeadLetter(id);
+                                                @RequestParam(required = false) String note,
+                                                @RequestBody(required = false) AdminTaskActionDTO dto) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        String actionNote = requireActionNote(note, dto);
+        MessageDeadLetter dl = getRecoverableDeadLetterCompat(id);
         replayDeadLetter(dl);
-        updateDeadLetterStatus(id, "RECOVERED", note);
+        updateDeadLetterStatus(dl.getId(), "RECOVERED", actionNote);
         return Result.success();
     }
 
     @Operation(summary = "Task service health")
     @GetMapping("/health")
     public Result<String> health() {
+        permissionGuard.require(PERM_TASK_LIST);
         return Result.success("task-service ok");
+    }
+
+    private AsyncTask getTaskEntity(Long id) {
+        AsyncTask task = asyncTaskMapper.selectById(id);
+        if (task == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "task not found");
+        }
+        return task;
+    }
+
+    private boolean isRetryableTaskStatus(String status) {
+        return "FAILED".equals(status) || "DEAD".equals(status)
+                || "ERROR".equals(status) || "DEAD_LETTER".equals(status);
+    }
+
+    private String requireActionNote(AdminTaskActionDTO dto) {
+        return requireActionNote(null, dto);
+    }
+
+    private String requireActionNote(String note, AdminTaskActionDTO dto) {
+        String resolved = StringUtils.hasText(note) ? note : dto == null ? null : dto.getNote();
+        if (!StringUtils.hasText(resolved)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "operation note is required");
+        }
+        return resolved.trim();
+    }
+
+    private AdminTaskImpactPreviewVO taskRetryPreview(AsyncTask task) {
+        AdminTaskImpactPreviewVO vo = new AdminTaskImpactPreviewVO();
+        vo.setId(task.getId());
+        vo.setTargetType("ASYNC_TASK");
+        vo.setBizType(task.getBizType());
+        vo.setBizId(task.getBizId());
+        vo.setUserId(task.getUserId());
+        vo.setCurrentStatus(task.getStatus());
+        vo.setExecutable(isRetryableTaskStatus(task.getStatus()));
+        vo.setRiskLevel("MEDIUM");
+        vo.setRequiredPermission(PERM_TASK_RETRY);
+        vo.setRequiredNote("请填写失败原因已处理的说明");
+        vo.setImpact("将任务状态重置为 PENDING，后续由对应补偿流程重新执行；非幂等业务可能产生重复 AI 调用或重复解析。");
+        return vo;
+    }
+
+    private AdminTaskImpactPreviewVO deadLetterRecoverPreview(MessageDeadLetter dl) {
+        AdminTaskImpactPreviewVO vo = new AdminTaskImpactPreviewVO();
+        vo.setId(dl.getId());
+        vo.setTargetType("DEAD_LETTER");
+        vo.setBizType(dl.getBizType());
+        vo.setBizId(dl.getBizId());
+        vo.setUserId(dl.getUserId());
+        vo.setCurrentStatus(dl.getHandleStatus());
+        vo.setExecutable("UNHANDLED".equals(dl.getHandleStatus()));
+        vo.setRiskLevel("HIGH");
+        vo.setRequiredPermission(PERM_TASK_RETRY);
+        vo.setRequiredNote("请填写依赖已恢复、允许重新投递的说明");
+        vo.setImpact("将按 bizType 校验 payload 后重新投递 MQ，并把死信标记为 RECOVERED；可能触发重复 AI 调用、解析或索引同步。");
+        return vo;
+    }
+
+    private AdminAsyncTaskVO toTaskVO(AsyncTask task) {
+        AdminAsyncTaskVO vo = new AdminAsyncTaskVO();
+        vo.setId(task.getId());
+        vo.setMessageId(task.getMessageId());
+        vo.setBizType(task.getBizType());
+        vo.setBizId(task.getBizId());
+        vo.setUserId(task.getUserId());
+        vo.setTraceId(task.getTraceId());
+        vo.setStatus(task.getStatus());
+        vo.setRetryCount(task.getRetryCount());
+        vo.setMaxRetry(task.getMaxRetry());
+        vo.setMaxRetryCount(task.getMaxRetry());
+        vo.setFailureReason(maskText(task.getFailureReason()));
+        vo.setPayloadPreview(preview(task.getPayload()));
+        vo.setPayloadHash(sha256Prefix(task.getPayload()));
+        vo.setResultPreview(preview(task.getResult()));
+        vo.setResultHash(sha256Prefix(task.getResult()));
+        vo.setRawFieldsAvailable(StringUtils.hasText(task.getPayload()) || StringUtils.hasText(task.getResult()));
+        vo.setStartedAt(task.getStartedAt());
+        vo.setCompletedAt(task.getCompletedAt());
+        vo.setCreatedAt(task.getCreatedAt());
+        vo.setUpdatedAt(task.getUpdatedAt());
+        return vo;
+    }
+
+    private AdminDeadLetterVO toDeadLetterVO(MessageDeadLetter dl) {
+        AdminDeadLetterVO vo = new AdminDeadLetterVO();
+        vo.setId(dl.getId());
+        vo.setMessageId(dl.getMessageId());
+        vo.setBizType(dl.getBizType());
+        vo.setBizId(dl.getBizId());
+        vo.setUserId(dl.getUserId());
+        vo.setTraceId(dl.getTraceId());
+        vo.setPayloadPreview(preview(dl.getPayload()));
+        vo.setPayloadHash(sha256Prefix(dl.getPayload()));
+        vo.setLastFailureReason(maskText(dl.getLastFailureReason()));
+        vo.setTotalRetry(dl.getTotalRetry());
+        vo.setHandleStatus(dl.getHandleStatus());
+        vo.setHandleNote(maskText(dl.getHandleNote()));
+        vo.setHandlerUserId(dl.getHandlerUserId());
+        vo.setRawFieldsAvailable(StringUtils.hasText(dl.getPayload()));
+        vo.setCreatedAt(dl.getCreatedAt());
+        vo.setUpdatedAt(dl.getUpdatedAt());
+        return vo;
+    }
+
+    private String preview(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replaceAll("\\s+", " ").trim();
+        String preview = normalized.length() <= 160 ? normalized : normalized.substring(0, 160) + "...";
+        return maskText(preview);
+    }
+
+    private String maskText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String masked = EMAIL.matcher(value).replaceAll("***@***");
+        masked = CHINA_MOBILE.matcher(masked).replaceAll("1**********");
+        masked = ID_CARD.matcher(masked).replaceAll("******************");
+        return JSON_SECRET.matcher(masked).replaceAll("$1******$2");
+    }
+
+    private String sha256Prefix(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of()
+                    .formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)))
+                    .substring(0, 16);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
     }
 
     private MessageDeadLetter getRecoverableDeadLetter(Long id) {
@@ -216,6 +405,39 @@ public class AdminTaskController {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
         }
         // 死信只允许从 UNHANDLED 恢复一次，防止管理员重复点击造成同一业务消息多次投递。
+        if (!"UNHANDLED".equals(dl.getHandleStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only UNHANDLED dead letters can be recovered");
+        }
+        return dl;
+    }
+
+    private MessageDeadLetter getRecoverableDeadLetterCompat(Long id) {
+        MessageDeadLetter dl = deadLetterMapper.selectById(id);
+        if (dl == null) {
+            AsyncTask task = asyncTaskMapper.selectById(id);
+            if (task != null) {
+                LambdaQueryWrapper<MessageDeadLetter> wrapper = new LambdaQueryWrapper<MessageDeadLetter>()
+                        .eq(StringUtils.hasText(task.getBizType()), MessageDeadLetter::getBizType, task.getBizType())
+                        .orderByDesc(MessageDeadLetter::getCreatedAt)
+                        .last("limit 1");
+                if (StringUtils.hasText(task.getMessageId()) && StringUtils.hasText(task.getBizId())) {
+                    wrapper.and(nested -> nested
+                            .eq(MessageDeadLetter::getMessageId, task.getMessageId())
+                            .or()
+                            .eq(MessageDeadLetter::getBizId, task.getBizId()));
+                } else if (StringUtils.hasText(task.getMessageId())) {
+                    wrapper.eq(MessageDeadLetter::getMessageId, task.getMessageId());
+                } else if (StringUtils.hasText(task.getBizId())) {
+                    wrapper.eq(MessageDeadLetter::getBizId, task.getBizId());
+                } else {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter cannot be resolved from task");
+                }
+                dl = deadLetterMapper.selectOne(wrapper);
+            }
+        }
+        if (dl == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter not found");
+        }
         if (!"UNHANDLED".equals(dl.getHandleStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Only UNHANDLED dead letters can be recovered");
         }

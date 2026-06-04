@@ -2,6 +2,9 @@ package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromGapDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromMatchReportDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
@@ -20,6 +23,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.Collections;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -82,6 +86,7 @@ public class StudyPlanController {
     }
 
     @GetMapping("/study-plans/{planId}/daily-view")
+    @OperationLog(module = "study", action = "QUERY_DAILY_VIEW", description = "查询每日学习任务", logArgs = true, logResponse = false)
     @Operation(summary = "Get daily study task view",
             description = "Returns task statistics and task list for one day in a user-owned study plan. "
                     + "date is optional and uses yyyy-MM-dd; when omitted, the server uses today.")
@@ -93,6 +98,7 @@ public class StudyPlanController {
     }
 
     @GetMapping("/daily-tasks")
+    @OperationLog(module = "study", action = "QUERY_DAILY_TASKS", description = "查询每日任务入口", logArgs = true, logResponse = false)
     public Result<StudyPlanDailyViewVO> dailyTasks(@RequestParam(required = false) Long planId,
                                                    @RequestParam(required = false) String date) {
         if (planId != null) {
@@ -131,7 +137,7 @@ public class StudyPlanController {
 
     private StudyPlanDailyViewVO emptyDailyView(String date) {
         StudyPlanDailyViewVO vo = new StudyPlanDailyViewVO();
-        vo.setDate(date == null || date.isBlank() ? LocalDate.now() : LocalDate.parse(date));
+        vo.setDate(parseDailyViewDate(date));
         vo.setDayIndex(0);
         vo.setTotalTaskCount(0);
         vo.setPendingTaskCount(0);
@@ -140,5 +146,16 @@ public class StudyPlanController {
         vo.setCompletionRate(0);
         vo.setTasks(Collections.emptyList());
         return vo;
+    }
+
+    private LocalDate parseDailyViewDate(String date) {
+        if (date == null || date.isBlank()) {
+            return LocalDate.now();
+        }
+        try {
+            return LocalDate.parse(date.trim());
+        } catch (DateTimeParseException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "date must be yyyy-MM-dd");
+        }
     }
 }

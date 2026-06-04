@@ -329,6 +329,15 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         return AiConvert.toLogVO(log);
     }
 
+    @Override
+    public AiCallLogVO getLogRaw(Long id) {
+        AiCallLog log = aiCallLogMapper.selectById(id);
+        if (log == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI call log not found");
+        }
+        return AiConvert.toLogVO(log, true);
+    }
+
     private String render(String content, Map<String, String> variables) {
         String rendered = content == null ? "" : content;
         for (Map.Entry<String, String> entry : variables.entrySet()) {

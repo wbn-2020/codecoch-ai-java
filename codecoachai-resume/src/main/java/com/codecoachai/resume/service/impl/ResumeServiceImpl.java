@@ -47,6 +47,8 @@ import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -76,6 +78,7 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String APPLY_MODE_STRUCTURED_PATCH = "STRUCTURED_PATCH";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
+    private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
     private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
             "title", "resumeName", "realName", "email", "phone", "targetPosition",
@@ -96,10 +99,11 @@ public class ResumeServiceImpl implements ResumeService {
         Long userId = requireCurrentUserId();
         return resumeMapper.selectList(new LambdaQueryWrapper<Resume>()
                         .eq(Resume::getUserId, userId)
+                        .eq(Resume::getDeleted, CommonConstants.NO)
                         .orderByDesc(Resume::getIsDefault)
                         .orderByDesc(Resume::getUpdatedAt))
                 .stream()
-                .map(ResumeConvert::toListVO)
+                .map(resume -> ResumeConvert.toListVO(resume, projectCount(resume.getId())))
                 .toList();
     }
 
@@ -400,22 +404,24 @@ public class ResumeServiceImpl implements ResumeService {
 
     @Override
     public ResumeProjectVO createProject(Long resumeId, ResumeProjectSaveDTO dto) {
-        getOwnedResume(resumeId);
+        Long userId = requireCurrentUserId();
+        getOwnedResume(resumeId, userId);
         ResumeProject project = new ResumeProject();
         project.setResumeId(resumeId);
         applyProject(project, dto);
         projectMapper.insert(project);
-        syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
+        syncResumeSearchAfterCommit(resumeId, userId, true);
         return ResumeConvert.toProjectVO(project);
     }
 
     @Override
     public ResumeProjectVO updateProject(Long resumeId, Long projectId, ResumeProjectSaveDTO dto) {
-        getOwnedResume(resumeId);
+        Long userId = requireCurrentUserId();
+        getOwnedResume(resumeId, userId);
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
-        syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
+        syncResumeSearchAfterCommit(resumeId, userId, true);
         return ResumeConvert.toProjectVO(project);
     }
 
@@ -768,24 +774,82 @@ public class ResumeServiceImpl implements ResumeService {
 
     private OptimizeContext createOptimizeRecord(Long resumeId, ResumeOptimizeRequestDTO dto) {
         Long userId = requireCurrentUserId();
+        ResumeOptimizeRequestDTO request = normalizeOptimizeRequest(dto);
         Resume resume = getOwnedResume(resumeId, userId);
-        List<ResumeProject> selectedProjects = selectProjects(resumeId, dto.getSelectedProjectIds());
-        String targetPosition = firstText(dto.getTargetPosition(), resume.getTargetPosition());
+        List<ResumeProject> selectedProjects = selectProjects(resumeId, request.getSelectedProjectIds());
+        String targetPosition = firstText(request.getTargetPosition(), resume.getTargetPosition());
 
         ResumeOptimizeRecord record = new ResumeOptimizeRecord();
         record.setUserId(userId);
         record.setResumeId(resumeId);
         record.setTargetPosition(targetPosition);
-        record.setExperienceYears(dto.getExperienceYears());
-        record.setIndustryDirection(dto.getIndustryDirection());
+        record.setExperienceYears(request.getExperienceYears());
+        record.setIndustryDirection(request.getIndustryDirection());
         record.setOptimizeStatus(ResumeOptimizeStatus.PROCESSING.getCode());
         optimizeRecordMapper.insert(record);
 
         ResumeOptimizeAiRequestDTO aiRequest = buildOptimizeAiRequest(record.getId(), userId, resume, selectedProjects,
-                targetPosition, dto);
+                targetPosition, request);
         record.setRequestJson(toJson(aiRequest));
         optimizeRecordMapper.updateById(record);
         return new OptimizeContext(resume, selectedProjects, record, aiRequest);
+    }
+
+    private ResumeOptimizeRequestDTO normalizeOptimizeRequest(ResumeOptimizeRequestDTO source) {
+        ResumeOptimizeRequestDTO target = new ResumeOptimizeRequestDTO();
+        if (source == null) {
+            return target;
+        }
+        target.setTargetPosition(repairPossibleMojibake(source.getTargetPosition()));
+        target.setExperienceYears(source.getExperienceYears());
+        target.setIndustryDirection(repairPossibleMojibake(source.getIndustryDirection()));
+        target.setTargetCompany(repairPossibleMojibake(source.getTargetCompany()));
+        target.setExtraRequirements(repairPossibleMojibake(source.getExtraRequirements()));
+        target.setOptimizeFocus(repairPossibleMojibake(source.getOptimizeFocus()));
+        target.setSelectedProjectIds(source.getSelectedProjectIds());
+        return target;
+    }
+
+    private String repairPossibleMojibake(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String best = value;
+        int bestScore = mojibakeScore(value);
+        String fromLatin1 = new String(value.getBytes(StandardCharsets.ISO_8859_1), StandardCharsets.UTF_8);
+        int latin1Score = mojibakeScore(fromLatin1);
+        if (latin1Score + 4 < bestScore) {
+            best = fromLatin1;
+            bestScore = latin1Score;
+        }
+        String fromGb18030 = new String(value.getBytes(GB18030), StandardCharsets.UTF_8);
+        int gbScore = mojibakeScore(fromGb18030);
+        if (gbScore + 4 < bestScore) {
+            best = fromGb18030;
+        }
+        return best;
+    }
+
+    private int mojibakeScore(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0;
+        }
+        int score = 0;
+        int cjkCount = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char ch = value.charAt(index);
+            if (ch == '\uFFFD' || (ch >= '\uE000' && ch <= '\uF8FF')) {
+                score += 8;
+            } else if ((ch >= '\u0080' && ch <= '\u009F') || "ÃÂâ¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿€".indexOf(ch) >= 0) {
+                score += 4;
+            } else if ("锛銆鐨绠鍘寮鍚庣璇搴撳悜閲".indexOf(ch) >= 0) {
+                score += 2;
+            }
+            if (Character.UnicodeScript.of(ch) == Character.UnicodeScript.HAN) {
+                cjkCount++;
+            }
+        }
+        return score - Math.min(cjkCount, 10);
     }
 
     private List<ResumeProject> selectProjects(Long resumeId, List<Long> selectedProjectIds) {
@@ -1204,12 +1268,19 @@ public class ResumeServiceImpl implements ResumeService {
     private List<ResumeProjectVO> projects(Long resumeId) {
         return projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                         .eq(ResumeProject::getResumeId, resumeId)
+                        .eq(ResumeProject::getDeleted, CommonConstants.NO)
                         .orderByAsc(ResumeProject::getSortOrder)
                         .orderByAsc(ResumeProject::getSort)
                         .orderByDesc(ResumeProject::getUpdatedAt))
                 .stream()
                 .map(ResumeConvert::toProjectVO)
                 .toList();
+    }
+
+    private Long projectCount(Long resumeId) {
+        return projectMapper.selectCount(new LambdaQueryWrapper<ResumeProject>()
+                .eq(ResumeProject::getResumeId, resumeId)
+                .eq(ResumeProject::getDeleted, CommonConstants.NO));
     }
 
     private void applyResume(Resume resume, ResumeSaveDTO dto) {

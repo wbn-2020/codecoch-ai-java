@@ -5,6 +5,7 @@ import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeOptimizeRecordVO;
+import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -19,6 +20,12 @@ public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/default")
     Result<InnerResumeDetailVO> getDefaultResume();
+
+    @GetMapping("/inner/job-targets/users/{userId}/current")
+    Result<InnerTargetJobVO> getCurrentTargetJob(@PathVariable("userId") Long userId);
+
+    @GetMapping("/inner/job-targets/users/{userId}/{id}")
+    Result<InnerTargetJobVO> getTargetJob(@PathVariable("userId") Long userId, @PathVariable("id") Long id);
 
     @GetMapping("/inner/resumes/optimize-records/{recordId}")
     Result<InnerResumeOptimizeRecordVO> getOptimizeRecord(@PathVariable("recordId") Long recordId);

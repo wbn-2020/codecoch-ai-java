@@ -4,8 +4,34 @@
 --   2) Preserve accounts, roles, permissions, system config, AI/third-party config, prompts and logs.
 --   3) Re-seed a coherent Chinese dataset across questions, reviews, duplicates, resumes, jobs,
 --      match reports, skill gaps, study plans, interviews and notifications.
+--
+-- Safety guard:
+--   This script intentionally resets broad business/demo data. It must never run
+--   on production schemas. It is allowed only when the current schema is an
+--   explicit local/dev/demo/test schema, or when the operator has set the
+--   session variable @codecoachai_allow_v4_009_demo_seed = '1' after reviewing
+--   the affected data and backup/rollback plan.
 
 SET NAMES utf8mb4;
+
+DELIMITER //
+DROP PROCEDURE IF EXISTS assert_v4_009_demo_seed_allowed//
+CREATE PROCEDURE assert_v4_009_demo_seed_allowed()
+BEGIN
+  DECLARE schema_name VARCHAR(128) DEFAULT LOWER(DATABASE());
+  DECLARE explicit_allow VARCHAR(16) DEFAULT COALESCE(@codecoachai_allow_v4_009_demo_seed, '0');
+
+  IF explicit_allow <> '1'
+     AND schema_name NOT IN ('codecoachai_dev', 'codecoachai_demo', 'codecoachai_test', 'codecoachai_local')
+     AND schema_name NOT REGEXP '(^|_)(dev|demo|test|local)($|_)' THEN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'V4_009 resets demo business data. Refuse to run outside local/dev/demo/test schema unless @codecoachai_allow_v4_009_demo_seed=1 is set for this session.';
+  END IF;
+END//
+DELIMITER ;
+
+CALL assert_v4_009_demo_seed_allowed();
+DROP PROCEDURE IF EXISTS assert_v4_009_demo_seed_allowed;
 
 -- ============================================================
 -- 1. Soft-delete old business demo data

@@ -8,7 +8,8 @@ import co.elastic.clients.elasticsearch.core.SearchResponse;
 import co.elastic.clients.elasticsearch.core.search.Hit;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.search.constant.IndexNames;
 import com.codecoachai.search.service.IndexManageService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -39,11 +40,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminSearchController {
 
     private static final int PARAM_ERROR_CODE = 40000;
+    private static final String PERM_QUESTION_SEARCH = "admin:question:list";
+    private static final String PERM_RESUME_SEARCH = "admin:search:resume";
+    private static final String PERM_INTERVIEW_SEARCH = "admin:search:interview";
+    private static final String PERM_INDEX_REBUILD = "admin:search:index:rebuild";
     private static final String REBUILD_CONFIRM_MESSAGE =
             "Dangerous index rebuild is rejected by default. Retry with confirm=true after verifying data sync can recover the index.";
 
     private final IndexManageService indexManageService;
     private final ElasticsearchClient esClient;
+    private final AdminPermissionGuard permissionGuard;
 
     @Operation(summary = "管理员题库全文搜索")
     @GetMapping("/questions")
@@ -53,7 +59,7 @@ public class AdminSearchController {
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) String difficulty,
             @RequestParam(required = false) String categoryId) throws IOException {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_QUESTION_SEARCH);
         List<Query> filters = new ArrayList<>();
         if (StringUtils.hasText(difficulty)) {
             filters.add(Query.of(q -> q.term(t -> t.field("difficulty").value(difficulty))));
@@ -71,7 +77,7 @@ public class AdminSearchController {
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) Long userId) throws IOException {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_RESUME_SEARCH);
         return doSearch(IndexNames.RESUME, keyword, pageNo, pageSize, userIdFilter(userId));
     }
 
@@ -82,15 +88,16 @@ public class AdminSearchController {
             @RequestParam(defaultValue = "1") Integer pageNo,
             @RequestParam(defaultValue = "10") Integer pageSize,
             @RequestParam(required = false) Long userId) throws IOException {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_INTERVIEW_SEARCH);
         return doSearch(IndexNames.INTERVIEW, keyword, pageNo, pageSize, userIdFilter(userId));
     }
 
     @Operation(summary = "重建指定索引（删除+重建，数据需重新同步）")
     @PostMapping("/indices/{indexName}/rebuild")
+    @OperationLog(module = "search", action = "REBUILD_SEARCH_INDEX", description = "重建指定搜索索引")
     public Result<String> rebuildIndex(@PathVariable String indexName,
                                        @RequestParam(defaultValue = "false") boolean confirm) throws IOException {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_INDEX_REBUILD);
         // 重建会删除 ES 索引并等待后续数据同步补齐，管理端必须显式确认，避免误点导致检索短暂无数据。
         if (!confirm) {
             return Result.fail(PARAM_ERROR_CODE, REBUILD_CONFIRM_MESSAGE);
@@ -101,8 +108,9 @@ public class AdminSearchController {
 
     @Operation(summary = "重建所有索引")
     @PostMapping("/indices/rebuild-all")
+    @OperationLog(module = "search", action = "REBUILD_ALL_SEARCH_INDEX", description = "重建全部搜索索引")
     public Result<String> rebuildAll(@RequestParam(defaultValue = "false") boolean confirm) throws IOException {
-        SecurityAssert.requireAdmin();
+        permissionGuard.require(PERM_INDEX_REBUILD);
         // 全量重建影响所有搜索域，继续沿用 confirm=true 安全闸。
         if (!confirm) {
             return Result.fail(PARAM_ERROR_CODE, REBUILD_CONFIRM_MESSAGE);

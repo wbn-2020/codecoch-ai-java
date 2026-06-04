@@ -22,5 +22,9 @@ public class CreateInterviewVO {
     private Boolean basedOnResume;
     private String status;
     private String reportStatus;
+    private Integer maxQuestionCount;
+    private Integer totalQuestionCount;
+    private Integer answeredQuestionCount;
+    private String overallProgress;
     private List<InterviewStageVO> stages;
 }

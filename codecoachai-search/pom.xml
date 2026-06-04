@@ -33,6 +33,11 @@
         </dependency>
         <dependency>
             <groupId>com.codecoachai</groupId>
+            <artifactId>common-mybatis</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.codecoachai</groupId>
             <artifactId>common-mq</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -71,6 +76,11 @@
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
         </dependency>
         <!-- Elasticsearch Java Client（官方新客户端） -->
         <dependency>

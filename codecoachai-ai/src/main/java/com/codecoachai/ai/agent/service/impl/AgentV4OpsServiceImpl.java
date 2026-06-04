@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.agent.config.KnowledgeIndexExecutor;
 import com.codecoachai.ai.agent.config.KnowledgeProperties;
+import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
@@ -158,6 +159,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final AiCallLogService aiCallLogService;
     private final EmbeddingService embeddingService;
     private final VectorStoreClient vectorStoreClient;
+    private final AiRouterProperties aiRouterProperties;
     private final KnowledgeProperties knowledgeProperties;
     private final KnowledgeIndexExecutor knowledgeIndexExecutor;
 
@@ -240,7 +242,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setContent(dto.getContent());
         document.setContentHash(contentHash);
         document.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
-        document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
+        document.setStatus(semanticKnowledgeEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.insert(document);
         KnowledgeDocumentVO vo = rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
         vo.setDuplicateDocument(false);
@@ -277,7 +279,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setContent(dto.getContent());
         document.setContentHash(contentHash);
         document.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
-        document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
+        document.setStatus(semanticKnowledgeEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.updateById(document);
         return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
     }
@@ -417,11 +419,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 .mapToLong(count -> count - 1)
                 .sum();
         KnowledgeStatsVO vo = new KnowledgeStatsVO();
+        boolean embeddingEnabled = embeddingEnabled();
+        boolean semanticEnabled = vectorStoreClient.isEnabled() && embeddingEnabled;
         vo.setDocumentCount(documents.size());
         vo.setChunkCount(chunks.size());
         vo.setDuplicateChunkCount(Math.toIntExact(Math.max(duplicateCount, hashDuplicateCount)));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
+        vo.setEmbeddingEnabled(embeddingEnabled);
+        vo.setSemanticEnabled(semanticEnabled);
+        vo.setEmbeddingDisabledReason(semanticEnabled ? null : embeddingDisabledReason());
+        vo.setRetrievalMode(semanticEnabled ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         vo.setDocumentTypeCounts(documents.stream()
                 .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
@@ -443,9 +450,14 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Override
     public KnowledgeConfigVO getKnowledgeConfig(Long userId) {
         KnowledgeConfigVO vo = new KnowledgeConfigVO();
+        boolean embeddingEnabled = embeddingEnabled();
+        boolean semanticEnabled = vectorStoreClient.isEnabled() && embeddingEnabled;
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setEmbeddingEnabled(embeddingEnabled);
+        vo.setSemanticEnabled(semanticEnabled);
+        vo.setEmbeddingDisabledReason(semanticEnabled ? null : embeddingDisabledReason());
         vo.setVectorCollection(knowledgeProperties.getCollection());
-        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
+        vo.setRetrievalMode(semanticEnabled ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
         vo.setChunkSize(knowledgeProperties.safeChunkSize());
@@ -459,6 +471,48 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setExactDedupScope("PER_USER_DOCUMENT_AND_CHUNK_HASH");
         vo.setNearDuplicateAction("WARN_ONLY");
         return vo;
+    }
+
+    private boolean semanticKnowledgeEnabled() {
+        return vectorStoreClient.isEnabled() && embeddingEnabled();
+    }
+
+    private boolean embeddingEnabled() {
+        AiRouterProperties.Router router = aiRouterProperties.getRouter();
+        String providerName = firstText(router == null ? null : router.getEmbeddingProvider(),
+                router == null ? null : router.getDefaultProvider());
+        if (!StringUtils.hasText(providerName)) {
+            return false;
+        }
+        Map<String, AiRouterProperties.ProviderConfig> providers = aiRouterProperties.getProviders();
+        AiRouterProperties.ProviderConfig provider = providers == null ? null : providers.get(providerName);
+        return provider != null
+                && StringUtils.hasText(provider.getBaseUrl())
+                && StringUtils.hasText(provider.getApiKey())
+                && StringUtils.hasText(provider.getEmbeddingModel());
+    }
+
+    private String embeddingDisabledReason() {
+        if (!vectorStoreClient.isEnabled()) {
+            return "Vector store is disabled; keyword fallback is active.";
+        }
+        AiRouterProperties.Router router = aiRouterProperties.getRouter();
+        String providerName = firstText(router == null ? null : router.getEmbeddingProvider(),
+                router == null ? null : router.getDefaultProvider());
+        if (!StringUtils.hasText(providerName)) {
+            return "Embedding provider is not configured; keyword fallback is active.";
+        }
+        Map<String, AiRouterProperties.ProviderConfig> providers = aiRouterProperties.getProviders();
+        AiRouterProperties.ProviderConfig provider = providers == null ? null : providers.get(providerName);
+        if (provider == null) {
+            return "Embedding provider is not configured; keyword fallback is active.";
+        }
+        if (!StringUtils.hasText(provider.getBaseUrl())
+                || !StringUtils.hasText(provider.getApiKey())
+                || !StringUtils.hasText(provider.getEmbeddingModel())) {
+            return "Embedding base URL, API key, or model is not configured; keyword fallback is active.";
+        }
+        return null;
     }
 
     @Override
@@ -511,7 +565,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         document.setContent(content);
         document.setContentHash(contentHash);
         document.setNormalizationVersion(firstText(version.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
-        document.setStatus(vectorStoreClient.isEnabled() ? "PENDING" : "INDEXED");
+        document.setStatus(semanticKnowledgeEnabled() ? "PENDING" : "INDEXED");
         personalKnowledgeDocumentMapper.updateById(document);
         return rebuildKnowledgeDocumentChunks(userId, document, normalizedContent, true);
     }
@@ -535,7 +589,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Override
     public List<KnowledgeSearchResultVO> listSimilarKnowledgeChunks(Long userId, Long chunkId, Integer limit) {
         PersonalKnowledgeChunk source = ownedChunk(userId, chunkId);
-        if (!vectorStoreClient.isEnabled()) {
+        if (!semanticKnowledgeEnabled()) {
             return List.of();
         }
         int size = normalizeLimit(limit);
@@ -614,7 +668,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setThreshold(minScore);
         vo.setLimit(size);
         vo.setGeneratedAt(LocalDateTime.now());
-        if (!vectorStoreClient.isEnabled()) {
+        if (!semanticKnowledgeEnabled()) {
             vo.setScannedChunkCount(0);
             vo.setCandidateCount(0);
             vo.setItems(List.of());
@@ -784,7 +838,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setDocumentId(documentId);
         vo.setDocumentType(pipeline.documentType());
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
-        vo.setRetrievalMode(vectorStoreClient.isEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
+        vo.setRetrievalMode(semanticKnowledgeEnabled() ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setVectorCandidates(pipeline.vectorCandidates());
         vo.setKeywordCandidates(pipeline.keywordCandidates());
         vo.setMergedCandidates(pipeline.mergedCandidates());
@@ -795,8 +849,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setFilteredCandidateCount(pipeline.filteredCandidates().size());
         vo.setFinalCandidateCount(pipeline.finalResults().size());
         List<String> warnings = new ArrayList<>();
-        if (!vectorStoreClient.isEnabled()) {
-            warnings.add("Vector store is disabled; search used keyword fallback only.");
+        if (!semanticKnowledgeEnabled()) {
+            warnings.add(firstText(embeddingDisabledReason(), "Semantic search is disabled; search used keyword fallback only."));
         }
         if (pipeline.finalResults().isEmpty()) {
             warnings.add("No candidate passed the current minScore and rerank filters.");
@@ -1360,7 +1414,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 """, Long.class, userId, size);
         if (documentIds.isEmpty()) {
             KnowledgeVectorRebuildVO vo = new KnowledgeVectorRebuildVO();
-            vo.setVectorEnabled(vectorStoreClient.isEnabled());
+            applyKnowledgeVectorCapability(vo);
             vo.setDocumentCount(0);
             vo.setChunkCount(0);
             vo.setVectorUpdated(0);
@@ -1387,12 +1441,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private KnowledgeVectorRebuildVO rebuildKnowledgeVectorsForDocuments(List<PersonalKnowledgeDocument> documents) {
-        boolean vectorEnabled = vectorStoreClient.isEnabled();
+        boolean semanticEnabled = semanticKnowledgeEnabled();
         int chunkCount = 0;
         int vectorUpdated = 0;
         int duplicateChunkCount = 0;
         List<Long> failedDocuments = new ArrayList<>();
         List<String> errors = new ArrayList<>();
+        if (!semanticEnabled && !documents.isEmpty()) {
+            errors.add(embeddingDisabledReason());
+        }
 
         for (PersonalKnowledgeDocument document : documents) {
             Long ownerId = document.getUserId();
@@ -1402,7 +1459,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             List<PersonalKnowledgeChunk> chunks = listDocumentChunks(ownerId, document.getId());
             chunkCount += chunks.size();
             duplicateChunkCount += duplicateChunkCount(chunks);
-            if (!vectorEnabled || chunks.isEmpty()) {
+            if (!semanticEnabled || chunks.isEmpty()) {
                 continue;
             }
             try {
@@ -1417,7 +1474,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
 
         KnowledgeVectorRebuildVO vo = new KnowledgeVectorRebuildVO();
-        vo.setVectorEnabled(vectorEnabled);
+        applyKnowledgeVectorCapability(vo);
         vo.setDocumentCount(documents.size());
         vo.setChunkCount(chunkCount);
         vo.setVectorUpdated(vectorUpdated);
@@ -1456,7 +1513,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 """, Long.class, size);
         if (documentIds.isEmpty()) {
             KnowledgeVectorRebuildVO vo = new KnowledgeVectorRebuildVO();
-            vo.setVectorEnabled(vectorStoreClient.isEnabled());
+            applyKnowledgeVectorCapability(vo);
             vo.setDocumentCount(0);
             vo.setChunkCount(0);
             vo.setVectorUpdated(0);
@@ -1473,6 +1530,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         KnowledgeVectorRebuildVO vo = rebuildKnowledgeVectorsForDocuments(documents);
         vo.setVectorDeleted(vectorDeleted);
         return vo;
+    }
+
+    private void applyKnowledgeVectorCapability(KnowledgeVectorRebuildVO vo) {
+        boolean embeddingEnabled = embeddingEnabled();
+        boolean semanticEnabled = vectorStoreClient.isEnabled() && embeddingEnabled;
+        vo.setVectorEnabled(vectorStoreClient.isEnabled());
+        vo.setEmbeddingEnabled(embeddingEnabled);
+        vo.setSemanticEnabled(semanticEnabled);
+        vo.setEmbeddingDisabledReason(semanticEnabled ? null : embeddingDisabledReason());
     }
 
     private int normalizeAdminKnowledgeVectorLimit(Integer limit) {
@@ -1984,21 +2050,25 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             chunk.setChunkHash(chunkHash);
             chunk.setNormalizationVersion(KNOWLEDGE_NORMALIZATION_VERSION);
             chunk.setSourceRef(truncateText(firstText(draft.sourceRef(), document.getTitle() + "#" + index), 200));
-            chunk.setIndexStatus(vectorStoreClient.isEnabled() ? "PENDING" : "DISABLED");
+            boolean semanticEnabled = semanticKnowledgeEnabled();
+            chunk.setIndexStatus(semanticEnabled ? "PENDING" : "DISABLED");
             personalKnowledgeChunkMapper.insert(chunk);
             chunks.add(chunk);
         }
-        boolean asyncIndex = knowledgeProperties.isAsyncIndexEnabled() && vectorStoreClient.isEnabled();
+        boolean semanticEnabled = semanticKnowledgeEnabled();
+        boolean asyncIndex = knowledgeProperties.isAsyncIndexEnabled() && semanticEnabled;
         int nearDuplicateChunkCount;
         if (asyncIndex) {
             // 异步模式：不在请求线程做近重统计（避免一次额外 embedding），索引提交后由线程池执行，
             // 近重统计在索引任务内复用同一批向量完成，结果延迟回填到 chunk 表。
             nearDuplicateChunkCount = 0;
             indexPersonalKnowledgeVectorsAsyncAfterCommit(userId, document, chunks);
-        } else {
+        } else if (semanticEnabled) {
             // 同步回退：保留改造前行为（请求线程内统计近重 + 提交后索引）。
             nearDuplicateChunkCount = countNearDuplicateChunks(userId, chunks);
             indexPersonalKnowledgeVectorsAfterCommit(userId, document, chunks);
+        } else {
+            nearDuplicateChunkCount = 0;
         }
         if (chunks.isEmpty()) {
             updateDocumentStatus(document.getId(), "EMPTY");
@@ -2399,7 +2469,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private void indexPersonalKnowledgeVectors(Long userId, PersonalKnowledgeDocument document,
                                                List<PersonalKnowledgeChunk> chunks) {
-        if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
+        if (!semanticKnowledgeEnabled() || chunks.isEmpty()) {
             return;
         }
         try {
@@ -2446,7 +2516,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private int countNearDuplicateChunks(Long userId, List<PersonalKnowledgeChunk> chunks) {
-        if (!vectorStoreClient.isEnabled() || chunks.isEmpty()) {
+        if (!semanticKnowledgeEnabled() || chunks.isEmpty()) {
             return 0;
         }
         try {
@@ -2528,7 +2598,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
      * 用已生成的向量统计近重数量，避免重新 embedding。
      */
     private int countNearDuplicateByVectors(Long userId, List<List<Float>> vectors) {
-        if (!vectorStoreClient.isEnabled() || vectors == null || vectors.isEmpty()) {
+        if (!semanticKnowledgeEnabled() || vectors == null || vectors.isEmpty()) {
             return 0;
         }
         int count = 0;
@@ -2703,7 +2773,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private List<KnowledgeSearchResultVO> searchKnowledgeByVector(Long userId, String keyword, int limit,
                                                                   Long documentId, String documentType) {
-        if (!vectorStoreClient.isEnabled()) {
+        if (!semanticKnowledgeEnabled()) {
             return List.of();
         }
         try {

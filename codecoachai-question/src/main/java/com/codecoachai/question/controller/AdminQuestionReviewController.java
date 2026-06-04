@@ -2,7 +2,7 @@ package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
@@ -30,27 +30,31 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Admin AI Question Review", description = "Admin APIs for AI-generated question drafts and review. /inner/** AI APIs are internal only and must not be called by frontend clients.")
 public class AdminQuestionReviewController {
 
+    private static final String PERM_QUESTION_GENERATE = "admin:question:generate";
+    private static final String PERM_QUESTION_REVIEW = "admin:question:review";
+
     private final QuestionReviewService questionReviewService;
+    private final AdminPermissionGuard adminPermissionGuard;
 
     @OperationLog(module = "question", action = "GENERATE_AI_QUESTION", description = "Generate AI question drafts", logResponse = false)
     @PostMapping("/admin/ai/questions/generate")
     @Operation(summary = "Generate AI question drafts", description = "Admin endpoint. Generated questions enter question_review as PENDING drafts and do not directly enter the formal question bank.")
     public Result<AiQuestionGenerateResultVO> generate(@Valid @RequestBody AiQuestionGenerateRequestDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_GENERATE);
         return Result.success(questionReviewService.generate(dto));
     }
 
     @GetMapping("/admin/question-reviews")
     @Operation(summary = "Page AI question review drafts", description = "Admin endpoint for the question_review pool.")
     public Result<PageResult<QuestionReviewListVO>> pageReviews(QuestionReviewQueryDTO query) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.pageReviews(query));
     }
 
     @GetMapping("/admin/question-reviews/{id}")
     @Operation(summary = "Get AI question review detail", description = "Admin endpoint for one question_review draft.")
     public Result<QuestionReviewDetailVO> getReview(@PathVariable Long id) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.getReview(id));
     }
 
@@ -59,7 +63,7 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Approve AI question draft", description = "Admin endpoint. Approval writes the draft into the formal question table.")
     public Result<QuestionReviewDetailVO> approve(@PathVariable Long id,
                                                   @RequestBody(required = false) QuestionReviewApproveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.approve(id, dto));
     }
 
@@ -68,7 +72,7 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Batch approve AI question drafts", description = "Admin endpoint. Each draft reuses the single approve flow; failed items are returned without stopping the batch.")
     public Result<BatchQuestionReviewResultVO> batchApprove(
             @Valid @RequestBody BatchQuestionReviewApproveDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.batchApprove(dto));
     }
 
@@ -77,7 +81,7 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Reject AI question draft", description = "Admin endpoint. Rejected drafts stay out of the formal question table.")
     public Result<QuestionReviewDetailVO> reject(@PathVariable Long id,
                                                  @Valid @RequestBody QuestionReviewRejectDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.reject(id, dto));
     }
 
@@ -86,7 +90,7 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Cancel AI question draft", description = "Admin endpoint. Cancelled drafts stay out of the formal question table and are kept for audit.")
     public Result<QuestionReviewDetailVO> cancel(@PathVariable Long id,
                                                  @RequestBody(required = false) QuestionReviewRejectDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.cancel(id, dto));
     }
 
@@ -95,7 +99,7 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Batch reject AI question drafts", description = "Admin endpoint. Each draft reuses the single reject flow; failed items are returned without stopping the batch.")
     public Result<BatchQuestionReviewResultVO> batchReject(
             @Valid @RequestBody BatchQuestionReviewRejectDTO dto) {
-        SecurityAssert.requireAdmin();
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return Result.success(questionReviewService.batchReject(dto));
     }
 }
