@@ -296,11 +296,7 @@ public class PracticeServiceImpl implements PracticeService {
     }
 
     private String safeError(String message) {
-        if (!StringUtils.hasText(message)) {
-            return "AI practice review failed";
-        }
-        String sanitized = message.replaceAll("[\\r\\n\\t]+", " ").trim();
-        return sanitized.length() > 500 ? sanitized.substring(0, 500) : sanitized;
+        return "AI 点评暂时不可用，请稍后重试，或先查看参考解析继续练习。";
     }
 
     private String defaultSource(String source) {

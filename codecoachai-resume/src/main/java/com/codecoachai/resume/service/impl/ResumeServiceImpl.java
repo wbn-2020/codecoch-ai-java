@@ -1008,6 +1008,11 @@ public class ResumeServiceImpl implements ResumeService {
                 patch = patches.get("title");
                 normalizedField = "title";
             }
+            if (isHighRiskResumePatch(patch)) {
+                skippedFields.add(field);
+                warnings.add("AI suggestion skipped because it contains unverified resume facts: " + field);
+                continue;
+            }
             String oldValue = resumeFieldValue(source, normalizedField);
             String newValue = patchValue(patch, oldValue);
             if (newValue == null) {
@@ -1025,6 +1030,13 @@ public class ResumeServiceImpl implements ResumeService {
             warnings.add("Structured patch was present but no selected supported field could be applied.");
         }
         return new StructuredApplyResult(appliedFields, skippedFields, diff, warnings);
+    }
+
+    private boolean isHighRiskResumePatch(JsonNode patch) {
+        return patch != null
+                && patch.isObject()
+                && (patch.path("fabricationRisk").asBoolean(false)
+                || StringUtils.hasText(patch.path("unsupportedFact").asText(null)));
     }
 
     private ObjectNode extractFieldPatches(JsonNode resultJson, JsonNode requestPatches) {

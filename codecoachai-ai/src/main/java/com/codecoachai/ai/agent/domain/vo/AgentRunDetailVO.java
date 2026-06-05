@@ -19,6 +19,8 @@ public class AgentRunDetailVO {
     private String inputSnapshotJson;
     private String outputJson;
     private String rawOutputText;
+    private Boolean rawAvailable;
+    private String rawAccessPermission;
     private String promptType;
     private Long promptVersionId;
     private String modelName;
