@@ -344,7 +344,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         } catch (RuntimeException ex) {
             cleanupTasks(plan.getId());
             plan.setPlanStatus(PLAN_FAILED);
-            plan.setFailureReason(truncate(firstText(ex.getMessage(), "Learning plan generation failed"), 500));
+            log.warn("Study plan generation failed, planId={}, reportId={}", plan.getId(), report.getId(), ex);
+            plan.setFailureReason(studyPlanFailureMessage());
             studyPlanMapper.updateById(plan);
         }
         return toGenerateVO(plan);
@@ -406,7 +407,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             cleanupTasks(plan.getId());
             cleanupRelations(plan.getId());
             plan.setPlanStatus(PLAN_FAILED);
-            plan.setFailureReason(truncate(firstText(ex.getMessage(), "Gap-driven study plan generation failed"), 500));
+            log.warn("Gap-driven study plan generation failed, planId={}, profileId={}",
+                    plan.getId(), profile.getProfileId(), ex);
+            plan.setFailureReason(studyPlanFailureMessage());
             studyPlanMapper.updateById(plan);
             StudyPlanGenerateVO vo = toGenerateVO(plan);
             vo.setTaskCount(0);
@@ -1061,13 +1064,17 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private void validateAiPlan(GenerateLearningPlanVO aiPlan) {
         if (aiPlan == null || aiPlan.getStages() == null || aiPlan.getStages().isEmpty()) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Learning plan response missing stages");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少阶段任务");
         }
         boolean hasItem = aiPlan.getStages().stream()
                 .anyMatch(stage -> stage != null && stage.getItems() != null && !stage.getItems().isEmpty());
         if (!hasItem) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Learning plan response missing tasks");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少可执行任务");
         }
+    }
+
+    private String studyPlanFailureMessage() {
+        return "学习计划生成失败：AI 返回内容暂时不可用，请稍后重试，或返回报告页重新生成。";
     }
 
     private Map<Long, InnerSkillGapItemVO> loadGapMap(Long skillProfileId) {

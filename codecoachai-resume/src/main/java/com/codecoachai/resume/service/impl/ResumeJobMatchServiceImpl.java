@@ -44,15 +44,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
 
-    private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final long DEFAULT_PAGE_NO = 1L;
     private static final long DEFAULT_PAGE_SIZE = 10L;
     private static final long MAX_PAGE_SIZE = 100L;
@@ -170,6 +171,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
                     markSuccess(report.getId(), resultJson, response == null ? null : response.getAiCallLogId()));
             return toSubmitVO(success);
         } catch (RuntimeException ex) {
+            log.warn("Resume job match generation failed, reportId={}", report.getId(), ex);
             ResumeJobMatchReport failed = transactionTemplate.execute(status -> markFailed(report.getId(), ex));
             return toSubmitVO(failed);
         }
@@ -227,6 +229,11 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
         JsonNode dimensionScores = resultJson.path("dimensionScores");
+        validateSuccessResult(resultJson, dimensionScores);
+        List<ResumeJobMatchDetail> details = buildDetails(report, resultJson);
+        if (details.isEmpty()) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI resume job match result invalid: missing detail evidence");
+        }
         report.setOverallScore(integerValue(resultJson, "overallScore"));
         report.setTechStackScore(integerValue(dimensionScores, "techStack"));
         report.setProjectExperienceScore(integerValue(dimensionScores, "projectExperience"));
@@ -244,7 +251,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         report.setErrorMessage(null);
         report.setAiCallLogId(aiCallLogId);
         reportMapper.updateById(report);
-        replaceDetails(report, resultJson);
+        replaceDetails(report, details);
         return reportMapper.selectById(reportId);
     }
 
@@ -254,7 +261,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
         report.setStatus(ResumeJobMatchStatus.FAILED.getCode());
-        report.setErrorMessage(truncateErrorMessage(ex == null ? null : ex.getMessage()));
+        report.setErrorMessage(safeUserFacingMatchError(ex));
         reportMapper.updateById(report);
         detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
                 .eq(ResumeJobMatchDetail::getReportId, reportId)
@@ -262,11 +269,11 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return reportMapper.selectById(reportId);
     }
 
-    private void replaceDetails(ResumeJobMatchReport report, JsonNode resultJson) {
+    private void replaceDetails(ResumeJobMatchReport report, List<ResumeJobMatchDetail> details) {
         detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
                 .eq(ResumeJobMatchDetail::getReportId, report.getId())
                 .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
-        for (ResumeJobMatchDetail detail : buildDetails(report, resultJson)) {
+        for (ResumeJobMatchDetail detail : details) {
             detailMapper.insert(detail);
         }
     }
@@ -553,6 +560,62 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return root;
     }
 
+    private void validateSuccessResult(JsonNode root, JsonNode dimensionScores) {
+        requireScore(root, "overallScore");
+        if (dimensionScores == null || !dimensionScores.isObject()) {
+            throw invalidMatchResult("missing dimensionScores object");
+        }
+        requireScore(dimensionScores, "techStack");
+        requireScore(dimensionScores, "projectExperience");
+        requireScore(dimensionScores, "businessFit");
+        requireScore(dimensionScores, "communication");
+        requireArray(root, "strengths");
+        requireArray(root, "gaps");
+        requireArray(root, "resumeRisks");
+        requireArray(root, "optimizationSuggestions");
+        requireArray(root, "recommendedLearningTopics");
+        requireArray(root, "recommendedInterviewTopics");
+        if (!StringUtils.hasText(textValue(root, "summary"))) {
+            throw invalidMatchResult("missing summary");
+        }
+        requireEvidenceFields(root.path("strengths"), "strengths", "title", "evidence");
+        requireEvidenceFields(root.path("gaps"), "gaps", "skillName", "severity", "description", "evidence");
+    }
+
+    private Integer requireScore(JsonNode json, String fieldName) {
+        Integer score = integerValue(json, fieldName);
+        if (score == null || score < 0 || score > 100) {
+            throw invalidMatchResult("invalid score " + fieldName);
+        }
+        return score;
+    }
+
+    private void requireArray(JsonNode json, String fieldName) {
+        if (json == null || !json.path(fieldName).isArray()) {
+            throw invalidMatchResult("missing array " + fieldName);
+        }
+    }
+
+    private void requireEvidenceFields(JsonNode array, String arrayName, String... fields) {
+        if (array == null || !array.isArray()) {
+            throw invalidMatchResult("missing array " + arrayName);
+        }
+        for (JsonNode item : array) {
+            if (!item.isObject()) {
+                throw invalidMatchResult("invalid item in " + arrayName);
+            }
+            for (String field : fields) {
+                if (!StringUtils.hasText(textValue(item, field))) {
+                    throw invalidMatchResult("missing " + arrayName + "." + field);
+                }
+            }
+        }
+    }
+
+    private BusinessException invalidMatchResult(String reason) {
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, "AI resume job match result invalid: " + reason);
+    }
+
     private JsonNode readJsonOrNull(String raw) {
         if (!StringUtils.hasText(raw)) {
             return null;
@@ -625,9 +688,39 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return Math.min(pageSize, MAX_PAGE_SIZE);
     }
 
-    private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "Resume job match failed";
-        return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    private String safeUserFacingMatchError(RuntimeException ex) {
+        String message = ex == null ? null : ex.getMessage();
+        if (!StringUtils.hasText(message)) {
+            return "\u7b80\u5386\u5339\u914d\u62a5\u544a\u751f\u6210\u5931\u8d25\uff0c\u4efb\u52a1\u8bb0\u5f55\u5df2\u4fdd\u7559\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002";
+        }
+        String lower = message.toLowerCase();
+        if (lower.contains("jd analysis") || lower.contains("job description") || lower.contains("target job jd")) {
+            return "\u76ee\u6807\u5c97\u4f4d JD \u5c1a\u672a\u5b8c\u6210\u89e3\u6790\uff0c\u8bf7\u5148\u91cd\u65b0\u89e3\u6790\u5c97\u4f4d\u63cf\u8ff0\u540e\u518d\u751f\u6210\u5339\u914d\u62a5\u544a\u3002";
+        }
+        if (lower.contains("ai resume job match")
+                || lower.contains("ai response")
+                || lower.contains("techstack")
+                || lower.contains("json")
+                || lower.contains("parse")) {
+            return "\u0041\u0049 \u5339\u914d\u7ed3\u679c\u5b57\u6bb5\u5f02\u5e38\uff0c\u5df2\u4fdd\u7559\u672c\u6b21\u4efb\u52a1\u8bb0\u5f55\uff0c\u8bf7\u7a0d\u540e\u91cd\u65b0\u751f\u6210\u3002";
+        }
+        return "\u7b80\u5386\u6216\u76ee\u6807\u5c97\u4f4d\u6570\u636e\u4e0d\u5b8c\u6574\uff0c\u8bf7\u68c0\u67e5\u540e\u91cd\u65b0\u751f\u6210\u5339\u914d\u62a5\u544a\u3002";
+    }
+
+    private String userFacingMatchError(RuntimeException ex) {
+        String message = ex == null ? null : ex.getMessage();
+        if (!StringUtils.hasText(message)) {
+            return "AI 匹配报告生成失败，请稍后重试。";
+        }
+        String lower = message.toLowerCase();
+        if (lower.contains("ai resume job match")
+                || lower.contains("ai response")
+                || lower.contains("techstack")
+                || lower.contains("json")
+                || lower.contains("parse")) {
+            return "AI 匹配结果部分字段异常，已保留本次任务记录，请稍后重新生成。";
+        }
+        return "\u7b80\u5386\u5339\u914d\u62a5\u544a\u751f\u6210\u5931\u8d25\uff0c\u4efb\u52a1\u8bb0\u5f55\u5df2\u4fdd\u7559\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002";
     }
 
     private String firstText(String... values) {

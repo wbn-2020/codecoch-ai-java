@@ -9,6 +9,8 @@ import com.codecoachai.ai.agent.domain.vo.SkillTagVO;
 
 public final class AgentConvert {
 
+    private static final String RAW_ACCESS_PERMISSION = "admin:ai:log:raw:view";
+
     private AgentConvert() {
     }
 
@@ -53,6 +55,8 @@ public final class AgentConvert {
         vo.setInputSnapshotJson(run.getInputSnapshotJson());
         vo.setOutputJson(run.getOutputJson());
         vo.setRawOutputText(run.getRawOutputText());
+        vo.setRawAvailable(true);
+        vo.setRawAccessPermission(RAW_ACCESS_PERMISSION);
         vo.setPromptType(run.getPromptType());
         vo.setPromptVersionId(run.getPromptVersionId());
         vo.setModelName(run.getModelName());

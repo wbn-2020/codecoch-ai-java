@@ -16,11 +16,20 @@ public class V4AdminPermissionGuard {
     private final JdbcTemplate jdbcTemplate;
 
     public void require(String permissionCode) {
-        SecurityAssert.requireAdmin();
-        if (!StringUtils.hasText(permissionCode)) {
+        if (!has(permissionCode)) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
         }
+    }
+
+    public boolean has(String permissionCode) {
+        SecurityAssert.requireAdmin();
+        if (!StringUtils.hasText(permissionCode)) {
+            return false;
+        }
         Long userId = LoginUserContext.getUserId();
+        if (userId == null) {
+            return false;
+        }
         Integer count = jdbcTemplate.queryForObject("""
                 SELECT COUNT(1)
                 FROM sys_user_role ur
@@ -31,8 +40,6 @@ public class V4AdminPermissionGuard {
                   AND ur.user_id = ?
                   AND m.permission_code = ?
                 """, Integer.class, userId, permissionCode);
-        if (count == null || count <= 0) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
+        return count != null && count > 0;
     }
 }

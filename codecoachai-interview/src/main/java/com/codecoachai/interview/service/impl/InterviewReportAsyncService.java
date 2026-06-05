@@ -21,6 +21,7 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,15 +39,21 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class InterviewReportAsyncService {
 
-    private static final int DEFAULT_REPORT_SCORE = 82;
     private static final String REPORT_AI_EMPTY_MESSAGE = "AI 报告内容暂时不完整";
-    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "，已生成可用于复习的基础报告。";
-    private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。";
+    private static final String REPORT_AI_INCOMPLETE_MESSAGE = REPORT_AI_EMPTY_MESSAGE
+            + "，未生成可核对的题目明细。答题记录已保留，请稍后重新生成报告。";
+    private static final String REPORT_AI_INCOMPLETE_SUGGESTIONS = "[\"稍后重新生成面试报告\",\"继续补充回答后再生成报告\",\"如多次失败，请将诊断记录交给管理员排查\"]";
+    private static final String DEFAULT_REPORT_SUMMARY = "本场模拟面试已完成，请结合题目明细复盘回答表现。";
     private static final String DEFAULT_REPORT_STRENGTHS = "[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]";
     private static final String DEFAULT_REPORT_WEAKNESSES = "部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。";
     private static final String DEFAULT_REPORT_SUGGESTIONS = "[\"复盘集合、并发、事务、索引和缓存高频题\",\"准备 2-3 个带指标的项目优化案例\"]";
+    private static final String REPORT_SAMPLE_INSUFFICIENT_MESSAGE = "答题样本不足，无法生成评分报告。请至少提交 1 条有效回答后再结束面试。";
+    private static final String REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS = "[\"至少提交 1 条有效回答后再结束面试\",\"如果只是想退出，可稍后重新开始面试训练\"]";
+    private static final String REPORT_GENERATION_FAILED_MESSAGE =
+            "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewReportMapper reportMapper;
@@ -73,27 +81,42 @@ public class InterviewReportAsyncService {
         }
         try {
             List<InterviewMessage> messages = messageEntities(session.getId());
+            if (!hasScorableAnswers(messages)) {
+                markReportSampleInsufficient(session, report);
+                return;
+            }
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(buildReportDTO(session, messages)));
             report.setStatus(ReportStatusEnum.GENERATED.name());
-            applyReportContent(report, aiReport);
-            applyLearningFeedback(report, messages);
+            applyReportContent(report, aiReport, messages);
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                applyLearningFeedback(report, messages);
+            }
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
-            session.setReportStatus(ReportStatusEnum.GENERATED.name());
-            session.setTotalScore(report.getTotalScore());
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                session.setReportStatus(ReportStatusEnum.GENERATED.name());
+                session.setTotalScore(report.getTotalScore());
+                session.setFailureReason(null);
+            } else {
+                session.setReportStatus(ReportStatusEnum.FAILED.name());
+                session.setTotalScore(null);
+                session.setFailureReason(report.getFailureReason());
+            }
             session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
-            session.setFailureReason(null);
             sessionMapper.updateById(session);
-            syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
+            }
         } catch (RuntimeException ex) {
+            log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
             report.setStatus(ReportStatusEnum.FAILED.name());
-            report.setFailureReason(ex.getMessage());
+            report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.FAILED.name());
             session.setReportStatus(ReportStatusEnum.FAILED.name());
-            session.setFailureReason(ex.getMessage());
+            session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             sessionMapper.updateById(session);
         }
     }
@@ -173,13 +196,13 @@ public class InterviewReportAsyncService {
                 .last("limit 1"));
     }
 
-    private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
-        if (aiReportMissingDisplayContent(aiReport)) {
-            applyDefaultReportContent(report);
-            report.setFailureReason(REPORT_FALLBACK_REASON);
+    private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
+        int answerCount = countScorableAnswers(messages);
+        if (aiReportMissingDisplayContent(aiReport) || !hasExpectedQaReviews(aiReport, answerCount)) {
+            markReportAiIncomplete(report);
             return;
         }
-        report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
+        report.setTotalScore(aiReport.getTotalScore());
         report.setSummary(firstText(aiReport.getSummary(), DEFAULT_REPORT_SUMMARY));
         report.setStageScores(aiReport.getStageScores());
         report.setWeakPoints(aiReport.getWeakPoints());
@@ -202,6 +225,36 @@ public class InterviewReportAsyncService {
                 || aiReport.getTotalScore() <= 0
                 || !StringUtils.hasText(aiReport.getSummary())
                 || !StringUtils.hasText(aiReport.getReportContent());
+    }
+
+    private boolean hasExpectedQaReviews(GenerateReportVO aiReport, int answerCount) {
+        if (answerCount <= 0 || aiReport == null) {
+            return false;
+        }
+        int reviewCount = countJsonArrayItems(aiReport.getQaReview());
+        return reviewCount == answerCount;
+    }
+
+    private int countScorableAnswers(List<InterviewMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        return (int) messages.stream().filter(message ->
+                "USER".equalsIgnoreCase(message.getRole())
+                        && "ANSWER".equalsIgnoreCase(message.getMessageType())
+                        && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent()))).count();
+    }
+
+    private int countJsonArrayItems(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(value);
+            return node != null && node.isArray() ? node.size() : 0;
+        } catch (Exception ex) {
+            return 0;
+        }
     }
 
     private void applyLearningFeedback(InterviewReport report, List<InterviewMessage> messages) {
@@ -399,22 +452,61 @@ public class InterviewReportAsyncService {
         return builder.toString();
     }
 
-    private void applyDefaultReportContent(InterviewReport report) {
-        report.setTotalScore(DEFAULT_REPORT_SCORE);
-        report.setSummary(DEFAULT_REPORT_SUMMARY);
-        report.setStageScores("{\"Java基础\":82,\"数据库\":80,\"项目表达\":84}");
-        report.setWeakPoints("[\"源码细节展开不足\",\"线上排查步骤不够完整\",\"项目指标量化不足\"]");
-        report.setStrengths(DEFAULT_REPORT_STRENGTHS);
-        report.setWeaknesses(DEFAULT_REPORT_WEAKNESSES);
-        report.setMainProblems(DEFAULT_REPORT_WEAKNESSES);
-        report.setProjectProblems("[\"项目优化结果缺少压测数据或线上指标佐证\"]");
-        report.setReviewSuggestions(DEFAULT_REPORT_SUGGESTIONS);
-        report.setRecommendedQuestions("[\"HashMap 扩容机制是什么？\",\"MySQL 索引失效有哪些场景？\",\"如何保证缓存和数据库一致性？\"]");
+    private void markReportAiIncomplete(InterviewReport report) {
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setTotalScore(null);
+        report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
+        report.setStageScores("{}");
+        report.setWeakPoints("[]");
+        report.setStrengths("[]");
+        report.setWeaknesses(null);
+        report.setMainProblems("[]");
+        report.setProjectProblems("[]");
+        report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
+        report.setRecommendedQuestions("[]");
         report.setQaReview("[]");
-        report.setReportContent(DEFAULT_REPORT_SUMMARY);
+        report.setReportContent(REPORT_AI_INCOMPLETE_MESSAGE);
         report.setGeneratedAt(LocalDateTime.now());
-        report.setSuggestions(DEFAULT_REPORT_SUGGESTIONS);
-        report.setFailureReason(null);
+        report.setSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
+        report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
+    }
+
+    private void markReportSampleInsufficient(InterviewSession session, InterviewReport report) {
+        report.setUserId(session.getUserId());
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setTotalScore(null);
+        report.setSummary(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        report.setStageScores("{}");
+        report.setWeakPoints("[]");
+        report.setStrengths("[]");
+        report.setWeaknesses(null);
+        report.setMainProblems("[]");
+        report.setProjectProblems("[]");
+        report.setReviewSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
+        report.setRecommendedQuestions("[]");
+        report.setQaReview("[]");
+        report.setReportContent(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        report.setGeneratedAt(LocalDateTime.now());
+        report.setSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
+        report.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        saveReport(report);
+
+        session.setStatus(InterviewStatusEnum.COMPLETED.name());
+        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setTotalScore(null);
+        session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
+        session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        sessionMapper.updateById(session);
+    }
+
+    private boolean hasScorableAnswers(List<InterviewMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
+        return messages.stream().anyMatch(message ->
+                "USER".equalsIgnoreCase(message.getRole())
+                        && "ANSWER".equalsIgnoreCase(message.getMessageType())
+                        && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent())));
     }
 
     private void saveReport(InterviewReport report) {

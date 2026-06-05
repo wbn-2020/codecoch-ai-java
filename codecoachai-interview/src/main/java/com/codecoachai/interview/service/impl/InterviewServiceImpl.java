@@ -55,11 +55,14 @@ import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -68,16 +71,22 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class InterviewServiceImpl implements InterviewService {
 
     private static final int MAX_FOLLOW_UP_COUNT = 2;
     private static final String REPORT_AI_EMPTY_MESSAGE = "AI 报告内容暂时不完整";
-    private static final String REPORT_FALLBACK_REASON = REPORT_AI_EMPTY_MESSAGE + "，已生成可用于复习的基础报告。";
-    private static final int DEFAULT_REPORT_SCORE = 82;
-    private static final String DEFAULT_REPORT_SUMMARY = "本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出，用于本地演示和后续针对性复习。";
+    private static final String REPORT_AI_INCOMPLETE_MESSAGE = REPORT_AI_EMPTY_MESSAGE
+            + "，未生成可核对的题目明细。答题记录已保留，请稍后重新生成报告。";
+    private static final String REPORT_AI_INCOMPLETE_SUGGESTIONS = "[\"稍后重新生成面试报告\",\"继续补充回答后再生成报告\",\"如多次失败，请将诊断记录交给管理员排查\"]";
+    private static final String DEFAULT_REPORT_SUMMARY = "本场模拟面试已完成，请结合题目明细复盘回答表现。";
     private static final String DEFAULT_REPORT_STRENGTHS = "回答亮点：能够围绕 Java 后端常见题目给出基本结论，并能结合 Spring、MySQL、Redis 等技术栈说明常见处理思路。项目类问题中能描述业务背景和核心方案。";
     private static final String DEFAULT_REPORT_WEAKNESSES = "主要问题：部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足，项目优化结果缺少量化指标。";
     private static final String DEFAULT_REPORT_SUGGESTIONS = "复习建议：1. 复盘集合、并发、事务、索引和缓存的高频题；2. 准备 2-3 个带指标的项目优化案例；3. 回答时按结论、原理、项目实践、风险边界的顺序组织。";
+    private static final String REPORT_SAMPLE_INSUFFICIENT_MESSAGE = "答题样本不足，无法生成评分报告。请至少提交 1 条有效回答后再结束面试。";
+    private static final String REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS = "[\"至少提交 1 条有效回答后再结束面试\",\"如果只是想退出，可稍后重新开始面试训练\"]";
+    private static final String REPORT_GENERATION_FAILED_MESSAGE =
+            "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -89,6 +98,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final InterviewReportAsyncService reportAsyncService;
     private final IndustryTemplateService industryTemplateService;
     private final InterviewMqDispatcher interviewMqDispatcher;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -382,6 +392,9 @@ public class InterviewServiceImpl implements InterviewService {
     @Transactional(rollbackFor = Exception.class)
     public FinishInterviewVO finish(Long id) {
         InterviewSession session = getOwnedSession(id);
+        if (!hasScorableAnswers(session.getId())) {
+            return prepareInsufficientReport(session);
+        }
         FinishInterviewVO vo = prepareReportGeneration(session);
         submitReportGenerationAfterCommit(session.getId());
         return vo;
@@ -391,6 +404,9 @@ public class InterviewServiceImpl implements InterviewService {
     @Transactional(rollbackFor = Exception.class)
     public FinishInterviewVO retryReport(Long id) {
         InterviewSession session = getOwnedSession(id);
+        if (!hasScorableAnswers(session.getId())) {
+            return prepareInsufficientReport(session);
+        }
         InterviewReport existing = currentReport(session.getId());
         if (existing != null && ReportStatusEnum.GENERATED.name().equals(existing.getStatus())) {
             FinishInterviewVO vo = new FinishInterviewVO();
@@ -469,7 +485,21 @@ public class InterviewServiceImpl implements InterviewService {
             }
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not generated");
         }
-        normalizeReportContent(report);
+        List<InterviewMessage> messages = messageEntities(session.getId());
+        if (!hasScorableAnswers(messages)) {
+            report = markReportSampleInsufficient(session, report);
+        } else if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                && !hasExpectedQaReviews(report.getQaReview(), countScorableAnswers(messages))) {
+            markReportAiIncomplete(session, report);
+            saveReport(report);
+            sessionMapper.updateById(session);
+        }
+        if (normalizeReportContent(report)) {
+            session.setReportStatus(ReportStatusEnum.FAILED.name());
+            session.setTotalScore(null);
+            session.setFailureReason(report.getFailureReason());
+            sessionMapper.updateById(session);
+        }
         return InterviewConvert.toReportVO(report);
     }
 
@@ -507,6 +537,11 @@ public class InterviewServiceImpl implements InterviewService {
         try {
             progress(progressConsumer, "LOAD_ANSWERS");
             List<InterviewMessage> messages = messageEntities(session.getId());
+            if (!hasScorableAnswers(messages)) {
+                progress(progressConsumer, "SAVE_REPORT");
+                markReportSampleInsufficient(session, report);
+                return buildReportGenerateResult(session.getId(), null, report);
+            }
             progress(progressConsumer, "BUILD_PROMPT");
             GenerateReportDTO reportDTO = buildReportDTO(session, messages);
             progress(progressConsumer, "CALL_AI");
@@ -515,25 +550,34 @@ public class InterviewServiceImpl implements InterviewService {
 
             progress(progressConsumer, "SAVE_REPORT");
             report.setStatus(ReportStatusEnum.GENERATED.name());
-            applyReportContent(report, aiReport);
+            applyReportContent(report, aiReport, messages);
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
-            session.setReportStatus(ReportStatusEnum.GENERATED.name());
-            session.setTotalScore(report.getTotalScore());
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                session.setReportStatus(ReportStatusEnum.GENERATED.name());
+                session.setTotalScore(report.getTotalScore());
+                session.setFailureReason(null);
+            } else {
+                session.setReportStatus(ReportStatusEnum.FAILED.name());
+                session.setTotalScore(null);
+                session.setFailureReason(report.getFailureReason());
+            }
             session.setEndTime(LocalDateTime.now());
-            session.setFailureReason(null);
             sessionMapper.updateById(session);
-            syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
+            }
             return buildReportGenerateResult(session.getId(), aiCallLogId, report);
         } catch (RuntimeException ex) {
+            log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
             report.setStatus(ReportStatusEnum.FAILED.name());
-            report.setFailureReason(ex.getMessage());
+            report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             saveReport(report);
 
             session.setStatus(InterviewStatusEnum.FAILED.name());
             session.setReportStatus(ReportStatusEnum.FAILED.name());
-            session.setFailureReason(ex.getMessage());
+            session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             sessionMapper.updateById(session);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview report generation failed");
         }
@@ -604,6 +648,23 @@ public class InterviewServiceImpl implements InterviewService {
         return vo;
     }
 
+    private FinishInterviewVO prepareInsufficientReport(InterviewSession session) {
+        InterviewReport report = currentReport(session.getId());
+        if (report == null) {
+            report = new InterviewReport();
+            report.setSessionId(session.getId());
+            report.setUserId(session.getUserId());
+        }
+        markReportSampleInsufficient(session, report);
+
+        FinishInterviewVO vo = new FinishInterviewVO();
+        vo.setId(session.getId());
+        vo.setStatus(session.getStatus());
+        vo.setReportStatus(session.getReportStatus());
+        vo.setReport(InterviewConvert.toReportVO(report));
+        return vo;
+    }
+
     private void submitReportGenerationAfterCommit(Long sessionId) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             reportAsyncService.generateReportAsync(sessionId);
@@ -655,20 +716,40 @@ public class InterviewServiceImpl implements InterviewService {
             reportDTO.setDifficulty(session.getDifficulty());
             reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
             reportDTO.setProjectContent(buildProjectContent(resume));
-            reportDTO.setMessages(messageEntities(session.getId()).stream().map(InterviewMessage::getContent).toList());
+            List<InterviewMessage> messages = messageEntities(session.getId());
+            if (!hasScorableAnswers(messages)) {
+                markReportSampleInsufficient(session, report);
+                saveReport(report);
+                sessionMapper.updateById(session);
+                FinishInterviewVO vo = new FinishInterviewVO();
+                vo.setId(session.getId());
+                vo.setStatus(session.getStatus());
+                vo.setReportStatus(session.getReportStatus());
+                vo.setReport(InterviewConvert.toReportVO(report));
+                return vo;
+            }
+            reportDTO.setMessages(messages.stream().map(InterviewMessage::getContent).toList());
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
             report.setStatus(ReportStatusEnum.GENERATED.name());
-            applyReportContent(report, aiReport);
+            applyReportContent(report, aiReport, messages);
             session.setStatus(InterviewStatusEnum.COMPLETED.name());
-            session.setReportStatus(ReportStatusEnum.GENERATED.name());
-            session.setTotalScore(report.getTotalScore());
+            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                session.setReportStatus(ReportStatusEnum.GENERATED.name());
+                session.setTotalScore(report.getTotalScore());
+                session.setFailureReason(null);
+            } else {
+                session.setReportStatus(ReportStatusEnum.FAILED.name());
+                session.setTotalScore(null);
+                session.setFailureReason(report.getFailureReason());
+            }
             session.setEndTime(LocalDateTime.now());
         } catch (RuntimeException ex) {
+            log.warn("Interview finish report generation failed, sessionId={}", session.getId(), ex);
             report.setStatus(ReportStatusEnum.FAILED.name());
-            report.setFailureReason(ex.getMessage());
+            report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             session.setStatus(InterviewStatusEnum.FAILED.name());
             session.setReportStatus(ReportStatusEnum.FAILED.name());
-            session.setFailureReason(ex.getMessage());
+            session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
         }
         saveReport(report);
         sessionMapper.updateById(session);
@@ -1042,13 +1123,14 @@ public class InterviewServiceImpl implements InterviewService {
                 .last("limit 1"));
     }
 
-    private void applyReportContent(InterviewReport report, GenerateReportVO aiReport) {
-        if (aiReportMissingDisplayContent(aiReport)) {
-            applyDefaultReportContent(report);
-            report.setFailureReason(REPORT_FALLBACK_REASON);
+    private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
+        int answerCount = countScorableAnswers(messages);
+        if (aiReportMissingDisplayContent(aiReport)
+                || !hasExpectedQaReviews(aiReport == null ? null : aiReport.getQaReview(), answerCount)) {
+            markReportAiIncomplete(report);
             return;
         }
-        report.setTotalScore(aiReport.getTotalScore() == null ? DEFAULT_REPORT_SCORE : aiReport.getTotalScore());
+        report.setTotalScore(aiReport.getTotalScore());
         report.setSummary(StringUtils.hasText(aiReport.getSummary()) ? aiReport.getSummary() : DEFAULT_REPORT_SUMMARY);
         report.setStageScores(aiReport.getStageScores());
         report.setWeakPoints(aiReport.getWeakPoints());
@@ -1076,42 +1158,125 @@ public class InterviewServiceImpl implements InterviewService {
                 || !StringUtils.hasText(aiReport.getReportContent());
     }
 
-    private void normalizeReportContent(InterviewReport report) {
-        if (report == null || !isEnglishMockReport(report)) {
-            return;
+    private boolean hasExpectedQaReviews(String qaReview, int answerCount) {
+        if (answerCount <= 0) {
+            return false;
         }
-        applyDefaultReportContent(report);
+        return countJsonArrayItems(qaReview) == answerCount;
+    }
+
+    private int countScorableAnswers(List<InterviewMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        return (int) messages.stream().filter(message ->
+                "USER".equalsIgnoreCase(message.getRole())
+                        && "ANSWER".equalsIgnoreCase(message.getMessageType())
+                        && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent()))).count();
+    }
+
+    private int countJsonArrayItems(String value) {
+        if (!StringUtils.hasText(value)) {
+            return 0;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(value);
+            return node != null && node.isArray() ? node.size() : 0;
+        } catch (Exception ex) {
+            return 0;
+        }
+    }
+
+    private boolean normalizeReportContent(InterviewReport report) {
+        if (report == null || !isEnglishMockReport(report)) {
+            return false;
+        }
+        markReportAiIncomplete(report);
         saveReport(report);
+        return true;
     }
 
     private boolean isEnglishMockReport(InterviewReport report) {
-        return false && (containsIgnoreCase(report.getSummary(), "Mock report")
+        return containsIgnoreCase(report.getSummary(), "Mock report")
                 || containsIgnoreCase(report.getSummary(), "the interview has been completed")
                 || containsIgnoreCase(report.getStrengths(), "Shows basic understanding")
                 || containsIgnoreCase(report.getWeaknesses(), "Needs more depth")
-                || containsIgnoreCase(report.getSuggestions(), "Review JVM"));
+                || containsIgnoreCase(report.getSuggestions(), "Review JVM");
     }
 
     private boolean containsIgnoreCase(String value, String keyword) {
         return StringUtils.hasText(value) && value.toLowerCase().contains(keyword.toLowerCase());
     }
 
-    private void applyDefaultReportContent(InterviewReport report) {
-        report.setTotalScore(DEFAULT_REPORT_SCORE);
-        report.setSummary(DEFAULT_REPORT_SUMMARY);
-        report.setStageScores("{\"Java基础\":82,\"数据库\":80,\"项目表达\":84}");
-        report.setWeakPoints("[\"源码细节展开不足\",\"线上排查步骤不够完整\",\"项目指标量化不足\"]");
-        report.setStrengths(DEFAULT_REPORT_STRENGTHS);
-        report.setWeaknesses(DEFAULT_REPORT_WEAKNESSES);
-        report.setMainProblems(DEFAULT_REPORT_WEAKNESSES);
-        report.setProjectProblems("[\"项目优化结果缺少压测数据或线上指标佐证\"]");
-        report.setReviewSuggestions(DEFAULT_REPORT_SUGGESTIONS);
-        report.setRecommendedQuestions("[\"HashMap 扩容机制是什么？\",\"MySQL 索引失效有哪些场景？\",\"如何保证缓存和数据库一致性？\"]");
+    private void markReportAiIncomplete(InterviewSession session, InterviewReport report) {
+        markReportAiIncomplete(report);
+        session.setStatus(InterviewStatusEnum.COMPLETED.name());
+        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setTotalScore(null);
+        session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
+        session.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
+    }
+
+    private void markReportAiIncomplete(InterviewReport report) {
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setTotalScore(null);
+        report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
+        report.setStageScores("{}");
+        report.setWeakPoints("[]");
+        report.setStrengths("[]");
+        report.setWeaknesses(null);
+        report.setMainProblems("[]");
+        report.setProjectProblems("[]");
+        report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
+        report.setRecommendedQuestions("[]");
         report.setQaReview("[]");
-        report.setReportContent(DEFAULT_REPORT_SUMMARY);
+        report.setReportContent(REPORT_AI_INCOMPLETE_MESSAGE);
         report.setGeneratedAt(LocalDateTime.now());
-        report.setSuggestions(DEFAULT_REPORT_SUGGESTIONS);
-        report.setFailureReason(null);
+        report.setSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
+        report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
+    }
+
+    private InterviewReport markReportSampleInsufficient(InterviewSession session, InterviewReport report) {
+        report.setUserId(session.getUserId());
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setTotalScore(null);
+        report.setSummary(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        report.setStageScores("{}");
+        report.setWeakPoints("[]");
+        report.setStrengths("[]");
+        report.setWeaknesses(null);
+        report.setMainProblems("[]");
+        report.setProjectProblems("[]");
+        report.setReviewSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
+        report.setRecommendedQuestions("[]");
+        report.setQaReview("[]");
+        report.setReportContent(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        report.setGeneratedAt(LocalDateTime.now());
+        report.setSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
+        report.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        saveReport(report);
+
+        session.setStatus(InterviewStatusEnum.COMPLETED.name());
+        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setTotalScore(null);
+        session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
+        session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
+        sessionMapper.updateById(session);
+        return report;
+    }
+
+    private boolean hasScorableAnswers(Long sessionId) {
+        return hasScorableAnswers(messageEntities(sessionId));
+    }
+
+    private boolean hasScorableAnswers(List<InterviewMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return false;
+        }
+        return messages.stream().anyMatch(message ->
+                "USER".equalsIgnoreCase(message.getRole())
+                        && "ANSWER".equalsIgnoreCase(message.getMessageType())
+                        && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent())));
     }
 
     private void saveReport(InterviewReport report) {

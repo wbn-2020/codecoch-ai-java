@@ -47,7 +47,10 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -82,7 +85,11 @@ public class AiServiceImpl implements AiService {
             "PostgreSQL", "MongoDB", "Jenkins", "GitHub Actions", "GitHub Action", "AWS", "Kubernetes",
             "K8s", "WebFlux", "Docker", "RabbitMQ", "RocketMQ", "Kafka", "Nacos", "Seata",
             "Elasticsearch", "ElasticSearch", "Flink", "ClickHouse", "CI/CD", "CICD",
-            "云原生", "容器化", "空窗", "6个月", "六个月");
+            "阿里云", "腾讯云", "华为云", "百度云", "Azure", "GCP", "云原生", "容器化",
+            "阿里", "腾讯", "字节", "美团", "百度", "京东", "华为", "蚂蚁", "小米", "滴滴",
+            "空窗", "6个月", "六个月");
+    private static final Pattern UNSUPPORTED_NUMERIC_FACT_PATTERN = Pattern.compile(
+            "(?i)(\\d+(?:\\.\\d+)?\\s*(?:%|ms|毫秒|秒|s|qps|tps|w|万|k|人|台|倍|个月|年|小时|天)|[一二三四五六七八九十百千万]+(?:人|台|万|个月|年|小时|天))");
     private static final String SCENE_TARGETED_QUESTION_RECOMMEND = "TARGETED_QUESTION_RECOMMEND";
 
     private final AiCallLogMapper aiCallLogMapper;
@@ -212,20 +219,20 @@ public class AiServiceImpl implements AiService {
                 RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getRecordId()));
                 rawResponse = routeResult.getContent();
                 vo = parsePracticeReview(rawResponse, dto);
+                validatePracticeReviewQuality(vo, dto);
                 logId = routeResult.getAiCallLogId();
             }
             vo.setAiCallLogId(logId);
             vo.setRawResponse(rawResponse);
             return vo;
         } catch (RuntimeException ex) {
-            if (!mockEnabled()) {
-                throw ex;
-            }
             PracticeReviewVO fallback = mockPracticeReview(dto);
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getRecordId()),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
             fallback.setAiCallLogId(logId);
-            fallback.setRawResponse(firstText(rawResponse, ex.getMessage()));
+            fallback.setRawResponse(null);
+            fallback.setSummary("AI 点评暂时未通过主题或语言校验，系统已生成基础中文点评。建议先对照参考答案补齐核心概念、适用场景和边界条件。");
+            fallback.setComment(fallback.getSummary());
             return fallback;
         }
     }
@@ -390,7 +397,7 @@ public class AiServiceImpl implements AiService {
             } else {
                 RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getOptimizeRecordId()));
                 rawResponse = routeResult.getContent();
-                resultJson = parseResumeOptimizeJson(rawResponse);
+                resultJson = parseResumeOptimizeJson(rawResponse, dto);
                 logId = routeResult.getAiCallLogId();
             }
             ResumeOptimizeAiResponseVO vo = new ResumeOptimizeAiResponseVO();
@@ -428,9 +435,12 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+            Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getLearningPlanId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
-            throw toBusinessException(ex);
+            GenerateLearningPlanVO fallback = mockLearningPlan(dto);
+            fallback.setPlanSummary("AI 学习计划返回格式异常，系统已生成基础模板计划。你可以先按该计划训练，稍后再重新生成。");
+            fallback.setAiCallLogId(logId);
+            return fallback;
         }
     }
 
@@ -459,10 +469,13 @@ public class AiServiceImpl implements AiService {
             vo.setAiCallLogId(logId);
             return vo;
         } catch (RuntimeException ex) {
-            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+            Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
-            throw toBusinessException(ex);
+            GenerateLearningPlanVO fallback = mockTargetedStudyPlan(dto);
+            fallback.setPlanSummary("AI 针对性学习计划返回格式异常，系统已按当前短板生成基础模板计划。你可以先执行任务，稍后再重新生成。");
+            fallback.setAiCallLogId(logId);
+            return fallback;
         }
     }
 
@@ -1186,6 +1199,81 @@ public class AiServiceImpl implements AiService {
         return vo;
     }
 
+    private void validatePracticeReviewQuality(PracticeReviewVO vo, PracticeReviewDTO dto) {
+        String reviewText = normalizeEvidenceText(
+                vo == null ? null : vo.getSummary(),
+                vo == null ? null : vo.getComment(),
+                vo == null ? null : vo.getSuggestions(),
+                vo == null ? null : vo.getReferenceComparison(),
+                vo == null ? null : String.join(" ", vo.getStrengths() == null ? List.of() : vo.getStrengths()),
+                vo == null ? null : String.join(" ", vo.getWeaknesses() == null ? List.of() : vo.getWeaknesses()),
+                vo == null ? null : String.join(" ", vo.getImprovementSuggestions() == null ? List.of() : vo.getImprovementSuggestions()),
+                vo == null ? null : String.join(" ", vo.getKnowledgeGaps() == null ? List.of() : vo.getKnowledgeGaps()));
+        if (!hasEnoughChinese(reviewText)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI practice review must be Chinese");
+        }
+        if (!hasTopicOverlap(reviewText, dto)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI practice review is unrelated to the question");
+        }
+    }
+
+    private boolean hasEnoughChinese(String value) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        int chinese = 0;
+        int latin = 0;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c >= '\u4e00' && c <= '\u9fff') {
+                chinese++;
+            } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                latin++;
+            }
+        }
+        return chinese >= 12 && chinese >= Math.max(6, latin / 2);
+    }
+
+    private boolean hasTopicOverlap(String reviewText, PracticeReviewDTO dto) {
+        List<String> tokens = topicTokens(dto);
+        if (tokens.isEmpty()) {
+            return true;
+        }
+        String normalizedReview = normalizeEvidenceText(reviewText);
+        long matched = tokens.stream().filter(token -> containsEvidenceTerm(normalizedReview, token)).count();
+        int requiredMatches = tokens.size() >= 3 ? 2 : 1;
+        return matched >= requiredMatches;
+    }
+
+    private List<String> topicTokens(PracticeReviewDTO dto) {
+        String source = normalizeEvidenceText(
+                dto == null ? null : dto.getQuestionTitle(),
+                dto == null ? null : dto.getQuestionContent(),
+                dto == null ? null : dto.getKnowledgePoint());
+        if (!StringUtils.hasText(source)) {
+            return List.of();
+        }
+        List<String> tokens = new java.util.ArrayList<>();
+        Matcher matcher = Pattern.compile("[a-zA-Z][a-zA-Z0-9+#.-]{2,}|[\\u4e00-\\u9fff]{2,}").matcher(source);
+        while (matcher.find()) {
+            String token = matcher.group();
+            if (!isGenericTopicToken(token)) {
+                tokens.add(token);
+            }
+        }
+        return tokens.stream().distinct().limit(12).toList();
+    }
+
+    private boolean isGenericTopicToken(String token) {
+        if (!StringUtils.hasText(token)) {
+            return true;
+        }
+        String value = token.toLowerCase();
+        return List.of("java", "spring", "mysql", "redis", "题目", "问题", "答案", "分析",
+                "实现", "说明", "什么", "如何", "为什么", "核心", "主要", "用户", "参考",
+                "面试", "后台", "项目", "系统", "场景", "技术").contains(value);
+    }
+
     private void validatePracticeReviewDTO(PracticeReviewDTO dto) {
         if (dto == null || dto.getRecordId() == null || dto.getQuestionId() == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "practice record and question are required");
@@ -1349,7 +1437,7 @@ public class AiServiceImpl implements AiService {
     }
 
     private String requireLearningText(JsonNode json, String fieldName) {
-        String value = json.path(fieldName).asText(null);
+        String value = textField(json, fieldName);
         if (!StringUtils.hasText(value)) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI learning plan item missing field: " + fieldName);
@@ -1358,7 +1446,24 @@ public class AiServiceImpl implements AiService {
     }
 
     private String requireLearningText(JsonNode json, String fieldName, String aliasFieldName) {
-        String value = firstText(json.path(fieldName).asText(null), json.path(aliasFieldName).asText(null));
+        String value = firstText(textField(json, fieldName), textField(json, aliasFieldName));
+        if (!StringUtils.hasText(value)) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                    "AI learning plan item missing field: " + fieldName);
+        }
+        return value;
+    }
+
+    private String requireLearningText(JsonNode json, String fieldName, String... aliasFieldNames) {
+        String value = textField(json, fieldName);
+        if (!StringUtils.hasText(value) && aliasFieldNames != null) {
+            for (String alias : aliasFieldNames) {
+                value = textField(json, alias);
+                if (StringUtils.hasText(value)) {
+                    break;
+                }
+            }
+        }
         if (!StringUtils.hasText(value)) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI learning plan item missing field: " + fieldName);
@@ -1534,11 +1639,41 @@ public class AiServiceImpl implements AiService {
         }
         for (String fieldName : fieldNames) {
             JsonNode node = json.path(fieldName);
-            if (node != null && !node.isMissingNode() && !node.isNull()) {
+            if (isPresentNode(node)) {
                 return node;
+            }
+            String snakeCase = camelToSnake(fieldName);
+            if (!snakeCase.equals(fieldName)) {
+                node = json.path(snakeCase);
+                if (isPresentNode(node)) {
+                    return node;
+                }
             }
         }
         return null;
+    }
+
+    private boolean isPresentNode(JsonNode node) {
+        return node != null && !node.isMissingNode() && !node.isNull();
+    }
+
+    private String camelToSnake(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        StringBuilder builder = new StringBuilder(value.length() + 8);
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (Character.isUpperCase(ch)) {
+                if (i > 0) {
+                    builder.append('_');
+                }
+                builder.append(Character.toLowerCase(ch));
+            } else {
+                builder.append(ch);
+            }
+        }
+        return builder.toString();
     }
 
     private String jsonText(JsonNode json, String... fieldNames) {
@@ -1547,6 +1682,11 @@ public class AiServiceImpl implements AiService {
             return null;
         }
         return node.isTextual() ? node.asText(null) : node.toString();
+    }
+
+    private String textField(JsonNode json, String... fieldNames) {
+        JsonNode node = firstNode(json, fieldNames);
+        return node == null || node.isMissingNode() || node.isNull() ? null : node.asText(null);
     }
 
     private Integer parseScore(String value) {
@@ -1570,52 +1710,65 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response must be a JSON object");
         }
-        JsonNode stagesNode = json.path("stages");
-        if (!stagesNode.isArray() || stagesNode.isEmpty()) {
+        JsonNode stagesNode = firstNode(json, "stages", "stageList", "phases", "phaseList");
+        if (stagesNode == null || !stagesNode.isArray() || stagesNode.isEmpty()) {
+            JsonNode rootItems = firstNode(json, "items", "tasks", "taskItems", "dailyTasks", "planItems");
+            if (rootItems != null && rootItems.isArray() && !rootItems.isEmpty()) {
+                ObjectNode fallbackStage = objectMapper.createObjectNode();
+                fallbackStage.put("stageNo", 1);
+                fallbackStage.put("stageTitle", firstText(textField(json, "stageTitle", "title", "name"), "基础训练"));
+                fallbackStage.set("items", rootItems);
+                ArrayNode fallbackStages = objectMapper.createArrayNode();
+                fallbackStages.add(fallbackStage);
+                stagesNode = fallbackStages;
+            }
+        }
+        if (stagesNode == null || !stagesNode.isArray() || stagesNode.isEmpty()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response missing stages array");
         }
         GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
-        vo.setPlanTitle(firstText(json.path("planTitle").asText(null), defaultLearningPlanTitle(dto)));
-        vo.setPlanSummary(firstText(json.path("planSummary").asText(null), "Study plan generated from interview report"));
-        vo.setDurationDays(json.path("durationDays").isNumber()
-                ? normalizeDuration(json.path("durationDays").asInt())
-                : normalizeDuration(dto.getExpectedDurationDays()));
+        vo.setPlanTitle(firstText(textField(json, "planTitle", "title", "name"), defaultLearningPlanTitle(dto)));
+        vo.setPlanSummary(firstText(textField(json, "planSummary", "summary", "description"),
+                "Study plan generated from interview report"));
+        Integer durationDays = readInteger(firstNode(json, "durationDays", "duration", "days"));
+        vo.setDurationDays(durationDays == null
+                ? normalizeDuration(dto.getExpectedDurationDays())
+                : normalizeDuration(durationDays));
         List<GenerateLearningPlanVO.StageVO> stages = new java.util.ArrayList<>();
         for (JsonNode stageNode : stagesNode) {
             if (stageNode == null || !stageNode.isObject()) {
                 throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage must be object");
             }
-            JsonNode itemsNode = stageNode.path("items");
-            if (!itemsNode.isArray() || itemsNode.isEmpty()) {
+            JsonNode itemsNode = firstNode(stageNode, "items", "tasks", "taskItems", "dailyTasks", "planItems");
+            if (itemsNode == null || !itemsNode.isArray() || itemsNode.isEmpty()) {
                 throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage missing items array");
             }
             GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
-            stage.setStageNo(stageNode.path("stageNo").isNumber() ? stageNode.path("stageNo").asInt() : stages.size() + 1);
-            stage.setStageTitle(firstText(stageNode.path("stageTitle").asText(null), "Stage " + stage.getStageNo()));
+            Integer stageNo = readInteger(firstNode(stageNode, "stageNo", "no", "order"));
+            stage.setStageNo(stageNo == null ? stages.size() + 1 : stageNo);
+            stage.setStageTitle(firstText(textField(stageNode, "stageTitle", "title", "name"), "阶段 " + stage.getStageNo()));
             List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
             for (JsonNode itemNode : itemsNode) {
                 if (itemNode == null || !itemNode.isObject()) {
                     throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan item must be object");
                 }
                 GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
-                item.setDayOffset(itemNode.path("dayOffset").isNumber() ? itemNode.path("dayOffset").asInt() : null);
-                item.setKnowledgePoint(itemNode.path("knowledgePoint").asText(null));
-                item.setSkillName(itemNode.path("skillName").asText(null));
-                item.setSourceGapId(itemNode.path("sourceGapId").asText(null));
-                item.setTaskTitle(requireLearningText(itemNode, "taskTitle", "title"));
-                item.setTaskDescription(requireLearningText(itemNode, "taskDescription", "description"));
-                item.setTaskType(normalizeTaskType(itemNode.path("taskType").asText(null)));
-                item.setPriority(normalizePriority(itemNode.path("priority").asText(null)));
-                item.setEstimatedHours(itemNode.path("estimatedHours").isNumber()
-                        ? Math.max(1, itemNode.path("estimatedHours").asInt())
-                        : 1);
-                item.setEstimatedMinutes(itemNode.path("estimatedMinutes").isNumber()
-                        ? Math.max(1, itemNode.path("estimatedMinutes").asInt())
-                        : null);
-                item.setAcceptance(itemNode.path("acceptance").asText(null));
-                item.setRelatedQuestionIds(longArray(itemNode.path("relatedQuestionIds")));
-                item.setRelatedTags(textArray(itemNode.path("relatedTags")));
-                item.setResources(textArray(itemNode.path("resources")));
+                item.setDayOffset(readInteger(firstNode(itemNode, "dayOffset", "day", "dayNo")));
+                item.setKnowledgePoint(firstText(textField(itemNode, "knowledgePoint", "skillName", "topic", "knowledge")));
+                item.setSkillName(firstText(textField(itemNode, "skillName", "skill", "knowledgePoint"), item.getKnowledgePoint()));
+                item.setSourceGapId(textField(itemNode, "sourceGapId", "gapId"));
+                item.setTaskTitle(requireLearningText(itemNode, "taskTitle", "title", "taskName", "name"));
+                item.setTaskDescription(requireLearningText(itemNode, "taskDescription", "description", "detail", "content"));
+                item.setTaskType(normalizeTaskType(firstText(textField(itemNode, "taskType", "type", "taskCategory"))));
+                item.setPriority(normalizePriority(textField(itemNode, "priority")));
+                Integer minutes = readInteger(firstNode(itemNode, "estimatedMinutes", "durationMinutes", "minutes"));
+                Integer hours = readInteger(firstNode(itemNode, "estimatedHours", "durationHours", "hours"));
+                item.setEstimatedHours(hours == null ? Math.max(1, minutes == null ? 1 : (minutes + 59) / 60) : Math.max(1, hours));
+                item.setEstimatedMinutes(minutes == null ? item.getEstimatedHours() * 60 : Math.max(1, minutes));
+                item.setAcceptance(textField(itemNode, "acceptance", "acceptanceCriteria", "expectedOutcome"));
+                item.setRelatedQuestionIds(longArray(firstNode(itemNode, "relatedQuestionIds", "questionIds")));
+                item.setRelatedTags(textArray(firstNode(itemNode, "relatedTags", "tags")));
+                item.setResources(textArray(firstNode(itemNode, "resources", "resourceList")));
                 items.add(item);
             }
             stage.setItems(items);
@@ -1644,12 +1797,72 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
-    private String parseResumeOptimizeJson(String raw) {
+    private String parseResumeOptimizeJson(String raw, ResumeOptimizeAiRequestDTO dto) {
         JsonNode json = parseJson(raw);
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume optimize response must be a JSON object");
         }
-        return json.toString();
+        ObjectNode normalized = ((ObjectNode) json).deepCopy();
+        markUnsupportedResumeOptimizeSuggestions(normalized, dto);
+        return normalized.toString();
+    }
+
+    private void markUnsupportedResumeOptimizeSuggestions(ObjectNode root, ResumeOptimizeAiRequestDTO dto) {
+        String evidence = normalizeEvidenceText(
+                dto == null ? null : toJson(dto.getResume()),
+                dto == null ? null : toJson(dto.getProjects()),
+                dto == null ? null : dto.getTargetPosition(),
+                dto == null ? null : dto.getIndustryDirection(),
+                dto == null ? null : dto.getOptimizeFocus());
+        JsonNode suggestions = root.path("rewriteSuggestions");
+        if (!suggestions.isArray()) {
+            return;
+        }
+        ArrayNode riskWarnings = root.path("riskWarnings").isArray()
+                ? (ArrayNode) root.path("riskWarnings")
+                : objectMapper.createArrayNode();
+        for (JsonNode item : suggestions) {
+            if (!(item instanceof ObjectNode suggestion)) {
+                continue;
+            }
+            String after = normalizeEvidenceText(
+                    suggestion.path("after").asText(null),
+                    suggestion.path("newValue").asText(null),
+                    suggestion.path("value").asText(null),
+                    suggestion.path("optimized").asText(null),
+                    suggestion.path("suggested").asText(null));
+            String unsupported = firstUnsupportedEvidenceTerm(after, evidence);
+            if (!StringUtils.hasText(unsupported)) {
+                continue;
+            }
+            suggestion.put("fabricationRisk", true);
+            suggestion.put("unsupportedFact", unsupported);
+            ObjectNode warning = objectMapper.createObjectNode();
+            warning.put("type", "UNSUPPORTED_FACT");
+            warning.put("description", "优化建议包含输入简历/项目中未提供的事实：" + unsupported);
+            warning.put("suggestion", "请把该内容作为待补充材料确认，不要直接写入简历草稿。");
+            riskWarnings.add(warning);
+        }
+        root.set("riskWarnings", riskWarnings);
+    }
+
+    private String firstUnsupportedEvidenceTerm(String output, String evidence) {
+        if (!StringUtils.hasText(output)) {
+            return null;
+        }
+        for (String term : RESUME_MATCH_FACT_TERMS) {
+            if (containsEvidenceTerm(output, term) && !containsEvidenceTerm(evidence, term)) {
+                return term;
+            }
+        }
+        Matcher matcher = UNSUPPORTED_NUMERIC_FACT_PATTERN.matcher(output);
+        while (matcher.find()) {
+            String term = matcher.group().replaceAll("\\s+", "");
+            if (StringUtils.hasText(term) && !containsEvidenceTerm(evidence, term)) {
+                return term;
+            }
+        }
+        return null;
     }
 
     private String parseJobDescriptionJson(String raw) {
@@ -1659,9 +1872,143 @@ public class AiServiceImpl implements AiService {
     }
 
     private String parseResumeJobMatchJson(String raw, AnalyzeResumeJobMatchDTO dto) {
-        JsonNode json = parseJson(raw);
+        JsonNode json = normalizeResumeJobMatchJson(parseJson(raw));
         validateResumeJobMatchJson(json, dto);
         return json.toString();
+    }
+
+    private JsonNode normalizeResumeJobMatchJson(JsonNode json) {
+        if (!(json instanceof ObjectNode root)) {
+            return json;
+        }
+        ObjectNode normalized = root.deepCopy();
+        Integer overallScore = readScore(firstNode(normalized, "overallScore", "matchScore", "score", "totalScore"));
+        if (overallScore == null) {
+            overallScore = averageDimensionScore(firstNode(normalized, "dimensionScores", "scores", "scoreDetails"));
+        }
+        if (overallScore == null) {
+            overallScore = 0;
+        }
+        normalized.put("overallScore", clampScore(overallScore));
+
+        JsonNode rawDimensionScores = firstNode(normalized, "dimensionScores", "scores", "scoreDetails");
+        ObjectNode dimensionScores = rawDimensionScores != null && rawDimensionScores.isObject()
+                ? ((ObjectNode) rawDimensionScores).deepCopy()
+                : objectMapper.createObjectNode();
+        for (String dimension : List.of("techStack", "projectExperience", "businessFit", "communication")) {
+            List<String> scoreFieldNames = new ArrayList<>();
+            scoreFieldNames.add(dimension);
+            scoreFieldNames.add(dimension + "Score");
+            scoreFieldNames.addAll(resumeMatchDimensionAliases(dimension));
+            Integer score = readScore(firstNode(dimensionScores, scoreFieldNames.toArray(String[]::new)));
+            if (score == null) {
+                score = readScore(firstNode(normalized, scoreFieldNames.toArray(String[]::new)));
+            }
+            dimensionScores.put(dimension, clampScore(score == null ? overallScore : score));
+        }
+        normalized.set("dimensionScores", dimensionScores);
+
+        normalizeArrayField(normalized, "strengths", false, "advantages", "highlights", "matchStrengths");
+        normalizeArrayField(normalized, "gaps", false, "weaknesses", "skillGaps", "mismatchPoints");
+        normalizeArrayField(normalized, "resumeRisks", false, "risks", "riskPoints", "resumeIssues");
+        normalizeArrayField(normalized, "optimizationSuggestions", false,
+                "suggestions", "improvementSuggestions", "resumeOptimizationSuggestions");
+        normalizeArrayField(normalized, "recommendedLearningTopics", true,
+                "learningTopics", "studyTopics", "recommendedSkills");
+        normalizeArrayField(normalized, "recommendedInterviewTopics", true,
+                "interviewTopics", "practiceTopics", "recommendedQuestions");
+        if (!StringUtils.hasText(normalized.path("summary").asText(null))) {
+            String summary = textField(normalized, "summary", "overallSummary", "matchSummary", "comment");
+            normalized.put("summary", StringUtils.hasText(summary)
+                    ? summary
+                    : "AI 已返回部分匹配结果，系统已按可用字段生成保守版报告，请结合明细复核。");
+        }
+        return normalized;
+    }
+
+    private void normalizeArrayField(ObjectNode root, String fieldName, boolean allowTextItem, String... aliases) {
+        List<String> fieldNames = new ArrayList<>();
+        fieldNames.add(fieldName);
+        if (aliases != null) {
+            fieldNames.addAll(List.of(aliases));
+        }
+        JsonNode node = firstNode(root, fieldNames.toArray(String[]::new));
+        if (node != null && node.isArray()) {
+            root.set(fieldName, node);
+            return;
+        }
+        ArrayNode array = objectMapper.createArrayNode();
+        if (node != null && node.isObject()) {
+            array.add(node);
+        } else if (node != null && allowTextItem && StringUtils.hasText(node.asText(null))) {
+            array.add(node.asText());
+        }
+        root.set(fieldName, array);
+    }
+
+    private List<String> resumeMatchDimensionAliases(String dimension) {
+        if ("techStack".equals(dimension)) {
+            return List.of("technicalSkills", "techSkills", "technology", "technicalScore");
+        }
+        if ("projectExperience".equals(dimension)) {
+            return List.of("project", "projects", "projectScore", "experience", "experienceScore");
+        }
+        if ("businessFit".equals(dimension)) {
+            return List.of("business", "domainFit", "jobFit", "positionFit", "businessScore");
+        }
+        if ("communication".equals(dimension)) {
+            return List.of("communicationSkill", "expression", "presentation", "communicationScore");
+        }
+        return List.of();
+    }
+
+    private Integer averageDimensionScore(JsonNode dimensionScores) {
+        if (dimensionScores == null || !dimensionScores.isObject()) {
+            return null;
+        }
+        int total = 0;
+        int count = 0;
+        for (String dimension : List.of("techStack", "projectExperience", "businessFit", "communication")) {
+            List<String> scoreFieldNames = new ArrayList<>();
+            scoreFieldNames.add(dimension);
+            scoreFieldNames.add(dimension + "Score");
+            scoreFieldNames.addAll(resumeMatchDimensionAliases(dimension));
+            Integer score = readScore(firstNode(dimensionScores, scoreFieldNames.toArray(String[]::new)));
+            if (score != null) {
+                total += clampScore(score);
+                count++;
+            }
+        }
+        return count == 0 ? null : Math.round((float) total / count);
+    }
+
+    private Integer readScore(JsonNode node) {
+        Integer score = readInteger(node);
+        if (score != null) {
+            return score;
+        }
+        if (node != null && node.isNumber()) {
+            return (int) Math.round(node.asDouble());
+        }
+        if (node != null && node.isTextual()) {
+            Matcher matcher = Pattern.compile("-?\\d+(?:\\.\\d+)?").matcher(node.asText());
+            if (matcher.find()) {
+                try {
+                    return (int) Math.round(Double.parseDouble(matcher.group()));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        if (node != null && node.isObject()) {
+            for (String field : List.of("score", "value", "totalScore", "matchScore")) {
+                score = readScore(node.path(field));
+                if (score != null) {
+                    return score;
+                }
+            }
+        }
+        return null;
     }
 
     private String parseSkillGapAnalyzeJson(String raw) {
@@ -2115,13 +2462,13 @@ public class AiServiceImpl implements AiService {
 
     private GenerateReportVO mockReport(GenerateReportDTO dto) {
         GenerateReportVO vo = new GenerateReportVO();
-        vo.setTotalScore(82);
+        vo.setTotalScore(null);
         if (applyProjectAwareMockReport(vo)) {
             applyIndustryAwareMockReport(vo, dto);
             return vo;
         }
-        vo.setSummary("本场 V1 模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达和工程权衡四个维度综合给出。");
-        vo.setStageScores("{\"technical\":82,\"project\":82}");
+        vo.setSummary("本场模拟面试已生成基础参考报告，但未获得可信 AI 评分。请继续答题或重新生成报告后再查看总分。");
+        vo.setStageScores("{}");
         vo.setWeakPoints("[\"源码细节\",\"执行计划\",\"缓存一致性边界\"]");
         vo.setStrengths("[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]");
         vo.setWeaknesses("部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。");
@@ -2144,28 +2491,28 @@ public class AiServiceImpl implements AiService {
         GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
         int duration = normalizeDuration(dto == null ? null : dto.getExpectedDurationDays());
         vo.setPlanTitle(defaultLearningPlanTitle(dto));
-        vo.setPlanSummary("A focused " + duration + "-day plan generated from interview weaknesses, resume signals, and target role.");
+        vo.setPlanSummary("基于面试短板、简历信号和目标岗位生成的 " + duration + " 天基础训练计划。");
         vo.setDurationDays(duration);
 
-        GenerateLearningPlanVO.ItemVO foundations = learningItem("Java core and collection internals",
-                "Review HashMap, ArrayList, and common collection trade-offs",
-                "Summarize key internals, edge cases, and interview-ready examples.",
+        GenerateLearningPlanVO.ItemVO foundations = learningItem("Java 集合与核心语法",
+                "复习 HashMap、ArrayList 和常见集合权衡",
+                "总结核心原理、边界条件和可用于面试表达的例子。",
                 "KNOWLEDGE_REVIEW", "HIGH", 2, List.of("Java", "Collections"));
-        GenerateLearningPlanVO.ItemVO concurrency = learningItem("Java concurrency",
-                "Practice thread pool and lock scenario questions",
-                "Prepare answers that cover parameters, rejection policy, monitoring, and production risks.",
+        GenerateLearningPlanVO.ItemVO concurrency = learningItem("Java 并发",
+                "练习线程池与锁相关场景题",
+                "准备覆盖核心参数、拒绝策略、监控指标和生产风险的回答。",
                 "INTERVIEW_PRACTICE", "HIGH", 2, List.of("Concurrency", "ThreadPool"));
-        GenerateLearningPlanVO.StageVO stageOne = learningStage(1, "Weakness repair", List.of(foundations, concurrency));
+        GenerateLearningPlanVO.StageVO stageOne = learningStage(1, "短板修复", List.of(foundations, concurrency));
 
-        GenerateLearningPlanVO.ItemVO project = learningItem("Project review",
-                "Refine one project story with measurable outcomes",
-                "Rewrite background, responsibility, technical challenge, trade-off, and result.",
+        GenerateLearningPlanVO.ItemVO project = learningItem("项目复盘",
+                "打磨一个有真实结果支撑的项目故事",
+                "按背景、职责、技术难点、取舍和结果重新组织表达。",
                 "PROJECT_REVIEW", "MEDIUM", 2, List.of("Project", "Resume"));
-        GenerateLearningPlanVO.ItemVO database = learningItem("Database and cache",
-                "Review MySQL index and Redis consistency scenarios",
-                "Prepare answers for index failure, slow query diagnosis, cache aside, and consistency boundaries.",
+        GenerateLearningPlanVO.ItemVO database = learningItem("数据库与缓存",
+                "复习 MySQL 索引和 Redis 一致性场景",
+                "准备索引失效、慢查询排查、Cache Aside 和一致性边界的回答。",
                 "CODING_PRACTICE", "MEDIUM", 2, List.of("MySQL", "Redis"));
-        GenerateLearningPlanVO.StageVO stageTwo = learningStage(2, "Scenario consolidation", List.of(project, database));
+        GenerateLearningPlanVO.StageVO stageTwo = learningStage(2, "场景巩固", List.of(project, database));
 
         vo.setStages(List.of(stageOne, stageTwo));
         return vo;
@@ -2176,32 +2523,32 @@ public class AiServiceImpl implements AiService {
         int duration = dto == null || dto.getAvailableDays() == null ? 14 : dto.getAvailableDays();
         int minutes = dto == null || dto.getDailyMinutes() == null ? 60 : dto.getDailyMinutes();
         vo.setPlanTitle(defaultTargetedStudyPlanTitle(dto));
-        vo.setPlanSummary("A targeted " + duration + "-day plan generated from selected skill gaps.");
+        vo.setPlanSummary("基于当前技能短板生成的 " + duration + " 天针对性训练计划。");
         vo.setDurationDays(duration);
 
         List<JsonNode> gaps = readArrayNodes(dto == null ? null : dto.getSkillGapsJson());
         if (gaps.isEmpty()) {
             GenerateLearningPlanVO.ItemVO item = learningItem("Redis",
-                    "Review Redis cache penetration, breakdown, and avalanche",
-                    "Summarize causes, protection strategies, and project-ready examples.",
+                    "复习 Redis 缓存穿透、击穿和雪崩",
+                    "总结成因、防护策略和可结合项目表达的例子。",
                     "KNOWLEDGE_REVIEW", "HIGH", Math.max(1, minutes / 60), List.of("Redis"));
             item.setDayOffset(1);
             item.setSkillName("Redis");
             item.setSourceGapId(null);
             item.setEstimatedMinutes(minutes);
             item.setAcceptance("Explain at least two cache protection strategies with project examples.");
-            vo.setStages(List.of(learningStage(1, "Targeted gap repair", List.of(item))));
+            vo.setStages(List.of(learningStage(1, "针对性短板修复", List.of(item))));
             return vo;
         }
 
         List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
         int day = 1;
         for (JsonNode gap : gaps.stream().limit(5).toList()) {
-            String skillName = firstText(gap.path("skillName").asText(null), "Java backend skill");
+            String skillName = firstText(gap.path("skillName").asText(null), "Java 后端能力");
             GenerateLearningPlanVO.ItemVO item = learningItem(skillName,
-                    "Strengthen " + skillName + " interview expression",
+                    "强化 " + skillName + " 面试表达",
                     firstText(gap.path("gapDescription").asText(null),
-                            "Review weak concepts, summarize scenarios, and prepare project evidence."),
+                            "复习薄弱概念，总结典型场景，并准备项目证据。"),
                     "KNOWLEDGE_REVIEW",
                     firstText(gap.path("severity").asText(null), "HIGH"),
                     Math.max(1, minutes / 60),
@@ -2210,10 +2557,10 @@ public class AiServiceImpl implements AiService {
             item.setSkillName(skillName);
             item.setSourceGapId(gap.path("id").asText(null));
             item.setEstimatedMinutes(minutes);
-            item.setAcceptance("Can explain " + skillName + " with one concrete project or troubleshooting example.");
+            item.setAcceptance("能结合一个真实项目或排障案例讲清 " + skillName + "。");
             items.add(item);
         }
-        vo.setStages(List.of(learningStage(1, "Targeted gap repair", items)));
+        vo.setStages(List.of(learningStage(1, "针对性短板修复", items)));
         return vo;
     }
 
@@ -2481,8 +2828,9 @@ public class AiServiceImpl implements AiService {
     }
 
     private boolean applyProjectAwareMockReport(GenerateReportVO vo) {
-        vo.setSummary("本场模拟面试已完成，综合得分 82。总分由回答完整度、关键知识点覆盖、项目表达、技术深度和工程取舍能力综合给出。");
-        vo.setStageScores("{\"technical\":82,\"projectExpression\":82,\"architectureThinking\":80}");
+        vo.setTotalScore(null);
+        vo.setSummary("本场模拟面试已生成项目表达基础参考报告，但未获得可信 AI 评分。请继续答题或重新生成报告后再查看总分。");
+        vo.setStageScores("{}");
         vo.setWeakPoints("[\"源码细节\",\"执行计划\",\"缓存一致性边界\",\"项目指标量化\"]");
         vo.setStrengths("[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\",\"能够描述项目背景和核心职责\"]");
         vo.setWeaknesses("部分回答停留在结论层，对源码细节、数据库执行计划、缓存一致性边界和线上排查步骤展开不足；项目表达还需要补充量化指标、技术取舍和故障复盘。");
@@ -2972,8 +3320,10 @@ public class AiServiceImpl implements AiService {
         return """
                 你是 Java 面试教练。请基于面试记录 {{historySummary}} 生成中文结构化报告。
                 只输出 JSON，不要 Markdown，不要代码块，不要解释文字。
+                totalScore 必须基于真实问答计算；无有效回答、题目明细缺失或无法评分时返回 null，不要生成固定兜底分数。
+                qaReview 必须逐题对应真实回答，不能用空数组伪装成功报告。
                 字段固定：
-                {"totalScore":82,"summary":"总分来源说明","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}
+                {"totalScore":null,"summary":"评分依据或不可评分原因","strengths":[],"weakPoints":[],"mainProblems":[],"projectProblems":[],"reviewSuggestions":[],"recommendedQuestions":[],"qaReview":[],"stageScores":{},"reportContent":"报告正文"}
                 """;
     }
 
@@ -3189,7 +3539,7 @@ public class AiServiceImpl implements AiService {
                 5. strengths、weaknesses、improvementSuggestions、knowledgeGaps、suggestedFollowUps 必须是字符串数组。
                 6. referenceComparison 对比用户答案和参考答案的关键差异。
                 只输出 JSON，不要 Markdown，不要代码块。
-                JSON 字段固定：{"score":82,"level":"GOOD","summary":"点评摘要","strengths":["优点"],"weaknesses":["问题"],"improvementSuggestions":["改进建议"],"referenceComparison":"参考答案对比","knowledgeGaps":["知识缺口"],"suggestedFollowUps":["后续练习题"]}
+                JSON 字段固定：{"score":76,"level":"GOOD","summary":"点评摘要","strengths":["优点"],"weaknesses":["问题"],"improvementSuggestions":["改进建议"],"referenceComparison":"参考答案对比","knowledgeGaps":["知识缺口"],"suggestedFollowUps":["后续练习题"]}
                 """;
     }
 
