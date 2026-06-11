@@ -32,12 +32,12 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
 
         candidates.add(task("q-practice-1", "QUESTION_PRACTICE", "练习 " + skillName + " 高频面试题",
                 "完成一组围绕 " + skillName + " 的题目练习，并记录没有答完整的知识点。",
-                "目标岗位或 JD 分析中出现了 " + skillName + "，先用题目练习暴露真实短板。", "HIGH", 30,
+                "目标岗位或岗位分析中出现了 " + skillName + "，先用题目练习找出当前短板。", "HIGH", 30,
                 skillCode, skillName, "TARGET_JOB", targetJobId,
                 "/questions/recommendations?targetJobId=" + targetJobId));
-        candidates.add(task("resume-optimize-1", "RESUME_OPTIMIZE", "补齐 " + skillName + " 的简历证据",
+        candidates.add(task("resume-optimize-1", "RESUME_OPTIMIZE", "补齐 " + skillName + " 的项目表达",
                 "检查项目经历里是否写清了 " + skillName + " 的使用场景、个人职责、难点和结果。",
-                "匹配报告最需要可信证据；把 JD 技能转成简历里的真实项目表达。", "MEDIUM", 25,
+                "目标岗位和岗位要求需要清晰的项目经历支撑；把岗位技能转成简历里的项目表达。", "MEDIUM", 25,
                 skillCode, skillName, "TARGET_JOB", targetJobId,
                 "/resumes"));
         candidates.add(task("interview-1", "INTERVIEW", "围绕" + firstText(targetTitle, "当前目标岗位") + "做模拟面试",
@@ -49,15 +49,15 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 "整理核心概念、常见追问、项目落地场景和容易说错的边界。",
                 secondarySkill.equals(skillName)
                         ? "练习前先做短复盘，可以让回答更有结构。"
-                        : "JD 同时关注 " + secondarySkill + "，今天顺手补一块次优先技能。",
+                        : "岗位要求同时关注 " + secondarySkill + "，今天顺手补一块次优先技能。",
                 "MEDIUM", 20,
                 secondarySkillCode, secondarySkill, "TARGET_JOB", targetJobId,
                 "/skill-profile"));
         candidates.add(task("knowledge-review-1", "KNOWLEDGE_REVIEW", "整理 " + skillName + " 的可复用回答素材",
-                "从个人笔记或历史训练里提取 2-3 条能直接用于面试表达的例子。",
-                "把零散知识沉淀成面试可复用素材，后续练习和模拟面试都能继续使用。", "LOW", 20,
-                skillCode, skillName, "PERSONAL_KNOWLEDGE", null,
-                "/knowledge"));
+                "从项目经历、历史训练或面试工具里提取 2-3 条能直接用于面试表达的例子。",
+                "把零散记录沉淀成面试可复用素材，后续练习和模拟面试都能继续使用。", "LOW", 20,
+                skillCode, skillName, "TRAINING_MATERIAL", null,
+                "/tools"));
         int size = Math.min(Math.max(taskCount, 1) + 1, candidates.size());
         return candidates.subList(0, size);
     }

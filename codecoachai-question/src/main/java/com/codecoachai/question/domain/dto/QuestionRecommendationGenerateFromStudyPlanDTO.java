@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class QuestionRecommendationGenerateFromStudyPlanDTO {
 
-    @NotNull(message = "studyPlanId is required")
+    @NotNull(message = "请选择学习计划")
     private Long studyPlanId;
     private List<Long> gapItemIds;
     private Integer questionCount;

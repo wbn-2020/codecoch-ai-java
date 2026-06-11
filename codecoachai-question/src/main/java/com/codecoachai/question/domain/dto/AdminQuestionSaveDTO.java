@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class AdminQuestionSaveDTO {
 
-    @NotBlank(message = "title is required")
+    @NotBlank(message = "请填写题目标题")
     private String title;
 
     private String content;

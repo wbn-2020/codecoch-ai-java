@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class ResumeProjectSaveDTO {
 
-    @NotBlank(message = "projectName is required")
+    @NotBlank(message = "请填写项目名称")
     private String projectName;
 
     private String projectPeriod;

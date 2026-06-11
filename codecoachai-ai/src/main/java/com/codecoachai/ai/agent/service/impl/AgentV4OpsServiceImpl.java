@@ -166,7 +166,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Override
     public AgentFeedbackVO createFeedback(Long userId, AgentFeedbackCreateDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getFeedbackType())) {
-            throw new IllegalArgumentException("feedbackType is required");
+            throw new IllegalArgumentException("反馈类型不能为空");
         }
         validateFeedbackOwnership(userId, dto);
         AgentFeedback feedback = new AgentFeedback();
@@ -223,7 +223,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeDocumentVO createKnowledgeDocument(Long userId, KnowledgeDocumentCreateDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getTitle()) || !StringUtils.hasText(dto.getContent())) {
-            throw new IllegalArgumentException("title and content are required");
+            throw new IllegalArgumentException("标题和内容不能为空");
         }
         String normalizedContent = normalizeKnowledgeContent(dto.getContent());
         String contentHash = knowledgeHash(normalizedContent);
@@ -253,7 +253,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeDocumentVO updateKnowledgeDocument(Long userId, Long documentId, KnowledgeDocumentCreateDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getTitle()) || !StringUtils.hasText(dto.getContent())) {
-            throw new IllegalArgumentException("title and content are required");
+            throw new IllegalArgumentException("标题和内容不能为空");
         }
         PersonalKnowledgeDocument document = ownedDocument(userId, documentId);
         String normalizedContent = normalizeKnowledgeContent(dto.getContent());
@@ -288,20 +288,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType) {
         if (file == null || file.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请先选择要上传的文件");
         }
         if (file.getSize() > knowledgeProperties.getUploadMaxBytes()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size must be <= 8MB");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不能超过 8MB");
         }
         String originalFilename = firstText(file.getOriginalFilename(), "knowledge.txt").trim();
         String extension = fileExtension(originalFilename);
         if (!knowledgeProperties.getUploadExtensions().contains(extension)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "only txt, md, markdown, pdf, docx and doc files are supported");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "仅支持 txt、md、markdown、pdf、docx、doc 文件");
         }
         try {
             String content = extractKnowledgeFileText(extension, file.getBytes());
             if (!StringUtils.hasText(content)) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "file content is empty");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容为空，请更换文件后重试");
             }
             KnowledgeDocumentCreateDTO dto = new KnowledgeDocumentCreateDTO();
             dto.setTitle(stripExtension(originalFilename));
@@ -311,7 +311,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file read failed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件读取失败，请更换文件后重试");
         }
     }
 
@@ -494,23 +494,23 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private String embeddingDisabledReason() {
         if (!vectorStoreClient.isEnabled()) {
-            return "Vector store is disabled; keyword fallback is active.";
+            return "语义检索未启用，当前使用关键词检索。";
         }
         AiRouterProperties.Router router = aiRouterProperties.getRouter();
         String providerName = firstText(router == null ? null : router.getEmbeddingProvider(),
                 router == null ? null : router.getDefaultProvider());
         if (!StringUtils.hasText(providerName)) {
-            return "Embedding provider is not configured; keyword fallback is active.";
+            return "向量模型未配置，当前使用关键词检索。";
         }
         Map<String, AiRouterProperties.ProviderConfig> providers = aiRouterProperties.getProviders();
         AiRouterProperties.ProviderConfig provider = providers == null ? null : providers.get(providerName);
         if (provider == null) {
-            return "Embedding provider is not configured; keyword fallback is active.";
+            return "向量模型未配置，当前使用关键词检索。";
         }
         if (!StringUtils.hasText(provider.getBaseUrl())
                 || !StringUtils.hasText(provider.getApiKey())
                 || !StringUtils.hasText(provider.getEmbeddingModel())) {
-            return "Embedding base URL, API key, or model is not configured; keyword fallback is active.";
+            return "向量服务地址、密钥或模型未配置，当前使用关键词检索。";
         }
         return null;
     }
@@ -850,7 +850,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setFinalCandidateCount(pipeline.finalResults().size());
         List<String> warnings = new ArrayList<>();
         if (!semanticKnowledgeEnabled()) {
-            warnings.add(firstText(embeddingDisabledReason(), "Semantic search is disabled; search used keyword fallback only."));
+            warnings.add(firstText(embeddingDisabledReason(), "语义检索暂不可用，当前仅使用关键词检索。"));
         }
         if (pipeline.finalResults().isEmpty()) {
             warnings.add("No candidate passed the current minScore and rerank filters.");
@@ -1173,20 +1173,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         boolean retrievalPassed;
         if (Boolean.TRUE.equals(sample.getExpectNoAnswer())) {
             retrievalPassed = references.isEmpty();
-            item.setFailureReason(retrievalPassed ? null : "expected no references, but retrieval returned " + references.size());
+                item.setFailureReason(retrievalPassed ? null : "期望不命中引用，但实际检索到 " + references.size() + " 条引用");
         } else {
             retrievalPassed = references.stream().anyMatch(reference -> expectedKnowledgeReferenceMatches(sample, reference));
             if (!retrievalPassed) {
                 item.setFailureReason(references.isEmpty()
-                        ? "no references passed the minimum score"
-                        : "expected document was not found in retrieved references");
+                        ? "没有引用达到最低相关度"
+                        : "检索结果中没有命中期望文档");
             }
         }
         boolean answerTrustPassed = Boolean.TRUE.equals(sample.getExpectNoAnswer())
                 || (Boolean.TRUE.equals(item.getCitationValid()) && Boolean.TRUE.equals(item.getAnswerGrounded()));
         if (retrievalPassed && !answerTrustPassed) {
             item.setFailureReason(firstText(item.getCitationWarning(),
-                    "retrieval matched expected source, but generated answer was not grounded by valid citations"));
+                    "检索已命中期望来源，但生成答案没有通过引用依据校验"));
         }
         item.setPassed(retrievalPassed && answerTrustPassed);
         return item;
@@ -1215,7 +1215,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public KnowledgeAskVO askKnowledge(Long userId, KnowledgeAskDTO dto) {
         String question = dto == null ? null : dto.getQuestion();
         if (!StringUtils.hasText(question)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "question is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "问题不能为空");
         }
         String normalizedQuestion = question.trim();
         int limit = dto == null || dto.getLimit() == null ? knowledgeProperties.safeAskDefaultLimit() : normalizeLimit(dto.getLimit());
@@ -1241,10 +1241,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setInsufficientReferences(references.isEmpty());
         vo.setGeneratedAt(LocalDateTime.now());
         if (references.isEmpty()) {
-            vo.setAnswer("No sufficiently relevant content was found in your personal knowledge base. Add or upload more targeted materials first.");
+            vo.setAnswer("个人知识库中没有找到足够相关的内容，请先补充或上传更匹配的资料。");
             vo.setAnswerGrounded(false);
             vo.setCitationValid(false);
-            vo.setCitationWarning("No references passed the minimum score.");
+            vo.setCitationWarning("没有引用达到最低相关度。");
             vo.setCitedReferenceNumbers(List.of());
             vo.setInvalidReferenceNumbers(List.of());
             return vo;
@@ -1267,10 +1267,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             vo.setAiCallLogId(result.getAiCallLogId());
         } catch (Exception ex) {
             log.warn("Personal knowledge ask generation failed userId={}", userId, ex);
-            vo.setAnswer("Relevant references were found, but the AI answer could not be generated. Please review the retrieved references below.");
+            vo.setAnswer("已找到相关引用，但暂时无法生成 AI 答案，请先查看下方检索到的资料。");
             vo.setAnswerGrounded(false);
             vo.setCitationValid(false);
-            vo.setCitationWarning("Answer generation failed before citation validation.");
+            vo.setCitationWarning("答案生成失败，未进入引用校验。");
             vo.setCitedReferenceNumbers(List.of());
             vo.setInvalidReferenceNumbers(List.of());
         }
@@ -1283,7 +1283,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         try {
             String question = dto == null ? null : dto.getQuestion();
             if (!StringUtils.hasText(question)) {
-                listener.onError("question is required");
+                listener.onError("问题不能为空");
                 return;
             }
             String normalizedQuestion = question.trim();
@@ -1306,10 +1306,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 empty.setReferences(references);
                 empty.setReferenceCount(0);
                 empty.setInsufficientReferences(true);
-                empty.setAnswer("No sufficiently relevant content was found in your personal knowledge base. Add or upload more targeted materials first.");
+                empty.setAnswer("个人知识库中没有找到足够相关的内容，请先补充或上传更匹配的资料。");
                 empty.setAnswerGrounded(false);
                 empty.setCitationValid(false);
-                empty.setCitationWarning("No references passed the minimum score.");
+                empty.setCitationWarning("没有引用达到最低相关度。");
                 empty.setCitedReferenceNumbers(List.of());
                 empty.setInvalidReferenceNumbers(List.of());
                 empty.setGeneratedAt(LocalDateTime.now());
@@ -1344,11 +1344,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 listener.onDone(result.getAiCallLogId());
             } catch (Exception ex) {
                 log.warn("Personal knowledge ask stream generation failed userId={}", userId, ex);
-                listener.onError("Answer generation failed. Please review the retrieved references below.");
+                listener.onError("答案生成失败，请先查看下方检索到的引用资料。");
             }
         } catch (Exception ex) {
             log.warn("Personal knowledge ask stream failed userId={}", userId, ex);
-            listener.onError(firstText(ex.getMessage(), "knowledge ask stream failed"));
+            listener.onError(firstText(ex.getMessage(), "知识库问答流式生成失败"));
         }
     }
 
@@ -1557,13 +1557,13 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     @Override
     public AnalyticsMetricDefinitionVO saveMetric(AdminAnalyticsMetricSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getMetricCode()) || !StringUtils.hasText(dto.getMetricName())) {
-            throw new IllegalArgumentException("metricCode and metricName are required");
+            throw new IllegalArgumentException("指标编码和指标名称不能为空");
         }
         AnalyticsMetricDefinition metric = dto.getId() == null
                 ? new AnalyticsMetricDefinition()
                 : analyticsMetricDefinitionMapper.selectById(dto.getId());
         if (metric == null) {
-            throw new IllegalArgumentException("Metric not found");
+            throw new IllegalArgumentException("指标不存在");
         }
         metric.setMetricCode(dto.getMetricCode());
         metric.setMetricName(dto.getMetricName());
@@ -1596,7 +1596,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public AnalyticsJobLogVO rerunJob(Long jobId) {
         AnalyticsJobLog source = analyticsJobLogMapper.selectById(jobId);
         if (source == null) {
-            throw new IllegalArgumentException("Job log not found");
+            throw new IllegalArgumentException("任务日志不存在");
         }
         AnalyticsJobLog log = startJob(source.getJobCode(), source.getJobName(), source.getStatDate());
         finishJob(log, "SUCCESS", "manual rerun recorded", null);
@@ -1672,11 +1672,11 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public PromptRegressionCaseVO savePromptCase(PromptRegressionCaseSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getCaseName()) || !StringUtils.hasText(dto.getPromptType())
                 || !StringUtils.hasText(dto.getInputJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "caseName, promptType and inputJson are required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用例名称、提示词类型和输入 JSON 不能为空");
         }
         PromptRegressionCase item = dto.getId() == null ? new PromptRegressionCase() : promptRegressionCaseMapper.selectById(dto.getId());
         if (item == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt regression case not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词回归用例不存在");
         }
         validateJsonObject(dto.getInputJson(), "inputJson");
         if (StringUtils.hasText(dto.getExpectedSchemaJson())) {
@@ -1699,7 +1699,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     public PromptRegressionResultVO runPromptCase(Long caseId, Long promptVersionId) {
         PromptRegressionCase item = promptRegressionCaseMapper.selectById(caseId);
         if (item == null) {
-            throw new IllegalArgumentException("Prompt regression case not found");
+            throw new IllegalArgumentException("提示词回归用例不存在");
         }
         PromptRegressionResult result = new PromptRegressionResult();
         result.setCaseId(caseId);
@@ -1730,7 +1730,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (dto.getAgentTaskId() != null) {
             AgentTask task = agentTaskMapper.selectById(dto.getAgentTaskId());
             if (task == null || !Objects.equals(task.getUserId(), userId)) {
-                throw new IllegalArgumentException("Agent task not found or forbidden");
+                throw new IllegalArgumentException("Agent 任务不存在或无权访问");
             }
             if (dto.getAgentRunId() == null) {
                 dto.setAgentRunId(task.getAgentRunId());
@@ -1739,7 +1739,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (dto.getAgentRunId() != null) {
             AgentRun run = agentRunMapper.selectById(dto.getAgentRunId());
             if (run == null || !Objects.equals(run.getUserId(), userId)) {
-                throw new IllegalArgumentException("Agent run not found or forbidden");
+                throw new IllegalArgumentException("Agent 运行记录不存在或无权访问");
             }
         }
     }
@@ -1776,7 +1776,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private PersonalKnowledgeDocument ownedDocument(Long userId, Long id) {
         PersonalKnowledgeDocument document = personalKnowledgeDocumentMapper.selectById(id);
         if (document == null || !Objects.equals(document.getUserId(), userId)) {
-            throw new IllegalArgumentException("Knowledge document not found or forbidden");
+            throw new IllegalArgumentException("知识文档不存在或无权访问");
         }
         return document;
     }
@@ -1784,7 +1784,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private PersonalKnowledgeChunk ownedChunk(Long userId, Long id) {
         PersonalKnowledgeChunk chunk = personalKnowledgeChunkMapper.selectById(id);
         if (chunk == null || !Objects.equals(chunk.getUserId(), userId)) {
-            throw new IllegalArgumentException("Knowledge chunk not found or forbidden");
+            throw new IllegalArgumentException("知识片段不存在或无权访问");
         }
         return chunk;
     }
@@ -1794,7 +1794,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (version == null
                 || !Objects.equals(version.getUserId(), userId)
                 || !Objects.equals(version.getDocumentId(), documentId)) {
-            throw new IllegalArgumentException("Knowledge document version not found or forbidden");
+            throw new IllegalArgumentException("知识文档版本不存在或无权访问");
         }
         return version;
     }
@@ -3025,7 +3025,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (citedNumbers.isEmpty()) {
             vo.setCitationWarning("The generated answer did not cite any retrieved reference.");
         } else {
-            vo.setCitationWarning("The generated answer cited unknown reference numbers " + invalidNumbers + ".");
+            vo.setCitationWarning("生成答案引用了未知编号：" + invalidNumbers + "。");
         }
         vo.setAnswer(answer);
     }
@@ -3335,12 +3335,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         try {
             JsonNode node = objectMapper.readTree(value);
             if (node == null || !node.isContainerNode()) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " must be a JSON object or array");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " 内容格式不正确，请填写对象或数组结构");
             }
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " must be valid JSON");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + " 内容不是有效 JSON");
         }
     }
 

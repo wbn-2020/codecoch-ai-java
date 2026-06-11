@@ -16,12 +16,21 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class QuestionGeneratePayload {
 
-    private Long batchId;
+    private String batchId;
     private Long userId;
     private String topic;
     private String difficulty;
     private Integer count;
     private List<String> tags;
     private String targetPosition;
+    private String technologyStack;
+    private String knowledgePoint;
+    private String questionType;
+    private Integer experienceYears;
     private String experienceLevel;
+    private Boolean generateReferenceAnswer;
+    private Boolean generateFollowUps;
+    private Boolean generateTagSuggestions;
+    private Boolean generateCategorySuggestion;
+    private String extraRequirements;
 }

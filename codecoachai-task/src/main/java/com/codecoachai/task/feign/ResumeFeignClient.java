@@ -2,8 +2,11 @@ package com.codecoachai.task.feign;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.task.feign.dto.CompleteResumeParseDTO;
+import com.codecoachai.task.feign.dto.JobDescriptionParseDTO;
+import com.codecoachai.task.feign.vo.JobDescriptionAnalysisVO;
 import com.codecoachai.task.feign.vo.ResumeAnalysisRawVO;
 import com.codecoachai.task.feign.vo.ResumeJobMatchSubmitVO;
+import com.codecoachai.task.feign.vo.ResumeOptimizeSubmitVO;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -36,4 +39,12 @@ public interface ResumeFeignClient {
 
     @PostMapping("/inner/resume-job-match/reports/{id}/execute")
     Result<ResumeJobMatchSubmitVO> executeJobMatchReport(@PathVariable("id") Long reportId);
+
+    @PostMapping("/inner/resumes/optimize-records/{recordId}/execute")
+    Result<ResumeOptimizeSubmitVO> executeResumeOptimize(@PathVariable("recordId") Long recordId);
+
+    @PostMapping("/inner/job-targets/users/{userId}/{id}/parse")
+    Result<JobDescriptionAnalysisVO> executeJobDescriptionParse(@PathVariable("userId") Long userId,
+                                                                @PathVariable("id") Long targetJobId,
+                                                                @RequestBody JobDescriptionParseDTO dto);
 }

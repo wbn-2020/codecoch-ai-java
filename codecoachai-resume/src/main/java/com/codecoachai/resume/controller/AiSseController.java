@@ -55,8 +55,8 @@ public class AiSseController {
         this.resumeSseStreamExecutor = resumeSseStreamExecutor;
     }
 
-    @Operation(summary = "Stream job target JD parse progress",
-            description = "Compatibility SSE endpoint for V3 job target parsing. The synchronous /job-targets/{id}/parse API remains the fallback.")
+    @Operation(summary = "Stream job target description analysis progress",
+            description = "Compatibility SSE endpoint for V3 job target analysis. The synchronous /job-targets/{id}/parse API remains available.")
     @GetMapping(value = "/job-targets/{id}/parse", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter jobTargetParse(@PathVariable Long id,
                                      @RequestParam(required = false) Boolean forceRefresh,
@@ -69,30 +69,30 @@ public class AiSseController {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 if (!send(emitter, active, "start", genericEvent(requestId, "job-target-parse", id, null,
-                        "JD parse started"))) {
+                        "岗位分析已开始"))) {
                     return;
                 }
                 if (!sendStageProgress(emitter, active, requestId, "job-target-parse", id, "LOAD_TARGET",
-                        "Loading target job")) {
+                        "正在读取目标岗位")) {
                     return;
                 }
                 JobDescriptionParseDTO dto = new JobDescriptionParseDTO();
                 dto.setForceRefresh(forceRefresh);
                 dto.setUserTargetDirection(userTargetDirection);
                 if (!sendStageProgress(emitter, active, requestId, "job-target-parse", id, "CALL_AI",
-                        "Calling DeepSeek to parse JD")) {
+                        "正在生成岗位分析")) {
                     return;
                 }
                 JobDescriptionAnalysisVO result = targetJobService.parseJobDescription(id, dto);
                 if (result == null || "FAILED".equalsIgnoreCase(result.getParseStatus())) {
                     send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id,
-                            result == null ? "JD parse failed" : result.getParseErrorMessage()));
+                            result == null ? "岗位分析生成失败" : result.getParseErrorMessage()));
                     complete(emitter, active);
                     return;
                 }
                 send(emitter, active, "result", genericResultEvent(requestId, "job-target-parse", id, result));
                 send(emitter, active, "done", genericEvent(requestId, "job-target-parse", id,
-                        result.getAiCallLogId(), "JD parse completed"));
+                        result.getAiCallLogId(), "岗位分析已完成"));
                 complete(emitter, active);
             } catch (RuntimeException ex) {
                 log.warn("Job target parse SSE failed, requestId={}, targetJobId={}", requestId, id, ex);
@@ -177,21 +177,21 @@ public class AiSseController {
                 LoginUserContext.setLoginUser(loginUser);
                 Long bizId = dto == null ? null : dto.getTargetJobId();
                 if (!send(emitter, active, "start", genericEvent(requestId, "resume-job-match", bizId, null,
-                        "Match report generation started"))) {
+                        "岗位匹配报告已开始生成"))) {
                     return;
                 }
                 if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "LOAD_CONTEXT",
-                        "Loading resume and JD context")) {
+                        "正在整理简历和岗位描述")) {
                     return;
                 }
                 if (!sendStageProgress(emitter, active, requestId, "resume-job-match", bizId, "SUBMIT_TASK",
-                        "Submitting match report task")) {
+                        "正在提交匹配报告生成任务")) {
                     return;
                 }
                 ResumeJobMatchSubmitVO submitted = resumeJobMatchService.createReport(dto);
                 if (submitted == null || "FAILED".equalsIgnoreCase(submitted.getStatus())) {
                     send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", bizId,
-                            submitted == null ? "Match report generation failed" : submitted.getErrorMessage()));
+                            submitted == null ? "匹配报告生成失败，请稍后重试" : submitted.getErrorMessage()));
                     complete(emitter, active);
                     return;
                 }
@@ -309,7 +309,7 @@ public class AiSseController {
 
     private Map<String, Object> genericErrorEvent(String requestId, String workflow, Long bizId, String message) {
         Map<String, Object> data = genericEvent(requestId, workflow, bizId, null,
-                message == null || message.isBlank() ? "Task failed" : message);
+                message == null || message.isBlank() ? "任务执行失败，请稍后重试" : message);
         data.put("code", "V3_SSE_TASK_FAILED");
         data.put("metadata", stageMetadata("ERROR", "FAILED"));
         return data;
@@ -356,7 +356,7 @@ public class AiSseController {
 
     private Map<String, Object> resultEvent(String requestId, ResumeOptimizeSubmitVO result) {
         Map<String, Object> data = event(requestId, "result", "简历优化结果已生成",
-                result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), result.getResultJson());
+                result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), resultPayload(result));
         data.put("optimizeStatus", result.getOptimizeStatus());
         data.put("metadata", resultMetadata(result));
         return data;
@@ -365,7 +365,7 @@ public class AiSseController {
     private Map<String, Object> doneEvent(String requestId, ResumeOptimizeSubmitVO result) {
         Map<String, Object> data = event(requestId, "done", "简历优化完成",
                 result.getResumeId(), result.getOptimizeRecordId(), result.getAiCallLogId(), null);
-        data.put("result", result.getResultJson());
+        data.put("result", resultPayload(result));
         data.put("metadata", resultMetadata(result));
         return data;
     }
@@ -386,6 +386,25 @@ public class AiSseController {
         data.put("code", "RESUME_OPTIMIZE_FAILED");
         data.put("metadata", result == null ? stageMetadata("ERROR", "FAILED") : resultMetadata(result));
         return data;
+    }
+
+    private Map<String, Object> resultPayload(ResumeOptimizeSubmitVO result) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (result == null) {
+            return payload;
+        }
+        payload.put("optimizeRecordId", result.getOptimizeRecordId());
+        payload.put("resumeId", result.getResumeId());
+        payload.put("aiCallLogId", result.getAiCallLogId());
+        payload.put("optimizeStatus", result.getOptimizeStatus());
+        payload.put("overallScore", result.getOverallScore());
+        payload.put("overallComment", result.getOverallComment());
+        payload.put("rewriteSuggestions", result.getRewriteSuggestions());
+        payload.put("riskWarnings", result.getRiskWarnings());
+        payload.put("possibleInterviewQuestions", result.getPossibleInterviewQuestions());
+        payload.put("nextActions", result.getNextActions());
+        payload.put("errorMessage", result.getErrorMessage());
+        return payload;
     }
 
     private Map<String, Object> resultMetadata(ResumeOptimizeSubmitVO result) {

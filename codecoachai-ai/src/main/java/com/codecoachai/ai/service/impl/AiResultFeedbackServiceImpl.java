@@ -41,11 +41,11 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         if (dto == null || !StringUtils.hasText(dto.getFeedbackType())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "feedbackType is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择反馈类型");
         }
         String feedbackType = normalizeType(dto.getFeedbackType());
         if (!ALLOWED_TYPES.contains(feedbackType)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported feedbackType");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的反馈类型");
         }
 
         AiResultFeedback feedback = new AiResultFeedback();

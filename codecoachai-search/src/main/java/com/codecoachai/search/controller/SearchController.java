@@ -185,7 +185,7 @@ public class SearchController {
     }
 
     private Result<PageResult<JsonNode>> unsupportedSearchType(String type) {
-        return Result.fail(40000, "Unsupported search type: " + (type == null ? "" : type));
+        return Result.fail(40000, "暂不支持的搜索类型：" + (type == null ? "" : type));
     }
 
     private List<Query> buildQuestionFilters(String difficulty, String categoryId) {

@@ -22,7 +22,7 @@ public class PdfResumeTextExtractor extends AbstractResumeTextExtractor {
         try (PDDocument document = PDDocument.load(new ByteArrayInputStream(content))) {
             return new PDFTextStripper().getText(document);
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "PDF text extraction failed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "PDF 简历文本提取失败，请更换文件或转为文本后重试");
         }
     }
 }

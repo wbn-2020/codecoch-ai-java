@@ -113,7 +113,20 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
     private boolean hasAdminRole(TokenInfo tokenInfo) {
         List<String> roles = tokenInfo.getRoles();
-        return roles != null && roles.stream().anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
+        return roles != null && roles.stream()
+                .map(this::normalizeRoleCode)
+                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
+    }
+
+    private String normalizeRoleCode(String roleCode) {
+        if (!StringUtils.hasText(roleCode)) {
+            return "";
+        }
+        String normalized = roleCode.trim();
+        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
+            normalized = normalized.substring(5);
+        }
+        return normalized;
     }
 
     private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo,

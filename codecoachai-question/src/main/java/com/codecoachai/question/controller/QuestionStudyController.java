@@ -5,10 +5,12 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.QuestionRelationStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationType;
+import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
@@ -46,6 +48,7 @@ public class QuestionStudyController {
     private final QuestionMapper questionMapper;
     private final UserQuestionRecordMapper userQuestionRecordMapper;
     private final QuestionRelationMapper questionRelationMapper;
+    private final QuestionCategoryMapper questionCategoryMapper;
 
     // ==================== 每日推荐题目 ====================
 
@@ -124,6 +127,11 @@ public class QuestionStudyController {
         Map<Long, Question> questionMap = questionMapper.selectList(
                         new LambdaQueryWrapper<Question>().in(Question::getId, questionIds))
                 .stream().collect(Collectors.toMap(Question::getId, q -> q));
+        Set<Long> categoryIds = questionMap.values().stream()
+                .map(Question::getCategoryId)
+                .filter(id -> id != null && id > 0)
+                .collect(Collectors.toSet());
+        Map<Long, String> categoryNameMap = loadCategoryNameMap(categoryIds);
 
         int totalAnswered = records.size();
         int totalCorrect = 0;
@@ -148,6 +156,7 @@ public class QuestionStudyController {
                 .map(e -> {
                     WeakCategoryVO wc = new WeakCategoryVO();
                     wc.setCategoryId(e.getKey());
+                    wc.setCategoryName(resolveCategoryName(e.getKey(), categoryNameMap));
                     wc.setTotalCount(e.getValue()[0]);
                     wc.setWrongCount(e.getValue()[1]);
                     wc.setWrongRate(Math.round(e.getValue()[1] * 100.0 / e.getValue()[0]));
@@ -316,6 +325,28 @@ public class QuestionStudyController {
         return ids;
     }
 
+    private Map<Long, String> loadCategoryNameMap(Set<Long> categoryIds) {
+        if (categoryIds == null || categoryIds.isEmpty()) {
+            return Map.of();
+        }
+        return questionCategoryMapper.selectList(new LambdaQueryWrapper<QuestionCategory>()
+                        .in(QuestionCategory::getId, categoryIds))
+                .stream()
+                .filter(category -> category.getId() != null && category.getCategoryName() != null)
+                .collect(Collectors.toMap(
+                        QuestionCategory::getId,
+                        QuestionCategory::getCategoryName,
+                        (left, right) -> left));
+    }
+
+    private String resolveCategoryName(Long categoryId, Map<Long, String> categoryNameMap) {
+        if (categoryId == null || categoryId <= 0) {
+            return "未分类题目";
+        }
+        String name = categoryNameMap.get(categoryId);
+        return name == null || name.isBlank() ? "题目分类 " + categoryId : name;
+    }
+
     // ==================== DTO / VO ====================
 
     @Data
@@ -338,6 +369,7 @@ public class QuestionStudyController {
     @Data
     public static class WeakCategoryVO {
         private Long categoryId;
+        private String categoryName;
         private int totalCount;
         private int wrongCount;
         private long wrongRate;

@@ -40,7 +40,11 @@ public class V3DashboardVO {
         private Long targetJobId;
         private Integer overallScore;
         private String status;
+        private String trustStatus;
+        private Boolean fallback;
+        private Integer schemaWarningCount;
         private String summary;
+        private String evidenceSummary;
         private LocalDateTime updatedAt;
     }
 

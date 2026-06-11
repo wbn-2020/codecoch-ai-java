@@ -114,10 +114,31 @@ public class RoleServiceImpl implements RoleService {
 
     @Override
     public void deleteRole(Long id) {
-        sysRoleMapper.deleteById(id);
-        // 同时删除用户-角色关联
-        sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
+        SysRole role = sysRoleMapper.selectById(id);
+        if (role == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "角色不存在");
+        }
+        if (isBuiltInRole(role.getRoleCode())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "系统内置角色不能删除，请改用禁用或调整菜单授权");
+        }
+        Long userRelationCount = sysUserRoleMapper.selectCount(new LambdaQueryWrapper<SysUserRole>()
                 .eq(SysUserRole::getRoleId, id));
+        if (userRelationCount > 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "该角色仍有关联用户，请先调整用户角色后再删除");
+        }
+        sysRoleMapper.deleteById(id);
+    }
+
+    private boolean isBuiltInRole(String roleCode) {
+        if (!StringUtils.hasText(roleCode)) {
+            return false;
+        }
+        String normalized = roleCode.trim().toUpperCase();
+        if (normalized.startsWith("ROLE_")) {
+            normalized = normalized.substring("ROLE_".length());
+        }
+        return "ADMIN".equals(normalized) || "USER".equals(normalized);
     }
 
     @Override
@@ -125,6 +146,9 @@ public class RoleServiceImpl implements RoleService {
         SysRole role = sysRoleMapper.selectById(id);
         if (role == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "角色不存在");
+        }
+        if (CommonConstants.NO.equals(status) && isBuiltInRole(role.getRoleCode())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "系统内置角色不能禁用，请改用菜单授权控制访问范围");
         }
         role.setStatus(status);
         sysRoleMapper.updateById(role);

@@ -82,8 +82,15 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             //    上游 dispatcher 应传 analysisRecordId（更准确）；这里以 resumeId 作为兜底标识。
             Long analysisRecordId = payload.getResumeId();
             Result<ResumeAnalysisRawVO> rawResp = resumeFeignClient.getAnalysisRaw(analysisRecordId);
-            if (rawResp == null || rawResp.getCode() != 0 || rawResp.getData() == null) {
-                throw new NonRetryableMqException("拉取简历解析记录失败：" + (rawResp == null ? "null" : rawResp.getMessage()));
+            if (rawResp == null) {
+                throw new RuntimeException("拉取简历解析记录失败：null");
+            }
+            if (rawResp.getCode() != 0 || rawResp.getData() == null) {
+                String reason = "拉取简历解析记录失败：" + rawResp.getMessage();
+                if (isBusinessFailure(rawResp.getCode())) {
+                    throw new TerminalTaskFailureException(reason);
+                }
+                throw new RuntimeException(reason);
             }
             ResumeAnalysisRawVO raw = rawResp.getData();
 
@@ -105,7 +112,7 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             Result<ParseResumeVO> aiResp = aiFeignClient.parseResume(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
                 if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
-                    throw new NonRetryableMqException("AI 简历解析业务失败: " + aiResp.getMessage());
+                    throw new TerminalTaskFailureException("AI 简历解析业务失败: " + aiResp.getMessage());
                 }
                 throw new RuntimeException("AI 解析返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
@@ -117,7 +124,14 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             complete.setStructuredJson(structured);
             complete.setRawText(raw.getRawText());
             complete.setModelTrace("deepseek");
-            resumeFeignClient.completeParse(analysisRecordId, complete);
+            Result<Void> completeResp = resumeFeignClient.completeParse(analysisRecordId, complete);
+            if (completeResp == null || completeResp.getCode() != 0) {
+                if (completeResp != null && isBusinessFailure(completeResp.getCode())) {
+                    throw new TerminalTaskFailureException("回写简历解析结果失败: " + completeResp.getMessage());
+                }
+                throw new RuntimeException("回写简历解析结果异常: "
+                        + (completeResp == null ? "null" : completeResp.getMessage()));
+            }
 
             // 4. 标记成功
             asyncTaskService.markSuccess(envelope.getMessageId(), structured);
@@ -125,6 +139,14 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             // 5. 通知用户
             notificationService.notifyTaskDone(payload.getUserId(), "RESUME_PARSE",
                     String.valueOf(analysisRecordId), "简历解析完成", "您的简历已解析完成，请查看解析结果");
+        } catch (TerminalTaskFailureException terminalEx) {
+            log.warn("简历解析任务业务终态失败 messageId={}", envelope.getMessageId(), terminalEx);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), terminalEx.getMessage());
+            tryMarkResumeFailed(envelope, terminalEx.getMessage());
+            if (envelope.getPayload() != null) {
+                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "RESUME_PARSE",
+                        String.valueOf(envelope.getPayload().getResumeId()), "简历解析失败", terminalEx.getMessage());
+            }
         } catch (NonRetryableMqException nrEx) {
             log.error("简历解析任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
             asyncTaskService.markDead(envelope, nrEx.getMessage());
@@ -164,5 +186,11 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private static class TerminalTaskFailureException extends RuntimeException {
+        private TerminalTaskFailureException(String message) {
+            super(message);
+        }
     }
 }

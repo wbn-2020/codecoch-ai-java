@@ -115,13 +115,13 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             log.info("OSS 上传成功 fileId={} ossKey={} size={}", fileInfo.getId(), ossKey, bytes.length);
             return toVO(fileInfo);
         } catch (IOException e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
         } catch (BusinessException be) {
             // OSS SDK 或校验层已经给出业务异常时直接透传，避免包装后丢失可读错误码。
             throw be;
         } catch (Exception ex) {
             log.error("OSS 上传失败", ex);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败，请稍后重试");
         }
     }
 
@@ -136,7 +136,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
         String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
         if (!StringUtils.hasText(key)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "oss key is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
         }
         return ossFileService.signUrl(key, null);
     }
@@ -155,7 +155,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
         String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
         if (!StringUtils.hasText(key)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "oss key is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
         }
 
         byte[] bytes = ossFileService.download(key);
@@ -189,12 +189,17 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     public PageResult<FileInfoVO> pageAdminFiles(AdminFileQueryDTO query) {
         AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
+        List<Long> parseStatusFileIds = resolveParseStatusFileIds(actualQuery);
+        if (parseStatusFileIds != null && parseStatusFileIds.isEmpty()) {
+            return PageResult.empty(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize()));
+        }
         Page<FileInfo> page = fileInfoMapper.selectPage(
                 Page.of(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize())),
                 new LambdaQueryWrapper<FileInfo>()
                         .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
                         .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
                         .eq(StringUtils.hasText(actualQuery.getStatus()), FileInfo::getStatus, actualQuery.getStatus())
+                        .in(parseStatusFileIds != null, FileInfo::getId, parseStatusFileIds)
                         .orderByDesc(FileInfo::getCreatedAt));
         List<FileInfoVO> records = page.getRecords().stream().map(this::toFileInfoVO).toList();
         fillResumeAnalysisStatus(records);
@@ -205,7 +210,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     public FileInfoVO getAdminFile(Long fileId) {
         FileInfo fileInfo = fileInfoMapper.selectById(fileId);
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可用");
         }
         FileInfoVO vo = toFileInfoVO(fileInfo);
         try {
@@ -220,10 +225,10 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
 
     private FileInfo getAvailableFile(Long fileId, Long userId, String bizType) {
         if (fileId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件信息不能为空");
         }
         if (userId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
@@ -233,14 +238,14 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可用");
         }
         return fileInfo;
     }
 
     private FileInfo getAvailableAdminFile(Long fileId) {
         if (fileId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件信息不能为空");
         }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
@@ -248,38 +253,38 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found or not downloadable");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或暂不可下载");
         }
         return fileInfo;
     }
 
     private void validateBasic(MultipartFile file, String bizType, Long userId) {
         if (userId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (!StringUtils.hasText(bizType)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件用途不能为空");
         }
         if (file == null || file.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "上传文件不能为空");
         }
     }
 
     private void validateSize(MultipartFile file) {
         long maxBytes = properties.getMaxSizeMb() * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size exceeds limit");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
         }
     }
 
     private String safeOriginalFilename(String originalFilename) {
         if (!StringUtils.hasText(originalFilename)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "filename is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不能为空");
         }
         String normalized = originalFilename.replace('\\', '/');
         String filename = normalized.substring(normalized.lastIndexOf('/') + 1);
         if (!StringUtils.hasText(filename) || filename.contains("..")) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid filename");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不合法");
         }
         return filename;
     }
@@ -287,7 +292,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     private String extractExtension(String filename) {
         int index = filename.lastIndexOf('.');
         if (index < 0 || index == filename.length() - 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file extension is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件扩展名不能为空");
         }
         return filename.substring(index + 1).toLowerCase(Locale.ROOT);
     }
@@ -370,6 +375,19 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         } catch (RuntimeException ex) {
             // 文件列表是主流程，解析状态只作为管理端辅助信息，查询失败时不阻断列表展示。
             log.warn("Failed to fill resume analysis status for fileIds={}", resumeFileIds, ex);
+        }
+    }
+
+    private List<Long> resolveParseStatusFileIds(AdminFileQueryDTO query) {
+        if (query == null || !StringUtils.hasText(query.getParseStatus())) {
+            return null;
+        }
+        String parseStatus = query.getParseStatus().trim().toUpperCase(Locale.ROOT);
+        try {
+            return fileInfoMapper.selectLatestResumeFileIdsByParseStatus(parseStatus);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to resolve resume file ids by parseStatus={}", parseStatus, ex);
+            return List.of();
         }
     }
 

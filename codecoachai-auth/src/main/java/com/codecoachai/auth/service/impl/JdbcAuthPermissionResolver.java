@@ -15,6 +15,9 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class JdbcAuthPermissionResolver implements AuthPermissionResolver {
 
+    private static final String ROLE_ADMIN = "ADMIN";
+    private static final String ADMIN_OVERVIEW_PERMISSION = "admin:system:overview";
+
     private static final String QUERY_SQL = """
             SELECT DISTINCT m.permission_code
             FROM sys_role r
@@ -37,7 +40,7 @@ public class JdbcAuthPermissionResolver implements AuthPermissionResolver {
         }
         List<String> normalizedRoles = roleCodes.stream()
                 .filter(StringUtils::hasText)
-                .map(item -> item.trim().toUpperCase())
+                .map(this::normalizeRoleCode)
                 .distinct()
                 .toList();
         if (normalizedRoles.isEmpty()) {
@@ -47,14 +50,36 @@ public class JdbcAuthPermissionResolver implements AuthPermissionResolver {
             String placeholders = String.join(",", Collections.nCopies(normalizedRoles.size(), "?"));
             List<String> permissions = jdbcTemplate.queryForList(QUERY_SQL.formatted(placeholders),
                     String.class, normalizedRoles.toArray());
-            return permissions.stream()
+            List<String> resolvedPermissions = permissions.stream()
                     .filter(StringUtils::hasText)
                     .map(String::trim)
                     .distinct()
                     .toList();
+            return withAdminBaseline(normalizedRoles, resolvedPermissions);
         } catch (Exception ex) {
             log.warn("Resolve auth permissions failed roles={}", normalizedRoles, ex);
-            return Collections.emptyList();
+            return withAdminBaseline(normalizedRoles, Collections.emptyList());
         }
+    }
+
+    private List<String> withAdminBaseline(List<String> normalizedRoles, List<String> permissions) {
+        if (!normalizedRoles.contains(ROLE_ADMIN)) {
+            return permissions;
+        }
+        boolean hasOverviewPermission = permissions.stream().anyMatch(ADMIN_OVERVIEW_PERMISSION::equals);
+        if (hasOverviewPermission) {
+            return permissions;
+        }
+        if (permissions.isEmpty()) {
+            log.warn("ADMIN role resolved with empty permissions, using baseline overview permission. Check sys_role_menu/sys_menu seed data.");
+        }
+        return java.util.stream.Stream.concat(permissions.stream(), java.util.stream.Stream.of(ADMIN_OVERVIEW_PERMISSION))
+                .distinct()
+                .toList();
+    }
+
+    private String normalizeRoleCode(String roleCode) {
+        String normalized = roleCode.trim().toUpperCase();
+        return normalized.startsWith("ROLE_") ? normalized.substring("ROLE_".length()) : normalized;
     }
 }

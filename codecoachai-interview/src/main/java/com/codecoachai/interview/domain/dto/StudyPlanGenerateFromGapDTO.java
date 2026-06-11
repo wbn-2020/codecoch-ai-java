@@ -10,17 +10,17 @@ import lombok.Data;
 @Data
 public class StudyPlanGenerateFromGapDTO {
 
-    @NotNull(message = "profileId is required")
+    @NotNull(message = "请选择能力画像")
     private Long profileId;
 
     private List<Long> gapItemIds;
 
-    @Min(value = 1, message = "days must be between 1 and 60")
-    @Max(value = 60, message = "days must be between 1 and 60")
+    @Min(value = 1, message = "学习天数需在 1 到 60 天之间")
+    @Max(value = 60, message = "学习天数需在 1 到 60 天之间")
     private Integer days;
 
-    @Min(value = 15, message = "dailyMinutes must be between 15 and 480")
-    @Max(value = 480, message = "dailyMinutes must be between 15 and 480")
+    @Min(value = 15, message = "每天学习时长需在 15 到 480 分钟之间")
+    @Max(value = 480, message = "每天学习时长需在 15 到 480 分钟之间")
     private Integer dailyMinutes;
 
     private LocalDate startDate;

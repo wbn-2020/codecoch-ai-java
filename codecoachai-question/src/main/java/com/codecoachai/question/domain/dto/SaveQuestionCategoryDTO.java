@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class SaveQuestionCategoryDTO {
 
-    @NotBlank(message = "categoryName is required")
+    @NotBlank(message = "请填写分类名称")
     private String categoryName;
 
     private Long parentId;

@@ -67,18 +67,18 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeEvalCaseVO saveCase(Long userId, KnowledgeEvalCaseSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getQuery())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "query is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "评测问题不能为空");
         }
         if (dto.getExpectedDocumentId() != null) {
             PersonalKnowledgeDocument document = personalKnowledgeDocumentMapper.selectById(dto.getExpectedDocumentId());
             if (document == null || !Objects.equals(document.getUserId(), userId)) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "Expected knowledge document not found");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "期望命中的知识文档不存在或无权访问");
             }
         }
         if (dto.getRetrievalDocumentId() != null) {
             PersonalKnowledgeDocument document = personalKnowledgeDocumentMapper.selectById(dto.getRetrievalDocumentId());
             if (document == null || !Objects.equals(document.getUserId(), userId)) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "Retrieval knowledge document not found");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "检索限定的知识文档不存在或无权访问");
             }
         }
         PersonalKnowledgeEvalCase item = dto.getId() == null ? new PersonalKnowledgeEvalCase() : ownedCase(userId, dto.getId());
@@ -180,7 +180,7 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
                 .eq(PersonalKnowledgeEvalRun::getUserId, userId)
                 .last("limit 1"));
         if (run == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Knowledge eval run not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "知识评测运行记录不存在或无权访问");
         }
         return toRunVO(run, true);
     }
@@ -212,7 +212,7 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
                 .orderByAsc(PersonalKnowledgeEvalCase::getId)
                 .last("limit " + size));
         if (cases.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "No knowledge eval cases matched");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "没有匹配到可评测的知识用例");
         }
         return cases;
     }
@@ -275,7 +275,7 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
                 .eq(PersonalKnowledgeEvalCase::getUserId, userId)
                 .last("limit 1"));
         if (item == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Knowledge eval case not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "知识评测用例不存在或无权访问");
         }
         return item;
     }

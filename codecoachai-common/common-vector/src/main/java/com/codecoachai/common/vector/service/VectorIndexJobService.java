@@ -78,7 +78,7 @@ public class VectorIndexJobService {
         }
     }
 
-    public PageResult<Map<String, Object>> page(String jobType, String scopeType, String status,
+    public PageResult<Map<String, Object>> page(Long jobId, String jobType, String scopeType, String status,
                                                 Long pageNo, Long pageSize) {
         long actualPageNo = pageNo == null || pageNo <= 0 ? 1L : pageNo;
         long actualPageSize = pageSize == null || pageSize <= 0 ? 10L : Math.min(pageSize, 100L);
@@ -86,6 +86,10 @@ public class VectorIndexJobService {
         List<String> where = new ArrayList<>();
         List<Object> args = new ArrayList<>();
         where.add("deleted = 0");
+        if (jobId != null && jobId > 0) {
+            where.add("id = ?");
+            args.add(jobId);
+        }
         if (jobType != null && !jobType.isBlank()) {
             where.add("job_type = ?");
             args.add(jobType.trim().toUpperCase());

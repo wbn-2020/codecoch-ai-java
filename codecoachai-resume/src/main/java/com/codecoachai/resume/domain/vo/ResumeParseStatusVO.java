@@ -11,6 +11,11 @@ public class ResumeParseStatusVO {
     private Long resumeId;
     private Long fileId;
     private String parseStatus;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
     private String errorMessage;
     private String message;
 

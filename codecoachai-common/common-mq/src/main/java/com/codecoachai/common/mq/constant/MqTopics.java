@@ -12,6 +12,7 @@ public final class MqTopics {
     // ========== 简历相关 ==========
     public static final String RESUME = "codecoachai-resume";
     public static final String RESUME_TAG_PARSE = "parse";
+    public static final String RESUME_TAG_JOB_TARGET_PARSE = "job-target-parse";
     public static final String RESUME_TAG_OPTIMIZE = "optimize";
 
     // ========== 面试相关 ==========
@@ -23,6 +24,7 @@ public final class MqTopics {
     public static final String QUESTION = "codecoachai-question";
     public static final String QUESTION_TAG_AI_GENERATE = "ai-generate";
     public static final String QUESTION_TAG_DUPLICATE_CHECK = "duplicate-check";
+    public static final String QUESTION_TAG_RECOMMENDATION_GENERATE = "recommendation-generate";
 
     // ========== 搜索索引同步 ==========
     public static final String SEARCH = "codecoachai-search";
@@ -42,6 +44,10 @@ public final class MqTopics {
     // ========== 学习计划 ==========
     public static final String STUDY_PLAN = "codecoachai-study-plan";
     public static final String STUDY_PLAN_TAG_GENERATE = "generate";
+
+    // ========== Agent 任务 ==========
+    public static final String AGENT = "codecoachai-agent";
+    public static final String AGENT_TAG_DAILY_PLAN = "daily-plan";
 
     /**
      * 拼接 destination：{topic}:{tag}

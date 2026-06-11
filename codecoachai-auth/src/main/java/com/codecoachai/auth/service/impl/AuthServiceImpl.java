@@ -119,12 +119,12 @@ public class AuthServiceImpl implements AuthService {
         // 按邮箱做短窗口限流，避免密码重置接口被刷；失败与不存在账号也返回统一受理文案。
         if (StringUtils.hasText(redisCacheHelper.get(limitKey))) {
             passwordResetSecurityLogRecorder.recordRejected("RATE_LIMIT");
-            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Password reset requests are too frequent");
+            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "密码重置请求过于频繁，请稍后再试。");
         }
         redisCacheHelper.set(limitKey, "1", Duration.ofSeconds(RESET_REQUEST_LIMIT_TTL_SECONDS));
 
         ForgotPasswordVO vo = new ForgotPasswordVO();
-        vo.setMessage("Password reset request accepted. If the account exists, follow the instructions sent through the configured notification channel.");
+        vo.setMessage("密码重置请求已受理。如果账号存在，请按通知渠道中的指引完成重置。");
         vo.setExpiresInSeconds(RESET_TOKEN_TTL_SECONDS);
         try {
             InnerUserAuthVO user = FeignResultUtils.unwrap(userFeignClient.getByEmail(email));

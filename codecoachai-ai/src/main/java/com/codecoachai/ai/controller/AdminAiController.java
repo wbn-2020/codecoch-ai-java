@@ -1,6 +1,7 @@
 package com.codecoachai.ai.controller;
 
 import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
+import com.codecoachai.ai.domain.dto.AiLogRawAccessDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
@@ -13,6 +14,8 @@ import com.codecoachai.ai.domain.vo.PromptTemplateDetailVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
 import com.codecoachai.ai.domain.vo.PromptVersionTestVO;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.common.core.domain.PageResult;
@@ -30,6 +33,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.util.StringUtils;
 
 @RestController
 @RequiredArgsConstructor
@@ -213,9 +217,30 @@ public class AdminAiController {
     }
 
     @OperationLog(module = "ai", action = "VIEW_AI_LOG_RAW", description = "查看 AI 调用日志原文", logResponse = false)
-    @GetMapping({"/admin/ai/call-logs/{id}/raw", "/admin/ai/logs/{id}/raw"})
-    public Result<AiCallLogVO> getLogRaw(@PathVariable Long id) {
+    @PostMapping({"/admin/ai/call-logs/{id}/raw", "/admin/ai/logs/{id}/raw"})
+    public Result<AiCallLogVO> getLogRaw(@PathVariable Long id,
+                                          @Valid @RequestBody AiLogRawAccessDTO dto) {
         permissionGuard.require(PERM_LOG_RAW_VIEW);
+        validateRawAccess(dto.getAccessReason(), dto.isConfirmSensitiveAccess());
         return Result.success(promptTemplateService.getLogRaw(id));
+    }
+
+    @OperationLog(module = "ai", action = "VIEW_AI_LOG_RAW_COMPAT", description = "兼容入口查看 AI 调用日志原文", logResponse = false)
+    @GetMapping({"/admin/ai/call-logs/{id}/raw", "/admin/ai/logs/{id}/raw"})
+    public Result<AiCallLogVO> getLogRawCompat(@PathVariable Long id) {
+        permissionGuard.require(PERM_LOG_RAW_VIEW);
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用日志原文需要使用 POST 申请，并填写访问原因。");
+    }
+
+    private void validateRawAccess(String accessReason, boolean confirmSensitiveAccess) {
+        if (!confirmSensitiveAccess) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请先确认本次敏感原文访问");
+        }
+        if (!StringUtils.hasText(accessReason)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写本次查看 AI 原文的访问原因");
+        }
+        if (accessReason.trim().length() > 300) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "访问原因不能超过 300 个字符");
+        }
     }
 }

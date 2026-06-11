@@ -98,6 +98,15 @@ public class AsyncTaskService {
         redisTemplate.delete(RedisKeyConstants.mqConsumedKey(messageId));
     }
 
+    public void markTerminalFailed(String messageId, String reason) {
+        asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getMessageId, messageId)
+                        .set(AsyncTask::getStatus, "FAILED")
+                        .set(AsyncTask::getFailureReason, truncate(reason, 2000))
+                        .set(AsyncTask::getCompletedAt, LocalDateTime.now()));
+    }
+
     public void markDead(MqMessage<?> envelope, String reason) {
         // 超过重试阈值后保留死信记录，后台可按 bizType 解析 payload 后人工恢复。
         asyncTaskMapper.update(null,
@@ -116,6 +125,31 @@ public class AsyncTaskService {
         dlq.setTotalRetry(envelope.getRetryCount() == null ? 0 : envelope.getRetryCount());
         dlq.setHandleStatus("UNHANDLED");
         deadLetterMapper.insert(dlq);
+    }
+
+    public void prepareManualRetry(Long taskId, String messageId) {
+        if (messageId != null && !messageId.isBlank()) {
+            redisTemplate.delete(RedisKeyConstants.mqConsumedKey(messageId));
+        }
+        asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, taskId)
+                        .set(AsyncTask::getStatus, "PENDING")
+                        .set(AsyncTask::getFailureReason, null)
+                        .set(AsyncTask::getResult, null)
+                        .set(AsyncTask::getStartedAt, null)
+                        .set(AsyncTask::getCompletedAt, null)
+                        .set(AsyncTask::getUpdatedAt, LocalDateTime.now()));
+    }
+
+    public void markManualRetryDispatchFailed(Long taskId, String reason) {
+        asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, taskId)
+                        .set(AsyncTask::getStatus, "FAILED")
+                        .set(AsyncTask::getFailureReason, truncate(reason, 2000))
+                        .set(AsyncTask::getCompletedAt, LocalDateTime.now())
+                        .set(AsyncTask::getUpdatedAt, LocalDateTime.now()));
     }
 
     private String toJson(Object obj) {

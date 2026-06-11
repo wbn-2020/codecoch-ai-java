@@ -28,6 +28,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.RedisConnection;
@@ -36,6 +37,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class SystemConfigServiceImpl implements SystemConfigService {
 
     private final SystemConfigMapper systemConfigMapper;
@@ -84,7 +86,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     public SystemConfigVO updateConfigStatus(String keyOrId, SystemConfigStatusDTO dto) {
         SystemConfig config = getConfigEntity(keyOrId);
         if (!CommonConstants.YES.equals(dto.getStatus()) && !CommonConstants.NO.equals(dto.getStatus())) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "status must be 0 or 1");
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "状态值只能是 0 或 1");
         }
         config.setStatus(dto.getStatus());
         systemConfigMapper.updateById(config);
@@ -148,7 +150,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                         .eq(SystemConfig::getConfigKey, keyOrId)
                         .last("limit 1"));
         if (config == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "System config not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "系统配置不存在或已不可用");
         }
         return config;
     }
@@ -167,20 +169,24 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     private List<AdminDashboardOverviewVO.SummaryCardVO> summaryCards() {
-        return List.of(
-                summaryCard("users", "User count", count("sys_user", "deleted = 0"), "sys_user"),
-                summaryCard("resumes", "Resume count", count("resume", "deleted = 0"), "resume"),
-                summaryCard("interviews", "Interview count", count("interview_session", "deleted = 0"), "interview_session"),
-                summaryCard("studyPlans", "Study plan count", count("study_plan", "deleted = 0"), "study_plan"),
-                summaryCard("aiCalls", "AI call count", count("ai_call_log", "deleted = 0"), "ai_call_log"),
-                summaryCard("todayAiCalls", "Today AI call count",
-                        count("ai_call_log", "deleted = 0 AND DATE(created_at) = CURDATE()"), "ai_call_log"),
-                summaryCard("pendingQuestionReviews", "Pending generated question reviews",
-                        count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review"),
-                summaryCard("failedResumeParses", "Failed resume parses",
-                        count("resume_analysis_record", "deleted = 0 AND parse_status = 'FAILED'"),
-                        "resume_analysis_record")
-        );
+        List<AdminDashboardOverviewVO.SummaryCardVO> cards = new ArrayList<>();
+        cards.add(summaryCard("users", "用户总数", count("sys_user", "deleted = 0"), "sys_user"));
+        cards.add(summaryCard("resumes", "简历总数", count("resume", "deleted = 0"), "resume"));
+        cards.add(summaryCard("interviews", "面试记录数", count("interview_session", "deleted = 0"), "interview_session"));
+        cards.add(summaryCard("studyPlans", "学习计划数", count("study_plan", "deleted = 0"), "study_plan"));
+        cards.add(summaryCard("aiCalls", "AI 调用总数", count("ai_call_log", "deleted = 0"), "ai_call_log"));
+        cards.add(summaryCard("todayAiCalls", "今日 AI 调用",
+                count("ai_call_log", "deleted = 0 AND DATE(created_at) = CURDATE()"), "ai_call_log"));
+        cards.add(summaryCard("failedAiCalls", "智能生成失败", failedAiCallCount(), "ai_call_log"));
+        cards.add(summaryCard("pendingQuestionReviews", "待审核生成题",
+                count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review"));
+        cards.add(summaryCard("failedResumeParses", "简历解析失败",
+                failedResumeParseCount(), "resume_analysis_record"));
+        cards.add(summaryCard("failedAsyncTasks", "异步任务失败", failedAsyncTaskCount(), "async_task"));
+        cards.add(summaryCard("agentSuccessRate", "计划生成成功率", agentSuccessRatePercent(), "agent_run"));
+        cards.add(summaryCard("slowSqlWarnings", "慢 SQL 告警", slowSqlWarningCount(), "slow_sql_log"));
+        cards.add(summaryCard("notificationFailures", "通知发送失败", notificationFailureCount(), "notification"));
+        return cards;
     }
 
     private AdminDashboardOverviewVO.SummaryCardVO summaryCard(String key, String label, Long value, String sourceTable) {
@@ -226,31 +232,37 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         String sql = "SELECT DATE(" + dateColumn + ") AS stat_date, COUNT(1) AS total FROM `" + tableName
                 + "` WHERE " + condition + " AND " + dateColumn
                 + " >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(" + dateColumn + ")";
-        jdbcTemplate.query(sql, rs -> {
-            LocalDate date = rs.getDate("stat_date").toLocalDate();
-            AdminDashboardOverviewVO.TrendStatVO vo = map.get(date);
-            if (vo != null) {
-                setter.set(vo, rs.getLong("total"));
-            }
-        });
+        try {
+            jdbcTemplate.query(sql, rs -> {
+                LocalDate date = rs.getDate("stat_date").toLocalDate();
+                AdminDashboardOverviewVO.TrendStatVO vo = map.get(date);
+                if (vo != null) {
+                    setter.set(vo, rs.getLong("total"));
+                }
+            });
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard trend stat skipped, table={}, dateColumn={}", tableName, dateColumn, ex);
+        }
     }
 
     private List<AdminDashboardOverviewVO.PendingItemVO> pendingItems() {
-        return List.of(
-                pendingItem("pendingQuestionReviews", "Pending AI generated question reviews",
-                        count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review", null),
-                pendingItem("duplicateQuestionReviews", "Pending duplicate question reviews",
-                        count("question_duplicate_review", "deleted = 0 AND review_status = 'PENDING'"),
-                        "question_duplicate_review", null),
-                pendingItem("promptVersions", "Prompt versions not active",
-                        count("prompt_template_version", "deleted = 0 AND (is_active = 0 OR status <> 'ACTIVE')"),
-                        "prompt_template_version", null),
-                pendingItem("failedAiCalls", "Failed AI calls",
-                        count("ai_call_log", "deleted = 0 AND (status = 0 OR success = 0)"), "ai_call_log", null),
-                pendingItem("failedResumeParses", "Failed resume parses",
-                        count("resume_analysis_record", "deleted = 0 AND parse_status = 'FAILED'"),
-                        "resume_analysis_record", null)
-        );
+        List<AdminDashboardOverviewVO.PendingItemVO> items = new ArrayList<>();
+        items.add(pendingItem("pendingQuestionReviews", "待审核 AI 生成题目",
+                count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review", null));
+        items.add(pendingItem("duplicateQuestionReviews", "待审核重复题目",
+                count("question_duplicate_review", "deleted = 0 AND review_status = 'PENDING'"),
+                "question_duplicate_review", null));
+        items.add(pendingItem("promptVersions", "Prompt 版本待启用",
+                count("prompt_template_version", "deleted = 0 AND (is_active = 0 OR status <> 'ACTIVE')"),
+                "prompt_template_version", null));
+        items.add(pendingItem("failedAiCalls", "智能生成失败", failedAiCallCount(), "ai_call_log", null));
+        items.add(pendingItem("failedResumeParses", "简历解析失败",
+                failedResumeParseCount(), "resume_analysis_record", null));
+        items.add(pendingItem("failedAsyncTasks", "异步任务失败", failedAsyncTaskCount(), "async_task", null));
+        items.add(pendingItem("failedAgentRuns", "近 7 日计划生成失败", failedAgentRunCount(), "agent_run", null));
+        items.add(pendingItem("slowSqlWarnings", "近 7 日慢 SQL 告警", slowSqlWarningCount(), "slow_sql_log", null));
+        items.add(notificationFailurePendingItem());
+        return items;
     }
 
     private AdminDashboardOverviewVO.PendingItemVO pendingItem(String key, String label, Long count,
@@ -263,6 +275,136 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         vo.setSourceTable(sourceTable);
         vo.setReason(reason);
         return vo;
+    }
+
+    private long failedAsyncTaskCount() {
+        if (!tableExists("async_task") || !columnExists("async_task", "status")) {
+            return 0L;
+        }
+        return count("async_task", "deleted = 0 AND status IN ('FAILED','DEAD','ERROR','DEAD_LETTER')");
+    }
+
+    private long failedAiCallCount() {
+        if (!tableExists("ai_call_log")) {
+            return 0L;
+        }
+        boolean hasStatus = columnExists("ai_call_log", "status");
+        boolean hasSuccess = columnExists("ai_call_log", "success");
+        if (!hasStatus && !hasSuccess) {
+            return 0L;
+        }
+        List<String> conditions = new ArrayList<>();
+        if (hasStatus) {
+            conditions.add("status = 0");
+        }
+        if (hasSuccess) {
+            conditions.add("success = 0");
+        }
+        return count("ai_call_log", "deleted = 0 AND (" + String.join(" OR ", conditions) + ")");
+    }
+
+    private long failedResumeParseCount() {
+        if (!tableExists("resume_analysis_record")
+                || !columnExists("resume_analysis_record", "file_id")
+                || !columnExists("resume_analysis_record", "parse_status")) {
+            return 0L;
+        }
+        String sql = """
+                SELECT COUNT(1)
+                FROM resume_analysis_record latest
+                INNER JOIN (
+                  SELECT file_id, MAX(CONCAT(DATE_FORMAT(created_at, '%Y%m%d%H%i%s'), LPAD(id, 20, '0'))) AS sort_key
+                  FROM resume_analysis_record
+                  WHERE deleted = 0
+                    AND file_id IS NOT NULL
+                  GROUP BY file_id
+                ) picked ON picked.file_id = latest.file_id
+                  AND picked.sort_key = CONCAT(DATE_FORMAT(latest.created_at, '%Y%m%d%H%i%s'), LPAD(latest.id, 20, '0'))
+                WHERE latest.deleted = 0
+                  AND latest.parse_status = 'FAILED'
+                """;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class);
+            return count == null ? 0L : count;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard resume parse failure count skipped", ex);
+            return 0L;
+        }
+    }
+
+    private long failedAgentRunCount() {
+        if (!tableExists("agent_run") || !columnExists("agent_run", "status")) {
+            return 0L;
+        }
+        String recentCondition = columnExists("agent_run", "created_at")
+                ? " AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
+                : "";
+        return count("agent_run", "deleted = 0 AND status = 'FAILED'" + recentCondition);
+    }
+
+    private long agentSuccessRatePercent() {
+        if (!tableExists("agent_run") || !columnExists("agent_run", "status")) {
+            return 0L;
+        }
+        String recentCondition = columnExists("agent_run", "created_at")
+                ? " AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)"
+                : "";
+        long success = count("agent_run", "deleted = 0 AND status = 'SUCCESS'" + recentCondition);
+        long failed = count("agent_run", "deleted = 0 AND status = 'FAILED'" + recentCondition);
+        long total = success + failed;
+        if (total <= 0L) {
+            return 0L;
+        }
+        return Math.round(success * 100.0D / total);
+    }
+
+    private long slowSqlWarningCount() {
+        if (!tableExists("slow_sql_log")) {
+            return 0L;
+        }
+        String condition = "deleted = 0";
+        if (columnExists("slow_sql_log", "created_at")) {
+            condition += " AND created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)";
+        }
+        return count("slow_sql_log", condition);
+    }
+
+    private AdminDashboardOverviewVO.PendingItemVO notificationFailurePendingItem() {
+        if (!tableExists("notification")) {
+            return pendingItem("notificationFailures", "通知发送失败", 0L,
+                    "notification", "通知表暂不可用，当前无法统计发送失败。");
+        }
+        String statusColumn = firstExistingColumn("notification", List.of("send_status", "delivery_status", "deliver_status"));
+        if (statusColumn == null) {
+            return pendingItem("notificationFailures", "通知发送失败", 0L,
+                    "notification", "通知暂未记录发送状态，当前无法统计发送失败。");
+        }
+        long failures = notificationFailureCount(statusColumn);
+        return pendingItem("notificationFailures", "通知发送失败", failures, "notification", null);
+    }
+
+    private long notificationFailureCount() {
+        if (!tableExists("notification")) {
+            return 0L;
+        }
+        String statusColumn = firstExistingColumn("notification", List.of("send_status", "delivery_status", "deliver_status"));
+        if (statusColumn == null) {
+            return 0L;
+        }
+        return notificationFailureCount(statusColumn);
+    }
+
+    private long notificationFailureCount(String statusColumn) {
+        return count("notification", "deleted = 0 AND `" + statusColumn + "` IN ('FAILED','ERROR','SEND_FAILED','DELIVERY_FAILED')");
+    }
+
+    private String firstExistingColumn(String tableName, List<String> candidates) {
+        for (String candidate : candidates) {
+            if (columnExists(tableName, candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private AdminDashboardOverviewVO.SystemStatusVO systemStatus(LocalDateTime generatedAt) {
@@ -357,8 +499,13 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         }
         String sql = "SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition
                 + " AND `" + dateColumn + "` >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class);
-        return count == null ? 0L : count;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class);
+            return count == null ? 0L : count;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard recent count skipped, table={}, dateColumn={}", tableName, dateColumn, ex);
+            return 0L;
+        }
     }
 
     private long recentTokenCount() {
@@ -374,8 +521,13 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         String completionExpr = hasCompletionTokens ? "COALESCE(completion_tokens, 0)" : "0";
         String sql = "SELECT COALESCE(SUM(" + promptExpr + " + " + completionExpr
                 + "), 0) FROM ai_call_log WHERE deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class);
-        return count == null ? 0L : count;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class);
+            return count == null ? 0L : count;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard token count skipped", ex);
+            return 0L;
+        }
     }
 
     private void fillJvmMetrics(AdminDashboardOverviewVO.OpsMetricsVO vo) {
@@ -454,21 +606,36 @@ public class SystemConfigServiceImpl implements SystemConfigService {
             return 0L;
         }
         String sql = "SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition;
-        Long count = jdbcTemplate.queryForObject(sql, Long.class);
-        return count == null ? 0L : count;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class);
+            return count == null ? 0L : count;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard count skipped, table={}, condition={}", tableName, condition, ex);
+            return 0L;
+        }
     }
 
     private boolean tableExists(String tableName) {
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
-        return count != null && count > 0;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
+            return count != null && count > 0;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard table existence check failed, table={}", tableName, ex);
+            return false;
+        }
     }
 
     private boolean columnExists(String tableName, String columnName) {
         String sql = "SELECT COUNT(1) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
-        Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName, columnName);
-        return count != null && count > 0;
+        try {
+            Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName, columnName);
+            return count != null && count > 0;
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard column existence check failed, table={}, column={}", tableName, columnName, ex);
+            return false;
+        }
     }
 
     @FunctionalInterface

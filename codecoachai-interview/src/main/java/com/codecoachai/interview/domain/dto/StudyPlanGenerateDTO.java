@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class StudyPlanGenerateDTO {
 
-    @NotNull(message = "reportId is required")
+    @NotNull(message = "请选择面试报告")
     private Long reportId;
     private Long resumeId;
     private Long optimizeRecordId;

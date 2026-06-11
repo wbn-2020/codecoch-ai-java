@@ -20,6 +20,14 @@ public interface QuestionRecommendationService {
 
     QuestionRecommendationGenerateVO generateFromStudyPlan(QuestionRecommendationGenerateFromStudyPlanDTO dto);
 
+    QuestionRecommendationGenerateVO submitFromGap(QuestionRecommendationGenerateFromGapDTO dto);
+
+    QuestionRecommendationGenerateVO submitFromMatchReport(QuestionRecommendationGenerateFromMatchReportDTO dto);
+
+    QuestionRecommendationGenerateVO submitFromStudyPlan(QuestionRecommendationGenerateFromStudyPlanDTO dto);
+
+    QuestionRecommendationGenerateVO executeBatch(Long batchId, Long userId);
+
     List<QuestionRecommendationSourceTypeVO> sourceTypes();
 
     PageResult<QuestionRecommendationBatchListVO> listBatches(QuestionRecommendationQueryDTO query);

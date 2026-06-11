@@ -10,4 +10,5 @@ public class AdminFileQueryDTO {
     private Long userId;
     private String bizType;
     private String status;
+    private String parseStatus;
 }

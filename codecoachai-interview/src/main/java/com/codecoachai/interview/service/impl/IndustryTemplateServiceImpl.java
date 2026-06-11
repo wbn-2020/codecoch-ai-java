@@ -102,11 +102,11 @@ public class IndustryTemplateServiceImpl implements IndustryTemplateService {
     @Override
     public IndustryTemplate getEnabledTemplate(Long id) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "industryTemplateId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择行业模板");
         }
         IndustryTemplate template = industryTemplateMapper.selectOne(enabledWrapper().eq(IndustryTemplate::getId, id).last("limit 1"));
         if (template == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Industry template not found or disabled");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "行业模板不存在或已停用");
         }
         return template;
     }
@@ -120,11 +120,11 @@ public class IndustryTemplateServiceImpl implements IndustryTemplateService {
 
     private IndustryTemplate requireTemplate(Long id) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "id is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择行业模板");
         }
         IndustryTemplate template = industryTemplateMapper.selectById(id);
         if (template == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Industry template not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "行业模板不存在");
         }
         return template;
     }

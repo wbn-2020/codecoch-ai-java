@@ -7,8 +7,8 @@ import lombok.Data;
 @Data
 public class PracticeSubmitDTO {
 
-    @NotBlank(message = "answerContent is required")
-    @Size(max = 5000, message = "answerContent length must be less than 5000")
+    @NotBlank(message = "请填写练习回答")
+    @Size(max = 5000, message = "练习回答不能超过 5000 字")
     private String answerContent;
 
     private Integer answerDurationSeconds;

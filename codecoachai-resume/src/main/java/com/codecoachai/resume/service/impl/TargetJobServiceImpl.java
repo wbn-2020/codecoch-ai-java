@@ -6,6 +6,7 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.JobDescriptionParseDTO;
@@ -21,10 +22,13 @@ import com.codecoachai.resume.feign.dto.ParseJobDescriptionDTO;
 import com.codecoachai.resume.feign.vo.ParseJobDescriptionVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mq.JobTargetParseMqDispatcher;
 import com.codecoachai.resume.service.TargetJobService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,6 +47,7 @@ public class TargetJobServiceImpl implements TargetJobService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final DistributedLockHelper distributedLockHelper;
+    private final Optional<JobTargetParseMqDispatcher> jobTargetParseMqDispatcher;
 
     @Override
     public List<TargetJobVO> listTargetJobs(TargetJobQueryDTO query) {
@@ -170,11 +175,15 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Override
     public JobDescriptionAnalysisVO parseJobDescription(Long id, JobDescriptionParseDTO dto) {
         Long userId = requireCurrentUserId();
+        return parseJobDescriptionForUser(id, userId, dto);
+    }
+
+    @Override
+    public JobDescriptionAnalysisVO submitJobDescriptionParse(Long id, JobDescriptionParseDTO dto) {
+        Long userId = requireCurrentUserId();
         JobDescriptionParseDTO request = dto == null ? new JobDescriptionParseDTO() : dto;
         TargetJob job = getOwnedTargetJob(id, userId);
-        if (!StringUtils.hasText(job.getJdText())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "jdText is required before parsing");
-        }
+        validateParseable(job);
 
         JobDescriptionAnalysis existing = latestAnalysis(id, userId);
         if (existing != null
@@ -183,20 +192,72 @@ public class TargetJobServiceImpl implements TargetJobService {
             return toAnalysisVO(existing);
         }
         if (JobDescriptionParseStatus.PARSING.getCode().equals(job.getParseStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "JD is parsing");
+            JobDescriptionAnalysisVO parsing = existing == null ? toParsingHintVO(job, userId) : toAnalysisVO(existing);
+            return attachSyntheticTaskHint(parsing, id, userId);
         }
 
         JobDescriptionAnalysis parsing = transactionTemplate.execute(status -> markParsing(job, existing, request));
+        MqDispatchReceipt receipt = dispatchParse(job, request);
+        if (receipt != null) {
+            return withAsyncReceipt(toAnalysisVO(parsing), receipt);
+        }
+        return parseMarkedJob(job, userId, parsing.getId(), request);
+    }
+
+    @Override
+    public JobDescriptionAnalysisVO parseJobDescriptionForUser(Long id, Long userId, JobDescriptionParseDTO dto) {
+        requireUserId(userId);
+        JobDescriptionParseDTO request = dto == null ? new JobDescriptionParseDTO() : dto;
+        TargetJob job = getOwnedTargetJob(id, userId);
+        validateParseable(job);
+
+        JobDescriptionAnalysis existing = latestAnalysis(id, userId);
+        if (existing != null
+                && JobDescriptionParseStatus.PARSED.getCode().equals(existing.getParseStatus())
+                && !Boolean.TRUE.equals(request.getForceRefresh())) {
+            return toAnalysisVO(existing);
+        }
+        if (JobDescriptionParseStatus.PARSING.getCode().equals(job.getParseStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "岗位分析正在生成中，请稍后查看。");
+        }
+
+        JobDescriptionAnalysis parsing = transactionTemplate.execute(status -> markParsing(job, existing, request));
+        return parseMarkedJob(job, userId, parsing.getId(), request);
+    }
+
+    @Override
+    public JobDescriptionAnalysisVO executeJobDescriptionParseForUser(Long id, Long userId, JobDescriptionParseDTO dto) {
+        requireUserId(userId);
+        JobDescriptionParseDTO request = dto == null ? new JobDescriptionParseDTO() : dto;
+        TargetJob job = getOwnedTargetJob(id, userId);
+        validateParseable(job);
+
+        JobDescriptionAnalysis existing = latestAnalysis(id, userId);
+        if (existing != null
+                && JobDescriptionParseStatus.PARSED.getCode().equals(existing.getParseStatus())
+                && !Boolean.TRUE.equals(request.getForceRefresh())) {
+            return toAnalysisVO(existing);
+        }
+
+        JobDescriptionAnalysis parsing = existing != null
+                && JobDescriptionParseStatus.PARSING.getCode().equals(existing.getParseStatus())
+                ? existing
+                : transactionTemplate.execute(status -> markParsing(job, existing, request));
+        return parseMarkedJob(job, userId, parsing.getId(), request);
+    }
+
+    private JobDescriptionAnalysisVO parseMarkedJob(TargetJob job, Long userId, Long analysisId,
+                                                    JobDescriptionParseDTO request) {
         try {
             ParseJobDescriptionVO aiResponse = FeignResultUtils.unwrap(aiFeignClient.parseJobDescription(toAiRequest(job, request)));
             JsonNode resultJson = parseResultJson(aiResponse == null ? null : aiResponse.getResultJson());
             JobDescriptionAnalysis parsed = transactionTemplate.execute(status ->
-                    markParsed(job.getId(), userId, parsing.getId(), resultJson,
+                    markParsed(job.getId(), userId, analysisId, resultJson,
                             aiResponse == null ? null : aiResponse.getAiCallLogId()));
             return toAnalysisVO(parsed);
         } catch (RuntimeException ex) {
             JobDescriptionAnalysis failed = transactionTemplate.execute(status ->
-                    markFailed(job.getId(), userId, parsing.getId(), ex));
+                    markFailed(job.getId(), userId, analysisId, ex));
             return toAnalysisVO(failed);
         }
     }
@@ -213,6 +274,56 @@ public class TargetJobServiceImpl implements TargetJobService {
         getOwnedTargetJob(id, userId);
         JobDescriptionAnalysis analysis = latestAnalysis(id, userId);
         return analysis == null ? null : toAnalysisVO(analysis);
+    }
+
+    private void validateParseable(TargetJob job) {
+        if (!StringUtils.hasText(job.getJdText())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "岗位描述内容不能为空，请先填写后再解析");
+        }
+    }
+
+    private MqDispatchReceipt dispatchParse(TargetJob job, JobDescriptionParseDTO request) {
+        return job == null ? null : jobTargetParseMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchParseWithReceipt(
+                        job.getId(), job.getUserId(), request.getForceRefresh(), request.getUserTargetDirection()))
+                .orElse(null);
+    }
+
+    private JobDescriptionAnalysisVO withAsyncReceipt(JobDescriptionAnalysisVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return vo;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncSendStatus(receipt.getSendStatus());
+        return vo;
+    }
+
+    private JobDescriptionAnalysisVO attachSyntheticTaskHint(JobDescriptionAnalysisVO vo, Long targetJobId, Long userId) {
+        if (vo == null) {
+            return null;
+        }
+        vo.setAsyncBizType(JobTargetParseMqDispatcher.BIZ_TYPE);
+        vo.setAsyncBizId(targetJobId == null ? null : String.valueOf(targetJobId));
+        if (vo.getUserId() == null) {
+            vo.setUserId(userId);
+        }
+        return vo;
+    }
+
+    private JobDescriptionAnalysisVO toParsingHintVO(TargetJob job, Long userId) {
+        JobDescriptionAnalysisVO vo = new JobDescriptionAnalysisVO();
+        vo.setTargetJobId(job.getId());
+        vo.setUserId(userId);
+        vo.setJobTitle(job.getJobTitle());
+        vo.setCompanyName(job.getCompanyName());
+        vo.setJobLevel(job.getJobLevel());
+        vo.setParseStatus(JobDescriptionParseStatus.PARSING.getCode());
+        vo.setParseErrorMessage(job.getParseErrorMessage());
+        vo.setUpdatedAt(job.getUpdatedAt());
+        return vo;
     }
 
     private JobDescriptionAnalysis markParsing(TargetJob job, JobDescriptionAnalysis existing,
@@ -244,7 +355,7 @@ public class TargetJobServiceImpl implements TargetJobService {
                                               JsonNode resultJson, Long aiCallLogId) {
         JobDescriptionAnalysis analysis = analysisMapper.selectById(analysisId);
         if (analysis == null || !userId.equals(analysis.getUserId())) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JD analysis record missing");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析记录不存在或已失效。");
         }
         analysis.setResponsibilitiesJson(jsonArrayText(resultJson, "responsibilities"));
         analysis.setRequiredSkillsJson(jsonArrayText(resultJson, "requiredSkills"));
@@ -272,10 +383,10 @@ public class TargetJobServiceImpl implements TargetJobService {
     }
 
     private JobDescriptionAnalysis markFailed(Long targetJobId, Long userId, Long analysisId, RuntimeException ex) {
-        String message = truncate(firstText(ex.getMessage(), "JD parse failed"), MAX_ERROR_MESSAGE_LENGTH);
+        String message = truncate(friendlyJobDescriptionError(ex), MAX_ERROR_MESSAGE_LENGTH);
         JobDescriptionAnalysis analysis = analysisMapper.selectById(analysisId);
         if (analysis == null || !userId.equals(analysis.getUserId())) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JD analysis record missing");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析记录不存在或已失效。");
         }
         analysis.setParseStatus(JobDescriptionParseStatus.FAILED.getCode());
         analysis.setParseErrorMessage(message);
@@ -304,7 +415,7 @@ public class TargetJobServiceImpl implements TargetJobService {
 
     private TargetJob getOwnedTargetJob(Long id, Long userId) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "target job id is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择目标岗位");
         }
         TargetJob job = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
                 .eq(TargetJob::getId, id)
@@ -312,7 +423,7 @@ public class TargetJobServiceImpl implements TargetJobService {
                 .eq(TargetJob::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (job == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不存在或已不可用");
         }
         return job;
     }
@@ -335,7 +446,7 @@ public class TargetJobServiceImpl implements TargetJobService {
 
     private void applyTargetJob(TargetJob job, TargetJobSaveDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         job.setJobTitle(dto.getJobTitle());
         job.setCompanyName(dto.getCompanyName());
@@ -385,7 +496,6 @@ public class TargetJobServiceImpl implements TargetJobService {
         vo.setInterviewFocusPoints(readJsonOrNull(analysis.getInterviewFocusJson()));
         vo.setSkillWeights(readJsonOrNull(analysis.getSkillWeightsJson()));
         vo.setSummary(analysis.getSummary());
-        vo.setRawResult(readJsonOrNull(analysis.getRawResultJson()));
         vo.setAiCallLogId(analysis.getAiCallLogId());
         vo.setParseStatus(analysis.getParseStatus());
         vo.setParseErrorMessage(analysis.getParseErrorMessage());
@@ -397,7 +507,7 @@ public class TargetJobServiceImpl implements TargetJobService {
     private JsonNode parseResultJson(String raw) {
         JsonNode json = readJsonOrNull(raw);
         if (json == null || !json.isObject()) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI JD parse response must be a JSON object");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析结果暂时无法整理，请重新生成。");
         }
         return json;
     }
@@ -409,7 +519,7 @@ public class TargetJobServiceImpl implements TargetJobService {
         try {
             return objectMapper.readTree(raw);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Stored JD analysis JSON is invalid");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析结果暂时不可用，请重新生成。");
         }
     }
 
@@ -451,7 +561,7 @@ public class TargetJobServiceImpl implements TargetJobService {
 
     private void requireUserId(Long userId) {
         if (userId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "user id is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息缺失，请重新登录后再试");
         }
     }
 
@@ -461,6 +571,20 @@ public class TargetJobServiceImpl implements TargetJobService {
 
     private String firstText(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private String friendlyJobDescriptionError(RuntimeException ex) {
+        String message = firstText(ex == null ? null : ex.getMessage(), "岗位分析生成失败，请稍后重试。");
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (lower.contains("json")
+                || lower.contains("parse")
+                || lower.contains("response")
+                || lower.contains("object")
+                || lower.contains("field")
+                || lower.contains("jd")) {
+            return "岗位分析结果暂时无法整理，请重新生成或补充岗位描述后再试。";
+        }
+        return message.replace("JD", "岗位描述");
     }
 
     private String truncate(String value, int maxLength) {

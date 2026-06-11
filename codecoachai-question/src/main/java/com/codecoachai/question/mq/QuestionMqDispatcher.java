@@ -1,7 +1,9 @@
 package com.codecoachai.question.mq;
 
 import com.codecoachai.common.mq.constant.MqTopics;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.mq.payload.QuestionGeneratePayload;
+import com.codecoachai.common.mq.payload.QuestionRecommendationGeneratePayload;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import java.util.List;
@@ -30,16 +32,43 @@ public class QuestionMqDispatcher {
     /**
      * 投递"AI 批量出题"任务。
      */
-    public boolean dispatchGenerate(Long batchId, Long userId, String topic,
+    public boolean dispatchGenerate(String batchId, Long userId, String topic,
                                     String difficulty, Integer count,
                                     List<String> tags, String targetPosition,
                                     String experienceLevel) {
+        return dispatchGenerateWithReceipt(batchId, userId, topic, difficulty, count, tags,
+                targetPosition, experienceLevel) != null;
+    }
+
+    /**
+     * 投递"AI 批量出题"任务，并返回可用于后台任务中心反查的诊断回执。
+     */
+    public MqDispatchReceipt dispatchGenerateWithReceipt(String batchId, Long userId, String topic,
+                                                         String difficulty, Integer count,
+                                                         List<String> tags, String targetPosition,
+                                                         String experienceLevel) {
+        return dispatchGenerateWithReceipt(batchId, userId, topic, difficulty, count, tags,
+                targetPosition, null, null, null, null, experienceLevel,
+                true, true, true, true, null);
+    }
+
+    public MqDispatchReceipt dispatchGenerateWithReceipt(String batchId, Long userId, String topic,
+                                                         String difficulty, Integer count,
+                                                         List<String> tags, String targetPosition,
+                                                         String technologyStack, String knowledgePoint,
+                                                         String questionType, Integer experienceYears,
+                                                         String experienceLevel,
+                                                         Boolean generateReferenceAnswer,
+                                                         Boolean generateFollowUps,
+                                                         Boolean generateTagSuggestions,
+                                                         Boolean generateCategorySuggestion,
+                                                         String extraRequirements) {
         if (batchId == null) {
-            return false;
+            return null;
         }
         if (mqProducer == null) {
             log.warn("MQ producer unavailable, skip question generate dispatch batchId={}", batchId);
-            return false;
+            return null;
         }
         try {
             QuestionGeneratePayload payload = QuestionGeneratePayload.builder()
@@ -50,20 +79,30 @@ public class QuestionMqDispatcher {
                     .count(count)
                     .tags(tags)
                     .targetPosition(targetPosition)
+                    .technologyStack(technologyStack)
+                    .knowledgePoint(knowledgePoint)
+                    .questionType(questionType)
+                    .experienceYears(experienceYears)
                     .experienceLevel(experienceLevel)
+                    .generateReferenceAnswer(generateReferenceAnswer)
+                    .generateFollowUps(generateFollowUps)
+                    .generateTagSuggestions(generateTagSuggestions)
+                    .generateCategorySuggestion(generateCategorySuggestion)
+                    .extraRequirements(extraRequirements)
                     .build();
-            mqProducer.sendSync(
+            MqDispatchReceipt receipt = mqProducer.sendSyncWithReceipt(
                     MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
-                    "question.ai-generate",
-                    String.valueOf(batchId),
+                    "question.generate",
+                    batchId,
                     userId,
                     payload
             );
-            log.info("派发批量出题任务 batchId={} topic={} count={}", batchId, topic, count);
-            return true;
+            log.info("派发批量出题任务 batchId={} topic={} count={} messageId={}",
+                    batchId, topic, count, receipt.getMessageId());
+            return receipt;
         } catch (Exception ex) {
             log.error("派发批量出题任务失败 batchId={}", batchId, ex);
-            return false;
+            return null;
         }
     }
 
@@ -73,6 +112,35 @@ public class QuestionMqDispatcher {
 
     public boolean dispatchQuestionSearchDelete(Long questionId, Long userId) {
         return dispatchQuestionSearch(questionId, userId, SEARCH_OP_DELETE);
+    }
+
+    public MqDispatchReceipt dispatchRecommendationGenerateWithReceipt(Long batchId, Long userId) {
+        if (batchId == null || userId == null) {
+            return null;
+        }
+        if (mqProducer == null) {
+            log.warn("MQ producer unavailable, skip question recommendation dispatch batchId={}", batchId);
+            return null;
+        }
+        try {
+            QuestionRecommendationGeneratePayload payload = QuestionRecommendationGeneratePayload.builder()
+                    .batchId(batchId)
+                    .userId(userId)
+                    .build();
+            MqDispatchReceipt receipt = mqProducer.sendSyncWithReceipt(
+                    MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_RECOMMENDATION_GENERATE),
+                    "question-recommendation.generate",
+                    String.valueOf(batchId),
+                    userId,
+                    payload
+            );
+            log.info("Dispatch question recommendation task batchId={} messageId={}",
+                    batchId, receipt.getMessageId());
+            return receipt;
+        } catch (Exception ex) {
+            log.error("Dispatch question recommendation task failed batchId={}", batchId, ex);
+            return null;
+        }
     }
 
     private boolean dispatchQuestionSearch(Long questionId, Long userId, String op) {

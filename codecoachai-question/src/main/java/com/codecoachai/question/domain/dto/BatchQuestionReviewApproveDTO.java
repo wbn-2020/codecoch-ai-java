@@ -9,8 +9,8 @@ import lombok.Data;
 @Data
 public class BatchQuestionReviewApproveDTO {
 
-    @NotEmpty(message = "reviewIds is required")
-    @Size(max = 100, message = "reviewIds must be at most 100")
+    @NotEmpty(message = "请选择待审核题目")
+    @Size(max = 100, message = "单次最多处理 100 道待审核题目")
     private List<Long> reviewIds;
 
     @Valid

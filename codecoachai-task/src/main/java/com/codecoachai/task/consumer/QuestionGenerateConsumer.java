@@ -62,7 +62,7 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
             if (!firstTime) return;
 
             QuestionGeneratePayload payload = envelope.getPayload();
-            if (payload == null || payload.getBatchId() == null) {
+            if (payload == null || !StringUtils.hasText(payload.getBatchId())) {
                 throw new NonRetryableMqException("question generate payload invalid");
             }
 
@@ -76,13 +76,23 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
             dto.setCount(payload.getCount());
             dto.setTags(payload.getTags());
             dto.setTargetPosition(payload.getTargetPosition());
+            dto.setTechnologyStack(firstText(payload.getTechnologyStack(), joinTags(payload.getTags())));
+            dto.setKnowledgePoint(payload.getKnowledgePoint());
+            dto.setQuestionType(firstText(payload.getQuestionType(), "SHORT_ANSWER"));
+            dto.setExperienceYears(payload.getExperienceYears());
             dto.setExperienceLevel(payload.getExperienceLevel());
             dto.setBatchId(payload.getBatchId());
+            dto.setAdminUserId(payload.getUserId());
+            dto.setGenerateReferenceAnswer(defaultBoolean(payload.getGenerateReferenceAnswer(), true));
+            dto.setGenerateFollowUps(defaultBoolean(payload.getGenerateFollowUps(), true));
+            dto.setGenerateTagSuggestions(defaultBoolean(payload.getGenerateTagSuggestions(), true));
+            dto.setGenerateCategorySuggestion(defaultBoolean(payload.getGenerateCategorySuggestion(), true));
+            dto.setExtraRequirements(payload.getExtraRequirements());
 
             Result<GenerateQuestionDraftVO> aiResp = aiFeignClient.generateQuestionDrafts(dto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
                 if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
-                    throw new NonRetryableMqException("AI 出题业务失败: " + aiResp.getMessage());
+                    throw new TerminalTaskFailureException("AI 出题业务失败: " + aiResp.getMessage());
                 }
                 throw new RuntimeException("AI 出题返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
@@ -94,13 +104,15 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
             }
 
             SaveQuestionDraftsDTO saveDto = new SaveQuestionDraftsDTO();
-            saveDto.setBatchId(String.valueOf(payload.getBatchId()));
+            saveDto.setBatchId(payload.getBatchId());
             saveDto.setCreatedBy(payload.getUserId());
             saveDto.setAiCallLogId(aiData.getAiCallLogId());
             saveDto.setTargetPosition(payload.getTargetPosition());
-            saveDto.setTechnologyStack(payload.getTags() == null ? null : String.join(",", payload.getTags()));
-            saveDto.setQuestionType("SHORT_ANSWER");
+            saveDto.setTechnologyStack(firstText(payload.getTechnologyStack(), joinTags(payload.getTags())));
+            saveDto.setKnowledgePoint(payload.getKnowledgePoint());
+            saveDto.setQuestionType(firstText(payload.getQuestionType(), "SHORT_ANSWER"));
             saveDto.setDifficulty(payload.getDifficulty());
+            saveDto.setExperienceYears(payload.getExperienceYears());
             saveDto.setRawAiResultJson(aiData.getRawResponse());
             saveDto.setQuestions(aiData.getQuestions());
             Result<SaveQuestionDraftsVO> saveResp = questionFeignClient.saveDrafts(saveDto);
@@ -108,7 +120,7 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
                     || saveResp.getData().getSavedCount() == null
                     || saveResp.getData().getSavedCount() != draftCount) {
                 if (saveResp != null && isBusinessFailure(saveResp.getCode())) {
-                    throw new NonRetryableMqException("题目草稿落库业务失败: " + saveResp.getMessage());
+                    throw new TerminalTaskFailureException("题目草稿落库业务失败: " + saveResp.getMessage());
                 }
                 throw new RuntimeException("题目草稿落库失败: " + (saveResp == null ? "null" : saveResp.getMessage()));
             }
@@ -121,6 +133,13 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
                 notificationService.notifyTaskDone(payload.getUserId(), "QUESTION_GENERATE",
                         String.valueOf(payload.getBatchId()), "题目生成完成",
                         "已为您生成 " + draftCount + " 道题目，请前往审核");
+            }
+        } catch (TerminalTaskFailureException terminalEx) {
+            log.warn("批量出题任务业务终态失败 messageId={}", envelope.getMessageId(), terminalEx);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), terminalEx.getMessage());
+            if (envelope.getPayload() != null && envelope.getPayload().getUserId() != null) {
+                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "QUESTION_GENERATE",
+                        String.valueOf(envelope.getPayload().getBatchId()), "题目生成失败", terminalEx.getMessage());
             }
         } catch (NonRetryableMqException nrEx) {
             log.error("批量出题任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
@@ -143,5 +162,31 @@ public class QuestionGenerateConsumer implements RocketMQListener<MqMessage<Ques
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String joinTags(java.util.List<String> tags) {
+        if (tags == null || tags.isEmpty()) {
+            return null;
+        }
+        return String.join(",", tags.stream().filter(StringUtils::hasText).map(String::trim).toList());
+    }
+
+    private String firstText(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private Boolean defaultBoolean(Boolean value, boolean fallback) {
+        return value == null ? fallback : value;
+    }
+
+    private static class TerminalTaskFailureException extends RuntimeException {
+        private TerminalTaskFailureException(String message) {
+            super(message);
+        }
     }
 }

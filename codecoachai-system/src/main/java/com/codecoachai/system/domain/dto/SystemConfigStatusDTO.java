@@ -6,6 +6,6 @@ import lombok.Data;
 @Data
 public class SystemConfigStatusDTO {
 
-    @NotNull(message = "status is required")
+    @NotNull(message = "状态不能为空")
     private Integer status;
 }

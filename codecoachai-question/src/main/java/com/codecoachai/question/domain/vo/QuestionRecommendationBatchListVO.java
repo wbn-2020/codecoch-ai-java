@@ -19,6 +19,9 @@ public class QuestionRecommendationBatchListVO {
     private String status;
     private Long aiCallLogId;
     private String errorMessage;
+    private String trustStatus;
+    private String evidenceSummary;
+    private Boolean fallback;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

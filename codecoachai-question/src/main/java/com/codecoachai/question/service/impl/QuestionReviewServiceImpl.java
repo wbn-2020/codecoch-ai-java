@@ -8,6 +8,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
@@ -109,6 +110,48 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         result.setGeneratedCount(reviewIds.size());
         result.setReviewIds(reviewIds);
         result.setAiCallLogId(aiResponse.getAiCallLogId());
+        return result;
+    }
+
+    @Override
+    public AiQuestionGenerateResultVO submitGenerate(AiQuestionGenerateRequestDTO dto) {
+        validateGenerateRequest(dto);
+        Long adminUserId = SecurityAssert.requireLoginUserId();
+        String batchId = "QG" + UUID.randomUUID().toString().replace("-", "");
+        MqDispatchReceipt receipt = questionMqDispatcher.dispatchGenerateWithReceipt(
+                batchId,
+                adminUserId,
+                defaultText(dto.getKnowledgePoint(), dto.getTechnologyStack(), dto.getTargetPosition(), "Java 后端面试题"),
+                defaultText(dto.getDifficulty(), "MEDIUM"),
+                dto.getCount() == null ? 5 : dto.getCount(),
+                buildGenerateTags(dto),
+                dto.getTargetPosition(),
+                dto.getTechnologyStack(),
+                dto.getKnowledgePoint(),
+                defaultText(dto.getQuestionType(), "SHORT_ANSWER"),
+                dto.getExperienceYears(),
+                dto.getExperienceYears() == null ? null : String.valueOf(dto.getExperienceYears()),
+                defaultBoolean(dto.getGenerateReferenceAnswer(), true),
+                defaultBoolean(dto.getGenerateFollowUps(), true),
+                defaultBoolean(dto.getGenerateTagSuggestions(), true),
+                defaultBoolean(dto.getGenerateCategorySuggestion(), true),
+                buildQuestionGenerateExtraRequirements(dto.getExtraRequirements())
+        );
+        AiQuestionGenerateResultVO result = new AiQuestionGenerateResultVO();
+        result.setBatchId(batchId);
+        result.setGeneratedCount(0);
+        result.setReviewIds(Collections.emptyList());
+        result.setAsyncBizType("question.generate");
+        result.setAsyncBizId(batchId);
+        if (receipt == null) {
+            result.setAsyncSendStatus("FAILED");
+            return result;
+        }
+        result.setAsyncMessageId(receipt.getMessageId());
+        result.setAsyncTraceId(receipt.getTraceId());
+        result.setAsyncBizType(defaultText(receipt.getBizType(), "question.generate"));
+        result.setAsyncBizId(defaultText(receipt.getBizId(), batchId));
+        result.setAsyncSendStatus(defaultText(receipt.getSendStatus(), "SENT"));
         return result;
     }
 
@@ -242,23 +285,23 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
 
     private void validateGenerateRequest(AiQuestionGenerateRequestDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         int count = dto.getCount() == null ? 5 : dto.getCount();
         if (count < 1 || count > MAX_GENERATE_COUNT) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "count must be between 1 and 20");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "生成题目数量需在 1 到 20 道之间");
         }
     }
 
     private void validateBatchReviewIds(List<Long> reviewIds) {
         if (reviewIds == null || reviewIds.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择待审核题目");
         }
         if (reviewIds.size() > MAX_BATCH_REVIEW_COUNT) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds must be at most 100");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "单次最多处理 100 道待审核题目");
         }
         if (reviewIds.stream().anyMatch(id -> id == null || id <= 0)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "reviewIds contains invalid id");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "待审核题目参数不完整，请刷新后重试");
         }
     }
 
@@ -275,7 +318,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         }
         String trimmed = reason.trim();
         if (trimmed.length() > 500) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "cancel reason must be at most 500 characters");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "取消原因不能超过 500 字");
         }
         return trimmed;
     }
@@ -382,6 +425,23 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
         return request;
     }
 
+    private List<String> buildGenerateTags(AiQuestionGenerateRequestDTO dto) {
+        List<String> tags = new ArrayList<>();
+        if (dto == null) {
+            return tags;
+        }
+        for (String value : new String[] { dto.getTechnologyStack(), dto.getKnowledgePoint(), dto.getTargetPosition() }) {
+            if (StringUtils.hasText(value)) {
+                tags.add(value.trim());
+            }
+        }
+        return tags.stream().distinct().toList();
+    }
+
+    private Boolean defaultBoolean(Boolean value, boolean fallback) {
+        return value == null ? fallback : value;
+    }
+
     private String buildQuestionGenerateExtraRequirements(String extraRequirements) {
         String qualityRules = """
                 请使用中文输出题干、参考答案、解析、分类建议和问题组建议。
@@ -460,7 +520,7 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 : parseLongList(review.getTagIdsJson());
         String title = defaultText(dto == null ? null : dto.getTitle(), review.getQuestionTitle());
         if (!StringUtils.hasText(title)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "question title is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写题目标题");
         }
         Long categoryId = resolveCategoryId(review,
                 dto != null && dto.getCategoryId() != null ? dto.getCategoryId() : review.getCategoryId());

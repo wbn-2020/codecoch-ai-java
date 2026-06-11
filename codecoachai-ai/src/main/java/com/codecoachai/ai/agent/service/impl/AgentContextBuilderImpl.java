@@ -44,7 +44,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(userId, targetJob.getId())));
         context.setRecentMemories(recentMemories(userId));
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
-        context.getContextWarnings().add("Context currently includes target job, JD analysis, recent Agent task history, and enabled memories.");
+        context.getContextWarnings().add("上下文已包含目标岗位、JD 分析、近期计划任务和已启用记忆。");
         return context;
     }
 

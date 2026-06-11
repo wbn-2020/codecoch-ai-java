@@ -6,6 +6,9 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
+import com.codecoachai.common.mq.payload.ResumeOptimizePayload;
+import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.convert.ResumeConvert;
 import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
@@ -37,7 +40,6 @@ import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
-import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
@@ -73,7 +75,7 @@ public class ResumeServiceImpl implements ResumeService {
 
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
-    private static final String DEFAULT_AI_RESUME_TITLE = "AI Parsed Resume";
+    private static final String DEFAULT_AI_RESUME_TITLE = "AI 解析简历";
     private static final String APPLY_MODE_CREATE_DRAFT = "CREATE_DRAFT";
     private static final String APPLY_MODE_STRUCTURED_PATCH = "STRUCTURED_PATCH";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
@@ -129,7 +131,7 @@ public class ResumeServiceImpl implements ResumeService {
         validateUploadFile(file);
         InnerFileUploadVO uploadedFile = FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId));
         if (uploadedFile == null || uploadedFile.getFileId() == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历文件上传失败，请稍后重试");
         }
 
         ResumeAnalysisRecord record = new ResumeAnalysisRecord();
@@ -138,7 +140,8 @@ public class ResumeServiceImpl implements ResumeService {
         record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
         record.setParseStatus(ResumeParseStatus.PENDING.getCode());
         analysisRecordMapper.insert(record);
-        boolean dispatched = dispatchResumeParse(record, uploadedFile);
+        MqDispatchReceipt receipt = dispatchResumeParse(record, uploadedFile);
+        boolean dispatched = receipt != null;
 
         ResumeUploadVO vo = new ResumeUploadVO();
         vo.setFileId(uploadedFile.getFileId());
@@ -149,6 +152,7 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setFileSize(uploadedFile.getFileSize());
         vo.setFileExt(uploadedFile.getFileExt());
         vo.setMessage(dispatched ? "上传成功，已提交解析" : "上传成功，等待解析补偿");
+        applyAsyncReceipt(vo, receipt);
         return vo;
     }
 
@@ -157,7 +161,7 @@ public class ResumeServiceImpl implements ResumeService {
         return toParseStatusVO(getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId()));
     }
 
-    private boolean dispatchResumeParse(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+    private MqDispatchReceipt dispatchResumeParse(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
         ResumeParsePayload payload = ResumeParsePayload.builder()
                 .resumeId(record.getId())
                 .fileId(record.getFileId())
@@ -166,12 +170,28 @@ public class ResumeServiceImpl implements ResumeService {
                 .userId(record.getUserId())
                 .mode("deep")
                 .build();
-        boolean dispatched = resumeMqDispatcher.map(dispatcher -> dispatcher.dispatchParse(payload)).orElse(false);
-        if (!dispatched) {
-            record.setErrorMessage("MQ dispatch unavailable; scheduled compensation will retry");
+        MqDispatchReceipt receipt = resumeMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchParseWithReceipt(payload))
+                .orElse(null);
+        if (receipt == null) {
+            record.setErrorMessage("异步解析任务暂时不可用，系统将通过补偿任务重试");
             analysisRecordMapper.updateById(record);
         }
-        return dispatched;
+        return receipt;
+    }
+
+    private MqDispatchReceipt dispatchResumeOptimize(ResumeOptimizeRecord record) {
+        if (record == null || record.getId() == null) {
+            return null;
+        }
+        ResumeOptimizePayload payload = ResumeOptimizePayload.builder()
+                .optimizeRecordId(record.getId())
+                .resumeId(record.getResumeId())
+                .userId(record.getUserId())
+                .build();
+        return resumeMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchOptimizeWithReceipt(payload))
+                .orElse(null);
     }
 
     @Override
@@ -181,19 +201,19 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
         if (status == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported parse status");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态不支持重新解析");
         }
         if (status == ResumeParseStatus.PENDING) {
             return toParseStatusVO(record);
         }
         if (status == ResumeParseStatus.PARSING) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume is parsing");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历正在解析，请稍后再试");
         }
         if (status == ResumeParseStatus.SUCCESS) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume has been parsed successfully");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历已解析成功，无需重新解析");
         }
         if (status == ResumeParseStatus.WAIT_CONFIRM) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is waiting for confirmation");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结果待确认，请先确认或处理当前结果");
         }
 
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
@@ -213,15 +233,15 @@ public class ResumeServiceImpl implements ResumeService {
             return toParseStatusVO(latestRecord);
         }
         if (latestStatus == ResumeParseStatus.PARSING) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume is parsing");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历正在解析中，请稍后再试");
         }
         if (latestStatus == ResumeParseStatus.SUCCESS) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume has been parsed successfully");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历已解析成功，无需重新解析");
         }
         if (latestStatus == ResumeParseStatus.WAIT_CONFIRM) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is waiting for confirmation");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结果待确认，请先确认或处理当前结果");
         }
-        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Reparse status update failed");
+        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "重新解析状态更新失败，请稍后重试");
     }
 
     @Override
@@ -250,19 +270,19 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
         if (status == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported parse status");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态无法确认");
         }
         if (status == ResumeParseStatus.SUCCESS) {
             return confirmAnalysisSuccess(record);
         }
         if (status == ResumeParseStatus.PENDING || status == ResumeParseStatus.PARSING) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis is not finished");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析尚未完成，请稍后再确认");
         }
         if (status == ResumeParseStatus.FAILED) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis failed, please reparse first");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析失败，请先重新解析");
         }
         if (status != ResumeParseStatus.WAIT_CONFIRM) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis cannot be confirmed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态无法确认");
         }
 
         ParsedResumeStructuredDTO structuredResume = parseStructuredResume(record.getStructuredJson());
@@ -279,7 +299,7 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.WAIT_CONFIRM.getCode()));
         if (affectedRows != 1) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume analysis confirmation failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历解析确认失败，请稍后重试");
         }
         syncResumeSearchAfterCommit(resume.getId(), userId, true);
         return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
@@ -289,16 +309,48 @@ public class ResumeServiceImpl implements ResumeService {
     public ResumeOptimizeSubmitVO optimizeResume(Long resumeId, ResumeOptimizeRequestDTO dto) {
         ResumeOptimizeRequestDTO request = dto == null ? new ResumeOptimizeRequestDTO() : dto;
         OptimizeContext context = transactionTemplate.execute(status -> createOptimizeRecord(resumeId, request));
+        MqDispatchReceipt receipt = dispatchResumeOptimize(context.record());
+        if (receipt != null) {
+            ResumeOptimizeSubmitVO vo = toOptimizeSubmitVO(context.record(), null);
+            applyAsyncReceipt(vo, receipt);
+            return vo;
+        }
+        return executeOptimizeContext(context);
+    }
+
+    @Override
+    public ResumeOptimizeSubmitVO executeOptimizeRecord(Long recordId) {
+        ResumeOptimizeRecord record = getOptimizeRecord(recordId);
+        if (ResumeOptimizeStatus.SUCCESS.getCode().equals(record.getOptimizeStatus())
+                || ResumeOptimizeStatus.FAILED.getCode().equals(record.getOptimizeStatus())) {
+            return toOptimizeSubmitVO(record, null);
+        }
         try {
-            ResumeOptimizeAiResponseVO response = FeignResultUtils.unwrap(aiFeignClient.optimizeResume(context.aiRequest()));
+            ResumeOptimizeAiRequestDTO aiRequest = readOptimizeAiRequest(record);
+            getOwnedResume(record.getResumeId(), record.getUserId());
+            return executeOptimizeAi(record.getId(), aiRequest);
+        } catch (RuntimeException ex) {
+            ResumeOptimizeRecord failedRecord = transactionTemplate.execute(status ->
+                    markOptimizeFailed(record.getId(), ex));
+            return toOptimizeSubmitVO(failedRecord, null);
+        }
+    }
+
+    private ResumeOptimizeSubmitVO executeOptimizeContext(OptimizeContext context) {
+        return executeOptimizeAi(context.record().getId(), context.aiRequest());
+    }
+
+    private ResumeOptimizeSubmitVO executeOptimizeAi(Long recordId, ResumeOptimizeAiRequestDTO aiRequest) {
+        try {
+            ResumeOptimizeAiResponseVO response = FeignResultUtils.unwrap(aiFeignClient.optimizeResume(aiRequest));
             JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
             ResumeOptimizeRecord latestRecord = transactionTemplate.execute(status ->
-                    markOptimizeSuccess(context.record().getId(), resultJson.toString(),
+                    markOptimizeSuccess(recordId, resultJson.toString(),
                             response == null ? null : response.getAiCallLogId()));
             return toOptimizeSubmitVO(latestRecord, resultJson);
         } catch (RuntimeException ex) {
             ResumeOptimizeRecord failedRecord = transactionTemplate.execute(status ->
-                    markOptimizeFailed(context.record().getId(), ex));
+                    markOptimizeFailed(recordId, ex));
             return toOptimizeSubmitVO(failedRecord, null);
         }
     }
@@ -330,14 +382,14 @@ public class ResumeServiceImpl implements ResumeService {
         String applyMode = dto == null || !StringUtils.hasText(dto.getApplyMode())
                 ? APPLY_MODE_CREATE_DRAFT : dto.getApplyMode();
         if (!APPLY_MODE_CREATE_DRAFT.equals(applyMode) && !APPLY_MODE_STRUCTURED_PATCH.equals(applyMode)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported applyMode");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前应用方式暂不支持");
         }
         ResumeOptimizeRecord record = getOwnedOptimizeRecord(recordId, userId);
         if (!ResumeOptimizeStatus.SUCCESS.getCode().equals(record.getOptimizeStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only successful optimize record can be applied");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "只有优化成功的记录可以应用");
         }
         if (record.getResumeId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Optimize record source resume is missing");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "优化记录缺少来源简历");
         }
         JsonNode resultJson = parseResultJson(record.getResultJson());
         Resume sourceResume = getOwnedResume(record.getResumeId(), userId);
@@ -358,8 +410,8 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setSkippedFields(applyResult.skippedFields());
         vo.setFieldDiff(applyResult.fieldDiff());
         vo.setMessage(applyResult.appliedFields().isEmpty()
-                ? "AI optimization suggestions are linked to a new draft copy. Please edit and confirm manually."
-                : "Selected AI optimization fields were applied to a new draft copy.");
+                ? "AI 优化建议已关联到新的简历草稿，请手动编辑确认。"
+                : "已将选中的 AI 优化字段应用到新的简历草稿。");
         vo.setWarnings(applyResult.warnings());
         vo.setResumeDetail(toDetailVO(draft));
         return vo;
@@ -453,7 +505,7 @@ public class ResumeServiceImpl implements ResumeService {
     public InnerResumeDetailVO getInnerResume(Long id) {
         Resume resume = resumeMapper.selectById(id);
         if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
         }
         return ResumeConvert.toInnerVO(resume, projects(id));
     }
@@ -466,7 +518,7 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(Resume::getIsDefault, CommonConstants.YES)
                 .last("limit 1"));
         if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Default resume not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "默认简历不存在，请先选择或创建默认简历");
         }
         return ResumeConvert.toInnerVO(resume, projects(resume.getId()));
     }
@@ -478,7 +530,7 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (record == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume optimize record not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历优化记录不存在或已不可用");
         }
         InnerResumeOptimizeRecordVO vo = new InnerResumeOptimizeRecordVO();
         vo.setOptimizeRecordId(record.getId());
@@ -566,9 +618,31 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setFileId(record.getFileId());
         vo.setParseStatus(record.getParseStatus());
         vo.setErrorMessage(record.getErrorMessage());
-        vo.setMessage(status == null ? "Unsupported parse status" : status.getMessage());
+        vo.setMessage(status == null ? "简历解析状态异常" : status.getMessage());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
+    }
+
+    private void applyAsyncReceipt(ResumeUploadVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncSendStatus(receipt.getSendStatus());
+    }
+
+    private void applyAsyncReceipt(ResumeOptimizeSubmitVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncSendStatus(receipt.getSendStatus());
     }
 
     private ResumeConfirmAnalysisVO confirmAnalysisSuccess(ResumeAnalysisRecord record) {
@@ -669,7 +743,7 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private BusinessException invalidStructuredJson() {
-        return new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis structuredJson is invalid");
+        return new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结构化结果格式异常");
     }
 
     private Resume buildResumeFromStructured(ResumeAnalysisRecord record, ParsedResumeStructuredDTO structuredResume) {
@@ -761,7 +835,7 @@ public class ResumeServiceImpl implements ResumeService {
         try {
             return objectMapper.writeValueAsString(value == null ? List.of() : value);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis structuredJson is invalid");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结构化结果格式异常");
         }
     }
 
@@ -840,9 +914,9 @@ public class ResumeServiceImpl implements ResumeService {
             char ch = value.charAt(index);
             if (ch == '\uFFFD' || (ch >= '\uE000' && ch <= '\uF8FF')) {
                 score += 8;
-            } else if ((ch >= '\u0080' && ch <= '\u009F') || "ÃÂâ¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿€".indexOf(ch) >= 0) {
+            } else if ((ch >= '\u0080' && ch <= '\u009F') || "ÃÂâ¤¥¦§¨©ª«¬®¯°±²³´µ¶·¸¹º»¼½¾¿€".indexOf(ch) >= 0) { // mojibake-check-ignore-line: intentional suspicious-character sample.
                 score += 4;
-            } else if ("锛銆鐨绠鍘寮鍚庣璇搴撳悜閲".indexOf(ch) >= 0) {
+            } else if ("锛銆鐨绠鍘寮鍚庣璇搴撳悜閲".indexOf(ch) >= 0) { // mojibake-check-ignore-line: intentional suspicious-character sample.
                 score += 2;
             }
             if (Character.UnicodeScript.of(ch) == Character.UnicodeScript.HAN) {
@@ -940,7 +1014,7 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setResumeId(record.getResumeId());
         vo.setAiCallLogId(record.getAiCallLogId());
         vo.setOptimizeStatus(record.getOptimizeStatus());
-        vo.setResultJson(resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
+        fillOptimizeSubmitResult(vo, resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
         vo.setErrorMessage(record.getErrorMessage());
         return vo;
     }
@@ -971,12 +1045,35 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setExperienceYears(record.getExperienceYears());
         vo.setIndustryDirection(record.getIndustryDirection());
         vo.setOptimizeStatus(record.getOptimizeStatus());
-        vo.setResultJson(resultJson);
+        fillOptimizeDetailResult(vo, resultJson);
         vo.setFieldPatches(extractFieldPatches(resultJson, null));
         vo.setErrorMessage(record.getErrorMessage());
         vo.setCreatedAt(record.getCreatedAt());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
+    }
+
+    private void fillOptimizeSubmitResult(ResumeOptimizeSubmitVO vo, JsonNode resultJson) {
+        vo.setOverallScore(integerField(resultJson, "overallScore"));
+        vo.setOverallComment(textField(resultJson, "overallComment"));
+        vo.setRewriteSuggestions(jsonField(resultJson, "rewriteSuggestions"));
+        vo.setRiskWarnings(jsonField(resultJson, "riskWarnings"));
+        vo.setPossibleInterviewQuestions(jsonField(resultJson, "possibleInterviewQuestions"));
+        vo.setNextActions(jsonField(resultJson, "nextActions"));
+    }
+
+    private void fillOptimizeDetailResult(ResumeOptimizeDetailVO vo, JsonNode resultJson) {
+        String overallComment = textField(resultJson, "overallComment");
+        vo.setSummary(overallComment);
+        vo.setOverallScore(integerField(resultJson, "overallScore"));
+        vo.setOverallComment(overallComment);
+        vo.setTargetPositionMatch(jsonField(resultJson, "targetPositionMatch"));
+        vo.setSectionScores(jsonField(resultJson, "sectionScores"));
+        vo.setProblems(jsonField(resultJson, "problems"));
+        vo.setRewriteSuggestions(jsonField(resultJson, "rewriteSuggestions"));
+        vo.setRiskWarnings(jsonField(resultJson, "riskWarnings"));
+        vo.setPossibleInterviewQuestions(jsonField(resultJson, "possibleInterviewQuestions"));
+        vo.setNextActions(jsonField(resultJson, "nextActions"));
     }
 
     private StructuredApplyResult applyStructuredPatches(Resume draft, Resume source, JsonNode resultJson,
@@ -997,7 +1094,7 @@ public class ResumeServiceImpl implements ResumeService {
             String normalizedField = normalizePatchField(field);
             if (!PATCHABLE_RESUME_FIELDS.contains(normalizedField)) {
                 skippedFields.add(field);
-                warnings.add("Unsupported resume patch field skipped: " + field);
+                warnings.add("已跳过暂不支持的简历字段：" + field);
                 continue;
             }
             JsonNode patch = patches.get(normalizedField);
@@ -1230,18 +1327,18 @@ public class ResumeServiceImpl implements ResumeService {
 
     private JsonNode parseResultJson(String resultJson) {
         if (!StringUtils.hasText(resultJson)) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result is empty");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历优化结果为空，请稍后重试");
         }
         try {
             JsonNode root = objectMapper.readTree(resultJson);
             if (root == null || !root.isObject()) {
-                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result must be a JSON object");
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历优化结果格式异常，请稍后重试");
             }
             return root;
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize result is not valid JSON");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历优化结果格式异常，请稍后重试");
         }
     }
 
@@ -1264,16 +1361,52 @@ public class ResumeServiceImpl implements ResumeService {
         return json.path(fieldName).isTextual() ? json.path(fieldName).asText() : json.path(fieldName).toString();
     }
 
+    private Integer integerField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            return null;
+        }
+        JsonNode value = json.path(fieldName);
+        if (value.isNumber()) {
+            return value.asInt();
+        }
+        if (value.isTextual()) {
+            try {
+                return Integer.valueOf(value.asText().trim());
+            } catch (NumberFormatException ex) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private JsonNode jsonField(JsonNode json, String fieldName) {
+        if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
+            return null;
+        }
+        return json.path(fieldName);
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialization failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "结果序列化失败，请稍后重试");
+        }
+    }
+
+    private ResumeOptimizeAiRequestDTO readOptimizeAiRequest(ResumeOptimizeRecord record) {
+        if (record == null || !StringUtils.hasText(record.getRequestJson())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume optimize request is missing");
+        }
+        try {
+            return objectMapper.readValue(record.getRequestJson(), ResumeOptimizeAiRequestDTO.class);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历优化请求内容异常，请重新提交");
         }
     }
 
     private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "Resume optimize failed";
+        String value = StringUtils.hasText(message) ? message : "简历优化失败，请稍后重试";
         return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
     }
 
@@ -1298,7 +1431,7 @@ public class ResumeServiceImpl implements ResumeService {
     private void applyResume(Resume resume, ResumeSaveDTO dto) {
         String title = StringUtils.hasText(dto.getResumeName()) ? dto.getResumeName() : dto.getTitle();
         if (!StringUtils.hasText(title)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeName is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写简历名称");
         }
         resume.setTitle(title);
         resume.setRealName(dto.getRealName());
@@ -1316,20 +1449,20 @@ public class ResumeServiceImpl implements ResumeService {
 
     private void validateUploadFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件为空，请重新选择");
         }
         String filename = file.getOriginalFilename();
         if (!StringUtils.hasText(filename)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "filename is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不能为空");
         }
         String normalized = filename.replace('\\', '/');
         String simpleName = normalized.substring(normalized.lastIndexOf('/') + 1);
         if (!StringUtils.hasText(simpleName) || simpleName.contains("..")) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid filename");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不合法，请重新选择");
         }
         int index = simpleName.lastIndexOf('.');
         if (index < 0 || index == simpleName.length() - 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file extension is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件扩展名不能为空");
         }
         String ext = simpleName.substring(index + 1).toLowerCase(Locale.ROOT);
         if (!ALLOWED_EXTENSIONS.contains(ext)) {
@@ -1364,7 +1497,7 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(Resume::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
         }
         return resume;
     }
@@ -1376,7 +1509,7 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (record == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume analysis record not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在或已不可用");
         }
         return record;
     }
@@ -1385,7 +1518,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = projectMapper.selectById(projectId);
         if (project == null || !resumeId.equals(project.getResumeId())
                 || CommonConstants.YES.equals(project.getDeleted())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume project not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历项目经历不存在或已不可用");
         }
         return project;
     }
@@ -1393,7 +1526,7 @@ public class ResumeServiceImpl implements ResumeService {
     private ResumeProject getOwnedProject(Long projectId) {
         ResumeProject project = projectMapper.selectById(projectId);
         if (project == null || CommonConstants.YES.equals(project.getDeleted())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume project not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历项目经历不存在或已不可用");
         }
         getOwnedResume(project.getResumeId());
         return project;
@@ -1406,7 +1539,18 @@ public class ResumeServiceImpl implements ResumeService {
                 .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (record == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume optimize record not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历优化记录不存在或已不可用");
+        }
+        return record;
+    }
+
+    private ResumeOptimizeRecord getOptimizeRecord(Long recordId) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectOne(new LambdaQueryWrapper<ResumeOptimizeRecord>()
+                .eq(ResumeOptimizeRecord::getId, recordId)
+                .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (record == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历建议记录不存在或已不可用");
         }
         return record;
     }

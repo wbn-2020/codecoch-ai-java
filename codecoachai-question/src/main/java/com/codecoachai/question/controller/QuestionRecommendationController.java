@@ -49,6 +49,24 @@ public class QuestionRecommendationController {
         return Result.success(questionRecommendationService.generateFromStudyPlan(dto));
     }
 
+    @PostMapping("/submit-from-gap")
+    public Result<QuestionRecommendationGenerateVO> submitFromGap(
+            @Valid @RequestBody QuestionRecommendationGenerateFromGapDTO dto) {
+        return Result.success(questionRecommendationService.submitFromGap(dto));
+    }
+
+    @PostMapping("/submit-from-match-report")
+    public Result<QuestionRecommendationGenerateVO> submitFromMatchReport(
+            @Valid @RequestBody QuestionRecommendationGenerateFromMatchReportDTO dto) {
+        return Result.success(questionRecommendationService.submitFromMatchReport(dto));
+    }
+
+    @PostMapping("/submit-from-study-plan")
+    public Result<QuestionRecommendationGenerateVO> submitFromStudyPlan(
+            @Valid @RequestBody QuestionRecommendationGenerateFromStudyPlanDTO dto) {
+        return Result.success(questionRecommendationService.submitFromStudyPlan(dto));
+    }
+
     @GetMapping("/source-types")
     public Result<List<QuestionRecommendationSourceTypeVO>> sourceTypes() {
         return Result.success(questionRecommendationService.sourceTypes());

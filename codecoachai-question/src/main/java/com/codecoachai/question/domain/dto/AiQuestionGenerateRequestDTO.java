@@ -18,8 +18,8 @@ public class AiQuestionGenerateRequestDTO {
     private String difficulty;
     private Integer experienceYears;
 
-    @Min(value = 1, message = "count must be at least 1")
-    @Max(value = 20, message = "count must be at most 20")
+    @Min(value = 1, message = "生成题目数量不能少于 1 道")
+    @Max(value = 20, message = "生成题目数量不能超过 20 道")
     private Integer count = 5;
 
     private Boolean generateReferenceAnswer = true;

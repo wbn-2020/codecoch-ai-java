@@ -7,6 +7,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromGapDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromMatchReportDTO;
@@ -46,6 +47,7 @@ import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.StudyPlanMapper;
 import com.codecoachai.interview.mapper.StudyPlanSkillRelationMapper;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
+import com.codecoachai.interview.mq.StudyPlanMqDispatcher;
 import com.codecoachai.interview.service.StudyPlanService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -59,6 +61,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -66,6 +69,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -77,6 +81,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private static final String PLAN_GENERATING = "GENERATING";
     private static final String PLAN_ACTIVE = "ACTIVE";
     private static final String PLAN_FAILED = "FAILED";
+    private static final String STUDY_PLAN_ASYNC_BIZ_TYPE = StudyPlanMqDispatcher.BIZ_TYPE_GENERATE;
     private static final String TASK_TODO = "TODO";
     private static final String TASK_COMPLETED = "COMPLETED";
     private static final String TASK_SKIPPED = "SKIPPED";
@@ -92,9 +97,10 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
+    private final TransactionTemplate transactionTemplate;
+    private final Optional<StudyPlanMqDispatcher> studyPlanMqDispatcher;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public StudyPlanGenerateVO generate(StudyPlanGenerateDTO dto) {
         Long userId = requireCurrentUserId();
         InterviewReport report = getOwnedGeneratedReport(dto.getReportId(), userId);
@@ -103,30 +109,29 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 || PLAN_GENERATING.equals(existing.getPlanStatus()))) {
             return toGenerateVO(existing);
         }
-        return generateNewPlan(userId, report, dto, null);
+        StudyPlan plan = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, null));
+        return submitForGeneration(plan, null);
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public StudyPlanGenerateVO generateFromGap(StudyPlanGenerateFromGapDTO dto) {
         if (dto == null || dto.getProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像链接不完整，请从能力画像页面重新进入");
         }
         InnerSkillProfileVO profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(dto.getProfileId()));
         return generateFromSkillProfile(dto, profile, StudyPlanSourceType.JD_GAP, dto.getProfileId());
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public StudyPlanGenerateVO generateFromMatchReport(StudyPlanGenerateFromMatchReportDTO dto) {
         if (dto == null || dto.getMatchReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告链接不完整，请从匹配报告页面重新进入");
         }
         InnerSkillProfileVO profile = FeignResultUtils.unwrap(
                 resumeFeignClient.getSuccessSkillProfileByMatchReport(dto.getMatchReportId()));
         if (profile == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "No SUCCESS skill profile found for this match report. Please generate skill profile first.");
+                    "当前匹配报告还没有可用的能力画像，请先生成能力画像");
         }
         StudyPlanGenerateFromGapDTO gapDTO = new StudyPlanGenerateFromGapDTO();
         gapDTO.setProfileId(profile.getProfileId());
@@ -152,8 +157,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     @Override
     public PageResult<StudyPlanListVO> list(StudyPlanQueryDTO dto) {
         Long userId = requireCurrentUserId();
-        long pageNo = dto == null || dto.getPageNo() == null ? 1L : dto.getPageNo();
-        long pageSize = dto == null || dto.getPageSize() == null ? 10L : dto.getPageSize();
+        long pageNo = dto == null || dto.getPageNo() == null || dto.getPageNo() < 1 ? 1L : dto.getPageNo();
+        long pageSize = dto == null || dto.getPageSize() == null || dto.getPageSize() < 1 ? 10L : Math.min(dto.getPageSize(), 100L);
         LambdaQueryWrapper<StudyPlan> query = new LambdaQueryWrapper<StudyPlan>()
                 .eq(StudyPlan::getUserId, userId)
                 .eq(StudyPlan::getDeleted, CommonConstants.NO)
@@ -254,11 +259,11 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .eq(StudyTask::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (task == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study task not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习任务不存在或已不可用");
         }
         StudyPlan plan = getOwnedPlan(task.getPlanId(), userId);
         if (PLAN_FAILED.equals(plan.getPlanStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study plan is failed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划生成失败，暂时不能更新任务");
         }
         task.setTaskStatus(normalizeTaskStatus(dto.getTaskStatus()));
         studyTaskMapper.updateById(task);
@@ -280,12 +285,11 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public StudyPlanGenerateVO regenerate(Long id) {
         Long userId = requireCurrentUserId();
         StudyPlan plan = getOwnedPlan(id, userId);
         if (!PLAN_FAILED.equals(plan.getPlanStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only failed study plan can be regenerated");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "只有生成失败的学习计划可以重新生成");
         }
         InterviewReport report = getOwnedGeneratedReport(plan.getReportId(), userId);
         StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
@@ -295,11 +299,151 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         dto.setTargetPosition(plan.getTargetPosition());
         dto.setIndustryDirection(plan.getIndustryDirection());
         dto.setExpectedDurationDays(plan.getDurationDays());
-        return generateNewPlan(userId, report, dto, plan);
+        StudyPlan prepared = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, plan));
+        return submitForGeneration(prepared, null);
     }
 
-    private StudyPlanGenerateVO generateNewPlan(Long userId, InterviewReport report,
-                                                StudyPlanGenerateDTO dto, StudyPlan reusablePlan) {
+    @Override
+    public StudyPlanGenerateVO executeGeneration(Long id) {
+        StudyPlan plan = studyPlanMapper.selectById(id);
+        if (plan == null || !CommonConstants.NO.equals(plan.getDeleted())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
+        }
+        if (PLAN_ACTIVE.equals(plan.getPlanStatus()) || PLAN_FAILED.equals(plan.getPlanStatus())) {
+            return toGenerateVO(plan);
+        }
+        if (!PLAN_GENERATING.equals(plan.getPlanStatus())) {
+            return toGenerateVO(plan);
+        }
+        if (SOURCE_TYPE_REPORT.equals(plan.getSourceType()) || plan.getReportId() != null) {
+            return executeReportPlan(plan);
+        }
+        return executeTargetedPlan(plan);
+    }
+
+    private StudyPlanGenerateVO submitForGeneration(StudyPlan plan, Integer skillGapCount) {
+        MqDispatchReceipt receipt = dispatchGenerate(plan);
+        StudyPlanGenerateVO vo = receipt == null
+                ? executeGeneration(plan.getId())
+                : withAsyncReceipt(toGenerateVO(plan), receipt);
+        if (skillGapCount != null) {
+            vo.setSkillGapCount(skillGapCount);
+        }
+        return vo;
+    }
+
+    private MqDispatchReceipt dispatchGenerate(StudyPlan plan) {
+        return plan == null ? null : studyPlanMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchGenerateWithReceipt(plan.getId(), plan.getUserId()))
+                .orElse(null);
+    }
+
+    private StudyPlanGenerateVO withAsyncReceipt(StudyPlanGenerateVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return vo;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(firstText(receipt.getBizType(), STUDY_PLAN_ASYNC_BIZ_TYPE));
+        vo.setAsyncBizId(firstText(receipt.getBizId(), String.valueOf(vo.getPlanId())));
+        vo.setAsyncSendStatus(receipt.getSendStatus());
+        return vo;
+    }
+
+    private StudyPlanGenerateVO executeReportPlan(StudyPlan plan) {
+        try {
+            GenerateLearningPlanDTO aiRequest = readRequestJson(plan, GenerateLearningPlanDTO.class);
+            GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(aiFeignClient.generateLearningPlan(aiRequest));
+            validateAiPlan(aiPlan);
+            StudyPlan success = transactionTemplate.execute(status -> markReportPlanSuccess(plan.getId(), aiPlan));
+            return toGenerateVO(success);
+        } catch (RuntimeException ex) {
+            log.warn("Study plan generation failed, planId={}, reportId={}", plan.getId(), plan.getReportId(), ex);
+            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId()));
+            return toGenerateVO(failed);
+        }
+    }
+
+    private StudyPlanGenerateVO executeTargetedPlan(StudyPlan plan) {
+        try {
+            GenerateTargetedStudyPlanDTO aiRequest = readRequestJson(plan, GenerateTargetedStudyPlanDTO.class);
+            List<InnerSkillGapItemVO> selectedGaps = readList(aiRequest.getSkillGapsJson(),
+                    new TypeReference<List<InnerSkillGapItemVO>>() {});
+            GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(
+                    aiFeignClient.generateTargetedStudyPlan(aiRequest));
+            validateAiPlan(aiPlan);
+            StudyPlan success = transactionTemplate.execute(status ->
+                    markTargetedPlanSuccess(plan.getId(), aiPlan, selectedGaps, aiRequest));
+            StudyPlanGenerateVO vo = toGenerateVO(success);
+            vo.setSkillGapCount(selectedGaps.size());
+            return vo;
+        } catch (RuntimeException ex) {
+            log.warn("Gap-driven study plan generation failed, planId={}, profileId={}",
+                    plan.getId(), plan.getSkillProfileId(), ex);
+            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId()));
+            return toGenerateVO(failed);
+        }
+    }
+
+    private StudyPlan markReportPlanSuccess(Long planId, GenerateLearningPlanVO aiPlan) {
+        StudyPlan plan = studyPlanMapper.selectById(planId);
+        cleanupTasks(planId);
+        cleanupRelations(planId);
+        plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), defaultTitle(plan)));
+        plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
+        plan.setDurationDays(normalizeDuration(aiPlan.getDurationDays()));
+        plan.setAiCallLogId(aiPlan.getAiCallLogId());
+        plan.setResultJson(toJson(aiPlan));
+        plan.setFailureReason(null);
+        insertTasks(plan, aiPlan);
+        plan.setPlanStatus(PLAN_ACTIVE);
+        studyPlanMapper.updateById(plan);
+        return plan;
+    }
+
+    private StudyPlan markTargetedPlanSuccess(Long planId, GenerateLearningPlanVO aiPlan,
+                                              List<InnerSkillGapItemVO> selectedGaps,
+                                              GenerateTargetedStudyPlanDTO aiRequest) {
+        StudyPlan plan = studyPlanMapper.selectById(planId);
+        cleanupTasks(planId);
+        cleanupRelations(planId);
+        insertTargetedTasks(plan, aiPlan, selectedGaps == null ? List.of() : selectedGaps);
+        plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), plan.getPlanTitle()));
+        plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
+        plan.setDurationDays(aiPlan.getDurationDays() == null
+                ? normalizeDuration(aiRequest.getAvailableDays())
+                : normalizeDuration(aiPlan.getDurationDays()));
+        plan.setAiCallLogId(aiPlan.getAiCallLogId());
+        plan.setResultJson(toJson(aiPlan));
+        plan.setFailureReason(null);
+        plan.setPlanStatus(PLAN_ACTIVE);
+        studyPlanMapper.updateById(plan);
+        return plan;
+    }
+
+    private StudyPlan markStudyPlanFailed(Long planId) {
+        cleanupTasks(planId);
+        cleanupRelations(planId);
+        StudyPlan plan = studyPlanMapper.selectById(planId);
+        plan.setPlanStatus(PLAN_FAILED);
+        plan.setFailureReason(studyPlanFailureMessage());
+        studyPlanMapper.updateById(plan);
+        return plan;
+    }
+
+    private <T> T readRequestJson(StudyPlan plan, Class<T> type) {
+        if (plan == null || !StringUtils.hasText(plan.getRequestJson())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成依据缺失，请重新提交");
+        }
+        try {
+            return objectMapper.readValue(plan.getRequestJson(), type);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成依据暂时无法读取，请重新提交");
+        }
+    }
+
+    private StudyPlan prepareReportPlan(Long userId, InterviewReport report,
+                                        StudyPlanGenerateDTO dto, StudyPlan reusablePlan) {
         InterviewSession session = getSession(report.getSessionId(), userId);
         InnerResumeDetailVO resume = loadResume(userId, firstLong(dto.getResumeId(), session.getResumeId()));
         InnerResumeOptimizeRecordVO optimizeRecord = loadOptimizeRecord(userId, dto.getOptimizeRecordId());
@@ -329,26 +473,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         GenerateLearningPlanDTO aiRequest = buildAiRequest(plan, session, report, dto, resume, optimizeRecord);
         plan.setRequestJson(toJson(aiRequest));
         studyPlanMapper.updateById(plan);
-        try {
-            GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(aiFeignClient.generateLearningPlan(aiRequest));
-            validateAiPlan(aiPlan);
-            plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), defaultTitle(plan)));
-            plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), report.getSummary()));
-            plan.setDurationDays(normalizeDuration(aiPlan.getDurationDays()));
-            plan.setAiCallLogId(aiPlan.getAiCallLogId());
-            plan.setResultJson(toJson(aiPlan));
-            plan.setFailureReason(null);
-            insertTasks(plan, aiPlan);
-            plan.setPlanStatus(PLAN_ACTIVE);
-            studyPlanMapper.updateById(plan);
-        } catch (RuntimeException ex) {
-            cleanupTasks(plan.getId());
-            plan.setPlanStatus(PLAN_FAILED);
-            log.warn("Study plan generation failed, planId={}, reportId={}", plan.getId(), report.getId(), ex);
-            plan.setFailureReason(studyPlanFailureMessage());
-            studyPlanMapper.updateById(plan);
-        }
-        return toGenerateVO(plan);
+        return plan;
     }
 
     private StudyPlanGenerateVO generateFromSkillProfile(StudyPlanGenerateFromGapDTO dto,
@@ -362,8 +487,22 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         LocalDate startDate = dto.getStartDate() == null ? LocalDate.now() : dto.getStartDate();
         List<InnerSkillGapItemVO> selectedGaps = resolveSelectedGaps(profile, dto.getGapItemIds());
 
+        StudyPlan plan = transactionTemplate.execute(status ->
+                prepareTargetedPlan(dto, profile, sourceType, sourceBizId, selectedGaps,
+                        days, dailyMinutes, startDate));
+        return submitForGeneration(plan, selectedGaps.size());
+    }
+
+    private StudyPlan prepareTargetedPlan(StudyPlanGenerateFromGapDTO dto,
+                                          InnerSkillProfileVO profile,
+                                          StudyPlanSourceType sourceType,
+                                          Long sourceBizId,
+                                          List<InnerSkillGapItemVO> selectedGaps,
+                                          int days,
+                                          int dailyMinutes,
+                                          LocalDate startDate) {
         StudyPlan plan = new StudyPlan();
-        plan.setUserId(userId);
+        plan.setUserId(profile.getUserId());
         plan.setSourceType(sourceType.getCode());
         plan.setSourceId(sourceBizId);
         plan.setTargetJobId(profile.getTargetJobId());
@@ -383,39 +522,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 plan, profile, selectedGaps, days, dailyMinutes, startDate);
         plan.setRequestJson(toJson(aiRequest));
         studyPlanMapper.updateById(plan);
-        try {
-            GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(
-                    aiFeignClient.generateTargetedStudyPlan(aiRequest));
-            validateAiPlan(aiPlan);
-            cleanupTasks(plan.getId());
-            cleanupRelations(plan.getId());
-            int taskCount = insertTargetedTasks(plan, aiPlan, selectedGaps);
-            plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), plan.getPlanTitle()));
-            plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
-            plan.setDurationDays(aiPlan.getDurationDays() == null ? days : aiPlan.getDurationDays());
-            plan.setAiCallLogId(aiPlan.getAiCallLogId());
-            plan.setResultJson(toJson(aiPlan));
-            plan.setFailureReason(null);
-            plan.setPlanStatus(PLAN_ACTIVE);
-            studyPlanMapper.updateById(plan);
-
-            StudyPlanGenerateVO vo = toGenerateVO(plan);
-            vo.setTaskCount(taskCount);
-            vo.setSkillGapCount(selectedGaps.size());
-            return vo;
-        } catch (RuntimeException ex) {
-            cleanupTasks(plan.getId());
-            cleanupRelations(plan.getId());
-            plan.setPlanStatus(PLAN_FAILED);
-            log.warn("Gap-driven study plan generation failed, planId={}, profileId={}",
-                    plan.getId(), profile.getProfileId(), ex);
-            plan.setFailureReason(studyPlanFailureMessage());
-            studyPlanMapper.updateById(plan);
-            StudyPlanGenerateVO vo = toGenerateVO(plan);
-            vo.setTaskCount(0);
-            vo.setSkillGapCount(selectedGaps.size());
-            return vo;
-        }
+        return plan;
     }
 
     private GenerateTargetedStudyPlanDTO buildTargetedAiRequest(StudyPlan plan,
@@ -511,16 +618,16 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private void validateSkillProfile(InnerSkillProfileVO profile, Long userId) {
         if (profile == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不存在或已不可用");
         }
         if (!userId.equals(profile.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不存在或已不可用");
         }
         if (!"SUCCESS".equals(profile.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile is not available");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像暂时不可用");
         }
         if (profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile has no skill gap items");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像还没有可用短板项");
         }
     }
 
@@ -534,7 +641,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (gapItemIds == null || gapItemIds.isEmpty()) {
             List<InnerSkillGapItemVO> topGaps = available.stream().limit(5).toList();
             if (topGaps.isEmpty()) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile has no usable skill gap items");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像还没有可用于生成计划的短板项");
             }
             return topGaps;
         }
@@ -543,14 +650,14 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .collect(Collectors.toMap(InnerSkillGapItemVO::getId, Function.identity(), (a, b) -> a));
         List<Long> distinctIds = gapItemIds.stream().filter(Objects::nonNull).distinct().toList();
         if (distinctIds.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "gapItemIds must contain valid ids");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择有效的短板项");
         }
         List<InnerSkillGapItemVO> selected = new ArrayList<>();
         for (Long gapItemId : distinctIds) {
             InnerSkillGapItemVO gap = gapMap.get(gapItemId);
             if (gap == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR,
-                        "Skill gap item not found or does not match this skill profile");
+                        "短板项不存在或不属于当前能力画像");
             }
             selected.add(gap);
         }
@@ -745,10 +852,10 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .eq(InterviewReport::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (report == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview report not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试报告不存在或已不可用");
         }
         if (!ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview report is not generated");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试报告尚未生成完成");
         }
         return report;
     }
@@ -760,7 +867,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .eq(InterviewSession::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (session == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview session not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试会话不存在或已不可用");
         }
         return session;
     }
@@ -772,7 +879,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .eq(StudyPlan::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (plan == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study plan not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
         }
         return plan;
     }
@@ -783,7 +890,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
         InnerResumeDetailVO resume = FeignResultUtils.unwrap(resumeFeignClient.getResume(resumeId));
         if (resume == null || !userId.equals(resume.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
         }
         return resume;
     }
@@ -794,7 +901,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
         InnerResumeOptimizeRecordVO record = FeignResultUtils.unwrap(resumeFeignClient.getOptimizeRecord(optimizeRecordId));
         if (record == null || !userId.equals(record.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume optimize record not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历优化记录不存在或已不可用");
         }
         return record;
     }
@@ -825,7 +932,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         try {
             return LocalDate.parse(date.trim());
         } catch (DateTimeParseException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "date must be yyyy-MM-dd");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "日期格式不正确，请使用 yyyy-MM-dd");
         }
     }
 
@@ -1156,7 +1263,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private String normalizePlanStatus(String status) {
         String value = status.trim().toUpperCase(Locale.ROOT);
         if (!List.of(PLAN_GENERATING, PLAN_ACTIVE, PLAN_FAILED, "ARCHIVED").contains(value)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported planStatus");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划状态不支持");
         }
         return value;
     }
@@ -1164,7 +1271,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private String normalizeTaskStatus(String status) {
         String value = status.trim().toUpperCase(Locale.ROOT);
         if (!List.of(TASK_TODO, "DOING", "DONE", TASK_COMPLETED, TASK_SKIPPED).contains(value)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported taskStatus");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习任务状态不支持");
         }
         return value;
     }
@@ -1208,7 +1315,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             return DEFAULT_DURATION_DAYS;
         }
         if (days < 1 || days > 60) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "days must be between 1 and 60");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习天数需要在 1 到 60 天之间");
         }
         return days;
     }
@@ -1218,13 +1325,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             return 60;
         }
         if (dailyMinutes < 15 || dailyMinutes > 480) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "dailyMinutes must be between 15 and 480");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "每日学习时长需要在 15 到 480 分钟之间");
         }
         return dailyMinutes;
     }
 
     private String defaultTitle(StudyPlan plan) {
-        return firstText(plan.getTargetPosition(), "Java backend") + " " + plan.getDurationDays() + "-day study plan";
+        return firstText(plan.getTargetPosition(), "Java 后端") + " " + plan.getDurationDays() + " 天学习计划";
     }
 
     private Long firstLong(Long... values) {
@@ -1292,7 +1399,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialization failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果处理失败，请稍后重试");
         }
     }
 
@@ -1301,7 +1408,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             try {
                 return objectMapper.readValue("[]", typeReference);
             } catch (Exception ex) {
-                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON parse failed");
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果处理失败，请稍后重试");
             }
         }
         try {
@@ -1310,7 +1417,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             try {
                 return objectMapper.readValue("[]", typeReference);
             } catch (Exception ignored) {
-                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON parse failed");
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果处理失败，请稍后重试");
             }
         }
     }

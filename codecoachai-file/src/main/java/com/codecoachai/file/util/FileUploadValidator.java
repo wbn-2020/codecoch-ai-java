@@ -51,7 +51,7 @@ public final class FileUploadValidator {
         }
         Set<String> allowed = ALLOWED_MIME_TYPES.get(fileExt);
         if (allowed != null && !allowed.contains(normalized)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file mime type not allowed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件类型不支持，请上传 PDF、Word 或文本文件。");
         }
     }
 
@@ -60,10 +60,10 @@ public final class FileUploadValidator {
         try (InputStream inputStream = file.getInputStream()) {
             header = inputStream.readNBytes(PROBE_BYTES);
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file content cannot be read");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容读取失败，请重新选择文件后再试。");
         }
         if (header.length == 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件为空，请上传有效文件。");
         }
 
         boolean valid = switch (fileExt) {
@@ -76,7 +76,7 @@ public final class FileUploadValidator {
             default -> true;
         };
         if (!valid) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file content does not match extension");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容与扩展名不匹配，请确认文件格式后重新上传。");
         }
     }
 
@@ -107,7 +107,7 @@ public final class FileUploadValidator {
 
     private static String normalizeExt(String fileExt) {
         if (!StringUtils.hasText(fileExt)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file extension is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件扩展名不能为空。");
         }
         return fileExt.toLowerCase(Locale.ROOT);
     }

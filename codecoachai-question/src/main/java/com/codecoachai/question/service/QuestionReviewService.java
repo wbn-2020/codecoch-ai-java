@@ -16,6 +16,8 @@ public interface QuestionReviewService {
 
     AiQuestionGenerateResultVO generate(AiQuestionGenerateRequestDTO dto);
 
+    AiQuestionGenerateResultVO submitGenerate(AiQuestionGenerateRequestDTO dto);
+
     PageResult<QuestionReviewListVO> pageReviews(QuestionReviewQueryDTO query);
 
     QuestionReviewDetailVO getReview(Long id);

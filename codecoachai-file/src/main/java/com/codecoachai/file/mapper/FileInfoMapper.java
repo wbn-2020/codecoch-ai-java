@@ -39,6 +39,21 @@ public interface FileInfoMapper extends BaseMapper<FileInfo> {
     List<FileResumeAnalysisStatusVO> selectLatestResumeAnalysisByFileIds(@Param("fileIds") List<Long> fileIds);
 
     @Select("""
+            SELECT latest.file_id
+            FROM resume_analysis_record latest
+            INNER JOIN (
+              SELECT file_id, MAX(CONCAT(DATE_FORMAT(created_at, '%Y%m%d%H%i%s'), LPAD(id, 20, '0'))) AS sort_key
+              FROM resume_analysis_record
+              WHERE deleted = 0
+              GROUP BY file_id
+            ) picked ON picked.file_id = latest.file_id
+              AND picked.sort_key = CONCAT(DATE_FORMAT(latest.created_at, '%Y%m%d%H%i%s'), LPAD(latest.id, 20, '0'))
+            WHERE latest.deleted = 0
+              AND latest.parse_status = #{parseStatus}
+            """)
+    List<Long> selectLatestResumeFileIdsByParseStatus(@Param("parseStatus") String parseStatus);
+
+    @Select("""
             SELECT
               file_id AS fileId,
               resume_id AS resumeId,

@@ -7,6 +7,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromGapDTO;
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromMatchReportDTO;
@@ -38,6 +39,7 @@ import com.codecoachai.question.feign.vo.QuestionRecommendationDraftItemVO;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
+import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionRecommendationService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +49,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -63,6 +66,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private static final long MAX_PAGE_SIZE = 100L;
     private static final String DEFAULT_STRATEGY = "GAP_PRIORITY";
     private static final String DEFAULT_DIFFICULTY = "MEDIUM";
+    private static final String TRUST_VERIFIED = "VERIFIED";
+    private static final String TRUST_PARTIAL = "PARTIAL";
+    private static final String TRUST_FALLBACK = "FALLBACK";
 
     private final QuestionRecommendationBatchMapper batchMapper;
     private final QuestionRecommendationItemMapper itemMapper;
@@ -71,16 +77,68 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private final StudyPlanFeignClient studyPlanFeignClient;
     private final AiQuestionRecommendationFeignClient aiRecommendationFeignClient;
     private final ObjectMapper objectMapper;
+    private final Optional<QuestionMqDispatcher> questionMqDispatcher;
 
     @Override
     public QuestionRecommendationGenerateVO generateFromGap(QuestionRecommendationGenerateFromGapDTO dto) {
-        if (dto == null || dto.getSkillProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillProfileId is required");
-        }
         Long userId = requireCurrentUserId();
+        return generate(buildGapRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO generateFromMatchReport(
+            QuestionRecommendationGenerateFromMatchReportDTO dto) {
+        Long userId = requireCurrentUserId();
+        return generate(buildMatchReportRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO generateFromStudyPlan(QuestionRecommendationGenerateFromStudyPlanDTO dto) {
+        Long userId = requireCurrentUserId();
+        return generate(buildStudyPlanRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO submitFromGap(QuestionRecommendationGenerateFromGapDTO dto) {
+        Long userId = requireCurrentUserId();
+        return submit(buildGapRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO submitFromMatchReport(QuestionRecommendationGenerateFromMatchReportDTO dto) {
+        Long userId = requireCurrentUserId();
+        return submit(buildMatchReportRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO submitFromStudyPlan(QuestionRecommendationGenerateFromStudyPlanDTO dto) {
+        Long userId = requireCurrentUserId();
+        return submit(buildStudyPlanRequest(dto, userId), userId);
+    }
+
+    @Override
+    public QuestionRecommendationGenerateVO executeBatch(Long batchId, Long userId) {
+        requireUserId(userId);
+        QuestionRecommendationBatch batch = batchMapper.selectOne(
+                new LambdaQueryWrapper<QuestionRecommendationBatch>()
+                        .eq(QuestionRecommendationBatch::getId, batchId)
+                        .eq(QuestionRecommendationBatch::getUserId, userId)
+                        .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (batch == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题记录不存在或无权访问");
+        }
+        assertTrustedBatchEvidence(batch);
+        return executeBatch(batch, false);
+    }
+
+    private RecommendationRequest buildGapRequest(QuestionRecommendationGenerateFromGapDTO dto, Long userId) {
+        if (dto == null || dto.getSkillProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择能力画像后再生成推荐题");
+        }
         InnerSkillProfileVO profile = loadOwnedProfile(dto.getSkillProfileId(), userId);
         List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, dto.getGapItemIds());
-        RecommendationRequest request = new RecommendationRequest(
+        return new RecommendationRequest(
                 QuestionRecommendationSourceType.JD_GAP,
                 profile.getProfileId(),
                 profile,
@@ -89,21 +147,18 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 normalizeQuestionCount(dto.getQuestionCount()),
                 normalizeDifficulty(dto.getDifficultyPreference()),
                 normalizeStrategy(dto.getStrategy()));
-        return generate(request, userId);
     }
 
-    @Override
-    public QuestionRecommendationGenerateVO generateFromMatchReport(
-            QuestionRecommendationGenerateFromMatchReportDTO dto) {
+    private RecommendationRequest buildMatchReportRequest(QuestionRecommendationGenerateFromMatchReportDTO dto,
+                                                          Long userId) {
         if (dto == null || dto.getMatchReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择匹配报告后再生成推荐题");
         }
-        Long userId = requireCurrentUserId();
         InnerSkillProfileVO profile = FeignResultUtils.unwrap(
                 resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(dto.getMatchReportId()));
         validateOwnedProfile(profile, userId);
         List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, dto.getGapItemIds());
-        RecommendationRequest request = new RecommendationRequest(
+        return new RecommendationRequest(
                 QuestionRecommendationSourceType.RESUME_JOB_MATCH,
                 dto.getMatchReportId(),
                 profile,
@@ -112,19 +167,17 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 normalizeQuestionCount(dto.getQuestionCount()),
                 normalizeDifficulty(dto.getDifficultyPreference()),
                 normalizeStrategy(dto.getStrategy()));
-        return generate(request, userId);
     }
 
-    @Override
-    public QuestionRecommendationGenerateVO generateFromStudyPlan(QuestionRecommendationGenerateFromStudyPlanDTO dto) {
+    private RecommendationRequest buildStudyPlanRequest(QuestionRecommendationGenerateFromStudyPlanDTO dto,
+                                                        Long userId) {
         if (dto == null || dto.getStudyPlanId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "studyPlanId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择学习计划后再生成推荐题");
         }
-        Long userId = requireCurrentUserId();
         InnerStudyPlanVO plan = FeignResultUtils.unwrap(studyPlanFeignClient.getStudyPlan(dto.getStudyPlanId()));
         validateOwnedPlan(plan, userId);
         if (plan.getSkillProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study plan has no linked skill profile");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前学习计划缺少能力画像依据，请先生成能力画像");
         }
         InnerSkillProfileVO profile = loadOwnedProfile(plan.getSkillProfileId(), userId);
         List<Long> requestedGapIds = dto.getGapItemIds();
@@ -136,7 +189,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                     .toList();
         }
         List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, requestedGapIds);
-        RecommendationRequest request = new RecommendationRequest(
+        return new RecommendationRequest(
                 QuestionRecommendationSourceType.STUDY_PLAN,
                 plan.getPlanId(),
                 profile,
@@ -145,7 +198,6 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 normalizeQuestionCount(dto.getQuestionCount()),
                 normalizeDifficulty(dto.getDifficultyPreference()),
                 normalizeStrategy(dto.getStrategy()));
-        return generate(request, userId);
     }
 
     @Override
@@ -180,14 +232,20 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 .eq(request.getSkillProfileId() != null, QuestionRecommendationBatch::getSkillProfileId, request.getSkillProfileId())
                 .eq(request.getStudyPlanId() != null, QuestionRecommendationBatch::getStudyPlanId, request.getStudyPlanId())
                 .orderByDesc(QuestionRecommendationBatch::getUpdatedAt);
-        Page<QuestionRecommendationBatch> page = batchMapper.selectPage(Page.of(pageNo, pageSize), wrapper);
-        return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
-                page.getTotal(), page.getCurrent(), page.getSize());
+        long candidatePageSize = pageNo == 1L ? Math.max(pageSize, 10L) : pageSize;
+        Page<QuestionRecommendationBatch> page = batchMapper.selectPage(Page.of(pageNo, candidatePageSize), wrapper);
+        List<QuestionRecommendationBatchListVO> trustedRecords = page.getRecords().stream()
+                .filter(this::hasTrustedBatchEvidence)
+                .limit(pageSize)
+                .map(this::toListVO)
+                .toList();
+        return PageResult.of(trustedRecords, page.getTotal(), pageNo, pageSize);
     }
 
     @Override
     public QuestionRecommendationBatchDetailVO batchDetail(Long batchId) {
         QuestionRecommendationBatch batch = getOwnedBatch(batchId, requireCurrentUserId());
+        assertTrustedBatchEvidence(batch);
         QuestionRecommendationBatchDetailVO vo = toDetailVO(batch);
         vo.setItems(batchItems(batchId));
         return vo;
@@ -196,6 +254,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     @Override
     public List<QuestionRecommendationItemVO> batchItems(Long batchId) {
         QuestionRecommendationBatch batch = getOwnedBatch(batchId, requireCurrentUserId());
+        assertTrustedBatchEvidence(batch);
         return itemMapper.selectList(new LambdaQueryWrapper<QuestionRecommendationItem>()
                         .eq(QuestionRecommendationItem::getBatchId, batch.getId())
                         .eq(QuestionRecommendationItem::getUserId, batch.getUserId())
@@ -203,23 +262,27 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                         .orderByAsc(QuestionRecommendationItem::getSortOrder)
                         .orderByAsc(QuestionRecommendationItem::getId))
                 .stream()
-                .map(this::toItemVO)
+                .map(item -> toItemVO(item, batch))
                 .toList();
     }
 
     @Override
     public List<QuestionRecommendationItemVO> recommendByJobTarget(Long targetJobId, Integer limit) {
         if (targetJobId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择目标岗位后再生成推荐题");
         }
         Long userId = requireCurrentUserId();
-        QuestionRecommendationBatch batch = batchMapper.selectOne(new LambdaQueryWrapper<QuestionRecommendationBatch>()
+        List<QuestionRecommendationBatch> batches = batchMapper.selectList(new LambdaQueryWrapper<QuestionRecommendationBatch>()
                 .eq(QuestionRecommendationBatch::getUserId, userId)
                 .eq(QuestionRecommendationBatch::getJobTargetId, targetJobId)
                 .eq(QuestionRecommendationBatch::getStatus, QuestionRecommendationBatchStatus.SUCCESS.getCode())
                 .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
                 .orderByDesc(QuestionRecommendationBatch::getUpdatedAt)
-                .last("limit 1"));
+                .last("limit 10"));
+        QuestionRecommendationBatch batch = batches.stream()
+                .filter(this::hasTrustedBatchEvidence)
+                .findFirst()
+                .orElse(null);
         if (batch == null) {
             return List.of();
         }
@@ -243,6 +306,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         int itemLimit = normalizeRecommendationLimit(limit);
         List<QuestionRecommendationItemVO> result = new java.util.ArrayList<>();
         for (QuestionRecommendationBatch batch : batches) {
+            if (!hasTrustedBatchEvidence(batch)) {
+                continue;
+            }
             LambdaQueryWrapper<QuestionRecommendationItem> wrapper = new LambdaQueryWrapper<QuestionRecommendationItem>()
                     .eq(QuestionRecommendationItem::getBatchId, batch.getId())
                     .eq(QuestionRecommendationItem::getUserId, userId)
@@ -252,7 +318,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                     .orderByAsc(QuestionRecommendationItem::getSortOrder)
                     .orderByAsc(QuestionRecommendationItem::getId)
                     .last("limit " + (itemLimit - result.size()));
-            result.addAll(itemMapper.selectList(wrapper).stream().map(this::toItemVO).toList());
+            result.addAll(itemMapper.selectList(wrapper).stream().map(item -> toItemVO(item, batch)).toList());
             if (result.size() >= itemLimit) {
                 break;
             }
@@ -262,10 +328,37 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private QuestionRecommendationGenerateVO generate(RecommendationRequest request, Long userId) {
         QuestionRecommendationBatch batch = createBatch(request, userId);
-        try {
-            GenerateQuestionRecommendationDTO aiRequest = buildAiRequest(batch, request, userId);
-            batch.setRequestJson(toJson(aiRequest));
+        GenerateQuestionRecommendationDTO aiRequest = buildAiRequest(batch, request, userId);
+        batch.setRequestJson(toJson(aiRequest));
+        batchMapper.updateById(batch);
+        return executeBatch(batch, true);
+    }
+
+    private QuestionRecommendationGenerateVO submit(RecommendationRequest request, Long userId) {
+        QuestionRecommendationBatch batch = createBatch(request, userId);
+        GenerateQuestionRecommendationDTO aiRequest = buildAiRequest(batch, request, userId);
+        batch.setRequestJson(toJson(aiRequest));
+        batchMapper.updateById(batch);
+        MqDispatchReceipt receipt = dispatchRecommendationGenerate(batch);
+        if (receipt == null) {
+            batch.setStatus(QuestionRecommendationBatchStatus.FAILED.getCode());
+            batch.setErrorMessage("推荐题生成任务暂时提交失败，请稍后重试");
             batchMapper.updateById(batch);
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "推荐题生成任务暂时提交失败，请稍后重试");
+        }
+        return withAsyncReceipt(toGenerateVO(batchMapper.selectById(batch.getId())), receipt);
+    }
+
+    private MqDispatchReceipt dispatchRecommendationGenerate(QuestionRecommendationBatch batch) {
+        return questionMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchRecommendationGenerateWithReceipt(batch.getId(), batch.getUserId()))
+                .orElse(null);
+    }
+
+    private QuestionRecommendationGenerateVO executeBatch(QuestionRecommendationBatch batch, boolean failFast) {
+        try {
+            GenerateQuestionRecommendationDTO aiRequest = readAiRequest(batch);
             GenerateQuestionRecommendationVO aiResult = FeignResultUtils.unwrap(
                     aiRecommendationFeignClient.generate(aiRequest));
             validateAiResult(aiResult);
@@ -282,8 +375,36 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             batch.setStatus(QuestionRecommendationBatchStatus.FAILED.getCode());
             batch.setErrorMessage(truncateErrorMessage(failureMessage));
             batchMapper.updateById(batch);
+            if (!failFast) {
+                return toGenerateVO(batchMapper.selectById(batch.getId()));
+            }
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "推荐题生成暂时失败：" + batch.getErrorMessage());
+        }
+    }
+
+    private GenerateQuestionRecommendationDTO readAiRequest(QuestionRecommendationBatch batch) {
+        if (!StringUtils.hasText(batch.getRequestJson())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Question recommendation generation failed: " + batch.getErrorMessage());
+                    "推荐题生成记录暂时无法读取，请重新提交");
+        }
+        try {
+            GenerateQuestionRecommendationDTO dto = objectMapper.readValue(
+                    batch.getRequestJson(), GenerateQuestionRecommendationDTO.class);
+            if (dto.getBatchId() == null || !dto.getBatchId().equals(batch.getId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "推荐题生成记录暂时无法读取，请重新提交");
+            }
+            if (dto.getUserId() == null || !dto.getUserId().equals(batch.getUserId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "推荐题生成记录暂时无法读取，请重新提交");
+            }
+            return dto;
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "推荐题生成记录暂时无法读取，请重新提交");
         }
     }
 
@@ -330,7 +451,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private void validateAiResult(GenerateQuestionRecommendationVO aiResult) {
         if (aiResult == null || aiResult.getQuestions() == null || aiResult.getQuestions().isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI question recommendation result has no questions");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题暂时没有生成有效题目，请稍后重试");
         }
     }
 
@@ -370,7 +491,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             itemMapper.insert(item);
         }
         if (order == 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI question recommendation result has no valid items");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题暂时没有生成有效题目，请稍后重试");
         }
     }
 
@@ -404,25 +525,25 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private void validateOwnedProfile(InnerSkillProfileVO profile, Long userId) {
         if (profile == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不存在或无权访问");
         }
         if (!userId.equals(profile.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不存在或无权访问");
         }
         if (!"SUCCESS".equals(profile.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only SUCCESS skill profiles can generate recommendations");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像还未生成完成，暂时不能生成推荐题");
         }
         if (profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile has no skill gaps");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前能力画像暂无可训练短板，请先补充岗位或简历信息");
         }
     }
 
     private void validateOwnedPlan(InnerStudyPlanVO plan, Long userId) {
         if (plan == null || !userId.equals(plan.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study plan not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或无权访问");
         }
         if (!"ACTIVE".equals(plan.getPlanStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only ACTIVE study plans can generate recommendations");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划当前不可生成推荐题，请先确认计划状态");
         }
     }
 
@@ -439,14 +560,14 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 .filter(gap -> selectedIds.contains(gap.getId()))
                 .toList();
         if (selected.isEmpty() || selected.size() != selectedIds.size()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill gap item not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "选择的能力短板不存在，请刷新后重试");
         }
         return selected;
     }
 
     private QuestionRecommendationBatch getOwnedBatch(Long batchId, Long userId) {
         if (batchId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择推荐题批次");
         }
         QuestionRecommendationBatch batch = batchMapper.selectOne(
                 new LambdaQueryWrapper<QuestionRecommendationBatch>()
@@ -455,9 +576,56 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                         .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
                         .last("limit 1"));
         if (batch == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question recommendation batch not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题记录不存在或无权访问");
         }
         return batch;
+    }
+
+    private void assertTrustedBatchEvidence(QuestionRecommendationBatch batch) {
+        if (!hasTrustedBatchEvidence(batch)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "推荐题依据的匹配报告证据待复核，请重新生成可信报告后再继续训练");
+        }
+    }
+
+    private boolean hasTrustedBatchEvidence(QuestionRecommendationBatch batch) {
+        if (batch == null) {
+            return true;
+        }
+        try {
+            if (isMatchReportSourceType(batch.getSourceType())) {
+                Long matchReportId = effectiveMatchReportId(batch);
+                if (matchReportId == null) {
+                    return false;
+                }
+                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(matchReportId));
+                return profile != null
+                        && batch.getUserId().equals(profile.getUserId())
+                        && matchReportId.equals(profile.getMatchReportId());
+            }
+            if (batch.getSkillProfileId() != null) {
+                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSkillProfile(batch.getSkillProfileId()));
+                return profile != null && batch.getUserId().equals(profile.getUserId());
+            }
+            return batch.getMatchReportId() == null;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private Long effectiveMatchReportId(QuestionRecommendationBatch batch) {
+        if (batch.getMatchReportId() != null) {
+            return batch.getMatchReportId();
+        }
+        return isMatchReportSourceType(batch.getSourceType()) ? batch.getSourceId() : null;
+    }
+
+    private boolean isMatchReportSourceType(String sourceType) {
+        String value = String.valueOf(sourceType).trim().toUpperCase(Locale.ROOT);
+        return QuestionRecommendationSourceType.RESUME_JOB_MATCH.getCode().equals(value)
+                || "MATCH_REPORT".equals(value);
     }
 
     private List<QuestionRecommendationItemVO> listBatchItems(QuestionRecommendationBatch batch, int limit) {
@@ -469,7 +637,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                         .orderByAsc(QuestionRecommendationItem::getId)
                         .last("limit " + limit))
                 .stream()
-                .map(this::toItemVO)
+                .map(item -> toItemVO(item, batch))
                 .toList();
     }
 
@@ -488,6 +656,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setStatus(batch.getStatus());
         vo.setAiCallLogId(batch.getAiCallLogId());
         vo.setErrorMessage(batch.getErrorMessage());
+        vo.setTrustStatus(batchTrustStatus(batch));
+        vo.setEvidenceSummary(batchEvidenceSummary(batch));
+        vo.setFallback(batchFallback(batch));
         vo.setCreatedAt(batch.getCreatedAt());
         vo.setUpdatedAt(batch.getUpdatedAt());
         return vo;
@@ -509,6 +680,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setStatus(base.getStatus());
         vo.setAiCallLogId(base.getAiCallLogId());
         vo.setErrorMessage(base.getErrorMessage());
+        vo.setTrustStatus(base.getTrustStatus());
+        vo.setEvidenceSummary(base.getEvidenceSummary());
+        vo.setFallback(base.getFallback());
         vo.setCreatedAt(base.getCreatedAt());
         vo.setUpdatedAt(base.getUpdatedAt());
         vo.setRequest(readJsonOrNull(batch.getRequestJson()));
@@ -519,16 +693,34 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private QuestionRecommendationGenerateVO toGenerateVO(QuestionRecommendationBatch batch) {
         QuestionRecommendationGenerateVO vo = new QuestionRecommendationGenerateVO();
         vo.setBatchId(batch.getId());
+        vo.setSourceType(batch.getSourceType());
+        vo.setSourceId(batch.getSourceId());
         vo.setStatus(batch.getStatus());
         vo.setQuestionCount(batch.getQuestionCount());
         vo.setAiCallLogId(batch.getAiCallLogId());
         vo.setErrorMessage(batch.getErrorMessage());
+        vo.setTrustStatus(batchTrustStatus(batch));
+        vo.setEvidenceSummary(batchEvidenceSummary(batch));
+        vo.setFallback(batchFallback(batch));
         vo.setCreatedAt(batch.getCreatedAt());
         vo.setUpdatedAt(batch.getUpdatedAt());
         return vo;
     }
 
-    private QuestionRecommendationItemVO toItemVO(QuestionRecommendationItem item) {
+    private QuestionRecommendationGenerateVO withAsyncReceipt(QuestionRecommendationGenerateVO vo,
+                                                              MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return vo;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncSendStatus(receipt.getSendStatus());
+        return vo;
+    }
+
+    private QuestionRecommendationItemVO toItemVO(QuestionRecommendationItem item, QuestionRecommendationBatch batch) {
         QuestionRecommendationItemVO vo = new QuestionRecommendationItemVO();
         vo.setId(item.getId());
         vo.setBatchId(item.getBatchId());
@@ -550,6 +742,11 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setPracticeStatus(defaultPracticeStatus(item, canPractice));
         vo.setCanPractice(canPractice);
         vo.setPracticeQuestionId(canPractice ? item.getQuestionId() : null);
+        vo.setSourceType(batch == null ? null : batch.getSourceType());
+        vo.setSourceId(batch == null ? null : batch.getSourceId());
+        vo.setTrustStatus(itemTrustStatus(item, batch, canPractice));
+        vo.setEvidenceSummary(itemEvidenceSummary(item, batch, canPractice));
+        vo.setFallback(!canPractice);
         vo.setCreatedAt(item.getCreatedAt());
         vo.setUpdatedAt(item.getUpdatedAt());
         return vo;
@@ -571,6 +768,73 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         return StringUtils.hasText(item.getPracticeStatus())
                 ? item.getPracticeStatus()
                 : QuestionRecommendationPracticeStatus.UNPRACTICED.getCode();
+    }
+
+    private String batchTrustStatus(QuestionRecommendationBatch batch) {
+        if (batch == null || !QuestionRecommendationBatchStatus.SUCCESS.getCode().equals(batch.getStatus())) {
+            return TRUST_PARTIAL;
+        }
+        return batch.getAiCallLogId() == null ? TRUST_PARTIAL : TRUST_VERIFIED;
+    }
+
+    private Boolean batchFallback(QuestionRecommendationBatch batch) {
+        return batch == null || !QuestionRecommendationBatchStatus.SUCCESS.getCode().equals(batch.getStatus())
+                || batch.getSourceId() == null;
+    }
+
+    private String batchEvidenceSummary(QuestionRecommendationBatch batch) {
+        if (batch == null) {
+            return "推荐批次缺少上下文证据。";
+        }
+        String source = sourceEvidenceLabel(batch.getSourceType());
+        String sourceId = batch.getSourceId() == null ? "推荐依据待确认" : "推荐依据已绑定";
+        if (QuestionRecommendationBatchStatus.FAILED.getCode().equals(batch.getStatus())) {
+            return source + " " + sourceId + " 生成失败：" + firstText(batch.getErrorMessage(), "失败原因待确认");
+        }
+        if (QuestionRecommendationBatchStatus.SUCCESS.getCode().equals(batch.getStatus())) {
+            String generationRecord = batch.getAiCallLogId() == null ? "生成进度待补齐" : "生成结果已记录";
+            return source + " " + sourceId + " · " + generationRecord + " · " + firstText(batch.getQuestionCount() == null ? null : batch.getQuestionCount() + " 道推荐题", "题量待确认");
+        }
+        return source + " " + sourceId + " 正在生成，结果可信度待确认。";
+    }
+
+    private String itemTrustStatus(QuestionRecommendationItem item, QuestionRecommendationBatch batch, boolean canPractice) {
+        if (!canPractice) {
+            return TRUST_FALLBACK;
+        }
+        if (batch == null || batch.getAiCallLogId() == null) {
+            return TRUST_PARTIAL;
+        }
+        return StringUtils.hasText(item.getRecommendReason())
+                || StringUtils.hasText(item.getAnswerHint())
+                || StringUtils.hasText(item.getEvaluatePoints())
+                ? TRUST_VERIFIED
+                : TRUST_PARTIAL;
+    }
+
+    private String itemEvidenceSummary(QuestionRecommendationItem item, QuestionRecommendationBatch batch,
+                                       boolean canPractice) {
+        String source = batch == null ? "推荐来源" : sourceEvidenceLabel(batch.getSourceType());
+        String sourceId = batch == null || batch.getSourceId() == null ? "未绑定上下文" : "#" + batch.getSourceId();
+        String skill = firstText(item.getSkillName(), item.getSkillCode(), "未标注技能");
+        if (!canPractice) {
+            return source + " " + sourceId + " · " + skill + " · AI 推荐方向尚未匹配正式题库。";
+        }
+        String reason = firstText(item.getRecommendReason(), item.getAnswerHint(), item.getEvaluatePoints(), "已匹配正式题库，可直接练习。");
+        return source + " " + sourceId + " · " + skill + " · " + reason;
+    }
+
+    private String sourceEvidenceLabel(String sourceType) {
+        if (QuestionRecommendationSourceType.RESUME_JOB_MATCH.getCode().equals(sourceType)) {
+            return "来自简历匹配报告";
+        }
+        if (QuestionRecommendationSourceType.STUDY_PLAN.getCode().equals(sourceType)) {
+            return "来自学习计划";
+        }
+        if (QuestionRecommendationSourceType.JD_GAP.getCode().equals(sourceType)) {
+            return "来自能力画像/岗位要求短板";
+        }
+        return "来自推荐上下文";
     }
 
     private Map<String, Object> requestSnapshot(RecommendationRequest request) {
@@ -687,7 +951,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             }
         }
         throw new BusinessException(ErrorCode.PARAM_ERROR,
-                "Unsupported sourceType: " + sourceType + ". Supported sourceType values: JD_GAP, RESUME_JOB_MATCH, STUDY_PLAN");
+                "暂不支持该推荐题来源，请刷新页面后重试");
     }
 
     private String normalizeBatchStatus(String status) {
@@ -697,7 +961,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
                 return value;
             }
         }
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported status");
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持该推荐题状态筛选，请刷新页面后重试");
     }
 
     private int normalizeQuestionCount(Integer count) {
@@ -705,7 +969,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             return 5;
         }
         if (count < 1 || count > 20) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionCount must be between 1 and 20");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "题目数量需在 1 到 20 道之间");
         }
         return count;
     }
@@ -716,7 +980,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         }
         String value = difficulty.trim().toUpperCase(Locale.ROOT);
         if (!List.of("EASY", "MEDIUM", "HARD").contains(value)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported difficultyPreference");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持该难度偏好，请刷新页面后重试");
         }
         return value;
     }
@@ -758,12 +1022,12 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         try {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialization failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "推荐题生成记录暂时无法保存，请稍后重试");
         }
     }
 
     private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "Question recommendation generation failed";
+        String value = StringUtils.hasText(message) ? message : "推荐题生成暂时失败，请稍后重试";
         return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
     }
 
@@ -771,19 +1035,19 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         String message = ex.getMessage();
         String lowerMessage = StringUtils.hasText(message) ? message.toLowerCase(Locale.ROOT) : "";
         if (lowerMessage.contains("json") || lowerMessage.contains("parse")) {
-            return "AI question recommendation response is not valid JSON";
+            return "推荐题结果暂时无法整理，请稍后重试";
         }
         if (lowerMessage.contains("load balancer")
                 || lowerMessage.contains("codecoachai-ai")
                 || lowerMessage.contains("feign")
                 || lowerMessage.contains("connection")
                 || lowerMessage.contains("503")) {
-            return "AI question recommendation service is unavailable";
+            return "推荐题生成服务暂时不可用，请稍后重试";
         }
         if (ex instanceof BusinessException && StringUtils.hasText(message)) {
             return message;
         }
-        return "AI question recommendation service failed";
+        return "推荐题生成暂时失败，请稍后重试";
     }
 
     private String firstText(String... values) {
@@ -804,6 +1068,12 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return userId;
+    }
+
+    private void requireUserId(Long userId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请先登录后再生成推荐题");
+        }
     }
 
     private record RecommendationRequest(

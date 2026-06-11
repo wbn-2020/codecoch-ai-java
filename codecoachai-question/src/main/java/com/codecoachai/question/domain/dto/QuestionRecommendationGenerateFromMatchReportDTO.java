@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class QuestionRecommendationGenerateFromMatchReportDTO {
 
-    @NotNull(message = "matchReportId is required")
+    @NotNull(message = "请选择匹配报告")
     private Long matchReportId;
     private List<Long> gapItemIds;
     private Integer questionCount;

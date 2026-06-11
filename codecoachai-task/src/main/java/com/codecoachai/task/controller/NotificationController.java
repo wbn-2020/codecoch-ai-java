@@ -81,6 +81,9 @@ public class NotificationController {
         private Integer readStatus;
         private Integer isRead;
         private LocalDateTime readAt;
+        private String sendStatus;
+        private String sendError;
+        private LocalDateTime sentAt;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
 
@@ -98,6 +101,9 @@ public class NotificationController {
             vo.setReadStatus(notification.getReadStatus());
             vo.setIsRead(notification.getReadStatus());
             vo.setReadAt(notification.getReadAt());
+            vo.setSendStatus(notification.getSendStatus());
+            vo.setSendError(notification.getSendError());
+            vo.setSentAt(notification.getSentAt());
             vo.setCreatedAt(notification.getCreatedAt());
             vo.setUpdatedAt(notification.getUpdatedAt());
             return vo;

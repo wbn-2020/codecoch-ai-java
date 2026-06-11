@@ -14,6 +14,8 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class AdminPermissionGuard {
 
+    private static final String ADMIN_OVERVIEW_PERMISSION = "admin:system:overview";
+
     private final JdbcTemplate jdbcTemplate;
 
     public void require(String permissionCode) {
@@ -29,6 +31,9 @@ public class AdminPermissionGuard {
                 .toArray(String[]::new);
         if (codes.length == 0) {
             throw new BusinessException(ErrorCode.FORBIDDEN);
+        }
+        if (LoginUserContext.isAdmin() && codes.length == 1 && ADMIN_OVERVIEW_PERMISSION.equals(codes[0])) {
+            return;
         }
         Long userId = LoginUserContext.getUserId();
         Integer count = jdbcTemplate.queryForObject("""

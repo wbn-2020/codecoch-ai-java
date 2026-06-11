@@ -94,7 +94,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             if (ex instanceof BusinessException businessException) {
                 throw businessException;
             }
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File upload failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败，请稍后重试");
         }
     }
 
@@ -129,14 +129,14 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
 
     private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
         if (!StringUtils.hasText(fileInfo.getStoragePath())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "storage path is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息不完整，暂时无法下载");
         }
 
         Path root = normalizeRoot();
         Path target = root.resolve(fileInfo.getStoragePath()).normalize();
         ensureInsideRoot(root, target);
         if (!Files.isRegularFile(target)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可下载");
         }
 
         try {
@@ -157,19 +157,24 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                             .toString())
                     .body(bytes);
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
         }
     }
 
     @Override
     public PageResult<FileInfoVO> pageAdminFiles(AdminFileQueryDTO query) {
         AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
+        List<Long> parseStatusFileIds = resolveParseStatusFileIds(actualQuery);
+        if (parseStatusFileIds != null && parseStatusFileIds.isEmpty()) {
+            return PageResult.empty(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize()));
+        }
         Page<FileInfo> page = fileInfoMapper.selectPage(
                 Page.of(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize())),
                 new LambdaQueryWrapper<FileInfo>()
                         .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
                         .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
                         .eq(StringUtils.hasText(actualQuery.getStatus()), FileInfo::getStatus, actualQuery.getStatus())
+                        .in(parseStatusFileIds != null, FileInfo::getId, parseStatusFileIds)
                         .orderByDesc(FileInfo::getCreatedAt));
         List<FileInfoVO> records = page.getRecords().stream().map(this::toFileInfoVO).toList();
         fillResumeAnalysisStatus(records);
@@ -181,7 +186,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     public FileInfoVO getAdminFile(Long fileId) {
         FileInfo fileInfo = fileInfoMapper.selectById(fileId);
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可下载");
         }
         FileInfoVO vo = toFileInfoVO(fileInfo);
         try {
@@ -212,10 +217,10 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
 
     private FileInfo getAvailableFile(Long fileId, Long userId, String bizType) {
         if (fileId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少文件编号");
         }
         if (userId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少用户编号");
         }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
@@ -225,14 +230,14 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可下载");
         }
         return fileInfo;
     }
 
     private FileInfo getAvailableAdminFile(Long fileId) {
         if (fileId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "fileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少文件编号");
         }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
@@ -240,38 +245,38 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
         if (fileInfo == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file not found or not downloadable");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可下载");
         }
         return fileInfo;
     }
 
     private void validateBasic(MultipartFile file, String bizType, Long userId) {
         if (userId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少用户编号");
         }
         if (!StringUtils.hasText(bizType)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少文件业务类型");
         }
         if (file == null || file.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择要上传的文件");
         }
     }
 
     private void validateSize(MultipartFile file) {
         long maxBytes = properties.getMaxSizeMb() * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file size exceeds limit");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
         }
     }
 
     private String safeOriginalFilename(String originalFilename) {
         if (!StringUtils.hasText(originalFilename)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "filename is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少文件名");
         }
         String normalized = originalFilename.replace('\\', '/');
         String filename = normalized.substring(normalized.lastIndexOf('/') + 1);
         if (!StringUtils.hasText(filename) || filename.contains("..")) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid filename");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不合法");
         }
         return filename;
     }
@@ -279,7 +284,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     private String extractExtension(String filename) {
         int index = filename.lastIndexOf('.');
         if (index < 0 || index == filename.length() - 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file extension is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少文件扩展名");
         }
         return filename.substring(index + 1).toLowerCase(Locale.ROOT);
     }
@@ -290,21 +295,21 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                 .map(item -> item.toLowerCase(Locale.ROOT))
                 .anyMatch(fileExt::equals);
         if (!allowed) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件类型不支持");
         }
     }
 
     private Path normalizeRoot() {
         Path root = Path.of(properties.getRootPath()).toAbsolutePath().normalize();
         if (!StringUtils.hasText(root.toString())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "storage root is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储配置不完整");
         }
         return root;
     }
 
     private void ensureInsideRoot(Path root, Path target) {
         if (!target.startsWith(root)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "invalid storage path");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储路径不合法");
         }
     }
 
@@ -379,6 +384,19 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             }
         } catch (RuntimeException ex) {
             log.warn("Failed to fill resume analysis status for fileIds={}", resumeFileIds, ex);
+        }
+    }
+
+    private List<Long> resolveParseStatusFileIds(AdminFileQueryDTO query) {
+        if (query == null || !StringUtils.hasText(query.getParseStatus())) {
+            return null;
+        }
+        String parseStatus = query.getParseStatus().trim().toUpperCase(Locale.ROOT);
+        try {
+            return fileInfoMapper.selectLatestResumeFileIdsByParseStatus(parseStatus);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to resolve resume file ids by parseStatus={}", parseStatus, ex);
+            return List.of();
         }
     }
 

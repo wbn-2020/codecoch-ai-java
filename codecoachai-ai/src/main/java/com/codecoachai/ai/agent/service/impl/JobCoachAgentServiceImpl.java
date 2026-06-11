@@ -26,6 +26,7 @@ import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
+import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
@@ -39,6 +40,7 @@ import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -47,10 +49,12 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 @Service
@@ -72,13 +76,13 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private final AgentOutputValidator agentOutputValidator;
     private final AiCallLogService aiCallLogService;
     private final ObjectMapper objectMapper;
+    private final AgentMqDispatcher agentMqDispatcher;
+    private final TransactionTemplate transactionTemplate;
 
     @Override
     public DailyPlanVO generateDailyPlan(Long userId, DailyPlanGenerateDTO dto) {
-        DailyPlanGenerateDTO request = dto == null ? new DailyPlanGenerateDTO() : dto;
-        LocalDate planDate = request.getDate() == null ? LocalDate.now() : request.getDate();
-        int taskCount = valueOrDefault(request.getTaskCount(), DEFAULT_TASK_COUNT);
-        int maxTotalMinutes = valueOrDefault(request.getMaxTotalMinutes(), DEFAULT_MAX_TOTAL_MINUTES);
+        DailyPlanGenerateDTO request = normalizeDailyPlanRequest(dto);
+        LocalDate planDate = request.getDate();
         if (!Boolean.TRUE.equals(request.getForceRegenerate())) {
             AgentRun existing = latestVisibleRun(userId, request.getTargetJobId(), planDate);
             if (existing != null && AgentRunStatusEnum.SUCCESS.name().equals(existing.getStatus())) {
@@ -93,10 +97,38 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             }
         }
 
-        long start = System.currentTimeMillis();
         AgentRun run = createRun(userId, request.getTargetJobId(), planDate);
+        MqDispatchReceipt receipt = agentMqDispatcher.dispatchDailyPlanWithReceipt(run.getId(), userId, request);
+        if (receipt != null) {
+            return withAsyncReceipt(toDailyPlan(agentRunMapper.selectById(run.getId())), receipt);
+        }
+        return executeDailyPlanRun(userId, run, request);
+    }
+
+    @Override
+    public DailyPlanVO executeDailyPlan(Long userId, Long runId, DailyPlanGenerateDTO dto) {
+        AgentRun run = agentRunMapper.selectById(runId);
+        if (run == null || !userId.equals(run.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, AgentErrorCode.RUN_NOT_FOUND);
+        }
+        if (AgentRunStatusEnum.SUCCESS.name().equals(run.getStatus())) {
+            return toDailyPlan(run);
+        }
+        DailyPlanGenerateDTO request = normalizeDailyPlanRequest(dto);
+        request.setDate(run.getPlanDate());
+        if (request.getTargetJobId() == null) {
+            request.setTargetJobId(run.getTargetJobId());
+        }
+        return executeDailyPlanRun(userId, run, request);
+    }
+
+    private DailyPlanVO executeDailyPlanRun(Long userId, AgentRun run, DailyPlanGenerateDTO request) {
+        long start = System.currentTimeMillis();
+        prepareRunForExecution(run);
         try {
-            JobCoachAgentContext context = agentContextBuilder.build(userId, request.getTargetJobId(), planDate);
+            int taskCount = valueOrDefault(request.getTaskCount(), DEFAULT_TASK_COUNT);
+            int maxTotalMinutes = valueOrDefault(request.getMaxTotalMinutes(), DEFAULT_MAX_TOTAL_MINUTES);
+            JobCoachAgentContext context = agentContextBuilder.build(userId, request.getTargetJobId(), request.getDate());
             run.setTargetJobId(context.getTargetJobId());
             agentRunMapper.updateById(run);
 
@@ -110,15 +142,18 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             RouteResult routeResult = callAi(userId, run, prompt);
             DailyPlanResult planResult = agentOutputParser.parseDailyPlan(routeResult.getContent());
             agentOutputValidator.validateDailyPlan(planResult, candidates, taskCount, maxTotalMinutes);
-            saveTasks(userId, run, planResult, candidates);
-            markSuccess(run, planResult, routeResult, System.currentTimeMillis() - start);
-            return toDailyPlan(agentRunMapper.selectById(run.getId()));
+            return transactionTemplate.execute(status -> {
+                clearRunTasks(run);
+                saveTasks(userId, run, planResult, candidates);
+                markSuccess(run, planResult, routeResult, System.currentTimeMillis() - start);
+                return toDailyPlan(agentRunMapper.selectById(run.getId()));
+            });
         } catch (BusinessException ex) {
             String errorCode = agentErrorCode(ex.getMessage());
-            markFailed(run, errorCode, ex.getMessage(), System.currentTimeMillis() - start);
+            markFailed(run, errorCode, friendlyAgentErrorMessage(errorCode, ex.getMessage()), System.currentTimeMillis() - start);
             throw new BusinessException(ex.getCode(), friendlyAgentErrorMessage(errorCode, ex.getMessage()));
         } catch (RuntimeException ex) {
-            markFailed(run, AgentErrorCode.AI_CALL_FAILED, firstText(ex.getMessage(), "AI call failed"),
+            markFailed(run, AgentErrorCode.AI_CALL_FAILED, friendlyAgentErrorMessage(AgentErrorCode.AI_CALL_FAILED, ex.getMessage()),
                     System.currentTimeMillis() - start);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                     friendlyAgentErrorMessage(AgentErrorCode.AI_CALL_FAILED, ex.getMessage()));
@@ -304,6 +339,30 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         return run;
     }
 
+    private DailyPlanGenerateDTO normalizeDailyPlanRequest(DailyPlanGenerateDTO dto) {
+        DailyPlanGenerateDTO request = dto == null ? new DailyPlanGenerateDTO() : dto;
+        if (request.getDate() == null) {
+            request.setDate(LocalDate.now());
+        }
+        if (request.getTaskCount() == null) {
+            request.setTaskCount(DEFAULT_TASK_COUNT);
+        }
+        if (request.getMaxTotalMinutes() == null) {
+            request.setMaxTotalMinutes(DEFAULT_MAX_TOTAL_MINUTES);
+        }
+        return request;
+    }
+
+    private void prepareRunForExecution(AgentRun run) {
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+        run.setStartedAt(LocalDateTime.now());
+        run.setFinishedAt(null);
+        run.setDurationMs(null);
+        run.setErrorCode(null);
+        run.setErrorMessage(null);
+        agentRunMapper.updateById(run);
+    }
+
     private RouteResult callAi(Long userId, AgentRun run, PromptRenderResult prompt) {
         AiCallContext ctx = new AiCallContext();
         ctx.setScene(AgentPromptBuilderImpl.PROMPT_TYPE);
@@ -319,6 +378,15 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         ctx.setResponseFormat("JSON");
         ctx.setRequestBody(run.getInputSnapshotJson());
         return aiCallLogService.callAndLog(ctx);
+    }
+
+    private void clearRunTasks(AgentRun run) {
+        agentTaskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
+                .eq(AgentTask::getAgentRunId, run.getId())
+                .eq(AgentTask::getUserId, run.getUserId())
+                .eq(AgentTask::getDeleted, 0)
+                .set(AgentTask::getDeleted, 1)
+                .set(AgentTask::getUpdatedAt, LocalDateTime.now()));
     }
 
     private void saveTasks(Long userId, AgentRun run, DailyPlanResult planResult, List<CandidateTask> candidates) {
@@ -348,6 +416,17 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             task.setSortOrder(++order);
             agentTaskMapper.insert(task);
         }
+    }
+
+    private DailyPlanVO withAsyncReceipt(DailyPlanVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return vo;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        return vo;
     }
 
     private void markSuccess(AgentRun run, DailyPlanResult planResult, RouteResult routeResult, long durationMs) {
@@ -586,7 +665,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialize failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, AgentErrorCode.OUTPUT_PARSE_FAILED);
         }
     }
 
@@ -640,13 +719,20 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         if (AgentErrorCode.TASK_STATUS_INVALID.equals(errorCode)) {
             return "任务状态已经变化，请刷新后重试。";
         }
-        if (StringUtils.hasText(rawMessage) && !rawMessage.trim().startsWith("AGENT_")) {
+        if (StringUtils.hasText(rawMessage)) {
             String value = rawMessage.trim();
-            if (!value.equalsIgnoreCase("AI call failed") && !value.equalsIgnoreCase("JSON serialize failed")) {
+            if (!isInternalAgentFailureMessage(value)) {
                 return value;
             }
         }
         return "AI 生成暂时失败，请稍后重试。";
+    }
+
+    private boolean isInternalAgentFailureMessage(String value) {
+        String normalized = value.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("agent_")
+                || (normalized.contains("ai") && normalized.contains("call") && normalized.contains("failed"))
+                || (normalized.contains("json") && normalized.contains("serialize") && normalized.contains("failed"));
     }
 
     private String truncate(String text, int max) {

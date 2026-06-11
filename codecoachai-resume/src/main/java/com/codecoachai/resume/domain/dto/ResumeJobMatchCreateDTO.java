@@ -6,10 +6,10 @@ import lombok.Data;
 @Data
 public class ResumeJobMatchCreateDTO {
 
-    @NotNull(message = "resumeId is required")
+    @NotNull(message = "请选择简历")
     private Long resumeId;
 
-    @NotNull(message = "targetJobId is required")
+    @NotNull(message = "请选择目标岗位")
     private Long targetJobId;
 
     private Boolean forceRefresh;

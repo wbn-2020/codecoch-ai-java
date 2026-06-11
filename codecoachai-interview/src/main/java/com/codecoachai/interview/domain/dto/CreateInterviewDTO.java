@@ -20,5 +20,8 @@ public class CreateInterviewDTO {
     private String industryDirection;
     private String difficulty;
     private String interviewerStyle;
+    private String practiceMode;
+    private String recommendationSource;
+    private String recommendationReason;
     private Boolean basedOnResume;
 }

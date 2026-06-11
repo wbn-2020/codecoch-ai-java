@@ -6,6 +6,6 @@ import lombok.Data;
 @Data
 public class StudyTaskStatusUpdateDTO {
 
-    @NotBlank(message = "taskStatus is required")
+    @NotBlank(message = "请选择学习任务状态")
     private String taskStatus;
 }

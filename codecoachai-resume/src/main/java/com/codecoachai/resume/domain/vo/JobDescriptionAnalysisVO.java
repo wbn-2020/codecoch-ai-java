@@ -23,8 +23,12 @@ public class JobDescriptionAnalysisVO {
     private JsonNode interviewFocusPoints;
     private JsonNode skillWeights;
     private String summary;
-    private JsonNode rawResult;
     private Long aiCallLogId;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
     private String parseStatus;
     private String parseErrorMessage;
     private LocalDateTime createdAt;

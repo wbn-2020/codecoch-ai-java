@@ -29,6 +29,12 @@ public interface TargetJobService {
 
     JobDescriptionAnalysisVO parseJobDescription(Long id, JobDescriptionParseDTO dto);
 
+    JobDescriptionAnalysisVO submitJobDescriptionParse(Long id, JobDescriptionParseDTO dto);
+
+    JobDescriptionAnalysisVO parseJobDescriptionForUser(Long id, Long userId, JobDescriptionParseDTO dto);
+
+    JobDescriptionAnalysisVO executeJobDescriptionParseForUser(Long id, Long userId, JobDescriptionParseDTO dto);
+
     JobDescriptionAnalysisVO getAnalysis(Long id);
 
     JobDescriptionAnalysisVO getAnalysisForUser(Long id, Long userId);

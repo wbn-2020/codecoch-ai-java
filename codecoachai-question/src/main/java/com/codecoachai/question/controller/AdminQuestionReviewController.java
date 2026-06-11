@@ -44,6 +44,14 @@ public class AdminQuestionReviewController {
         return Result.success(questionReviewService.generate(dto));
     }
 
+    @OperationLog(module = "question", action = "SUBMIT_AI_QUESTION_GENERATE", description = "Submit AI question draft generation task", logResponse = false)
+    @PostMapping("/admin/ai/questions/generate/submit")
+    @Operation(summary = "Submit AI question draft generation task", description = "Admin endpoint. The task enters async_task and generated drafts are saved to question_review after completion.")
+    public Result<AiQuestionGenerateResultVO> submitGenerate(@Valid @RequestBody AiQuestionGenerateRequestDTO dto) {
+        adminPermissionGuard.require(PERM_QUESTION_GENERATE);
+        return Result.success(questionReviewService.submitGenerate(dto));
+    }
+
     @GetMapping("/admin/question-reviews")
     @Operation(summary = "Page AI question review drafts", description = "Admin endpoint for the question_review pool.")
     public Result<PageResult<QuestionReviewListVO>> pageReviews(QuestionReviewQueryDTO query) {
