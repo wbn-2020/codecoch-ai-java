@@ -19,7 +19,7 @@ public class ResumeTextExtractorDispatcher {
 
     public String extract(String fileExt, byte[] content) {
         if (content == null || content.length == 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file content is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容为空，请更换文件后重试");
         }
         ResumeTextExtractor extractor = extractors.stream()
                 .filter(item -> item.supports(fileExt))
@@ -27,7 +27,7 @@ public class ResumeTextExtractorDispatcher {
                 .orElseThrow(() -> new BusinessException(ErrorCode.PARAM_ERROR, "unsupported resume file type"));
         String text = extractor.extract(content);
         if (!StringUtils.hasText(text)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "extracted resume text is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "未能提取到简历正文，请更换文件或转为文本后重试");
         }
         return truncateIfNecessary(text.trim(), fileExt);
     }

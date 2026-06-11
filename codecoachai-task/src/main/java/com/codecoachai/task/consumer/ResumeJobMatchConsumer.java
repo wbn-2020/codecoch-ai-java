@@ -58,7 +58,7 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
             Result<ResumeJobMatchSubmitVO> response = resumeFeignClient.executeJobMatchReport(payload.getReportId());
             if (response == null || response.getCode() != 0 || response.getData() == null) {
                 if (response != null && isBusinessFailure(response.getCode())) {
-                    throw new NonRetryableMqException("resume job match execute failed: " + response.getMessage());
+                    throw new TerminalTaskFailureException("resume job match execute failed: " + response.getMessage());
                 }
                 throw new RuntimeException("resume job match execute returned invalid result: "
                         + (response == null ? "null" : response.getMessage()));
@@ -69,7 +69,7 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
                 String reason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "resume job match report failed";
-                asyncTaskService.markFailed(envelope.getMessageId(), reason);
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
                 notifyFailed(payload, reason);
                 log.warn("Resume job match report failed reportId={} reason={}", payload.getReportId(), reason);
                 return;
@@ -79,6 +79,10 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
             notificationService.notifyTaskDone(payload.getUserId(), "RESUME_JOB_MATCH",
                     String.valueOf(payload.getReportId()), "简历匹配报告已生成", "您的简历岗位匹配报告已生成完毕，请查看");
             log.info("Resume job match task completed reportId={}", payload.getReportId());
+        } catch (TerminalTaskFailureException ex) {
+            log.warn("Resume job match task terminal failed messageId={}", envelope.getMessageId(), ex);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
+            notifyFailed(envelope.getPayload(), ex.getMessage());
         } catch (NonRetryableMqException ex) {
             log.error("Resume job match task is not retryable messageId={}", envelope.getMessageId(), ex);
             asyncTaskService.markDead(envelope, ex.getMessage());
@@ -105,5 +109,11 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private static class TerminalTaskFailureException extends RuntimeException {
+        private TerminalTaskFailureException(String message) {
+            super(message);
+        }
     }
 }

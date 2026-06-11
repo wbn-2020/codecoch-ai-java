@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class QuestionRelationCreateDTO {
 
-    @NotNull(message = "targetQuestionId is required")
+    @NotNull(message = "请选择要关联的题目")
     private Long targetQuestionId;
 
     private String relationType;

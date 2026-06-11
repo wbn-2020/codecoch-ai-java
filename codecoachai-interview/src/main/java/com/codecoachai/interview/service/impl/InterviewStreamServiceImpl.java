@@ -296,7 +296,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .type("error")
                 .requestId(requestId)
                 .code(code)
-                .message("Streaming failed. Please retry later.")
+                .message("流式生成失败，请稍后重试。")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }
@@ -417,7 +417,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .requestId(requestId)
                 .interviewId(interviewId)
                 .sessionId(interviewId)
-                .message("interview answer review started")
+                .message("面试回答点评开始生成")
                 .build());
     }
 
@@ -469,7 +469,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .sessionId(interviewId)
                 .messageId(answer.getEvaluationMessageId())
                 .aiCallLogId(answer.getAiCallLogId())
-                .message("AI review metadata")
+                .message("AI 点评结果元数据")
                 .metadata(metadata)
                 .build())) {
             return;
@@ -498,7 +498,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .sessionId(interviewId)
                 .messageId(answer.getEvaluationMessageId())
                 .aiCallLogId(answer.getAiCallLogId())
-                .message("AI review completed")
+                .message("AI 点评生成完成")
                 .result(doneResult(answer))
                 .metadata(answerMetadata(answer))
                 .build())) {
@@ -513,7 +513,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .interviewId(interviewId)
                 .sessionId(interviewId)
                 .code("INTERVIEW_ANSWER_REVIEW_FAILED")
-                .message("AI review failed. Please retry later.")
+                .message("AI 点评生成失败，请稍后重试。")
                 .build())) {
             SseEmitterUtils.complete(emitter, active);
         }

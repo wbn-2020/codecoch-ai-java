@@ -6,6 +6,6 @@ import lombok.Data;
 @Data
 public class UpdateMasteryDTO {
 
-    @NotBlank(message = "masteryStatus is required")
+    @NotBlank(message = "请选择掌握状态")
     private String masteryStatus;
 }

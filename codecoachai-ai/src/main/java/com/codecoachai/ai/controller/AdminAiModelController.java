@@ -136,7 +136,7 @@ public class AdminAiModelController {
     private void apply(AiModelConfig entity, AiModelConfigSaveDTO dto) {
         String modelCode = dto == null ? null : (StringUtils.hasText(dto.getModelCode()) ? dto.getModelCode() : dto.getModelName());
         if (dto == null || !StringUtils.hasText(dto.getProvider()) || !StringUtils.hasText(modelCode)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "provider and modelCode are required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "供应商和模型标识不能为空");
         }
         entity.setProvider(dto.getProvider().trim());
         entity.setModelCode(modelCode.trim());
@@ -160,7 +160,7 @@ public class AdminAiModelController {
     private AiModelConfig get(Long id) {
         AiModelConfig entity = mapper.selectById(id);
         if (entity == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI model config not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "模型配置不存在或已不可用");
         }
         return entity;
     }
@@ -185,7 +185,7 @@ public class AdminAiModelController {
             return apiKeyEncryptor.encrypt(apiKey);
         } catch (IllegalStateException ex) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
-                    "AI model apiKey encryption key is not configured or invalid");
+                    "模型密钥加密配置不可用，请先检查运行环境配置");
         }
     }
 

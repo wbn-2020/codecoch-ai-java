@@ -3,6 +3,9 @@ package com.codecoachai.user.controller;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.user.domain.vo.V3DashboardVO;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -23,7 +26,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/dashboard/v3")
 public class V3DashboardController {
 
+    private static final String TRUST_VERIFIED = "VERIFIED";
+    private static final String TRUST_PARTIAL = "PARTIAL";
+    private static final String TRUST_FALLBACK = "FALLBACK";
+
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
     private final ThreadLocal<List<String>> governanceTips = ThreadLocal.withInitial(ArrayList::new);
 
     @GetMapping({"", "/"})
@@ -113,13 +121,16 @@ public class V3DashboardController {
             targetFilter = " AND target_job_id = ?";
             args.add(targetJobId);
         }
+        String rawResultExpr = columnExists("resume_job_match_report", "raw_result_json")
+                ? "raw_result_json"
+                : "NULL AS raw_result_json";
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT id, resume_id, target_job_id, overall_score, status, summary, updated_at
+                SELECT id, resume_id, target_job_id, overall_score, status, summary, %s, updated_at
                 FROM resume_job_match_report
                 WHERE deleted = 0 AND user_id = ?%s
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1
-                """.formatted(targetFilter), args.toArray());
+                """.formatted(rawResultExpr, targetFilter), args.toArray());
         if (rows.isEmpty()) {
             return null;
         }
@@ -131,6 +142,12 @@ public class V3DashboardController {
         vo.setOverallScore(intValue(row.get("overall_score")));
         vo.setStatus(stringValue(row.get("status")));
         vo.setSummary(stringValue(row.get("summary")));
+        String rawResultJson = stringValue(row.get("raw_result_json"));
+        JsonNode rawResult = parseRawResult(rawResultJson);
+        vo.setTrustStatus(matchTrustStatus(rawResult, vo.getStatus()));
+        vo.setFallback(matchFallback(rawResult, vo.getStatus()));
+        vo.setSchemaWarningCount(matchSchemaWarningCount(rawResult, vo.getStatus()));
+        vo.setEvidenceSummary(matchEvidenceSummary(vo));
         vo.setUpdatedAt(dateTime(row.get("updated_at")));
         return vo;
     }
@@ -247,12 +264,18 @@ public class V3DashboardController {
                 FROM question_recommendation_batch
                 WHERE deleted = 0 AND user_id = ?%s
                 ORDER BY updated_at DESC, id DESC
-                LIMIT 1
+                LIMIT 10
                 """.formatted(targetSelect, targetFilter), args.toArray());
         if (rows.isEmpty()) {
             return null;
         }
-        Map<String, Object> row = rows.get(0);
+        Map<String, Object> row = rows.stream()
+                .filter(candidate -> hasTrustedRecommendationEvidence(userId, candidate))
+                .findFirst()
+                .orElse(null);
+        if (row == null) {
+            return null;
+        }
         Long batchId = longValue(row.get("id"));
         Long itemCount = tableExists("question_recommendation_item")
                 ? queryLong("""
@@ -285,6 +308,46 @@ public class V3DashboardController {
         vo.setPendingPracticeCount(Math.max(0L, (vo.getQuestionCount() == null ? 0L : vo.getQuestionCount()) - vo.getCanPracticeCount()));
         vo.setUpdatedAt(dateTime(row.get("updated_at")));
         return vo;
+    }
+
+    private boolean hasTrustedRecommendationEvidence(Long userId, Map<String, Object> row) {
+        Long matchReportId = longValue(row.get("match_report_id"));
+        Long sourceId = longValue(row.get("source_id"));
+        String sourceType = stringValue(row.get("source_type"));
+        boolean matchReportSource = isMatchReportSourceType(sourceType);
+        Long evidenceReportId = matchReportId != null ? matchReportId : matchReportSourceId(sourceType, sourceId);
+        if (matchReportSource && evidenceReportId == null) {
+            return false;
+        }
+        return evidenceReportId == null || isTrustedMatchReportId(userId, evidenceReportId);
+    }
+
+    private Long matchReportSourceId(String sourceType, Long sourceId) {
+        return sourceId != null && isMatchReportSourceType(sourceType) ? sourceId : null;
+    }
+
+    private boolean isMatchReportSourceType(String sourceType) {
+        if (!StringUtils.hasText(sourceType)) {
+            return false;
+        }
+        String normalized = sourceType.trim().toUpperCase();
+        return "RESUME_JOB_MATCH".equals(normalized) || "MATCH_REPORT".equals(normalized);
+    }
+
+    private boolean isTrustedMatchReportId(Long userId, Long matchReportId) {
+        if (userId == null || matchReportId == null || !tableExists("resume_job_match_report")) {
+            return false;
+        }
+        String rawResultExpr = columnExists("resume_job_match_report", "raw_result_json")
+                ? "raw_result_json"
+                : "NULL AS raw_result_json";
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT status, %s
+                FROM resume_job_match_report
+                WHERE deleted = 0 AND user_id = ? AND id = ?
+                LIMIT 1
+                """.formatted(rawResultExpr), userId, matchReportId);
+        return !rows.isEmpty() && isTrustedSuccessfulMatch(rows.get(0));
     }
 
     private V3DashboardVO.RecentInterviewVO recentInterview(Long userId, Long targetJobId) {
@@ -394,15 +457,28 @@ public class V3DashboardController {
         List<V3DashboardVO.NextActionVO> actions = new ArrayList<>();
         appendReportActions(actions, vo);
         if (vo.getCurrentTargetJob() == null) {
-            actions.add(action("CREATE_TARGET_JOB", "创建目标岗位", "先录入目标岗位和 JD，才能开启 V3 闭环。", "/job-targets", 1));
+            actions.add(action("CREATE_TARGET_JOB", "创建目标岗位", "先录入目标岗位和岗位描述，才能开启求职训练闭环。", "/job-targets", 1));
         } else if (vo.getLatestMatch() == null) {
-            actions.add(action("RUN_MATCH", "生成简历-JD 匹配报告", "用当前简历和目标 JD 生成匹配度与差距。", "/resume-job-match", 1));
+            actions.add(action("RUN_MATCH", "生成岗位匹配报告", "用当前简历和目标岗位描述生成匹配度与差距。", "/resume-job-match", 1));
+        } else if (!isTrustedSuccessfulMatch(vo.getLatestMatch())) {
+            V3DashboardVO.MatchSummaryVO match = vo.getLatestMatch();
+            String status = StringUtils.hasText(match.getStatus()) ? match.getStatus().toUpperCase() : "";
+            if ("FAILED".equals(status)) {
+                actions.add(action("RETRY_MATCH", "查看失败并重新生成", "上次匹配报告生成失败，先恢复匹配结果再进入能力画像、推荐题和模拟面试。",
+                        matchReportPath(match), 1));
+            } else if ("SUCCESS".equals(status)) {
+                actions.add(action("REVIEW_MATCH_EVIDENCE", "复核匹配报告证据", "匹配报告已生成，但证据可信度待复核；复核或重新生成前不会作为训练、推荐题或模拟面试依据。",
+                        matchReportPath(match), 1));
+            } else {
+                actions.add(action("VIEW_MATCH_PROGRESS", "查看匹配生成进度", "匹配报告未成功前不会作为训练证据，可先查看生成进度。",
+                        matchReportPath(match), 1));
+            }
         } else if (vo.getSkillProfile() == null) {
             actions.add(action("GENERATE_PROFILE", "生成能力画像", "把匹配报告转成可训练的能力短板。", "/skill-profiles", 1));
         } else if (vo.getStudyProgress() == null || vo.getStudyProgress().getActivePlanId() == null) {
             actions.add(action("GENERATE_PLAN", "生成学习计划", "基于能力短板安排每日训练任务。", "/study-plans", 1));
         } else {
-            actions.add(action("START_INTERVIEW", "开始目标岗位模拟面试", "用当前 JD 和短板上下文进行针对性面试。", "/interviews/create?source=job-target", 1));
+            actions.add(action("START_INTERVIEW", "开始目标岗位模拟面试", "用当前岗位要求和能力短板进行针对性面试。", "/interviews/create?source=job-target", 1));
         }
         actions.add(action("REVIEW_GAPS", "复盘能力短板", "查看最新能力画像和面试报告回流弱项。", "/skill-profiles", 2));
         return actions;
@@ -462,10 +538,128 @@ public class V3DashboardController {
         if (vo.getSkillProfile() != null && vo.getSkillProfile().getProfileId() != null) {
             return "/questions/recommendations?source=gap&sourceId=" + vo.getSkillProfile().getProfileId();
         }
-        if (vo.getLatestMatch() != null && vo.getLatestMatch().getReportId() != null) {
+        if (isTrustedSuccessfulMatch(vo.getLatestMatch()) && vo.getLatestMatch().getReportId() != null) {
             return "/questions/recommendations?source=matchReport&sourceId=" + vo.getLatestMatch().getReportId();
         }
         return "/questions/recommendations";
+    }
+
+    private boolean isTrustedSuccessfulMatch(Map<String, Object> row) {
+        if (row == null) {
+            return false;
+        }
+        String status = stringValue(row.get("status"));
+        String rawResultJson = stringValue(row.get("raw_result_json"));
+        JsonNode rawResult = parseRawResult(rawResultJson);
+        V3DashboardVO.MatchSummaryVO match = new V3DashboardVO.MatchSummaryVO();
+        match.setStatus(status);
+        match.setTrustStatus(matchTrustStatus(rawResult, status));
+        match.setFallback(matchFallback(rawResult, status));
+        match.setSchemaWarningCount(matchSchemaWarningCount(rawResult, status));
+        return isTrustedSuccessfulMatch(match);
+    }
+
+    private boolean isTrustedSuccessfulMatch(V3DashboardVO.MatchSummaryVO match) {
+        return match != null
+                && "SUCCESS".equalsIgnoreCase(String.valueOf(match.getStatus()))
+                && TRUST_VERIFIED.equals(normalizeTrustStatus(match.getTrustStatus()))
+                && !Boolean.TRUE.equals(match.getFallback())
+                && Integer.valueOf(0).equals(match.getSchemaWarningCount());
+    }
+
+    private JsonNode parseRawResult(String rawResultJson) {
+        if (!StringUtils.hasText(rawResultJson)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(rawResultJson);
+        } catch (JsonProcessingException ex) {
+            addGovernanceTip("匹配报告结构读取受限，部分推荐依据暂不可用："
+                    + ex.getClass().getSimpleName());
+            return null;
+        }
+    }
+
+    private String matchTrustStatus(JsonNode rawResult, String status) {
+        String normalizedStatus = StringUtils.hasText(status) ? status.trim().toUpperCase() : "";
+        if ("FAILED".equals(normalizedStatus)) {
+            return TRUST_FALLBACK;
+        }
+        if (!"SUCCESS".equals(normalizedStatus)) {
+            return TRUST_PARTIAL;
+        }
+        if (rawResult == null) {
+            return TRUST_PARTIAL;
+        }
+        if (rawResult.path("fallback").asBoolean(false)) {
+            return TRUST_FALLBACK;
+        }
+        if (matchSchemaWarningCount(rawResult, status) > 0) {
+            return TRUST_PARTIAL;
+        }
+        String value = normalizeTrustStatus(textValue(rawResult, "trustStatus"));
+        if (TRUST_VERIFIED.equals(value) || TRUST_PARTIAL.equals(value) || TRUST_FALLBACK.equals(value)) {
+            return value;
+        }
+        return TRUST_PARTIAL;
+    }
+
+    private Boolean matchFallback(JsonNode rawResult, String status) {
+        String normalizedStatus = StringUtils.hasText(status) ? status.trim().toUpperCase() : "";
+        if ("FAILED".equals(normalizedStatus)) {
+            return true;
+        }
+        if (!"SUCCESS".equals(normalizedStatus)) {
+            return false;
+        }
+        return rawResult == null
+                || rawResult.path("fallback").asBoolean(false)
+                || TRUST_FALLBACK.equals(normalizeTrustStatus(textValue(rawResult, "trustStatus")))
+                || matchSchemaWarningCount(rawResult, status) > 0;
+    }
+
+    private Integer matchSchemaWarningCount(JsonNode rawResult, String status) {
+        if (rawResult == null) {
+            return "SUCCESS".equalsIgnoreCase(String.valueOf(status)) ? 1 : 0;
+        }
+        JsonNode warnings = rawResult.path("schemaWarnings");
+        return warnings.isArray() ? warnings.size() : 0;
+    }
+
+    private String matchEvidenceSummary(V3DashboardVO.MatchSummaryVO match) {
+        if (match == null) {
+            return "匹配报告缺少上下文证据。";
+        }
+        String resumeLabel = match.getResumeId() == null ? "简历来源待确认" : "已绑定简历";
+        String targetJobLabel = match.getTargetJobId() == null ? "目标岗位待确认" : "已绑定目标岗位";
+        String context = "来自" + resumeLabel + "与" + targetJobLabel;
+        String status = StringUtils.hasText(match.getStatus()) ? match.getStatus().toUpperCase() : "";
+        if ("FAILED".equals(status)) {
+            return context + "，匹配生成失败，需重新生成后再使用。";
+        }
+        if ("SUCCESS".equals(status)) {
+            if (isTrustedSuccessfulMatch(match)) {
+                return context + "，已通过证据核验，可用于能力画像、推荐题和模拟面试。";
+            }
+            return context + "，报告已生成但证据待复核，不会作为训练或面试推荐依据。";
+        }
+        return context + "，报告生成中，暂不作为训练依据。";
+    }
+
+    private String normalizeTrustStatus(String value) {
+        return StringUtils.hasText(value) ? value.trim().toUpperCase() : null;
+    }
+
+    private String textValue(JsonNode node, String fieldName) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        JsonNode value = node.path(fieldName);
+        return value.isMissingNode() || value.isNull() ? null : value.asText(null);
+    }
+
+    private String matchReportPath(V3DashboardVO.MatchSummaryVO match) {
+        return match != null && match.getReportId() != null ? "/resume-match/" + match.getReportId() : "/resume-match";
     }
 
     private String studyPlanPath(V3DashboardVO vo, V3DashboardVO.RecentReportVO report) {
@@ -509,11 +703,11 @@ public class V3DashboardController {
                     Long.class, tableName);
             boolean exists = count != null && count > 0;
             if (!exists) {
-                addGovernanceTip("degraded: missing table " + tableName + ", related dashboard block is unavailable");
+                addGovernanceTip("后台数据表缺失：" + tableName + "，相关首页模块暂不可用");
             }
             return exists;
         } catch (DataAccessException ex) {
-            addGovernanceTip("degraded: unable to inspect table " + tableName + ", " + ex.getClass().getSimpleName());
+            addGovernanceTip("后台数据表状态读取失败：" + tableName + "，" + ex.getClass().getSimpleName());
             return false;
         }
     }
@@ -525,7 +719,7 @@ public class V3DashboardController {
                     Long.class, tableName, columnName);
             return count != null && count > 0;
         } catch (DataAccessException ex) {
-            addGovernanceTip("degraded: unable to inspect column " + tableName + "." + columnName + ", " + ex.getClass().getSimpleName());
+            addGovernanceTip("后台字段状态读取失败：" + tableName + "." + columnName + "，" + ex.getClass().getSimpleName());
             return false;
         }
     }

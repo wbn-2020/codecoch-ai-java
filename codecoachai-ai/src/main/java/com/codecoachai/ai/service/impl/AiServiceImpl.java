@@ -79,6 +79,8 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
+    private static final String TRUST_VERIFIED = "VERIFIED";
+    private static final String TRUST_PARTIAL = "PARTIAL";
     private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
     private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
     private static final List<String> RESUME_MATCH_FACT_TERMS = List.of(
@@ -164,7 +166,7 @@ public class AiServiceImpl implements AiService {
             if (ex instanceof BusinessException businessException) {
                 throw businessException;
             }
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "AI question generation failed"));
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "题目生成失败，请稍后重试"));
         }
     }
 
@@ -231,7 +233,7 @@ public class AiServiceImpl implements AiService {
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
             fallback.setAiCallLogId(logId);
             fallback.setRawResponse(null);
-            fallback.setSummary("AI 点评暂时未通过主题或语言校验，系统已生成基础中文点评。建议先对照参考答案补齐核心概念、适用场景和边界条件。");
+            fallback.setSummary("本次点评不够贴合题目，已生成基础中文建议。建议先对照参考答案补齐核心概念、适用场景和边界条件。");
             fallback.setComment(fallback.getSummary());
             return fallback;
         }
@@ -259,7 +261,7 @@ public class AiServiceImpl implements AiService {
             }
             if (Boolean.TRUE.equals(vo.getFollowUpValid()) && isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
                 vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
-                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "AI 追问无效，使用本地兜底追问")));
+                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "追问内容不够贴合，已改用通用追问")));
                 vo.setFollowUpValid(true);
             }
             vo.setAiCallLogId(logId);
@@ -297,7 +299,7 @@ public class AiServiceImpl implements AiService {
             }
             if (isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
                 vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
-                vo.setReason(markFallback(firstText(vo.getReason(), "AI 追问无效，使用本地兜底追问")));
+                vo.setReason(markFallback(firstText(vo.getReason(), "追问内容不够贴合，已改用通用追问")));
                 vo.setRelatedToOriginalQuestion(true);
                 vo.setFollowUpValid(true);
             }
@@ -309,7 +311,7 @@ public class AiServiceImpl implements AiService {
             }
             GenerateFollowUpVO fallback = new GenerateFollowUpVO();
             fallback.setFollowUpQuestion(buildFallbackFollowUp(dto));
-            fallback.setReason(markFallback("AI 追问调用失败，使用本地兜底追问：" + ex.getMessage()));
+            fallback.setReason(markFallback("追问内容暂时不够贴合，已改用通用追问"));
             fallback.setRelatedToOriginalQuestion(true);
             fallback.setFollowUpValid(true);
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
@@ -438,7 +440,7 @@ public class AiServiceImpl implements AiService {
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getLearningPlanId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
             GenerateLearningPlanVO fallback = mockLearningPlan(dto);
-            fallback.setPlanSummary("AI 学习计划返回格式异常，系统已生成基础模板计划。你可以先按该计划训练，稍后再重新生成。");
+            fallback.setPlanSummary("学习计划内容暂时不够完整，系统已生成基础训练计划。你可以先按该计划训练，稍后再重新生成。");
             fallback.setAiCallLogId(logId);
             return fallback;
         }
@@ -473,7 +475,7 @@ public class AiServiceImpl implements AiService {
                     businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
             GenerateLearningPlanVO fallback = mockTargetedStudyPlan(dto);
-            fallback.setPlanSummary("AI 针对性学习计划返回格式异常，系统已按当前短板生成基础模板计划。你可以先执行任务，稍后再重新生成。");
+            fallback.setPlanSummary("针对性学习计划内容暂时不够完整，系统已按当前短板生成基础训练计划。你可以先执行任务，稍后再重新生成。");
             fallback.setAiCallLogId(logId);
             return fallback;
         }
@@ -581,178 +583,178 @@ public class AiServiceImpl implements AiService {
 
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getAnalysisRecordId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysisRecordId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (!StringUtils.hasText(dto.getRawText())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "rawText is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历内容不能为空");
         }
     }
 
     private void validateParseJobDescriptionDTO(ParseJobDescriptionDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getTargetJobId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (!StringUtils.hasText(dto.getJobTitle())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobTitle is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "岗位名称不能为空");
         }
         if (!StringUtils.hasText(dto.getJdText())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "jdText is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "岗位描述不能为空");
         }
     }
 
     private void validateAnalyzeResumeJobMatchDTO(AnalyzeResumeJobMatchDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "reportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (dto.getResumeId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不能为空");
         }
         if (dto.getTargetJobId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不能为空");
         }
         if (!StringUtils.hasText(dto.getResumeAnalysisJson())
                 && !StringUtils.hasText(dto.getResumeSnapshotJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume analysis or snapshot is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历分析结果或简历快照不能为空");
         }
         if (!StringUtils.hasText(dto.getJobDescriptionAnalysisJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "jobDescriptionAnalysisJson is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "岗位分析结果不能为空");
         }
     }
 
     private void validateAnalyzeSkillGapDTO(AnalyzeSkillGapDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不能为空");
         }
         if (dto.getMatchReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (dto.getTargetJobId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不能为空");
         }
         if (!StringUtils.hasText(dto.getMatchReportJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportJson is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告内容不能为空");
         }
         if (!StringUtils.hasText(dto.getGapsJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "gapsJson is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力短板内容不能为空");
         }
     }
 
     private void validateResumeOptimizeDTO(ResumeOptimizeAiRequestDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getOptimizeRecordId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "optimizeRecordId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历建议记录不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (dto.getResumeId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不能为空");
         }
         if (dto.getResume() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume snapshot is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历快照不能为空");
         }
     }
 
     private void validateQuestionDraftDTO(GenerateQuestionDraftDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (!StringUtils.hasText(dto.getBatchId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "题目生成批次不能为空");
         }
         if (dto.getAdminUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "adminUserId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "管理员信息不能为空");
         }
         int count = dto.getCount() == null ? 5 : dto.getCount();
         if (count < 1 || count > 20) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "count must be between 1 and 20");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "题目数量需在 1 到 20 道之间");
         }
     }
 
     private void validateQuestionRecommendationDTO(GenerateQuestionRecommendationDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getBatchId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题批次不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         int count = dto.getQuestionCount() == null ? 5 : dto.getQuestionCount();
         if (count < 1 || count > 20) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionCount must be between 1 and 20");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "题目数量需在 1 到 20 道之间");
         }
         if (!StringUtils.hasText(dto.getSkillGapsJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力短板内容不能为空");
         }
     }
 
     private void validateLearningPlanDTO(GenerateLearningPlanDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getLearningPlanId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "learningPlanId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (dto.getReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "reportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试报告不能为空");
         }
         if (!StringUtils.hasText(dto.getInterviewSummary()) && !StringUtils.hasText(dto.getWeaknessSummary())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview summary or weakness summary is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试总结或薄弱点总结不能为空");
         }
     }
 
     private void validateTargetedStudyPlanDTO(GenerateTargetedStudyPlanDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         if (dto.getLearningPlanId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "learningPlanId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不能为空");
         }
         if (dto.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
         if (dto.getSkillProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillProfileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不能为空");
         }
         if (!StringUtils.hasText(dto.getSkillGapsJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "skillGapsJson is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力短板内容不能为空");
         }
         if (dto.getAvailableDays() == null || dto.getAvailableDays() < 1 || dto.getAvailableDays() > 60) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "availableDays must be between 1 and 60");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "可学习天数需在 1 到 60 天之间");
         }
         if (dto.getDailyMinutes() == null || dto.getDailyMinutes() < 15 || dto.getDailyMinutes() > 480) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "dailyMinutes must be between 15 and 480");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "每天学习时长需在 15 到 480 分钟之间");
         }
     }
 
@@ -763,7 +765,7 @@ public class AiServiceImpl implements AiService {
         if (ex instanceof AiProviderException aiProviderException) {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume parse failed"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "简历解析失败，请稍后重试"));
     }
 
     private boolean mockEnabled() {
@@ -777,7 +779,7 @@ public class AiServiceImpl implements AiService {
         if (ex instanceof AiProviderException aiProviderException) {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Resume optimize failed"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "简历建议生成失败，请稍后重试"));
     }
 
     private BusinessException toJobDescriptionParseBusinessException(RuntimeException ex) {
@@ -787,7 +789,7 @@ public class AiServiceImpl implements AiService {
         if (ex instanceof AiProviderException aiProviderException) {
             return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "JD parse failed"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "岗位分析生成失败"));
     }
 
     private boolean isProjectStage(String stageType) {
@@ -1276,13 +1278,13 @@ public class AiServiceImpl implements AiService {
 
     private void validatePracticeReviewDTO(PracticeReviewDTO dto) {
         if (dto == null || dto.getRecordId() == null || dto.getQuestionId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "practice record and question are required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "练习记录和题目信息不能为空");
         }
         if (!StringUtils.hasText(dto.getAnswerContent())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "answerContent is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "回答内容不能为空");
         }
         if (dto.getAnswerContent().length() > 5000) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "answerContent length must be less than 5000");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "回答内容不能超过 5000 字");
         }
     }
 
@@ -1575,7 +1577,7 @@ public class AiServiceImpl implements AiService {
                     extractLabelValue(raw, "questionContent"),
                     raw,
                     buildFallbackFollowUp(dto)));
-            fallback.setReason("非标准 JSON 响应解析兜底");
+            fallback.setReason("已整理为可继续练习的追问");
             fallback.setRelatedToOriginalQuestion(!isInvalidFollowUp(fallback.getFollowUpQuestion(), dto));
             fallback.setFollowUpValid(!isInvalidFollowUp(fallback.getFollowUpQuestion(), dto));
             return fallback;
@@ -1689,6 +1691,13 @@ public class AiServiceImpl implements AiService {
         return node == null || node.isMissingNode() || node.isNull() ? null : node.asText(null);
     }
 
+    private String textValue(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return null;
+        }
+        return node.isValueNode() ? node.asText(null) : null;
+    }
+
     private Integer parseScore(String value) {
         if (!StringUtils.hasText(value)) {
             return null;
@@ -1710,72 +1719,197 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response must be a JSON object");
         }
-        JsonNode stagesNode = firstNode(json, "stages", "stageList", "phases", "phaseList");
-        if (stagesNode == null || !stagesNode.isArray() || stagesNode.isEmpty()) {
-            JsonNode rootItems = firstNode(json, "items", "tasks", "taskItems", "dailyTasks", "planItems");
-            if (rootItems != null && rootItems.isArray() && !rootItems.isEmpty()) {
-                ObjectNode fallbackStage = objectMapper.createObjectNode();
-                fallbackStage.put("stageNo", 1);
-                fallbackStage.put("stageTitle", firstText(textField(json, "stageTitle", "title", "name"), "基础训练"));
-                fallbackStage.set("items", rootItems);
-                ArrayNode fallbackStages = objectMapper.createArrayNode();
-                fallbackStages.add(fallbackStage);
-                stagesNode = fallbackStages;
-            }
-        }
+        JsonNode stagesNode = normalizeLearningStagesNode(json);
         if (stagesNode == null || !stagesNode.isArray() || stagesNode.isEmpty()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan response missing stages array");
         }
         GenerateLearningPlanVO vo = new GenerateLearningPlanVO();
         vo.setPlanTitle(firstText(textField(json, "planTitle", "title", "name"), defaultLearningPlanTitle(dto)));
         vo.setPlanSummary(firstText(textField(json, "planSummary", "summary", "description"),
-                "Study plan generated from interview report"));
+                "根据面试报告生成的学习计划"));
         Integer durationDays = readInteger(firstNode(json, "durationDays", "duration", "days"));
         vo.setDurationDays(durationDays == null
                 ? normalizeDuration(dto.getExpectedDurationDays())
                 : normalizeDuration(durationDays));
         List<GenerateLearningPlanVO.StageVO> stages = new java.util.ArrayList<>();
         for (JsonNode stageNode : stagesNode) {
-            if (stageNode == null || !stageNode.isObject()) {
-                throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage must be object");
-            }
-            JsonNode itemsNode = firstNode(stageNode, "items", "tasks", "taskItems", "dailyTasks", "planItems");
-            if (itemsNode == null || !itemsNode.isArray() || itemsNode.isEmpty()) {
-                throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan stage missing items array");
-            }
             GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
-            Integer stageNo = readInteger(firstNode(stageNode, "stageNo", "no", "order"));
+            boolean stageObject = stageNode != null && stageNode.isObject();
+            Integer stageNo = stageObject ? readInteger(firstNode(stageNode, "stageNo", "no", "order")) : null;
             stage.setStageNo(stageNo == null ? stages.size() + 1 : stageNo);
-            stage.setStageTitle(firstText(textField(stageNode, "stageTitle", "title", "name"), "阶段 " + stage.getStageNo()));
+            stage.setStageTitle(firstText(
+                    stageObject ? textField(stageNode, "stageTitle", "title", "name", "phaseName") : textValue(stageNode),
+                    "阶段 " + stage.getStageNo()));
             List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
-            for (JsonNode itemNode : itemsNode) {
-                if (itemNode == null || !itemNode.isObject()) {
-                    throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI learning plan item must be object");
+            JsonNode itemsNode = stageObject
+                    ? firstNode(stageNode, "items", "tasks", "taskItems", "dailyTasks", "planItems")
+                    : null;
+            if (itemsNode != null && itemsNode.isObject() && !itemsNode.isEmpty()) {
+                itemsNode = normalizeLearningItemMap(itemsNode);
+            }
+            if (itemsNode != null && itemsNode.isArray()) {
+                for (JsonNode itemNode : itemsNode) {
+                    GenerateLearningPlanVO.ItemVO item = normalizeLearningPlanItem(
+                            itemNode, stage.getStageTitle(), stage.getStageNo(), items.size() + 1);
+                    if (item != null) {
+                        items.add(item);
+                    }
                 }
-                GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
-                item.setDayOffset(readInteger(firstNode(itemNode, "dayOffset", "day", "dayNo")));
-                item.setKnowledgePoint(firstText(textField(itemNode, "knowledgePoint", "skillName", "topic", "knowledge")));
-                item.setSkillName(firstText(textField(itemNode, "skillName", "skill", "knowledgePoint"), item.getKnowledgePoint()));
-                item.setSourceGapId(textField(itemNode, "sourceGapId", "gapId"));
-                item.setTaskTitle(requireLearningText(itemNode, "taskTitle", "title", "taskName", "name"));
-                item.setTaskDescription(requireLearningText(itemNode, "taskDescription", "description", "detail", "content"));
-                item.setTaskType(normalizeTaskType(firstText(textField(itemNode, "taskType", "type", "taskCategory"))));
-                item.setPriority(normalizePriority(textField(itemNode, "priority")));
-                Integer minutes = readInteger(firstNode(itemNode, "estimatedMinutes", "durationMinutes", "minutes"));
-                Integer hours = readInteger(firstNode(itemNode, "estimatedHours", "durationHours", "hours"));
-                item.setEstimatedHours(hours == null ? Math.max(1, minutes == null ? 1 : (minutes + 59) / 60) : Math.max(1, hours));
-                item.setEstimatedMinutes(minutes == null ? item.getEstimatedHours() * 60 : Math.max(1, minutes));
-                item.setAcceptance(textField(itemNode, "acceptance", "acceptanceCriteria", "expectedOutcome"));
-                item.setRelatedQuestionIds(longArray(firstNode(itemNode, "relatedQuestionIds", "questionIds")));
-                item.setRelatedTags(textArray(firstNode(itemNode, "relatedTags", "tags")));
-                item.setResources(textArray(firstNode(itemNode, "resources", "resourceList")));
-                items.add(item);
+            }
+            if (items.isEmpty()) {
+                items.add(fallbackLearningPlanItem(stageObject ? stageNode : null, stage.getStageTitle(),
+                        stage.getStageNo(), 1));
             }
             stage.setItems(items);
             stages.add(stage);
         }
         vo.setStages(stages);
         return vo;
+    }
+
+    private JsonNode normalizeLearningStagesNode(JsonNode json) {
+        JsonNode stagesNode = firstNode(json, "stages", "stageList", "phases", "phaseList");
+        if (stagesNode != null && stagesNode.isArray() && !stagesNode.isEmpty()) {
+            return stagesNode;
+        }
+        if (stagesNode != null && stagesNode.isObject() && !stagesNode.isEmpty()) {
+            ArrayNode normalizedStages = objectMapper.createArrayNode();
+            stagesNode.fields().forEachRemaining(entry -> {
+                JsonNode value = entry.getValue();
+                if (value == null || value.isNull()) {
+                    return;
+                }
+                ObjectNode stage = value.isObject() ? ((ObjectNode) value).deepCopy() : objectMapper.createObjectNode();
+                if (!StringUtils.hasText(textField(stage, "stageTitle", "title", "name", "phaseName"))) {
+                    stage.put("stageTitle", entry.getKey());
+                }
+                if (value.isArray()) {
+                    stage.set("items", value);
+                } else if (value.isValueNode() && !StringUtils.hasText(textField(stage, "description", "content"))) {
+                    stage.put("description", firstText(textValue(value), entry.getKey()));
+                }
+                normalizedStages.add(stage);
+            });
+            if (!normalizedStages.isEmpty()) {
+                return normalizedStages;
+            }
+        }
+        JsonNode rootItems = firstNode(json, "items", "tasks", "taskItems", "dailyTasks", "planItems");
+        if (rootItems != null && rootItems.isObject() && !rootItems.isEmpty()) {
+            rootItems = normalizeLearningItemMap(rootItems);
+        }
+        if (rootItems != null && rootItems.isArray() && !rootItems.isEmpty()) {
+            ObjectNode fallbackStage = objectMapper.createObjectNode();
+            fallbackStage.put("stageNo", 1);
+            fallbackStage.put("stageTitle", firstText(textField(json, "stageTitle", "title", "name"), "基础训练"));
+            fallbackStage.set("items", rootItems);
+            ArrayNode fallbackStages = objectMapper.createArrayNode();
+            fallbackStages.add(fallbackStage);
+            return fallbackStages;
+        }
+        return stagesNode;
+    }
+
+    private ArrayNode normalizeLearningItemMap(JsonNode itemsNode) {
+        ArrayNode normalizedItems = objectMapper.createArrayNode();
+        itemsNode.fields().forEachRemaining(entry -> {
+            JsonNode value = entry.getValue();
+            if (value == null || value.isNull()) {
+                return;
+            }
+            if (value.isObject()) {
+                ObjectNode item = ((ObjectNode) value).deepCopy();
+                if (!StringUtils.hasText(textField(item, "taskTitle", "title", "taskName", "name"))) {
+                    item.put("taskTitle", entry.getKey());
+                }
+                normalizedItems.add(item);
+                return;
+            }
+            ObjectNode item = objectMapper.createObjectNode();
+            item.put("taskTitle", entry.getKey());
+            if (value.isValueNode()) {
+                item.put("taskDescription", firstText(textValue(value), entry.getKey()));
+            }
+            normalizedItems.add(item);
+        });
+        return normalizedItems;
+    }
+
+    private GenerateLearningPlanVO.ItemVO normalizeLearningPlanItem(JsonNode itemNode, String stageTitle,
+                                                                    int stageNo, int itemIndex) {
+        if (itemNode == null || itemNode.isNull()) {
+            return null;
+        }
+        if (!itemNode.isObject()) {
+            String text = textValue(itemNode);
+            if (!StringUtils.hasText(text)) {
+                return null;
+            }
+            return fallbackLearningPlanItem(null, firstText(text, stageTitle), stageNo, itemIndex);
+        }
+        GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+        item.setDayOffset(readInteger(firstNode(itemNode, "dayOffset", "day", "dayNo")));
+        item.setKnowledgePoint(firstText(textField(itemNode, "knowledgePoint", "skillName", "topic", "knowledge"),
+                stageTitle, "Java 后端能力"));
+        item.setSkillName(firstText(textField(itemNode, "skillName", "skill", "knowledgePoint"),
+                item.getKnowledgePoint()));
+        item.setSourceGapId(textField(itemNode, "sourceGapId", "gapId"));
+        item.setTaskTitle(firstText(textField(itemNode, "taskTitle", "title", "taskName", "name"),
+                item.getKnowledgePoint() + "专项训练"));
+        item.setTaskDescription(firstText(textField(itemNode, "taskDescription", "description", "detail", "content"),
+                defaultLearningTaskDescription(item.getKnowledgePoint())));
+        item.setTaskType(normalizeTaskType(firstText(textField(itemNode, "taskType", "type", "taskCategory"))));
+        item.setPriority(normalizePriority(textField(itemNode, "priority")));
+        Integer minutes = readInteger(firstNode(itemNode, "estimatedMinutes", "durationMinutes", "minutes"));
+        Integer hours = readInteger(firstNode(itemNode, "estimatedHours", "durationHours", "hours"));
+        item.setEstimatedHours(hours == null ? Math.max(1, minutes == null ? 1 : (minutes + 59) / 60) : Math.max(1, hours));
+        item.setEstimatedMinutes(minutes == null ? item.getEstimatedHours() * 60 : Math.max(1, minutes));
+        item.setAcceptance(firstText(textField(itemNode, "acceptance", "acceptanceCriteria", "expectedOutcome"),
+                defaultLearningAcceptance(item.getKnowledgePoint())));
+        item.setRelatedQuestionIds(longArray(firstNode(itemNode, "relatedQuestionIds", "questionIds")));
+        item.setRelatedTags(textArray(firstNode(itemNode, "relatedTags", "tags")));
+        item.setResources(textArray(firstNode(itemNode, "resources", "resourceList")));
+        if (item.getDayOffset() == null) {
+            item.setDayOffset(Math.max(1, stageNo + itemIndex - 1));
+        }
+        return item;
+    }
+
+    private GenerateLearningPlanVO.ItemVO fallbackLearningPlanItem(JsonNode source, String stageTitle,
+                                                                   int stageNo, int itemIndex) {
+        String knowledgePoint = firstText(
+                source == null ? null : textField(source, "knowledgePoint", "skillName", "topic", "name", "title"),
+                stageTitle,
+                "Java 后端能力");
+        GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+        item.setDayOffset(Math.max(1, stageNo + itemIndex - 1));
+        item.setKnowledgePoint(knowledgePoint);
+        item.setSkillName(knowledgePoint);
+        item.setSourceGapId(source == null ? null : textField(source, "sourceGapId", "gapId"));
+        item.setTaskTitle(firstText(source == null ? null : textField(source, "taskTitle", "title", "taskName", "name"),
+                knowledgePoint + "专项训练"));
+        item.setTaskDescription(firstText(source == null ? null : textField(source, "taskDescription", "description", "detail", "content"),
+                defaultLearningTaskDescription(knowledgePoint)));
+        item.setTaskType(normalizeTaskType(source == null ? null : textField(source, "taskType", "type", "taskCategory")));
+        item.setPriority(normalizePriority(source == null ? null : textField(source, "priority")));
+        Integer minutes = source == null ? null : readInteger(firstNode(source, "estimatedMinutes", "durationMinutes", "minutes"));
+        Integer hours = source == null ? null : readInteger(firstNode(source, "estimatedHours", "durationHours", "hours"));
+        item.setEstimatedHours(hours == null ? Math.max(1, minutes == null ? 1 : (minutes + 59) / 60) : Math.max(1, hours));
+        item.setEstimatedMinutes(minutes == null ? item.getEstimatedHours() * 60 : Math.max(1, minutes));
+        item.setAcceptance(firstText(source == null ? null : textField(source, "acceptance", "acceptanceCriteria", "expectedOutcome"),
+                defaultLearningAcceptance(knowledgePoint)));
+        item.setRelatedQuestionIds(source == null ? List.of() : longArray(firstNode(source, "relatedQuestionIds", "questionIds")));
+        item.setRelatedTags(source == null ? List.of(knowledgePoint) : textArray(firstNode(source, "relatedTags", "tags")));
+        item.setResources(source == null ? List.of() : textArray(firstNode(source, "resources", "resourceList")));
+        return item;
+    }
+
+    private String defaultLearningTaskDescription(String knowledgePoint) {
+        return "围绕" + firstText(knowledgePoint, "当前短板") + "整理关键概念、项目证据和面试表达。";
+    }
+
+    private String defaultLearningAcceptance(String knowledgePoint) {
+        return "能结合项目或练习记录讲清" + firstText(knowledgePoint, "该能力点") + "的核心思路。";
     }
 
     private GenerateLearningPlanVO parseTargetedStudyPlan(String raw, GenerateTargetedStudyPlanDTO dto) {
@@ -1872,26 +2006,49 @@ public class AiServiceImpl implements AiService {
     }
 
     private String parseResumeJobMatchJson(String raw, AnalyzeResumeJobMatchDTO dto) {
-        JsonNode json = normalizeResumeJobMatchJson(parseJson(raw));
-        validateResumeJobMatchJson(json, dto);
+        JsonNode parsed;
+        try {
+            parsed = parseJson(raw);
+        } catch (RuntimeException ex) {
+            return fallbackResumeJobMatchJson("匹配报告内容暂时无法整理，请重新生成或补充资料后再用于训练。", ex);
+        }
+        JsonNode json = normalizeResumeJobMatchJson(parsed);
+        try {
+            validateResumeJobMatchJson(json, dto);
+        } catch (AiProviderException ex) {
+            if (isUnsupportedResumeMatchEvidenceError(ex)) {
+                throw ex;
+            }
+            return fallbackResumeJobMatchJson(
+                    "匹配报告内容结构不完整，请结合简历和岗位描述明细复核后重新生成。", ex);
+        }
         return json.toString();
     }
 
     private JsonNode normalizeResumeJobMatchJson(JsonNode json) {
-        if (!(json instanceof ObjectNode root)) {
-            return json;
+        JsonNode rootNode = unwrapResumeMatchRoot(json);
+        if (!(rootNode instanceof ObjectNode root)) {
+            return rootNode;
         }
         ObjectNode normalized = root.deepCopy();
-        Integer overallScore = readScore(firstNode(normalized, "overallScore", "matchScore", "score", "totalScore"));
+        ArrayNode schemaWarnings = objectMapper.createArrayNode();
+        if (rootNode != json) {
+            markResumeMatchSchemaWarning(schemaWarnings, "root", "AI 返回包含外层包装，系统已展开为匹配报告");
+        }
+        Integer overallScore = readScore(firstNode(normalized, "overallScore", "overall_score",
+                "matchScore", "match_score", "matchingScore", "matching_score", "score", "totalScore",
+                "total_score", "综合得分", "匹配分", "综合匹配度"));
         if (overallScore == null) {
-            overallScore = averageDimensionScore(firstNode(normalized, "dimensionScores", "scores", "scoreDetails"));
+            overallScore = averageDimensionScore(firstNode(normalized, "dimensionScores", "scores", "scoreDetails",
+                    "dimensionScore", "dimension_score", "维度得分", "维度评分"));
         }
         if (overallScore == null) {
             overallScore = 0;
         }
         normalized.put("overallScore", clampScore(overallScore));
 
-        JsonNode rawDimensionScores = firstNode(normalized, "dimensionScores", "scores", "scoreDetails");
+        JsonNode rawDimensionScores = firstNode(normalized, "dimensionScores", "scores", "scoreDetails",
+                "dimensionScore", "dimension_score", "维度得分", "维度评分");
         ObjectNode dimensionScores = rawDimensionScores != null && rawDimensionScores.isObject()
                 ? ((ObjectNode) rawDimensionScores).deepCopy()
                 : objectMapper.createObjectNode();
@@ -1902,28 +2059,92 @@ public class AiServiceImpl implements AiService {
             scoreFieldNames.addAll(resumeMatchDimensionAliases(dimension));
             Integer score = readScore(firstNode(dimensionScores, scoreFieldNames.toArray(String[]::new)));
             if (score == null) {
+                score = readDimensionScore(rawDimensionScores, dimension);
+            }
+            if (score == null) {
                 score = readScore(firstNode(normalized, scoreFieldNames.toArray(String[]::new)));
             }
             dimensionScores.put(dimension, clampScore(score == null ? overallScore : score));
         }
         normalized.set("dimensionScores", dimensionScores);
 
-        normalizeArrayField(normalized, "strengths", false, "advantages", "highlights", "matchStrengths");
-        normalizeArrayField(normalized, "gaps", false, "weaknesses", "skillGaps", "mismatchPoints");
-        normalizeArrayField(normalized, "resumeRisks", false, "risks", "riskPoints", "resumeIssues");
+        normalizeArrayField(normalized, "strengths", true, "advantages", "highlights", "matchStrengths",
+                "matchedPoints", "matchedSkills", "优势", "匹配优势", "亮点");
+        normalizeArrayField(normalized, "gaps", true, "weaknesses", "skillGaps", "mismatchPoints",
+                "missingSkills", "gapItems", "shortcomings", "差距", "短板", "能力短板", "不足项");
+        normalizeArrayField(normalized, "resumeRisks", false, "risks", "riskPoints", "resumeIssues",
+                "riskWarnings", "风险", "简历风险");
         normalizeArrayField(normalized, "optimizationSuggestions", false,
-                "suggestions", "improvementSuggestions", "resumeOptimizationSuggestions");
+                "suggestions", "improvementSuggestions", "resumeOptimizationSuggestions",
+                "recommendations", "nextSteps", "优化建议", "改进建议");
         normalizeArrayField(normalized, "recommendedLearningTopics", true,
-                "learningTopics", "studyTopics", "recommendedSkills");
+                "learningTopics", "studyTopics", "recommendedSkills",
+                "learningSuggestions", "studyRecommendations", "学习主题", "学习建议");
         normalizeArrayField(normalized, "recommendedInterviewTopics", true,
-                "interviewTopics", "practiceTopics", "recommendedQuestions");
+                "interviewTopics", "practiceTopics", "recommendedQuestions",
+                "interviewSuggestions", "interviewFocus", "面试主题", "面试建议", "面试重点");
+        normalizeResumeMatchStrengthItems(normalized, schemaWarnings);
+        normalizeResumeMatchGapItems(normalized, schemaWarnings);
         if (!StringUtils.hasText(normalized.path("summary").asText(null))) {
-            String summary = textField(normalized, "summary", "overallSummary", "matchSummary", "comment");
+            markResumeMatchSchemaWarning(schemaWarnings, "summary", "摘要内容已整理为可展示内容");
+            String summary = textField(normalized, "summary", "overallSummary", "matchSummary", "comment",
+                    "conclusion", "overallEvaluation", "summaryText", "整体评价", "匹配结论");
             normalized.put("summary", StringUtils.hasText(summary)
                     ? summary
-                    : "AI 已返回部分匹配结果，系统已按可用字段生成保守版报告，请结合明细复核。");
+                    : "已整理出部分匹配结果，来源仍需复核，请结合明细确认后再继续训练。");
+        }
+        if (!schemaWarnings.isEmpty()) {
+            normalized.set("schemaWarnings", schemaWarnings);
+            if (!StringUtils.hasText(normalized.path("trustStatus").asText(null))) {
+                normalized.put("trustStatus", TRUST_PARTIAL);
+            }
+        } else if (!StringUtils.hasText(normalized.path("trustStatus").asText(null))) {
+            normalized.put("trustStatus", TRUST_VERIFIED);
         }
         return normalized;
+    }
+
+    private JsonNode unwrapResumeMatchRoot(JsonNode json) {
+        if (json == null || json.isMissingNode() || json.isNull()) {
+            return json;
+        }
+        JsonNode parsedText = parseTextualJsonNode(json);
+        if (parsedText != json) {
+            return unwrapResumeMatchRoot(parsedText);
+        }
+        if (json.isArray() && json.size() == 1) {
+            return unwrapResumeMatchRoot(json.get(0));
+        }
+        if (!json.isObject() || looksLikeResumeMatchObject(json)) {
+            return json;
+        }
+        JsonNode wrapper = firstNode(json, "resultJson", "result", "data", "report", "matchReport",
+                "resumeJobMatch", "resumeJobMatchReport", "matchResult", "analysisResult", "content");
+        if (wrapper == null) {
+            return json;
+        }
+        JsonNode parsedWrapper = parseTextualJsonNode(wrapper);
+        JsonNode candidate = parsedWrapper != wrapper ? parsedWrapper : wrapper;
+        return candidate == json ? json : unwrapResumeMatchRoot(candidate);
+    }
+
+    private JsonNode parseTextualJsonNode(JsonNode node) {
+        if (node == null || !node.isTextual() || !StringUtils.hasText(node.asText(null))) {
+            return node;
+        }
+        try {
+            return objectMapper.readTree(extractJson(node.asText()));
+        } catch (Exception ignored) {
+            return node;
+        }
+    }
+
+    private boolean looksLikeResumeMatchObject(JsonNode json) {
+        return json != null && json.isObject()
+                && firstNode(json, "overallScore", "overall_score", "matchScore", "match_score",
+                "matchingScore", "score", "dimensionScores", "scores", "scoreDetails", "strengths",
+                "advantages", "highlights", "gaps", "weaknesses", "skillGaps", "missingSkills",
+                "summary", "overallSummary", "matchSummary", "整体评价", "匹配结论") != null;
     }
 
     private void normalizeArrayField(ObjectNode root, String fieldName, boolean allowTextItem, String... aliases) {
@@ -1946,24 +2167,229 @@ public class AiServiceImpl implements AiService {
         root.set(fieldName, array);
     }
 
+    private void normalizeResumeMatchStrengthItems(ObjectNode root, ArrayNode schemaWarnings) {
+        JsonNode strengths = root.path("strengths");
+        ArrayNode normalized = objectMapper.createArrayNode();
+        if (strengths.isArray()) {
+            int index = 0;
+            for (JsonNode item : strengths) {
+                ObjectNode normalizedItem = normalizeResumeMatchStrengthItem(item, schemaWarnings, index);
+                if (normalizedItem != null) {
+                    normalized.add(normalizedItem);
+                }
+                index++;
+            }
+        }
+        root.set("strengths", normalized);
+    }
+
+    private ObjectNode normalizeResumeMatchStrengthItem(JsonNode item, ArrayNode schemaWarnings, int index) {
+        String fieldPath = "strengths[" + index + "]";
+        ObjectNode normalized = item instanceof ObjectNode objectItem
+                ? objectItem.deepCopy()
+                : objectMapper.createObjectNode();
+        String title = item != null && item.isObject()
+                ? textField(item, "title", "name", "point", "summary", "advantage", "strength")
+                : item == null ? null : item.asText(null);
+        String evidence = item != null && item.isObject()
+                ? textField(item, "evidence", "reason", "basis", "source", "detail", "description")
+                : null;
+        if (!StringUtils.hasText(title) && !StringUtils.hasText(evidence)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath, "空优势项已跳过");
+            return null;
+        }
+        if (!StringUtils.hasText(title)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath + ".title", "缺少标题，已补充默认标题");
+            title = "待复核匹配优势";
+        }
+        if (!StringUtils.hasText(evidence)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath + ".evidence", "缺少来源说明，已标记后续确认");
+            evidence = "AI 返回该优势但缺少结构化来源说明，已标记为待人工复核。";
+        }
+        normalized.put("title", title);
+        normalized.put("evidence", evidence);
+        JsonNode relatedSkills = firstNode(normalized, "relatedSkills", "skills", "skillNames", "skill");
+        normalized.set("relatedSkills", normalizeResumeMatchTextArray(relatedSkills));
+        return normalized;
+    }
+
+    private void normalizeResumeMatchGapItems(ObjectNode root, ArrayNode schemaWarnings) {
+        JsonNode gaps = root.path("gaps");
+        ArrayNode normalized = objectMapper.createArrayNode();
+        if (gaps.isArray()) {
+            int index = 0;
+            for (JsonNode item : gaps) {
+                ObjectNode normalizedItem = normalizeResumeMatchGapItem(item, schemaWarnings, index);
+                if (normalizedItem != null) {
+                    normalized.add(normalizedItem);
+                }
+                index++;
+            }
+        }
+        root.set("gaps", normalized);
+    }
+
+    private ObjectNode normalizeResumeMatchGapItem(JsonNode item, ArrayNode schemaWarnings, int index) {
+        String fieldPath = "gaps[" + index + "]";
+        ObjectNode normalized = item instanceof ObjectNode objectItem
+                ? objectItem.deepCopy()
+                : objectMapper.createObjectNode();
+        String textItem = item != null && item.isTextual() ? item.asText(null) : null;
+        String skillName = item != null && item.isObject()
+                ? textField(item, "skillName", "skill", "knowledgePoint", "topic", "name")
+                : null;
+        String description = item != null && item.isObject()
+                ? textField(item, "description", "gapDescription", "weakness", "problem", "summary")
+                : textItem;
+        String evidence = item != null && item.isObject()
+                ? textField(item, "evidence", "reason", "basis", "source", "detail")
+                : null;
+        if (!StringUtils.hasText(skillName)
+                && !StringUtils.hasText(description)
+                && !StringUtils.hasText(evidence)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath, "空短板项已跳过");
+            return null;
+        }
+        if (!StringUtils.hasText(skillName)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath + ".skillName", "缺少技能名称，已补充默认名称");
+            skillName = "待确认技能";
+        }
+        if (!StringUtils.hasText(description)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath + ".description", "缺少描述，已补充默认描述");
+            description = "AI 返回该差距但缺少结构化描述，已标记为待人工复核。";
+        }
+        if (!StringUtils.hasText(evidence)) {
+            markResumeMatchSchemaWarning(schemaWarnings, fieldPath + ".evidence", "缺少来源说明，已标记后续确认");
+            evidence = "AI 返回该差距但缺少结构化来源说明，已标记为待人工复核。";
+        }
+        normalized.put("skillName", skillName);
+        normalized.put("description", description);
+        normalized.put("evidence", evidence);
+        normalized.put("severity", normalizeResumeMatchSeverity(
+                textField(normalized, "severity", "level", "priority", "gapSeverity")));
+        JsonNode actions = firstNode(normalized, "recommendedActions", "actions", "suggestions", "nextActions");
+        normalized.set("recommendedActions", normalizeResumeMatchTextArray(actions));
+        return normalized;
+    }
+
+    private String normalizeResumeMatchSeverity(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "MEDIUM";
+        }
+        String upper = value.trim().toUpperCase();
+        if (upper.contains("HIGH") || upper.contains("P0") || upper.contains("P1")) {
+            return "HIGH";
+        }
+        if (upper.contains("LOW")) {
+            return "LOW";
+        }
+        return "MEDIUM";
+    }
+
+    private ArrayNode normalizeResumeMatchTextArray(JsonNode node) {
+        ArrayNode array = objectMapper.createArrayNode();
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return array;
+        }
+        if (node.isArray()) {
+            for (JsonNode item : node) {
+                String text = item == null || item.isNull()
+                        ? null
+                        : item.isValueNode() ? item.asText(null) : item.toString();
+                if (StringUtils.hasText(text)) {
+                    array.add(text);
+                }
+            }
+            return array;
+        }
+        String text = node.isValueNode() ? node.asText(null) : node.toString();
+        if (StringUtils.hasText(text)) {
+            array.add(text);
+        }
+        return array;
+    }
+
+    private void markResumeMatchSchemaWarning(ArrayNode warnings, String fieldPath, String message) {
+        if (warnings == null) {
+            return;
+        }
+        ObjectNode warning = objectMapper.createObjectNode();
+        warning.put("field", fieldPath);
+        warning.put("message", message);
+        warnings.add(warning);
+    }
+
+    private String fallbackResumeJobMatchJson(String summary, RuntimeException ex) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("overallScore", 0);
+        ObjectNode dimensionScores = objectMapper.createObjectNode();
+        for (String dimension : List.of("techStack", "projectExperience", "businessFit", "communication")) {
+            dimensionScores.put(dimension, 0);
+        }
+        root.set("dimensionScores", dimensionScores);
+        root.set("strengths", objectMapper.createArrayNode());
+        ArrayNode gaps = objectMapper.createArrayNode();
+        ObjectNode gap = objectMapper.createObjectNode();
+        gap.put("skillName", "待复核匹配结论");
+        gap.put("severity", "HIGH");
+        gap.put("description", firstText(summary, "匹配报告资料来源不完整，请重新生成或补齐资料后复核。"));
+        gap.put("evidence", "AI 输出未通过结构化校验，系统已将异常内容标记为待复核。");
+        ArrayNode actions = objectMapper.createArrayNode();
+        actions.add("检查简历项目经历、目标岗位分析结果后重新生成匹配报告。");
+        actions.add("在报告详情查看生成记录，确认是否为内容结构异常或资料来源不完整。");
+        gap.set("recommendedActions", actions);
+        gaps.add(gap);
+        root.set("gaps", gaps);
+        root.set("resumeRisks", objectMapper.createArrayNode());
+        root.set("optimizationSuggestions", objectMapper.createArrayNode()
+                .add("当前资料来源不完整，建议先补充简历项目经历、岗位描述和关键技能后重新生成。"));
+        root.set("recommendedLearningTopics", objectMapper.createArrayNode()
+                .add("先练习目标岗位核心 Java 后端基础与项目表达。"));
+        root.set("recommendedInterviewTopics", objectMapper.createArrayNode()
+                .add("围绕当前简历项目准备 1 场基础追问面试。"));
+        root.put("summary", firstText(summary, "匹配报告资料来源不完整，请重新生成或补齐资料后复核。"));
+        root.put("trustStatus", "FALLBACK");
+        root.put("fallback", true);
+        ArrayNode warnings = objectMapper.createArrayNode();
+        markResumeMatchSchemaWarning(warnings, "rawResponse", firstText(ex == null ? null : ex.getMessage(), "匹配报告内容暂时不可解析，已标记为来源待复核"));
+        root.set("schemaWarnings", warnings);
+        return root.toString();
+    }
+
+    private boolean isUnsupportedResumeMatchEvidenceError(RuntimeException ex) {
+        String message = ex == null ? null : ex.getMessage();
+        if (!StringUtils.hasText(message)) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("unsupported fact") || lower.contains("cannot be based on missing evidence");
+    }
+
     private List<String> resumeMatchDimensionAliases(String dimension) {
         if ("techStack".equals(dimension)) {
-            return List.of("technicalSkills", "techSkills", "technology", "technicalScore");
+            return List.of("tech_stack", "techStackScore", "technicalSkills", "technical_skills",
+                    "techSkills", "tech_skills", "technology", "technologyScore", "technicalScore",
+                    "skillScore", "skillsScore", "技术栈", "技术匹配", "技术能力");
         }
         if ("projectExperience".equals(dimension)) {
-            return List.of("project", "projects", "projectScore", "experience", "experienceScore");
+            return List.of("project_experience", "projectExperienceScore", "project", "projects",
+                    "projectScore", "project_score", "experience", "experienceScore", "experience_score",
+                    "项目经验", "项目经历", "项目匹配");
         }
         if ("businessFit".equals(dimension)) {
-            return List.of("business", "domainFit", "jobFit", "positionFit", "businessScore");
+            return List.of("business_fit", "businessFitScore", "business", "domainFit", "domain_fit",
+                    "jobFit", "job_fit", "positionFit", "position_fit", "businessScore",
+                    "业务契合", "岗位契合", "业务匹配");
         }
         if ("communication".equals(dimension)) {
-            return List.of("communicationSkill", "expression", "presentation", "communicationScore");
+            return List.of("communication_score", "communicationSkill", "communication_skill",
+                    "expression", "presentation", "communicationScore", "沟通表达", "表达能力", "沟通能力");
         }
         return List.of();
     }
 
     private Integer averageDimensionScore(JsonNode dimensionScores) {
-        if (dimensionScores == null || !dimensionScores.isObject()) {
+        if (dimensionScores == null) {
             return null;
         }
         int total = 0;
@@ -1973,13 +2399,57 @@ public class AiServiceImpl implements AiService {
             scoreFieldNames.add(dimension);
             scoreFieldNames.add(dimension + "Score");
             scoreFieldNames.addAll(resumeMatchDimensionAliases(dimension));
-            Integer score = readScore(firstNode(dimensionScores, scoreFieldNames.toArray(String[]::new)));
+            Integer score = dimensionScores.isObject()
+                    ? readScore(firstNode(dimensionScores, scoreFieldNames.toArray(String[]::new)))
+                    : readDimensionScore(dimensionScores, dimension);
             if (score != null) {
                 total += clampScore(score);
                 count++;
             }
         }
         return count == 0 ? null : Math.round((float) total / count);
+    }
+
+    private Integer readDimensionScore(JsonNode dimensionScores, String dimension) {
+        if (dimensionScores == null || !dimensionScores.isArray()) {
+            return null;
+        }
+        for (JsonNode item : dimensionScores) {
+            if (item == null || !item.isObject()) {
+                continue;
+            }
+            String name = textField(item, "dimension", "name", "label", "type", "category", "key", "skill");
+            if (!matchesResumeMatchDimension(name, dimension)) {
+                continue;
+            }
+            Integer score = readScore(firstNode(item, "score", "value", "matchScore", "match_score",
+                    "overallScore", "overall_score", "points", "得分", "分数"));
+            if (score != null) {
+                return score;
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesResumeMatchDimension(String value, String dimension) {
+        if (!StringUtils.hasText(value) || !StringUtils.hasText(dimension)) {
+            return false;
+        }
+        String normalizedValue = normalizeResumeMatchDimensionName(value);
+        List<String> candidates = new ArrayList<>();
+        candidates.add(dimension);
+        candidates.add(dimension + "Score");
+        candidates.addAll(resumeMatchDimensionAliases(dimension));
+        for (String candidate : candidates) {
+            if (normalizedValue.equals(normalizeResumeMatchDimensionName(candidate))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String normalizeResumeMatchDimensionName(String value) {
+        return value == null ? "" : value.toLowerCase().replaceAll("[\\s_\\-:/：]+", "");
     }
 
     private Integer readScore(JsonNode node) {
@@ -2042,7 +2512,7 @@ public class AiServiceImpl implements AiService {
 
     private void validateJobDescriptionJson(JsonNode json) {
         if (json == null || !json.isObject()) {
-            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI JD parse response must be a JSON object");
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "岗位分析结果暂时无法整理");
         }
         requireJobDescriptionField(json, "responsibilities");
         requireJobDescriptionField(json, "requiredSkills");
@@ -2097,7 +2567,7 @@ public class AiServiceImpl implements AiService {
     private void requireJobDescriptionField(JsonNode json, String fieldName) {
         if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
-                    "AI JD parse response missing field: " + fieldName);
+                    "岗位分析结果缺少必要字段：" + fieldName);
         }
     }
 
@@ -2127,7 +2597,7 @@ public class AiServiceImpl implements AiService {
     }
 
     private void requireResumeJobMatchScore(JsonNode json, String fieldName) {
-        Integer score = readInteger(json.path(fieldName));
+        Integer score = readScore(json.path(fieldName));
         if (score == null || score < 0 || score > 100) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI resume job match response score must be 0-100: " + fieldName);
@@ -2263,7 +2733,7 @@ public class AiServiceImpl implements AiService {
 
     private String extractJson(String raw) {
         if (!StringUtils.hasText(raw)) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI response is empty");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "智能生成结果为空，请稍后重试");
         }
         String text = raw.trim();
         int codeStart = text.indexOf("```");
@@ -2454,7 +2924,7 @@ public class AiServiceImpl implements AiService {
     private GenerateFollowUpVO mockFollowUp(GenerateFollowUpDTO dto) {
         GenerateFollowUpVO vo = new GenerateFollowUpVO();
         vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
-        vo.setReason("mock 模式本地相关性追问");
+        vo.setReason("本地模拟追问，用于管理端测试");
         vo.setRelatedToOriginalQuestion(true);
         vo.setFollowUpValid(true);
         return vo;
@@ -3047,7 +3517,7 @@ public class AiServiceImpl implements AiService {
         String question = firstText(candidateQuestion, vo.getFollowUpQuestion());
         if (isInvalidFollowUp(question, dto)) {
             question = buildFallbackFollowUp(dto);
-            vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "评分追问缺失或无效，使用本地兜底追问")));
+            vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "追问内容不够贴合，已改用通用追问")));
         }
         vo.setFollowUpQuestion(question);
         vo.setFollowUpValid(true);

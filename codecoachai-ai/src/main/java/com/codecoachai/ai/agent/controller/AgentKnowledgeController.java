@@ -27,7 +27,9 @@ import com.codecoachai.ai.agent.service.KnowledgeEvaluationService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.common.vector.service.VectorIndexJobService;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -47,9 +49,16 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/agent/knowledge")
 public class AgentKnowledgeController {
 
+    private static final String VECTOR_JOB_KNOWLEDGE_REBUILD = "KNOWLEDGE_REBUILD";
+    private static final String VECTOR_JOB_KNOWLEDGE_RETRY = "KNOWLEDGE_RETRY";
+    private static final String VECTOR_SCOPE_KNOWLEDGE = "KNOWLEDGE";
+    private static final String VECTOR_SCOPE_FAILED_OR_STALE = "FAILED_OR_STALE";
+
     private final AgentV4OpsService agentV4OpsService;
 
     private final KnowledgeEvaluationService knowledgeEvaluationService;
+
+    private final VectorIndexJobService vectorIndexJobService;
     @PostMapping("/documents")
     public Result<KnowledgeDocumentVO> createDocument(@RequestBody KnowledgeDocumentCreateDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -253,12 +262,63 @@ public class AgentKnowledgeController {
     @PostMapping("/vectors/rebuild")
     public Result<KnowledgeVectorRebuildVO> rebuildVectors(@RequestParam(required = false) Long documentId) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.rebuildKnowledgeVectors(userId, documentId));
+        String scopeId = documentId == null ? null : String.valueOf(documentId);
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, scopeId, null);
+        try {
+            KnowledgeVectorRebuildVO result = agentV4OpsService.rebuildKnowledgeVectors(userId, documentId);
+            String status = finishKnowledgeVectorJob(jobId, result);
+            attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, scopeId, status);
+            return Result.success(result);
+        } catch (Exception ex) {
+            vectorIndexJobService.fail(jobId, ex);
+            throw ex;
+        }
     }
 
     @PostMapping("/vectors/retry-failed")
     public Result<KnowledgeVectorRebuildVO> retryFailedVectors(@RequestParam(required = false) Integer limit) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.retryFailedKnowledgeVectors(userId, limit));
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE,
+                VECTOR_SCOPE_FAILED_OR_STALE, limit);
+        try {
+            KnowledgeVectorRebuildVO result = agentV4OpsService.retryFailedKnowledgeVectors(userId, limit);
+            String status = finishKnowledgeVectorJob(jobId, result);
+            attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE,
+                    VECTOR_SCOPE_FAILED_OR_STALE, status);
+            return Result.success(result);
+        } catch (Exception ex) {
+            vectorIndexJobService.fail(jobId, ex);
+            throw ex;
+        }
+    }
+
+    private String finishKnowledgeVectorJob(Long jobId, KnowledgeVectorRebuildVO result) {
+        long total = numberValue(result == null ? null : result.getChunkCount());
+        long success = numberValue(result == null ? null : result.getVectorUpdated());
+        long failed = result == null || result.getFailedDocuments() == null ? 0L : result.getFailedDocuments().size();
+        long updated = numberValue(result == null ? null : result.getVectorUpdated());
+        long deleted = numberValue(result == null ? null : result.getVectorDeleted());
+        String error = result == null || result.getErrors() == null || result.getErrors().isEmpty()
+                ? null : String.join("; ", result.getErrors().stream().limit(5).toList());
+        String status = failed > 0 || error != null ? "FAILED" : "SUCCESS";
+        vectorIndexJobService.finish(jobId, status, Map.of(), total, success, failed, updated, deleted, error);
+        return status;
+    }
+
+    private void attachKnowledgeVectorJob(KnowledgeVectorRebuildVO result, Long jobId, String jobType,
+                                          String scopeType, String scopeId, String status) {
+        if (result == null || jobId == null) {
+            return;
+        }
+        result.setJobId(jobId);
+        result.setVectorJobId(jobId);
+        result.setVectorJobType(jobType);
+        result.setVectorScopeType(scopeType);
+        result.setVectorScopeId(scopeId);
+        result.setVectorJobStatus(status);
+    }
+
+    private long numberValue(Object value) {
+        return value instanceof Number number ? number.longValue() : 0L;
     }
 }

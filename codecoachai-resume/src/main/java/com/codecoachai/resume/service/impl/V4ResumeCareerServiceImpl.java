@@ -4,7 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
-import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
@@ -58,7 +58,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO createVersion(Long resumeId, ResumeVersionCreateDTO dto) {
         Resume resume = ownedResume(resumeId);
-        Integer nextNo = nextVersionNo(resumeId);
+        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
         ResumeVersion version = new ResumeVersion();
         version.setUserId(resume.getUserId());
         version.setResumeId(resumeId);
@@ -68,7 +68,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         version.setSourceId(dto == null ? null : dto.getSourceId());
         version.setSnapshotJson(writeJson(snapshot(resume)));
         version.setCurrentFlag(1);
-        clearCurrentVersions(resumeId);
+        clearCurrentVersions(resumeId, resume.getUserId());
         resumeVersionMapper.insert(version);
         return toVersionVO(version);
     }
@@ -79,7 +79,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         ResumeVersion source = ownedVersion(versionId);
         ensureVersionBelongsToResume(resumeId, source);
 
-        Integer nextNo = nextVersionNo(resumeId);
+        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
         String sourceName = StringUtils.hasText(source.getVersionName()) ? source.getVersionName() : "V" + source.getVersionNo();
         ResumeVersion copy = new ResumeVersion();
         copy.setUserId(resume.getUserId());
@@ -99,7 +99,9 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Override
     public List<ResumeVersionVO> listVersions(Long resumeId) {
         ownedResume(resumeId);
+        Long userId = currentUserId();
         return resumeVersionMapper.selectList(new LambdaQueryWrapper<ResumeVersion>()
+                        .eq(ResumeVersion::getUserId, userId)
                         .eq(ResumeVersion::getResumeId, resumeId)
                         .orderByDesc(ResumeVersion::getVersionNo))
                 .stream().map(this::toVersionVO).toList();
@@ -124,7 +126,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         ResumeVersion source = ownedVersion(sourceVersionId);
         ResumeVersion target = ownedVersion(targetVersionId);
         if (!Objects.equals(source.getResumeId(), target.getResumeId())) {
-            throw new IllegalArgumentException("Versions must belong to the same resume");
+            throw new IllegalArgumentException("只能对同一份简历的版本进行比较");
         }
         return buildDiff(source.getResumeId(), sourceVersionId, targetVersionId, "SOURCE_VERSION", "TARGET_VERSION",
                 readMap(source.getSnapshotJson()), readMap(target.getSnapshotJson()));
@@ -138,7 +140,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         ensureVersionBelongsToResume(resumeId, version);
         applySnapshot(resume, readMap(version.getSnapshotJson()));
         resumeMapper.updateById(resume);
-        clearCurrentVersions(resumeId);
+        clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
         return toVersionVO(version);
@@ -151,7 +153,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Resume resume = ownedResume(version.getResumeId());
         applySnapshot(resume, readMap(version.getSnapshotJson()));
         resumeMapper.updateById(resume);
-        clearCurrentVersions(version.getResumeId());
+        clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
 
@@ -171,7 +173,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     @Override
     public List<JobApplicationVO> listApplications(String status) {
-        Long userId = LoginUserContext.getUserId();
+        Long userId = currentUserId();
         return jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                         .eq(JobApplication::getUserId, userId)
                         .eq(StringUtils.hasText(status), JobApplication::getStatus, status)
@@ -181,7 +183,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     @Override
     public JobApplicationVO createApplication(JobApplicationSaveDTO dto) {
-        Long userId = LoginUserContext.getUserId();
+        Long userId = currentUserId();
         if (dto != null && dto.getResumeVersionId() != null) {
             ownedVersion(dto.getResumeVersionId());
         }
@@ -230,7 +232,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private Resume ownedResume(Long resumeId) {
         Resume resume = resumeMapper.selectById(resumeId);
-        Long userId = LoginUserContext.getUserId();
+        Long userId = currentUserId();
         if (resume == null || !Objects.equals(userId, resume.getUserId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "简历不存在或无权访问");
         }
@@ -239,7 +241,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private ResumeVersion ownedVersion(Long versionId) {
         ResumeVersion version = resumeVersionMapper.selectById(versionId);
-        Long userId = LoginUserContext.getUserId();
+        Long userId = currentUserId();
         if (version == null || !Objects.equals(userId, version.getUserId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "简历版本不存在或无权访问");
         }
@@ -248,7 +250,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private JobApplication ownedApplication(Long applicationId) {
         JobApplication app = jobApplicationMapper.selectById(applicationId);
-        Long userId = LoginUserContext.getUserId();
+        Long userId = currentUserId();
         if (app == null || !Objects.equals(userId, app.getUserId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问");
         }
@@ -261,18 +263,24 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
     }
 
-    private void clearCurrentVersions(Long resumeId) {
+    private void clearCurrentVersions(Long resumeId, Long userId) {
         resumeVersionMapper.update(null, new LambdaUpdateWrapper<ResumeVersion>()
+                .eq(ResumeVersion::getUserId, userId)
                 .eq(ResumeVersion::getResumeId, resumeId)
                 .set(ResumeVersion::getCurrentFlag, 0));
     }
 
-    private Integer nextVersionNo(Long resumeId) {
+    private Integer nextVersionNo(Long resumeId, Long userId) {
         ResumeVersion latest = resumeVersionMapper.selectOne(new LambdaQueryWrapper<ResumeVersion>()
+                .eq(ResumeVersion::getUserId, userId)
                 .eq(ResumeVersion::getResumeId, resumeId)
                 .orderByDesc(ResumeVersion::getVersionNo)
                 .last("LIMIT 1"));
         return latest == null || latest.getVersionNo() == null ? 1 : latest.getVersionNo() + 1;
+    }
+
+    private Long currentUserId() {
+        return SecurityAssert.requireLoginUserId();
     }
 
     private Map<String, Object> snapshot(Resume resume) {

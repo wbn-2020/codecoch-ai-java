@@ -1,5 +1,6 @@
 package com.codecoachai.common.mq.producer;
 
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.mq.domain.MqMessage;
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -52,6 +53,38 @@ public class MqProducer {
     }
 
     /**
+     * Synchronously resend a prebuilt application envelope, preserving its application messageId.
+     * Used by manual retry flows so the existing async_task row can continue to RUNNING/SUCCESS/FAILED.
+     */
+    public <T> SendResult sendEnvelopeSync(String destination, MqMessage<T> envelope) {
+        if (envelope == null || !StringUtils.hasText(envelope.getMessageId())) {
+            throw new IllegalArgumentException("MQ envelope messageId is required");
+        }
+        Message<MqMessage<T>> msg = MessageBuilder.withPayload(envelope)
+                .setHeader("KEYS", envelope.getMessageId())
+                .build();
+        SendResult result = rocketMQTemplate.syncSend(destination, msg);
+        log.info("MQ envelope resent dest={} bizType={} msgId={} status={}",
+                destination, envelope.getBizType(), envelope.getMessageId(), result.getSendStatus());
+        return result;
+    }
+
+    /**
+     * 同步发送并返回业务可展示的诊断回执。保留 sendSync 原签名，避免影响既有调用方。
+     */
+    public <T> MqDispatchReceipt sendSyncWithReceipt(String destination, String bizType, String bizId,
+                                                     Long userId, T payload) {
+        MqMessage<T> envelope = buildEnvelope(bizType, bizId, userId, payload);
+        Message<MqMessage<T>> msg = MessageBuilder.withPayload(envelope)
+                .setHeader("KEYS", envelope.getMessageId())
+                .build();
+        SendResult result = rocketMQTemplate.syncSend(destination, msg);
+        log.info("MQ sync sent dest={} bizType={} msgId={} status={}",
+                destination, bizType, envelope.getMessageId(), result.getSendStatus());
+        return toReceipt(destination, envelope, result);
+    }
+
+    /**
      * 异步发送（用于次要业务：通知、操作日志等）。
      */
     public <T> void sendAsync(String destination, String bizType, String bizId, Long userId, T payload) {
@@ -100,6 +133,21 @@ public class MqProducer {
                 .payload(payload)
                 .retryCount(0)
                 .createdAt(LocalDateTime.now())
+                .build();
+    }
+
+    private <T> MqDispatchReceipt toReceipt(String destination, MqMessage<T> envelope, SendResult result) {
+        return MqDispatchReceipt.builder()
+                .messageId(envelope.getMessageId())
+                .traceId(envelope.getTraceId())
+                .bizType(envelope.getBizType())
+                .bizId(envelope.getBizId())
+                .userId(envelope.getUserId())
+                .destination(destination)
+                .sendStatus(result == null || result.getSendStatus() == null
+                        ? null
+                        : result.getSendStatus().name())
+                .createdAt(envelope.getCreatedAt())
                 .build();
     }
 }

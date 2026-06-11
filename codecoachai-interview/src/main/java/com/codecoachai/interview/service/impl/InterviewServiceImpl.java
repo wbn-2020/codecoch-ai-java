@@ -6,6 +6,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.convert.InterviewConvert;
 import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
@@ -44,6 +45,7 @@ import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
+import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
 import com.codecoachai.interview.feign.vo.InnerResumeProjectVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
@@ -105,11 +107,12 @@ public class InterviewServiceImpl implements InterviewService {
     public CreateInterviewVO create(CreateInterviewDTO dto) {
         CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
+        validateSuccessfulMatchReportContext(userId, request);
         String mode = normalizeMode(StringUtils.hasText(request.getInterviewMode()) ? request.getInterviewMode() : request.getMode());
         InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
         resolveDefaultResumeIfNeeded(mode, request);
         validateResumeOwnership(userId, mode, request);
-        IndustryTemplateSnapshot industrySnapshot = resolveIndustrySnapshot(request);
+        IndustryTemplateSnapshot industrySnapshot = withRecommendationContext(resolveIndustrySnapshot(request), request);
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -396,7 +399,7 @@ public class InterviewServiceImpl implements InterviewService {
             return prepareInsufficientReport(session);
         }
         FinishInterviewVO vo = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId());
+        submitReportGenerationAfterCommit(session.getId(), session.getUserId(), vo);
         return vo;
     }
 
@@ -425,13 +428,15 @@ public class InterviewServiceImpl implements InterviewService {
             return vo;
         }
         FinishInterviewVO vo = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId());
+        submitReportGenerationAfterCommit(session.getId(), session.getUserId(), vo);
         return vo;
     }
 
     @Override
     public PageResult<InterviewListVO> list(Long pageNo, Long pageSize) {
-        Page<InterviewSession> page = sessionMapper.selectPage(Page.of(pageNo == null ? 1L : pageNo, pageSize == null ? 10L : pageSize),
+        long actualPageNo = pageNo == null || pageNo < 1 ? 1L : pageNo;
+        long actualPageSize = pageSize == null || pageSize < 1 ? 10L : Math.min(pageSize, 100L);
+        Page<InterviewSession> page = sessionMapper.selectPage(Page.of(actualPageNo, actualPageSize),
                 new LambdaQueryWrapper<InterviewSession>()
                         .eq(InterviewSession::getUserId, requireCurrentUserId())
                         .orderByDesc(InterviewSession::getUpdatedAt));
@@ -509,7 +514,7 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         InterviewReport existing = currentReport(session.getId());
         if (reportId != null && (existing == null || !reportId.equals(existing.getId()))) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试报告不存在或已不可用");
         }
         boolean force = Boolean.TRUE.equals(forceRegenerate);
         if (!force && existing != null && ReportStatusEnum.GENERATED.name().equals(existing.getStatus())) {
@@ -579,7 +584,7 @@ public class InterviewServiceImpl implements InterviewService {
             session.setReportStatus(ReportStatusEnum.FAILED.name());
             session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             sessionMapper.updateById(session);
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview report generation failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "面试报告生成失败，请稍后重试");
         }
     }
 
@@ -665,17 +670,37 @@ public class InterviewServiceImpl implements InterviewService {
         return vo;
     }
 
-    private void submitReportGenerationAfterCommit(Long sessionId) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+    private void submitReportGenerationAfterCommit(Long sessionId, Long userId, FinishInterviewVO vo) {
+        Runnable action = () -> {
+            MqDispatchReceipt receipt = interviewMqDispatcher.dispatchReportWithReceipt(sessionId, userId);
+            if (receipt != null) {
+                attachReportDispatchReceipt(vo, receipt);
+                return;
+            }
+            log.warn("面试报告 MQ 投递不可用，回退本地异步生成 sessionId={}", sessionId);
             reportAsyncService.generateReportAsync(sessionId);
+        };
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                reportAsyncService.generateReportAsync(sessionId);
+                action.run();
             }
         });
+    }
+
+    private void attachReportDispatchReceipt(FinishInterviewVO vo, MqDispatchReceipt receipt) {
+        if (vo == null || receipt == null) {
+            return;
+        }
+        vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setAsyncTraceId(receipt.getTraceId());
+        vo.setAsyncBizType(receipt.getBizType());
+        vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncSendStatus(receipt.getSendStatus());
     }
 
     private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
@@ -1067,7 +1092,7 @@ public class InterviewServiceImpl implements InterviewService {
     private InterviewSession getOwnedSession(Long id) {
         InterviewSession session = sessionMapper.selectById(id);
         if (session == null || !requireCurrentUserId().equals(session.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试记录不存在或已不可用");
         }
         return session;
     }
@@ -1078,7 +1103,7 @@ public class InterviewServiceImpl implements InterviewService {
                 .orderByAsc(InterviewStage::getSort)
                 .last("limit 1"));
         if (stage == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview stage missing");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "面试流程暂时不完整，请重新进入面试");
         }
         return stage;
     }
@@ -1291,13 +1316,41 @@ public class InterviewServiceImpl implements InterviewService {
         boolean resumeRequired = Boolean.TRUE.equals(dto.getBasedOnResume())
                 && (InterviewModeEnum.PROJECT_DEEP_DIVE.name().equals(mode) || InterviewModeEnum.COMPREHENSIVE.name().equals(mode));
         if (resumeRequired && dto.getResumeId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resumeId is required for resume-based interview");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择用于面试的简历");
         }
         if (dto.getResumeId() != null) {
             InnerResumeDetailVO resume = FeignResultUtils.unwrap(resumeFeignClient.getResume(dto.getResumeId()));
             if (resume == null || !userId.equals(resume.getUserId())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
             }
+        }
+    }
+
+    private void validateSuccessfulMatchReportContext(Long userId, CreateInterviewDTO request) {
+        if (request == null || request.getMatchReportId() == null) {
+            return;
+        }
+        InnerResumeJobMatchReportVO report = FeignResultUtils.unwrap(
+                resumeFeignClient.getSuccessResumeJobMatchReport(request.getMatchReportId()));
+        if (report == null || !userId.equals(report.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告不存在，不能作为面试依据");
+        }
+        if (!"SUCCESS".equalsIgnoreCase(String.valueOf(report.getStatus()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告未成功，不能作为面试依据");
+        }
+        if (request.getResumeId() != null && report.getResumeId() != null
+                && !request.getResumeId().equals(report.getResumeId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试简历与匹配报告不一致");
+        }
+        if (request.getTargetJobId() != null && report.getTargetJobId() != null
+                && !request.getTargetJobId().equals(report.getTargetJobId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位与匹配报告不一致");
+        }
+        if (request.getResumeId() == null) {
+            request.setResumeId(report.getResumeId());
+        }
+        if (request.getTargetJobId() == null) {
+            request.setTargetJobId(report.getTargetJobId());
         }
     }
 
@@ -1348,6 +1401,26 @@ public class InterviewServiceImpl implements InterviewService {
         IndustryTemplate template = industryTemplateService.getEnabledTemplate(dto.getIndustryTemplateId());
         String direction = firstText(normalizeText(dto.getIndustryDirection()), template.getIndustryName());
         return new IndustryTemplateSnapshot(template.getId(), direction, buildIndustryContext(template, direction));
+    }
+
+    private IndustryTemplateSnapshot withRecommendationContext(IndustryTemplateSnapshot snapshot, CreateInterviewDTO dto) {
+        if (dto == null) {
+            return snapshot;
+        }
+        String source = normalizeText(dto.getRecommendationSource());
+        String reason = normalizeText(dto.getRecommendationReason());
+        String practiceMode = normalizeText(dto.getPracticeMode());
+        if (!StringUtils.hasText(source) && !StringUtils.hasText(reason) && !StringUtils.hasText(practiceMode)) {
+            return snapshot;
+        }
+        StringBuilder builder = new StringBuilder(firstText(snapshot.industryContext(), ""));
+        appendLine(builder, "推荐配置来源", source);
+        appendLine(builder, "推荐配置依据", reason);
+        appendLine(builder, "训练模式", practiceMode);
+        return new IndustryTemplateSnapshot(
+                snapshot.industryTemplateId(),
+                snapshot.industryDirection(),
+                builder.toString().trim());
     }
 
     private String buildIndustryContext(IndustryTemplate template, String direction) {

@@ -66,6 +66,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     private static final long DEFAULT_PAGE_SIZE = 10L;
     private static final long MAX_PAGE_SIZE = 100L;
     private static final String SOURCE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
+    private static final String TRUST_FALLBACK = "FALLBACK";
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
@@ -83,7 +84,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     @Override
     public SkillProfileGenerateVO generate(SkillProfileGenerateDTO dto) {
         if (dto == null || dto.getMatchReportId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择匹配报告");
         }
         Long userId = requireCurrentUserId();
         return generateFromMatchReport(dto.getMatchReportId(), userId);
@@ -145,7 +146,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     @Override
     public SkillProfileGenerateVO refresh(SkillProfileRefreshDTO dto) {
         if (dto == null || (dto.getProfileId() == null && dto.getMatchReportId() == null)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId or matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择能力画像或匹配报告");
         }
         Long userId = requireCurrentUserId();
         Long matchReportId = dto.getMatchReportId();
@@ -160,6 +161,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     public InnerSkillProfileVO getInnerProfile(Long profileId) {
         Long userId = requireCurrentUserId();
         SkillProfile profile = getOwnedProfile(profileId, userId);
+        assertTrustedProfileEvidence(profile);
         return toInnerProfileVO(profile);
     }
 
@@ -167,9 +169,13 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     public InnerSkillProfileVO getInnerSuccessProfileByMatchReport(Long matchReportId) {
         Long userId = requireCurrentUserId();
         ResumeJobMatchReport report = getOwnedReport(matchReportId, userId);
+        if (!isTrustedSuccessMatchReport(report)) {
+            return null;
+        }
         SkillProfile profile = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
                 .eq(SkillProfile::getMatchReportId, report.getId())
                 .eq(SkillProfile::getUserId, userId)
+                .eq(SkillProfile::getSourceType, SOURCE_RESUME_JOB_MATCH)
                 .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
                 .eq(SkillProfile::getDeleted, CommonConstants.NO)
                 .orderByDesc(SkillProfile::getUpdatedAt)
@@ -185,7 +191,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         }
         TargetJob targetJob = targetJobMapper.selectById(dto.getTargetJobId());
         if (targetJob == null || !dto.getUserId().equals(targetJob.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "target job not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不存在或已不可用");
         }
         SkillProfile profile = resolveFeedbackProfile(dto);
         int nextPriority = nextGapPriority(profile.getId(), dto.getUserId());
@@ -267,9 +273,9 @@ public class SkillProfileServiceImpl implements SkillProfileService {
 
     private SkillProfileGenerateVO generateFromMatchReport(Long matchReportId, Long userId) {
         ResumeJobMatchReport report = getOwnedReport(matchReportId, userId);
-        if (!ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())) {
+        if (!isTrustedSuccessMatchReport(report)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Only SUCCESS resume job match reports can generate skill profiles");
+                    "Only trusted SUCCESS resume job match reports can generate skill profiles");
         }
         JsonNode reportGaps = readJsonOrNull(report.getGapsJson());
         if (!hasEffectiveGaps(reportGaps)) {
@@ -288,7 +294,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         } catch (RuntimeException ex) {
             SkillProfile failed = transactionTemplate.execute(status -> markFailed(profile.getId(), ex));
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Skill profile analysis failed: " + failed.getErrorMessage());
+                    "技能画像分析失败：" + failed.getErrorMessage());
         }
     }
 
@@ -414,7 +420,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
 
     private ResumeJobMatchReport getOwnedReport(Long id, Long userId) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "matchReportId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择匹配报告");
         }
         ResumeJobMatchReport report = reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
                 .eq(ResumeJobMatchReport::getId, id)
@@ -422,14 +428,14 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (report == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume job match report not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历匹配报告不存在或已不可用");
         }
         return report;
     }
 
     private TargetJob getOwnedTargetJob(Long id, Long userId) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "targetJobId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择目标岗位");
         }
         TargetJob job = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
                 .eq(TargetJob::getId, id)
@@ -437,14 +443,14 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 .eq(TargetJob::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (job == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位不存在或已不可用");
         }
         return job;
     }
 
     private SkillProfile getOwnedProfile(Long id, Long userId) {
         if (id == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "profileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择能力画像");
         }
         SkillProfile profile = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
                 .eq(SkillProfile::getId, id)
@@ -452,7 +458,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 .eq(SkillProfile::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (profile == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "技能画像不存在或已不可用");
         }
         return profile;
     }
@@ -468,13 +474,57 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     private SkillProfile latestSuccessProfile(Long targetJobId, Long userId) {
-        return profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+        List<SkillProfile> profiles = profileMapper.selectList(new LambdaQueryWrapper<SkillProfile>()
                 .eq(SkillProfile::getTargetJobId, targetJobId)
                 .eq(SkillProfile::getUserId, userId)
                 .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
                 .eq(SkillProfile::getDeleted, CommonConstants.NO)
                 .orderByDesc(SkillProfile::getUpdatedAt)
+                .last("limit 10"));
+        return profiles.stream()
+                .filter(this::hasTrustedProfileEvidence)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private void assertTrustedProfileEvidence(SkillProfile profile) {
+        if (!hasTrustedProfileEvidence(profile)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Skill profile is linked to a non-SUCCESS resume job match report");
+        }
+    }
+
+    private boolean hasTrustedProfileEvidence(SkillProfile profile) {
+        if (!isResumeJobMatchProfile(profile)) {
+            return true;
+        }
+        if (profile.getMatchReportId() == null) {
+            return false;
+        }
+        ResumeJobMatchReport report = reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, profile.getMatchReportId())
+                .eq(ResumeJobMatchReport::getUserId, profile.getUserId())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
+        return isTrustedSuccessMatchReport(report);
+    }
+
+    private boolean isTrustedSuccessMatchReport(ResumeJobMatchReport report) {
+        return report != null
+                && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())
+                && !isFallbackMatchReport(report);
+    }
+
+    private boolean isFallbackMatchReport(ResumeJobMatchReport report) {
+        JsonNode rawResult = readJsonSafely(report == null ? null : report.getRawResultJson());
+        return rawResult != null
+                && (rawResult.path("fallback").asBoolean(false)
+                || TRUST_FALLBACK.equalsIgnoreCase(rawResult.path("trustStatus").asText(null))
+                || (rawResult.path("schemaWarnings").isArray() && !rawResult.path("schemaWarnings").isEmpty()));
+    }
+
+    private boolean isResumeJobMatchProfile(SkillProfile profile) {
+        return profile != null && SOURCE_RESUME_JOB_MATCH.equalsIgnoreCase(String.valueOf(profile.getSourceType()));
     }
 
     private Long resolveOverviewTargetJobId(Long targetJobId, Long userId) {
@@ -505,7 +555,6 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         vo.setSourceBizId(profile.getSourceBizId());
         vo.setStatus(profile.getStatus());
         vo.setErrorMessage(profile.getErrorMessage());
-        vo.setRawResult(readJsonOrNull(profile.getRawResultJson()));
         vo.setAiCallLogId(profile.getAiCallLogId());
         vo.setGapItems(listGapItems(profile));
         vo.setCreatedAt(profile.getCreatedAt());
@@ -791,7 +840,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     private JsonNode parseResultJson(String resultJson) {
         JsonNode root = readJsonOrNull(resultJson);
         if (root == null || !root.isObject()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Skill profile result must be a JSON object");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像结果格式异常，请稍后重试");
         }
         JsonNode gaps = root.path("skillGaps");
         if (!gaps.isArray() || gaps.isEmpty()) {
@@ -821,7 +870,18 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         try {
             return objectMapper.readTree(raw);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Stored skill profile JSON is invalid");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "已保存的技能画像结果格式异常");
+        }
+    }
+
+    private JsonNode readJsonSafely(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return null;
+        }
+        try {
+            return objectMapper.readTree(raw);
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -885,7 +945,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "JSON serialization failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "结果序列化失败，请稍后重试");
         }
     }
 
@@ -909,7 +969,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "Skill profile analysis failed";
+        String value = StringUtils.hasText(message) ? message : "技能画像分析失败";
         return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
     }
 

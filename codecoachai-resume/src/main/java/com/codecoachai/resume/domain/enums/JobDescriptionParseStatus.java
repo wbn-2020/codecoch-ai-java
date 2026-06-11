@@ -6,8 +6,8 @@ public enum JobDescriptionParseStatus {
 
     NOT_PARSED("Not parsed"),
     PARSING("Parsing in progress"),
-    PARSED("Parsed successfully"),
-    FAILED("Parsing failed");
+    PARSED("解析成功"),
+    FAILED("解析失败");
 
     private final String message;
 

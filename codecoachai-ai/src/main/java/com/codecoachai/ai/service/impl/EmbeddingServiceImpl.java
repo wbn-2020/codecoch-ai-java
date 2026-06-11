@@ -59,10 +59,10 @@ public class EmbeddingServiceImpl implements EmbeddingService {
 
     private List<String> normalizeTexts(List<String> texts) {
         if (texts == null || texts.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "texts is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "待处理文本不能为空");
         }
         if (texts.size() > MAX_BATCH_SIZE) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "texts size must be at most 64");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "单次最多处理 64 段文本");
         }
         List<String> normalized = texts.stream()
                 .filter(StringUtils::hasText)
@@ -70,7 +70,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
                 .map(text -> text.length() > MAX_TEXT_LENGTH ? text.substring(0, MAX_TEXT_LENGTH) : text)
                 .toList();
         if (normalized.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "texts is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "待处理文本不能为空");
         }
         return normalized;
     }

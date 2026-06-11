@@ -34,4 +34,13 @@ public class Notification extends BaseEntity {
     private Integer readStatus;
 
     private LocalDateTime readAt;
+
+    /** SUCCESS / FAILED / UNKNOWN */
+    private String sendStatus;
+
+    /** 发送失败原因 */
+    private String sendError;
+
+    /** 写入或投递时间 */
+    private LocalDateTime sentAt;
 }

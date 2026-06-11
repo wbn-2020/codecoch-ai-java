@@ -30,4 +30,9 @@ public class InterviewReportVO {
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;
     private String failureReason;
+    private String sourceType;
+    private Long sourceId;
+    private String trustStatus;
+    private String evidenceSummary;
+    private Boolean fallback;
 }

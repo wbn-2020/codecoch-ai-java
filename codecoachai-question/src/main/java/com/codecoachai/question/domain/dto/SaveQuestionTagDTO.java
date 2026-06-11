@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class SaveQuestionTagDTO {
 
-    @NotBlank(message = "tagName is required")
+    @NotBlank(message = "请填写标签名称")
     private String tagName;
 
     private String keyword;

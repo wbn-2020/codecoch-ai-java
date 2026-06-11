@@ -18,6 +18,8 @@ public interface JobCoachAgentService {
 
     DailyPlanVO generateDailyPlan(Long userId, DailyPlanGenerateDTO dto);
 
+    DailyPlanVO executeDailyPlan(Long userId, Long runId, DailyPlanGenerateDTO dto);
+
     DailyPlanVO latestDailyPlan(Long userId, Long targetJobId, LocalDate date);
 
     List<AgentTaskVO> todayTasks(Long userId, Long targetJobId, LocalDate date, String status);

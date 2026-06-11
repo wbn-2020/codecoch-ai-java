@@ -10,6 +10,16 @@ public class GenerateQuestionDraftDTO {
     private Integer count;
     private List<String> tags;
     private String targetPosition;
+    private String technologyStack;
+    private String knowledgePoint;
+    private String questionType;
+    private Integer experienceYears;
     private String experienceLevel;
-    private Long batchId;
+    private String batchId;
+    private Long adminUserId;
+    private Boolean generateReferenceAnswer;
+    private Boolean generateFollowUps;
+    private Boolean generateTagSuggestions;
+    private Boolean generateCategorySuggestion;
+    private String extraRequirements;
 }

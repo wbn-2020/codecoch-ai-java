@@ -22,6 +22,11 @@ public class AgentTaskVO {
     private String relatedBizType;
     private Long relatedBizId;
     private String actionUrl;
+    private String sourceType;
+    private Long sourceId;
+    private String trustStatus;
+    private String evidenceSummary;
+    private Boolean fallback;
     private String status;
     private String skipReason;
     private LocalDate dueDate;

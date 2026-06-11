@@ -657,25 +657,25 @@ CREATE TABLE IF NOT EXISTS interview_session (
 
 CREATE TABLE IF NOT EXISTS industry_template (
     id BIGINT NOT NULL AUTO_INCREMENT,
-    industry_code VARCHAR(64) NOT NULL COMMENT '琛屼笟缂栫爜',
-    industry_name VARCHAR(100) NOT NULL COMMENT '琛屼笟鍚嶇О',
-    description VARCHAR(500) DEFAULT NULL COMMENT '琛屼笟璇存槑',
-    target_positions VARCHAR(500) DEFAULT NULL COMMENT '閫傜敤宀椾綅',
-    core_business_scenarios LONGTEXT DEFAULT NULL COMMENT '鏍稿績涓氬姟鍦烘櫙 JSON',
-    key_technical_points LONGTEXT DEFAULT NULL COMMENT '鍏抽敭鎶€鏈叧娉ㄧ偣 JSON',
-    common_question_directions LONGTEXT DEFAULT NULL COMMENT '甯歌杩介棶鏂瑰悜 JSON',
-    risk_points LONGTEXT DEFAULT NULL COMMENT '甯歌椋庨櫓鐐?JSON',
-    prompt_context LONGTEXT DEFAULT NULL COMMENT '娉ㄥ叆 AI Prompt 鐨勮涓氫笂涓嬫枃',
-    enabled TINYINT NOT NULL DEFAULT 1 COMMENT '鏄惁鍚敤',
-    sort_order INT NOT NULL DEFAULT 0 COMMENT '鎺掑簭',
-    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '鏄惁鍒犻櫎',
+    industry_code VARCHAR(64) NOT NULL COMMENT '行业编码',
+    industry_name VARCHAR(100) NOT NULL COMMENT '行业名称',
+    description VARCHAR(500) DEFAULT NULL COMMENT '行业说明',
+    target_positions VARCHAR(500) DEFAULT NULL COMMENT '适用岗位',
+    core_business_scenarios LONGTEXT DEFAULT NULL COMMENT '核心业务场景 JSON',
+    key_technical_points LONGTEXT DEFAULT NULL COMMENT '关键技术关注点 JSON',
+    common_question_directions LONGTEXT DEFAULT NULL COMMENT '常见追问方向 JSON',
+    risk_points LONGTEXT DEFAULT NULL COMMENT '常见风险点 JSON',
+    prompt_context LONGTEXT DEFAULT NULL COMMENT '注入 AI Prompt 的行业上下文',
+    enabled TINYINT NOT NULL DEFAULT 1 COMMENT '是否启用',
+    sort_order INT NOT NULL DEFAULT 0 COMMENT '排序',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '是否删除',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_industry_code (industry_code),
     KEY idx_enabled_sort (enabled, sort_order),
     KEY idx_deleted (deleted)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='琛屼笟妯℃澘';
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='行业模板';
 
 CREATE TABLE IF NOT EXISTS interview_stage (
   id BIGINT NOT NULL AUTO_INCREMENT,

@@ -54,7 +54,7 @@ public class PracticeServiceImpl implements PracticeService {
     public PracticeRecordVO submit(Long questionId, PracticeSubmitDTO dto) {
         Long userId = requireCurrentUserId();
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Practice submit body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写练习提交内容");
         }
         if (dto != null && dto.getQuestionId() != null && !dto.getQuestionId().equals(questionId)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "questionId is inconsistent");

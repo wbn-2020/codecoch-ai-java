@@ -133,7 +133,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         PromptTemplate template = getTemplate(id);
         if (hasPromptContent(dto)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt content must be changed through prompt version APIs");
+                    "提示词正文请通过版本管理修改");
         }
         applyMetadata(template, dto);
         promptTemplateMapper.updateById(template);
@@ -198,7 +198,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
         if (PromptVersionStatus.DISABLED.name().equals(version.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Disabled prompt version cannot be activated");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "已禁用的提示词版本不能启用");
         }
         PromptTemplate template = getTemplate(version.getTemplateId());
         promptTemplateVersionMapper.update(null, new LambdaUpdateWrapper<PromptTemplateVersion>()
@@ -233,7 +233,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public void disableVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
         if (CommonConstants.YES.equals(version.getIsActive())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Active prompt version cannot be disabled directly");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前生效版本不能直接禁用，请先切换到其他版本");
         }
         version.setStatus(PromptVersionStatus.DISABLED.name());
         version.setChangeLog(dto == null ? version.getChangeLog() : firstText(dto.getChangeLog(), version.getChangeLog()));
@@ -324,7 +324,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public AiCallLogVO getLog(Long id) {
         AiCallLog log = aiCallLogMapper.selectById(id);
         if (log == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI call log not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用记录不存在");
         }
         return AiConvert.toLogVO(log);
     }
@@ -333,7 +333,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public AiCallLogVO getLogRaw(Long id) {
         AiCallLog log = aiCallLogMapper.selectById(id);
         if (log == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI call log not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用记录不存在");
         }
         return AiConvert.toLogVO(log, true);
     }
@@ -354,7 +354,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                     savePromptTestLog(template, version, renderedPrompt, variables, response));
         }
         if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
-            String response = "PROMPT_VERSION_TEST_MOCK_RESPONSE";
+            String response = "提示词版本测试模拟响应";
             return new PromptTestResult(response,
                     savePromptTestLog(template, version, renderedPrompt, variables, response));
         }
@@ -376,7 +376,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             RouteResult result = aiCallLogService.callAndLog(ctx);
             return new PromptTestResult(result.getContent(), result.getAiCallLogId());
         } catch (RuntimeException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "Prompt version test failed"));
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "提示词版本测试失败，请稍后重试"));
         }
     }
 
@@ -386,7 +386,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         log.setUserId(LoginUserContext.getUserId());
         log.setScene("PROMPT_VERSION_TEST");
         log.setModelName(Boolean.TRUE.equals(aiProperties.getMockEnabled())
-                ? aiProperties.getModel() + "(mock)"
+                ? aiProperties.getModel() + "（模拟）"
                 : aiProperties.getModel());
         log.setPromptTemplateId(template.getId());
         log.setPromptTemplateVersionId(version.getId());
@@ -431,10 +431,10 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private void apply(PromptTemplate template, PromptTemplateSaveDTO dto) {
         if (!StringUtils.hasText(dto.getName()) && !StringUtils.hasText(dto.getTemplateName())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "templateName is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词名称不能为空");
         }
         if (!StringUtils.hasText(dto.getContent()) && !StringUtils.hasText(dto.getTemplateContent())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "templateContent is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词内容不能为空");
         }
         template.setScene(dto.getScene());
         template.setName(StringUtils.hasText(dto.getName()) ? dto.getName() : dto.getTemplateName());
@@ -479,10 +479,10 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         try {
             versionStatus = PromptVersionStatus.valueOf(status.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Invalid prompt version status");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本状态不正确");
         }
         if (PromptVersionStatus.ACTIVE.equals(versionStatus)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt version must be activated through activate endpoint");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本需要通过启用操作发布");
         }
         return versionStatus.name();
     }
@@ -492,14 +492,14 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 .eq(PromptTemplateVersion::getTemplateId, templateId)
                 .eq(PromptTemplateVersion::getVersionCode, versionCode));
         if (count != null && count > 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt version code already exists");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本号已存在");
         }
     }
 
     private PromptTemplateVersion getVersion(Long id) {
         PromptTemplateVersion version = promptTemplateVersionMapper.selectById(id);
         if (version == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt template version not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本不存在或已不可用");
         }
         return version;
     }
@@ -507,7 +507,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private PromptTemplate getTemplate(Long id) {
         PromptTemplate template = promptTemplateMapper.selectById(id);
         if (template == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt template not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词模板不存在或已不可用");
         }
         return template;
     }

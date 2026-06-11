@@ -4,6 +4,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.service.ResumeService;
@@ -13,6 +14,7 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -42,6 +44,11 @@ public class InnerResumeController {
     @GetMapping("/optimize-records/{recordId}")
     public Result<InnerResumeOptimizeRecordVO> getOptimizeRecord(@PathVariable Long recordId) {
         return Result.success(resumeService.getInnerOptimizeRecord(recordId));
+    }
+
+    @PostMapping("/optimize-records/{recordId}/execute")
+    public Result<ResumeOptimizeSubmitVO> executeOptimizeRecord(@PathVariable Long recordId) {
+        return Result.success(resumeService.executeOptimizeRecord(recordId));
     }
 
     @GetMapping("/{id}/search-doc")

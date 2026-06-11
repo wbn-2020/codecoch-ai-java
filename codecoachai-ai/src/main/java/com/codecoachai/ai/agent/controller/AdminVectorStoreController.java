@@ -34,6 +34,10 @@ public class AdminVectorStoreController {
 
     private static final String QUESTION_COLLECTION = "question_embedding";
     private static final String VECTOR_OPS_PERMISSION = "admin:analytics:ai";
+    private static final String VECTOR_JOB_KNOWLEDGE_REBUILD = "KNOWLEDGE_REBUILD";
+    private static final String VECTOR_JOB_KNOWLEDGE_RETRY = "KNOWLEDGE_RETRY";
+    private static final String VECTOR_SCOPE_KNOWLEDGE = "KNOWLEDGE";
+    private static final String VECTOR_SCOPE_FAILED_OR_STALE = "FAILED_OR_STALE";
 
     private final VectorStoreClient vectorStoreClient;
     private final VectorIndexJobService vectorIndexJobService;
@@ -118,10 +122,11 @@ public class AdminVectorStoreController {
     @PostMapping("/knowledge/rebuild")
     public Result<KnowledgeVectorRebuildVO> rebuildKnowledgeVectors(@RequestParam(required = false) Integer limit) {
         permissionGuard.require(VECTOR_OPS_PERMISSION);
-        Long jobId = vectorIndexJobService.start("KNOWLEDGE_REBUILD", "KNOWLEDGE", null, limit);
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, null, limit);
         try {
             KnowledgeVectorRebuildVO result = agentV4OpsService.rebuildAllKnowledgeVectors(limit);
-            finishKnowledgeVectorJob(jobId, result);
+            String status = finishKnowledgeVectorJob(jobId, result);
+            attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, null, status);
             return Result.success(result);
         } catch (Exception ex) {
             vectorIndexJobService.fail(jobId, ex);
@@ -132,10 +137,12 @@ public class AdminVectorStoreController {
     @PostMapping("/knowledge/retry-failed")
     public Result<KnowledgeVectorRebuildVO> retryFailedKnowledgeVectors(@RequestParam(required = false) Integer limit) {
         permissionGuard.require(VECTOR_OPS_PERMISSION);
-        Long jobId = vectorIndexJobService.start("KNOWLEDGE_RETRY", "KNOWLEDGE", "FAILED_OR_STALE", limit);
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE, VECTOR_SCOPE_FAILED_OR_STALE, limit);
         try {
             KnowledgeVectorRebuildVO result = agentV4OpsService.retryAllFailedKnowledgeVectors(limit);
-            finishKnowledgeVectorJob(jobId, result);
+            String status = finishKnowledgeVectorJob(jobId, result);
+            attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE,
+                    VECTOR_SCOPE_FAILED_OR_STALE, status);
             return Result.success(result);
         } catch (Exception ex) {
             vectorIndexJobService.fail(jobId, ex);
@@ -144,13 +151,14 @@ public class AdminVectorStoreController {
     }
 
     @GetMapping("/jobs")
-    public Result<PageResult<Map<String, Object>>> jobs(@RequestParam(required = false) String jobType,
+    public Result<PageResult<Map<String, Object>>> jobs(@RequestParam(required = false) Long jobId,
+                                                        @RequestParam(required = false) String jobType,
                                                         @RequestParam(required = false) String scopeType,
                                                         @RequestParam(required = false) String status,
                                                         @RequestParam(required = false) Long pageNo,
                                                         @RequestParam(required = false) Long pageSize) {
         permissionGuard.require(VECTOR_OPS_PERMISSION);
-        return Result.success(vectorIndexJobService.page(jobType, scopeType, status, pageNo, pageSize));
+        return Result.success(vectorIndexJobService.page(jobId, jobType, scopeType, status, pageNo, pageSize));
     }
 
     private Map<String, Object> mysqlVectorIndexStats() {
@@ -497,7 +505,7 @@ public class AdminVectorStoreController {
                         firstText(ex == null ? null : ex.getMessage(), "unknown error")).toArray());
     }
 
-    private void finishKnowledgeVectorJob(Long jobId, KnowledgeVectorRebuildVO result) {
+    private String finishKnowledgeVectorJob(Long jobId, KnowledgeVectorRebuildVO result) {
         long total = numberValue(result == null ? null : result.getChunkCount());
         long success = numberValue(result == null ? null : result.getVectorUpdated());
         long failed = result == null || result.getFailedDocuments() == null ? 0L : result.getFailedDocuments().size();
@@ -505,8 +513,23 @@ public class AdminVectorStoreController {
         long deleted = numberValue(result == null ? null : result.getVectorDeleted());
         String error = result == null || result.getErrors() == null || result.getErrors().isEmpty()
                 ? null : String.join("; ", result.getErrors().stream().limit(5).toList());
-        vectorIndexJobService.finish(jobId, failed > 0 || error != null ? "FAILED" : "SUCCESS",
+        String status = failed > 0 || error != null ? "FAILED" : "SUCCESS";
+        vectorIndexJobService.finish(jobId, status,
                 Map.of(), total, success, failed, updated, deleted, error);
+        return status;
+    }
+
+    private void attachKnowledgeVectorJob(KnowledgeVectorRebuildVO result, Long jobId, String jobType,
+                                          String scopeType, String scopeId, String status) {
+        if (result == null || jobId == null) {
+            return;
+        }
+        result.setJobId(jobId);
+        result.setVectorJobId(jobId);
+        result.setVectorJobType(jobType);
+        result.setVectorScopeType(scopeType);
+        result.setVectorScopeId(scopeId);
+        result.setVectorJobStatus(status);
     }
 
     private String sqlPlaceholders(int count) {

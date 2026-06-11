@@ -298,16 +298,16 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private List<String> nextActions(List<AgentTask> tasks, long done, long skipped, long todo) {
         List<String> actions = new ArrayList<>();
         if (todo > 0) {
-            actions.add("Finish the remaining high-priority Agent tasks first.");
+            actions.add("先完成剩余的高优先级今日任务。");
         }
         if (skipped > 0) {
-            actions.add("Review skipped tasks and reduce tomorrow's workload if needed.");
+            actions.add("复盘已跳过的任务，必要时减少明天的任务量。");
         }
         if (done == tasks.size() && !tasks.isEmpty()) {
-            actions.add("Add one wrong-question review or interview retelling drill.");
+            actions.add("加练一次错题复盘或面试复述。");
         }
         if (actions.isEmpty()) {
-            actions.add("Generate a daily plan first so progress can be reviewed.");
+            actions.add("先生成今日计划，后续才能复盘准备进度。");
         }
         return actions;
     }
@@ -335,7 +335,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private AgentMemory ownedMemory(Long userId, Long id) {
         AgentMemory memory = agentMemoryMapper.selectById(id);
         if (memory == null || !Objects.equals(userId, memory.getUserId())) {
-            throw new IllegalArgumentException("Memory not found or forbidden");
+            throw new IllegalArgumentException("记忆记录不存在或无权访问");
         }
         return memory;
     }

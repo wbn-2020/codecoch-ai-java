@@ -1,6 +1,8 @@
 package com.codecoachai.resume.mq;
 
 import com.codecoachai.common.mq.constant.MqTopics;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
+import com.codecoachai.common.mq.payload.ResumeOptimizePayload;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.producer.MqProducer;
@@ -33,21 +35,43 @@ public class ResumeMqDispatcher {
      * @return 是否投递成功（异常时返回 false，不会阻塞主流程）
      */
     public boolean dispatchParse(ResumeParsePayload payload) {
+        return dispatchParseWithReceipt(payload) != null;
+    }
+
+    public MqDispatchReceipt dispatchParseWithReceipt(ResumeParsePayload payload) {
         if (payload == null || payload.getResumeId() == null) {
-            return false;
+            return null;
         }
         try {
-            mqProducer.sendSync(
+            return mqProducer.sendSyncWithReceipt(
                     MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
                     "resume.parse",
                     String.valueOf(payload.getResumeId()),
                     payload.getUserId(),
                     payload
             );
-            return true;
         } catch (Exception ex) {
             log.error("派发简历解析任务失败 resumeId={}", payload.getResumeId(), ex);
-            return false;
+            return null;
+        }
+    }
+
+    public MqDispatchReceipt dispatchOptimizeWithReceipt(ResumeOptimizePayload payload) {
+        if (payload == null || payload.getOptimizeRecordId() == null) {
+            return null;
+        }
+        try {
+            return mqProducer.sendSyncWithReceipt(
+                    MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_OPTIMIZE),
+                    "resume.optimize",
+                    String.valueOf(payload.getOptimizeRecordId()),
+                    payload.getUserId(),
+                    payload
+            );
+        } catch (Exception ex) {
+            log.error("Dispatch resume optimize task failed optimizeRecordId={}",
+                    payload.getOptimizeRecordId(), ex);
+            return null;
         }
     }
 

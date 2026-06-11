@@ -48,7 +48,7 @@ public class InnerResumeAnalysisController {
     public Result<RawVO> getAnalysisRaw(@PathVariable("id") Long id) {
         ResumeAnalysisRecord record = analysisRecordMapper.selectById(id);
         if (record == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysis record not found: " + id);
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
         }
         RawVO vo = new RawVO();
         vo.setId(record.getId());
@@ -80,7 +80,7 @@ public class InnerResumeAnalysisController {
     public Result<Void> completeParse(@PathVariable("id") Long id, @Valid @RequestBody CompleteDTO dto) {
         ResumeAnalysisRecord existing = analysisRecordMapper.selectById(id);
         if (existing == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysis record not found: " + id);
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
         }
         String status = StringUtils.hasText(dto.getParseStatus()) ? dto.getParseStatus() : "SUCCESS";
 

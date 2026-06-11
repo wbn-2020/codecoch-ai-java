@@ -9,11 +9,11 @@ import lombok.Data;
 @Data
 public class BatchQuestionReviewRejectDTO {
 
-    @NotEmpty(message = "reviewIds is required")
-    @Size(max = 100, message = "reviewIds must be at most 100")
+    @NotEmpty(message = "请选择待审核题目")
+    @Size(max = 100, message = "单次最多处理 100 道待审核题目")
     private List<Long> reviewIds;
 
-    @NotBlank(message = "rejectReason is required")
-    @Size(max = 500, message = "rejectReason must be at most 500 characters")
+    @NotBlank(message = "请填写驳回原因")
+    @Size(max = 500, message = "驳回原因不能超过 500 字")
     private String rejectReason;
 }

@@ -70,9 +70,15 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
 
             // 1. 拉取上下文
             Result<InterviewReportContextVO> ctxResp = interviewFeignClient.getReportContext(payload.getSessionId());
-            if (ctxResp == null || ctxResp.getCode() != 0 || ctxResp.getData() == null) {
-                throw new NonRetryableMqException("拉取面试上下文失败: "
-                        + (ctxResp == null ? "null" : ctxResp.getMessage()));
+            if (ctxResp == null) {
+                throw new RuntimeException("拉取面试上下文失败: null");
+            }
+            if (ctxResp.getCode() != 0 || ctxResp.getData() == null) {
+                String reason = "拉取面试上下文失败: " + ctxResp.getMessage();
+                if (isBusinessFailure(ctxResp.getCode())) {
+                    throw new TerminalTaskFailureException(reason);
+                }
+                throw new RuntimeException(reason);
             }
             InterviewReportContextVO ctx = ctxResp.getData();
 
@@ -93,7 +99,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             Result<GenerateReportVO> aiResp = aiFeignClient.generateInterviewReport(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
                 if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
-                    throw new NonRetryableMqException("AI 面试报告业务失败: " + aiResp.getMessage());
+                    throw new TerminalTaskFailureException("AI 面试报告业务失败: " + aiResp.getMessage());
                 }
                 throw new RuntimeException("AI 报告返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
@@ -103,13 +109,28 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             complete.setReportJson(aiResp.getData().getReportJson());
             complete.setTotalScore(aiResp.getData().getTotalScore());
             complete.setReportStatus("SUCCESS");
-            interviewFeignClient.completeReport(payload.getSessionId(), complete);
+            Result<Void> completeResp = interviewFeignClient.completeReport(payload.getSessionId(), complete);
+            if (completeResp == null || completeResp.getCode() != 0) {
+                if (completeResp != null && isBusinessFailure(completeResp.getCode())) {
+                    throw new TerminalTaskFailureException("回写面试报告失败: " + completeResp.getMessage());
+                }
+                throw new RuntimeException("回写面试报告异常: "
+                        + (completeResp == null ? "null" : completeResp.getMessage()));
+            }
 
             asyncTaskService.markSuccess(envelope.getMessageId(), aiResp.getData().getReportJson());
             log.info("面试报告生成完成 sessionId={}", payload.getSessionId());
             // 通知用户
             notificationService.notifyTaskDone(payload.getUserId(), "INTERVIEW_REPORT",
                     String.valueOf(payload.getSessionId()), "面试报告已生成", "您的模拟面试报告已生成完毕，请查看");
+        } catch (TerminalTaskFailureException terminalEx) {
+            log.warn("面试报告任务业务终态失败 messageId={}", envelope.getMessageId(), terminalEx);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), terminalEx.getMessage());
+            tryMarkInterviewFailed(envelope, terminalEx.getMessage());
+            if (envelope.getPayload() != null) {
+                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "INTERVIEW_REPORT",
+                        String.valueOf(envelope.getPayload().getSessionId()), "面试报告生成失败", terminalEx.getMessage());
+            }
         } catch (NonRetryableMqException nrEx) {
             log.error("面试报告任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
             asyncTaskService.markDead(envelope, nrEx.getMessage());
@@ -146,5 +167,11 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private static class TerminalTaskFailureException extends RuntimeException {
+        private TerminalTaskFailureException(String message) {
+            super(message);
+        }
     }
 }

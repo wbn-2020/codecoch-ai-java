@@ -6,6 +6,6 @@ import lombok.Data;
 @Data
 public class UpdateStatusDTO {
 
-    @NotNull(message = "status is required")
+    @NotNull(message = "请选择状态")
     private Integer status;
 }

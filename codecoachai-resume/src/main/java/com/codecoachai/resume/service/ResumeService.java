@@ -38,6 +38,8 @@ public interface ResumeService {
 
     ResumeOptimizeSubmitVO optimizeResume(Long resumeId, ResumeOptimizeRequestDTO dto);
 
+    ResumeOptimizeSubmitVO executeOptimizeRecord(Long recordId);
+
     List<ResumeOptimizeRecordVO> listOptimizeRecords(Long resumeId);
 
     ResumeOptimizeDetailVO getOptimizeRecordDetail(Long recordId);

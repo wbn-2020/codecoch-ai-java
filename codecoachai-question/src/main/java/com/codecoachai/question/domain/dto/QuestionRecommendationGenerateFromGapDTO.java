@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class QuestionRecommendationGenerateFromGapDTO {
 
-    @NotNull(message = "skillProfileId is required")
+    @NotNull(message = "请选择能力画像")
     private Long skillProfileId;
     private List<Long> gapItemIds;
     private Integer questionCount;

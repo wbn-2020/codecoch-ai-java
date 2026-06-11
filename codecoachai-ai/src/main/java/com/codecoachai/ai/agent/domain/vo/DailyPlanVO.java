@@ -21,6 +21,10 @@ public class DailyPlanVO {
     private List<AgentTaskVO> tasks = new ArrayList<>();
     private Boolean empty = false;
     private String emptyMessage;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime createdAt;

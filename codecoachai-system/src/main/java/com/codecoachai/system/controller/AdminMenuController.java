@@ -141,7 +141,7 @@ public class AdminMenuController {
                 .filter(id -> !menuById.containsKey(id))
                 .toList();
         if (!missingIds.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "menu not found: " + missingIds);
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "部分菜单不存在或已不可用：" + missingIds);
         }
 
         Set<Long> resolvedIds = new LinkedHashSet<>();
@@ -161,7 +161,7 @@ public class AdminMenuController {
 
     private void apply(SysMenu menu, SysMenuSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getMenuName())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "menuName is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "菜单名称不能为空");
         }
         menu.setParentId(dto.getParentId() == null ? 0L : dto.getParentId());
         menu.setMenuName(dto.getMenuName().trim());
@@ -179,7 +179,7 @@ public class AdminMenuController {
     private SysMenu get(Long id) {
         SysMenu menu = menuMapper.selectById(id);
         if (menu == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "menu not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "菜单不存在或已不可用");
         }
         return menu;
     }

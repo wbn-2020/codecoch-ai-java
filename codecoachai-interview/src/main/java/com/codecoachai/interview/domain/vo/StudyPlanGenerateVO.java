@@ -11,5 +11,10 @@ public class StudyPlanGenerateVO {
     private Integer taskCount;
     private Integer skillGapCount;
     private Long aiCallLogId;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
     private String failureReason;
 }

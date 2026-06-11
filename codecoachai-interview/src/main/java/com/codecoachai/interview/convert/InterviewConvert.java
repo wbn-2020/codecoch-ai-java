@@ -18,6 +18,10 @@ import org.springframework.util.StringUtils;
 public final class InterviewConvert {
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final String REPORT_SOURCE_TYPE = "INTERVIEW_REPORT";
+    private static final String TRUST_VERIFIED = "VERIFIED";
+    private static final String TRUST_PARTIAL = "PARTIAL";
+    private static final String TRUST_FALLBACK = "FALLBACK";
 
     private InterviewConvert() {
     }
@@ -114,7 +118,52 @@ public final class InterviewConvert {
         vo.setGeneratedAt(report.getGeneratedAt());
         vo.setCreatedAt(report.getCreatedAt());
         vo.setFailureReason(report.getFailureReason());
+        vo.setSourceType(REPORT_SOURCE_TYPE);
+        vo.setSourceId(report.getId());
+        vo.setTrustStatus(reportTrustStatus(report));
+        vo.setEvidenceSummary(reportEvidenceSummary(report));
+        vo.setFallback(reportFallback(report));
         return vo;
+    }
+
+    private static String reportTrustStatus(InterviewReport report) {
+        if (report == null) {
+            return TRUST_PARTIAL;
+        }
+        String status = report.getStatus();
+        if ("FAILED".equalsIgnoreCase(status) || "UNSCORABLE".equalsIgnoreCase(status)) {
+            return TRUST_FALLBACK;
+        }
+        boolean generated = "GENERATED".equalsIgnoreCase(status) || "SUCCESS".equalsIgnoreCase(status);
+        boolean hasScore = report.getTotalScore() != null && report.getTotalScore() > 0;
+        boolean hasContent = StringUtils.hasText(report.getReportContent())
+                || StringUtils.hasText(report.getSummary())
+                || StringUtils.hasText(report.getQaReview());
+        return generated && hasScore && hasContent ? TRUST_VERIFIED : TRUST_PARTIAL;
+    }
+
+    private static Boolean reportFallback(InterviewReport report) {
+        if (report == null || report.getSessionId() == null) {
+            return true;
+        }
+        String status = report.getStatus();
+        return "FAILED".equalsIgnoreCase(status) || "UNSCORABLE".equalsIgnoreCase(status);
+    }
+
+    private static String reportEvidenceSummary(InterviewReport report) {
+        if (report == null) {
+            return "面试报告缺少上下文证据。";
+        }
+        String reportId = report.getId() == null ? "未落库" : "#" + report.getId();
+        String sessionId = report.getSessionId() == null ? "未绑定面试" : "#" + report.getSessionId();
+        String status = firstText(report.getStatus(), "状态待确认");
+        if ("FAILED".equalsIgnoreCase(report.getStatus()) || "UNSCORABLE".equalsIgnoreCase(report.getStatus())) {
+            return "来自面试 " + sessionId + " · 报告 " + reportId + " · " + status + "："
+                    + firstText(report.getFailureReason(), "原因待排查");
+        }
+        String score = report.getTotalScore() == null ? "评分待确认" : "综合得分 " + report.getTotalScore() + " 分";
+        String generatedAt = report.getGeneratedAt() == null ? "生成时间待确认" : "生成于 " + report.getGeneratedAt();
+        return "来自面试 " + sessionId + " · 报告 " + reportId + " · " + score + " · " + generatedAt;
     }
 
     private static Map<String, Object> parseMap(String value) {

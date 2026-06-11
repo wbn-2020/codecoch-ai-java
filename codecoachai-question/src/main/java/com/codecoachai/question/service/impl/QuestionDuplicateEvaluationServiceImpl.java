@@ -74,10 +74,10 @@ public class QuestionDuplicateEvaluationServiceImpl implements QuestionDuplicate
     @Transactional(rollbackFor = Exception.class)
     public QuestionDuplicateEvalCaseVO saveCase(QuestionDuplicateEvalCaseSaveDTO dto) {
         if (dto == null || dto.getSourceQuestionId() == null || dto.getTargetQuestionId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "sourceQuestionId and targetQuestionId are required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择要评测的两道题目");
         }
         if (Objects.equals(dto.getSourceQuestionId(), dto.getTargetQuestionId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "sourceQuestionId and targetQuestionId must be different");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "源题目和目标题目不能相同");
         }
         String expected = normalizeExpected(dto.getExpected());
         Question source = getQuestionOrThrow(dto.getSourceQuestionId());
@@ -498,7 +498,7 @@ public class QuestionDuplicateEvaluationServiceImpl implements QuestionDuplicate
         if ("FALSE".equals(value) || "NO".equals(value)) {
             return "NOT_DUPLICATE";
         }
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "expected must be DUPLICATE, REVIEW or NOT_DUPLICATE");
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "期望结果只能是 DUPLICATE、REVIEW 或 NOT_DUPLICATE");
     }
 
     private String defaultCaseId(Long sourceQuestionId, Long targetQuestionId) {

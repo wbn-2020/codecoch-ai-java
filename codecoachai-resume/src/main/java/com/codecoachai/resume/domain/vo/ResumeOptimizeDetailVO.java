@@ -13,7 +13,16 @@ public class ResumeOptimizeDetailVO {
     private Integer experienceYears;
     private String industryDirection;
     private String optimizeStatus;
-    private JsonNode resultJson;
+    private String summary;
+    private Integer overallScore;
+    private String overallComment;
+    private JsonNode targetPositionMatch;
+    private JsonNode sectionScores;
+    private JsonNode problems;
+    private JsonNode rewriteSuggestions;
+    private JsonNode riskWarnings;
+    private JsonNode possibleInterviewQuestions;
+    private JsonNode nextActions;
     private JsonNode fieldPatches;
     private String errorMessage;
     private LocalDateTime createdAt;

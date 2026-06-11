@@ -39,7 +39,21 @@ public final class LoginUserContext {
     }
 
     public static boolean hasRole(String roleCode) {
-        return roleCode != null && getRoles().stream().anyMatch(roleCode::equalsIgnoreCase);
+        String normalizedRoleCode = normalizeRoleCode(roleCode);
+        return normalizedRoleCode != null && getRoles().stream()
+                .map(LoginUserContext::normalizeRoleCode)
+                .anyMatch(normalizedRoleCode::equalsIgnoreCase);
+    }
+
+    private static String normalizeRoleCode(String roleCode) {
+        if (roleCode == null) {
+            return null;
+        }
+        String normalized = roleCode.trim();
+        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
+            normalized = normalized.substring(5);
+        }
+        return normalized.isBlank() ? null : normalized;
     }
 
     public static void clear() {

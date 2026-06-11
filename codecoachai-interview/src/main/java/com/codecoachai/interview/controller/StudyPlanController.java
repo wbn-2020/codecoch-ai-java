@@ -155,7 +155,7 @@ public class StudyPlanController {
         try {
             return LocalDate.parse(date.trim());
         } catch (DateTimeParseException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "date must be yyyy-MM-dd");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "日期格式不正确，请使用 yyyy-MM-dd");
         }
     }
 }

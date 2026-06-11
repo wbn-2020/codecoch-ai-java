@@ -92,7 +92,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         Long operatorId = SecurityAssert.requireLoginUserId();
         List<Long> questionIds = normalizeQuestionIds(dto);
         if (questionIds.isEmpty()) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "questionId or questionIds is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择要检测的题目");
         }
         if (questionIds.size() > duplicateProperties.getMaxBatchCheckCount()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -348,7 +348,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     @Transactional(rollbackFor = Exception.class)
     public QuestionRelationVO createRelation(Long questionId, QuestionRelationCreateDTO dto) {
         if (dto == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "request body is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
         }
         QuestionRelationType relationType = parseRelationType(dto.getRelationType(), QuestionRelationType.RELATED);
         QuestionRelation relation = createOrGetRelation(questionId, dto.getTargetQuestionId(),
@@ -1413,7 +1413,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
 
     private QuestionPairIds sortedPairIds(Long leftQuestionId, Long rightQuestionId) {
         if (leftQuestionId == null || rightQuestionId == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "question id is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择题目");
         }
         return leftQuestionId <= rightQuestionId
                 ? new QuestionPairIds(leftQuestionId, rightQuestionId)
@@ -1427,7 +1427,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         try {
             return QuestionRelationType.valueOf(relationType);
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported relationType");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的题目关联类型");
         }
     }
 

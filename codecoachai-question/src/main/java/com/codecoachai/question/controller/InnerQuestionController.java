@@ -70,7 +70,7 @@ public class InnerQuestionController {
         String rawJson = StringUtils.hasText(dto.getRawAiResultJson()) ? dto.getRawAiResultJson() : toJson(dto);
         for (QuestionDraftItem item : dto.getQuestions()) {
             if (!StringUtils.hasText(item.getTitle()) || !StringUtils.hasText(item.getContent())) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR, "question draft title/content is required");
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "题目草稿标题和内容不能为空");
             }
             QuestionReview review = new QuestionReview();
             review.setBatchId(dto.getBatchId());

@@ -51,6 +51,7 @@ public class AdminNotificationController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Long userId,
             @RequestParam(required = false) String type,
+            @RequestParam(required = false) String sendStatus,
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) Integer readStatus) {
         adminPermissionGuard.require(PERM_NOTICE_LIST);
@@ -64,9 +65,10 @@ public class AdminNotificationController {
                                 .or().like(Notification::getContent, keyword)
                                 .or().like(Notification::getType, keyword)
                                 .or().like(Notification::getBizType, keyword)
-                                .or().like(Notification::getBizId, keyword))
+                        .or().like(Notification::getBizId, keyword))
                         .eq(userId != null, Notification::getUserId, userId)
                         .eq(StringUtils.hasText(type), Notification::getType, type)
+                        .eq(StringUtils.hasText(sendStatus), Notification::getSendStatus, sendStatus)
                         .eq(resolvedReadStatus != null, Notification::getReadStatus, resolvedReadStatus)
                         .orderByDesc(Notification::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
@@ -91,15 +93,16 @@ public class AdminNotificationController {
     }
 
     private void doSend(SendNotificationDTO dto) {
+        String type = StringUtils.hasText(dto.getType()) ? dto.getType() : "SYSTEM";
         if (dto.getUserIds() != null && !dto.getUserIds().isEmpty()) {
             for (Long uid : dto.getUserIds()) {
-                notificationService.notifySystem(uid, dto.getTitle(), dto.getContent());
+                notificationService.notify(uid, type, null, null, dto.getTitle(), dto.getContent());
             }
         } else if (dto.getTargetUserId() != null) {
-            notificationService.notifySystem(dto.getTargetUserId(), dto.getTitle(), dto.getContent());
+            notificationService.notify(dto.getTargetUserId(), type, null, null, dto.getTitle(), dto.getContent());
         } else {
             // userId=0 是广播通知的历史约定，查询端需按自己的场景决定是否合并广播消息。
-            notificationService.notifySystem(0L, dto.getTitle(), dto.getContent());
+            notificationService.notify(0L, type, null, null, dto.getTitle(), dto.getContent());
         }
     }
 

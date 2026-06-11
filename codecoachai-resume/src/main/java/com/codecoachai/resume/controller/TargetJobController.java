@@ -69,6 +69,12 @@ public class TargetJobController {
         return Result.success(targetJobService.parseJobDescription(id, dto));
     }
 
+    @PostMapping("/{id}/parse-task")
+    public Result<JobDescriptionAnalysisVO> parseTask(@PathVariable Long id,
+                                                      @RequestBody(required = false) JobDescriptionParseDTO dto) {
+        return Result.success(targetJobService.submitJobDescriptionParse(id, dto));
+    }
+
     @GetMapping("/{id}/analysis")
     public Result<JobDescriptionAnalysisVO> analysis(@PathVariable Long id) {
         return Result.success(targetJobService.getAnalysis(id));

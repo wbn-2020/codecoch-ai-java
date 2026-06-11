@@ -242,7 +242,7 @@ public class UserServiceImpl implements UserService {
     @Override
     public void resetInnerPassword(Long id, InnerResetPasswordDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getPasswordHash())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "passwordHash is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "新密码信息不能为空");
         }
         SysUser user = getUserOrThrow(id);
         user.setPasswordHash(dto.getPasswordHash());
@@ -463,6 +463,7 @@ public class UserServiceImpl implements UserService {
 
     private void ensureNotDisablingLastAdmin(Long userId) {
         boolean targetIsAdmin = roleService.listRoleCodesByUserId(userId).stream()
+                .map(this::normalizeRoleCode)
                 .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
         if (!targetIsAdmin) {
             return;
@@ -481,6 +482,17 @@ public class UserServiceImpl implements UserService {
         if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
         }
+    }
+
+    private String normalizeRoleCode(String roleCode) {
+        if (!org.springframework.util.StringUtils.hasText(roleCode)) {
+            return "";
+        }
+        String normalized = roleCode.trim();
+        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
+            normalized = normalized.substring(5);
+        }
+        return normalized;
     }
 
     private int toInt(long value) {

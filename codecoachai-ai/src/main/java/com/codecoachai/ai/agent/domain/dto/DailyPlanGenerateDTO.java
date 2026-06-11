@@ -8,6 +8,7 @@ import lombok.Data;
 @Data
 public class DailyPlanGenerateDTO {
 
+    private Long userId;
     private Long targetJobId;
     private LocalDate date;
     @Min(15)

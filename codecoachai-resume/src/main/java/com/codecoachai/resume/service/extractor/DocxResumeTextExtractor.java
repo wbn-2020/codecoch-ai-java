@@ -25,7 +25,7 @@ public class DocxResumeTextExtractor extends AbstractResumeTextExtractor {
                     .map(paragraph -> paragraph.getText())
                     .collect(Collectors.joining("\n"));
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "DOCX text extraction failed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "DOCX 简历文本提取失败，请更换文件或转为文本后重试");
         }
     }
 }

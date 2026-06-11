@@ -29,7 +29,7 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
 
     private static final int DEFAULT_BATCH_SIZE = 5;
     private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
-    private static final String DEFAULT_ERROR_MESSAGE = "Resume analysis parse failed";
+    private static final String DEFAULT_ERROR_MESSAGE = "简历解析失败，请稍后重试";
 
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final FileContentService fileContentService;
@@ -82,16 +82,16 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
 
     private void validateClaimableRecord(ResumeAnalysisRecord record) {
         if (record == null || record.getId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysis record is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不能为空");
         }
     }
 
     private void validateClaimedRecord(ResumeAnalysisRecord record) {
         if (record.getFileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysis record fileId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析文件信息缺失");
         }
         if (record.getUserId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "analysis record userId is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析用户信息缺失");
         }
     }
 
@@ -114,7 +114,7 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
         dto.setFileExt(file.getFileExt());
         ParseResumeVO vo = FeignResultUtils.unwrap(aiFeignClient.parseResume(dto));
         if (vo == null || !StringUtils.hasText(vo.getStructuredJson())) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI resume parse response is empty");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 简历解析结果为空，请稍后重试");
         }
         return vo.getStructuredJson();
     }
@@ -129,7 +129,7 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PARSING.getCode())
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO));
         if (affectedRows != 1) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume analysis status update failed");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历解析状态更新失败，请稍后重试");
         }
     }
 

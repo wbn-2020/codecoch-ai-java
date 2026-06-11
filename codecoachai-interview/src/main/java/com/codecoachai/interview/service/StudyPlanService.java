@@ -32,6 +32,8 @@ public interface StudyPlanService {
 
     InnerStudyPlanVO getInnerPlan(Long id);
 
+    StudyPlanGenerateVO executeGeneration(Long id);
+
     List<StudyTaskVO> tasks(Long planId);
 
     List<StudyPlanSkillRelationVO> skillRelations(Long planId);

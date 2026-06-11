@@ -9,6 +9,11 @@ public class ResumeUploadVO {
     private Long analysisRecordId;
     private Long resumeId;
     private String parseStatus;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
     private String originalFilename;
     private Long fileSize;
     private String fileExt;

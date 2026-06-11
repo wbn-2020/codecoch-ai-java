@@ -25,22 +25,26 @@ public class QuestionEmbeddingController {
     private static final String PERM_QUESTION_LIST = "admin:question:list";
     private static final String PERM_QUESTION_DEDUPE = "admin:question:dedupe";
     private static final String PERM_QUESTION_EMBEDDING_REBUILD = "admin:question:embedding:rebuild";
+    private static final String VECTOR_JOB_QUESTION_REBUILD = "QUESTION_REBUILD";
+    private static final String VECTOR_JOB_QUESTION_RETRY = "QUESTION_RETRY";
+    private static final String VECTOR_SCOPE_QUESTION = "QUESTION";
+    private static final String VECTOR_SCOPE_FAILED_OR_STALE = "FAILED_OR_STALE";
 
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionDuplicateProperties questionDuplicateProperties;
     private final VectorIndexJobService vectorIndexJobService;
     private final AdminPermissionGuard adminPermissionGuard;
 
-    @OperationLog(module = "question", action = "REBUILD_QUESTION_EMBEDDING", description = "重建题目向量", logArgs = false, logResponse = false)
+    @OperationLog(module = "question", action = "REBUILD_QUESTION_EMBEDDING", description = "重建题目向量索引", logArgs = false, logResponse = false)
     @PostMapping("/admin/questions/embedding/rebuild")
     public Result<Map<String, Object>> rebuild(@RequestBody(required = false) RebuildDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
-        Long jobId = vectorIndexJobService.start("QUESTION_REBUILD", "QUESTION", null, limit);
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_REBUILD, VECTOR_SCOPE_QUESTION, null, limit);
         try {
             Map<String, Object> result = new LinkedHashMap<>(questionEmbeddingIndexService.rebuild(limit));
-            finishQuestionVectorJob(jobId, result);
-            vectorIndexJobService.attach(result, jobId);
+            String status = finishQuestionVectorJob(jobId, result);
+            attachQuestionVectorJob(result, jobId, VECTOR_JOB_QUESTION_REBUILD, VECTOR_SCOPE_QUESTION, null, status);
             return Result.success(result);
         } catch (Exception ex) {
             vectorIndexJobService.fail(jobId, ex);
@@ -59,11 +63,12 @@ public class QuestionEmbeddingController {
     public Result<Map<String, Object>> retryFailed(@RequestBody(required = false) RebuildDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
-        Long jobId = vectorIndexJobService.start("QUESTION_RETRY", "QUESTION", "FAILED_OR_STALE", limit);
+        Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_RETRY, VECTOR_SCOPE_QUESTION, VECTOR_SCOPE_FAILED_OR_STALE, limit);
         try {
             Map<String, Object> result = new LinkedHashMap<>(questionEmbeddingIndexService.retryFailed(limit));
-            finishQuestionVectorJob(jobId, result);
-            vectorIndexJobService.attach(result, jobId);
+            String status = finishQuestionVectorJob(jobId, result);
+            attachQuestionVectorJob(result, jobId, VECTOR_JOB_QUESTION_RETRY, VECTOR_SCOPE_QUESTION,
+                    VECTOR_SCOPE_FAILED_OR_STALE, status);
             return Result.success(result);
         } catch (Exception ex) {
             vectorIndexJobService.fail(jobId, ex);
@@ -89,7 +94,7 @@ public class QuestionEmbeddingController {
         private Integer limit;
     }
 
-    private void finishQuestionVectorJob(Long jobId, Map<String, Object> result) {
+    private String finishQuestionVectorJob(Long jobId, Map<String, Object> result) {
         long total = firstPositive(numberValue(result.get("updated")), numberValue(result.get("matched")));
         long success = firstPositive(numberValue(result.get("vectorUpdated")), numberValue(result.get("retried")));
         long vectorDeleted = numberValue(result.get("vectorDeleted"));
@@ -98,6 +103,22 @@ public class QuestionEmbeddingController {
         String error = firstError(result.get("errors"));
         vectorIndexJobService.finish(jobId, status, total, success, failed,
                 numberValue(result.get("vectorUpdated")), vectorDeleted, error);
+        return status;
+    }
+
+    private void attachQuestionVectorJob(Map<String, Object> result, Long jobId, String jobType,
+                                         String scopeType, String scopeId, String status) {
+        vectorIndexJobService.attach(result, jobId);
+        if (result == null || jobId == null) {
+            return;
+        }
+        result.put("vectorJobId", jobId);
+        result.put("vectorJobType", jobType);
+        result.put("vectorScopeType", scopeType);
+        if (scopeId != null) {
+            result.put("vectorScopeId", scopeId);
+        }
+        result.put("vectorJobStatus", status);
     }
 
     private long firstPositive(long first, long second) {

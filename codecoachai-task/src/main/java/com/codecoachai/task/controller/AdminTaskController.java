@@ -9,10 +9,17 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.constant.MqTopics;
+import com.codecoachai.common.mq.domain.MqMessage;
+import com.codecoachai.common.mq.payload.AgentDailyPlanPayload;
 import com.codecoachai.common.mq.payload.InterviewReportPayload;
+import com.codecoachai.common.mq.payload.JobTargetParsePayload;
 import com.codecoachai.common.mq.payload.QuestionGeneratePayload;
+import com.codecoachai.common.mq.payload.QuestionRecommendationGeneratePayload;
+import com.codecoachai.common.mq.payload.ResumeJobMatchPayload;
+import com.codecoachai.common.mq.payload.ResumeOptimizePayload;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.mq.payload.SearchSyncPayload;
+import com.codecoachai.common.mq.payload.StudyPlanGeneratePayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
@@ -25,6 +32,7 @@ import com.codecoachai.task.domain.vo.AdminDeadLetterVO;
 import com.codecoachai.task.domain.vo.AdminTaskImpactPreviewVO;
 import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.codecoachai.task.mapper.MessageDeadLetterMapper;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -64,9 +72,15 @@ public class AdminTaskController {
     private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
     private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
     private static final String BIZ_RESUME_PARSE = "resume.parse";
+    private static final String BIZ_RESUME_OPTIMIZE = "resume.optimize";
+    private static final String BIZ_JOB_TARGET_PARSE = "job-target.parse";
+    private static final String BIZ_RESUME_JOB_MATCH = "resume-job-match.analyze";
     private static final String BIZ_QUESTION_GENERATE = "question.generate";
     private static final String BIZ_QUESTION_AI_GENERATE = "question.ai-generate";
+    private static final String BIZ_QUESTION_RECOMMENDATION_GENERATE = "question-recommendation.generate";
     private static final String BIZ_INTERVIEW_REPORT = "interview.report";
+    private static final String BIZ_STUDY_PLAN_GENERATE = "study-plan.generate";
+    private static final String BIZ_AGENT_DAILY_PLAN_GENERATE = "agent.daily-plan.generate";
     private static final String BIZ_SEARCH_SYNC = "search.sync";
     private static final String INDEX_QUESTION = "cc_question";
     private static final String INDEX_RESUME = "cc_resume";
@@ -74,6 +88,7 @@ public class AdminTaskController {
 
     private final AsyncTaskMapper asyncTaskMapper;
     private final MessageDeadLetterMapper deadLetterMapper;
+    private final AsyncTaskService asyncTaskService;
     private final Optional<MqProducer> mqProducer;
     private final ObjectMapper objectMapper;
     private final AdminPermissionGuard permissionGuard;
@@ -131,6 +146,44 @@ public class AdminTaskController {
         return Result.success(toTaskVO(task));
     }
 
+    @Operation(summary = "List async tasks by business key")
+    @GetMapping("/by-biz")
+    public Result<List<AdminAsyncTaskVO>> listByBiz(
+            @RequestParam String bizType,
+            @RequestParam String bizId,
+            @RequestParam(required = false) Long userId,
+            @RequestParam(defaultValue = "20") Integer limit) {
+        permissionGuard.require(PERM_TASK_LIST);
+        if (!StringUtils.hasText(bizType) || !StringUtils.hasText(bizId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "bizType and bizId are required");
+        }
+        List<AsyncTask> tasks = asyncTaskMapper.selectList(
+                new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getBizType, bizType.trim())
+                        .eq(AsyncTask::getBizId, bizId.trim())
+                        .eq(userId != null, AsyncTask::getUserId, userId)
+                        .orderByDesc(AsyncTask::getCreatedAt)
+                        .last("limit " + safeLimit(limit)));
+        return Result.success(tasks.stream().map(this::toTaskVO).toList());
+    }
+
+    @Operation(summary = "List async tasks by trace id")
+    @GetMapping("/by-trace")
+    public Result<List<AdminAsyncTaskVO>> listByTrace(
+            @RequestParam String traceId,
+            @RequestParam(defaultValue = "20") Integer limit) {
+        permissionGuard.require(PERM_TASK_LIST);
+        if (!StringUtils.hasText(traceId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请提供任务追踪编号");
+        }
+        List<AsyncTask> tasks = asyncTaskMapper.selectList(
+                new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getTraceId, traceId.trim())
+                        .orderByDesc(AsyncTask::getCreatedAt)
+                        .last("limit " + safeLimit(limit)));
+        return Result.success(tasks.stream().map(this::toTaskVO).toList());
+    }
+
     @Operation(summary = "Task status stats")
     @GetMapping("/stats")
     public Result<List<Map<String, Object>>> stats() {
@@ -162,13 +215,19 @@ public class AdminTaskController {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Only FAILED/DEAD tasks can be retried");
         }
         // 这里仅把任务状态退回 PENDING；真正重新投递由对应业务补偿入口或死信恢复流程触发。
-        asyncTaskMapper.update(null,
-                new LambdaUpdateWrapper<AsyncTask>()
-                        .eq(AsyncTask::getId, id)
-                        .set(AsyncTask::getStatus, "PENDING")
-                        .set(AsyncTask::getFailureReason, null)
-                        .set(AsyncTask::getCompletedAt, null)
-                        .set(AsyncTask::getUpdatedAt, LocalDateTime.now()));
+        // Validate payload and redispatch the original envelope instead of only flipping status.
+        RetryDispatch dispatch = buildRetryDispatch(task);
+        asyncTaskService.prepareManualRetry(task.getId(), task.getMessageId());
+        try {
+            mqProducer.orElseThrow(() -> new BusinessException(ErrorCode.SYSTEM_ERROR, "MQ producer is not available"))
+                    .sendEnvelopeSync(dispatch.destination, dispatch.envelope);
+        } catch (BusinessException ex) {
+            asyncTaskService.markManualRetryDispatchFailed(task.getId(), "Manual retry dispatch failed: " + ex.getMessage());
+            throw ex;
+        } catch (Exception ex) {
+            asyncTaskService.markManualRetryDispatchFailed(task.getId(), "Manual retry dispatch failed: " + ex.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Manual retry dispatch failed");
+        }
         return Result.success();
     }
 
@@ -276,6 +335,13 @@ public class AdminTaskController {
                 || "ERROR".equals(status) || "DEAD_LETTER".equals(status);
     }
 
+    private int safeLimit(Integer limit) {
+        if (limit == null) {
+            return 20;
+        }
+        return Math.max(1, Math.min(limit, 100));
+    }
+
     private String requireActionNote(AdminTaskActionDTO dto) {
         return requireActionNote(null, dto);
     }
@@ -283,7 +349,7 @@ public class AdminTaskController {
     private String requireActionNote(String note, AdminTaskActionDTO dto) {
         String resolved = StringUtils.hasText(note) ? note : dto == null ? null : dto.getNote();
         if (!StringUtils.hasText(resolved)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "operation note is required");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写操作备注");
         }
         return resolved.trim();
     }
@@ -318,6 +384,126 @@ public class AdminTaskController {
         vo.setRequiredNote("请填写依赖已恢复、允许重新投递的说明");
         vo.setImpact("将按 bizType 校验 payload 后重新投递 MQ，并把死信标记为 RECOVERED；可能触发重复 AI 调用、解析或索引同步。");
         return vo;
+    }
+
+    private RetryDispatch buildRetryDispatch(AsyncTask task) {
+        if (!StringUtils.hasText(task.getMessageId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "async task messageId is empty");
+        }
+        String bizType = task.getBizType();
+        if (BIZ_RESUME_PARSE.equals(bizType)) {
+            ResumeParsePayload payload = readTaskPayload(task.getPayload(), ResumeParsePayload.class);
+            if (payload == null || payload.getResumeId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
+                    bizType, resolveBizId(task.getBizId(), payload.getResumeId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_RESUME_OPTIMIZE.equals(bizType)) {
+            ResumeOptimizePayload payload = readTaskPayload(task.getPayload(), ResumeOptimizePayload.class);
+            if (payload == null || payload.getOptimizeRecordId() == null
+                    || payload.getResumeId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume optimize payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_OPTIMIZE),
+                    bizType, resolveBizId(task.getBizId(), payload.getOptimizeRecordId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_JOB_TARGET_PARSE.equals(bizType)) {
+            JobTargetParsePayload payload = readTaskPayload(task.getPayload(), JobTargetParsePayload.class);
+            if (payload == null || payload.getTargetJobId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task job target payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_JOB_TARGET_PARSE),
+                    bizType, resolveBizId(task.getBizId(), payload.getTargetJobId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_RESUME_JOB_MATCH.equals(bizType)) {
+            ResumeJobMatchPayload payload = readTaskPayload(task.getPayload(), ResumeJobMatchPayload.class);
+            if (payload == null || payload.getReportId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume job match payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.JOB_MATCH, MqTopics.JOB_MATCH_TAG_ANALYZE),
+                    bizType, resolveBizId(task.getBizId(), payload.getReportId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_QUESTION_GENERATE.equals(bizType) || BIZ_QUESTION_AI_GENERATE.equals(bizType)) {
+            QuestionGeneratePayload payload = readTaskPayload(task.getPayload(), QuestionGeneratePayload.class);
+            if (payload == null || !StringUtils.hasText(payload.getBatchId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task question payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
+                    BIZ_QUESTION_GENERATE, resolveBizId(task.getBizId(), payload.getBatchId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_QUESTION_RECOMMENDATION_GENERATE.equals(bizType)) {
+            QuestionRecommendationGeneratePayload payload =
+                    readTaskPayload(task.getPayload(), QuestionRecommendationGeneratePayload.class);
+            if (payload == null || payload.getBatchId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "async task question recommendation payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_RECOMMENDATION_GENERATE),
+                    bizType, resolveBizId(task.getBizId(), payload.getBatchId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_INTERVIEW_REPORT.equals(bizType)) {
+            InterviewReportPayload payload = readTaskPayload(task.getPayload(), InterviewReportPayload.class);
+            if (payload == null || payload.getSessionId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task interview payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.INTERVIEW, MqTopics.INTERVIEW_TAG_REPORT),
+                    bizType, resolveBizId(task.getBizId(), payload.getSessionId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_STUDY_PLAN_GENERATE.equals(bizType)) {
+            StudyPlanGeneratePayload payload = readTaskPayload(task.getPayload(), StudyPlanGeneratePayload.class);
+            if (payload == null || payload.getPlanId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task study plan payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.STUDY_PLAN, MqTopics.STUDY_PLAN_TAG_GENERATE),
+                    bizType, resolveBizId(task.getBizId(), payload.getPlanId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_AGENT_DAILY_PLAN_GENERATE.equals(bizType)) {
+            AgentDailyPlanPayload payload = readTaskPayload(task.getPayload(), AgentDailyPlanPayload.class);
+            if (payload == null || payload.getRunId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task agent daily plan payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.AGENT, MqTopics.AGENT_TAG_DAILY_PLAN),
+                    bizType, resolveBizId(task.getBizId(), payload.getRunId()),
+                    resolveUserId(task.getUserId(), payload.getUserId()), payload);
+        }
+        if (BIZ_SEARCH_SYNC.equals(bizType)) {
+            SearchSyncPayload payload = readTaskPayload(task.getPayload(), SearchSyncPayload.class);
+            if (payload == null || !StringUtils.hasText(payload.getIndexName())
+                    || !StringUtils.hasText(payload.getDocId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "async task search payload is invalid");
+            }
+            return retryDispatch(task, MqTopics.dest(MqTopics.SEARCH, resolveSearchTag(payload.getIndexName())),
+                    bizType, resolveBizId(task.getBizId(), payload.getDocId()), task.getUserId(), payload);
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported async task bizType: " + bizType);
+    }
+
+    private <T> RetryDispatch retryDispatch(AsyncTask task, String destination, String bizType,
+                                            String bizId, Long userId, T payload) {
+        MqMessage<T> envelope = MqMessage.<T>builder()
+                .messageId(task.getMessageId())
+                .traceId(task.getTraceId())
+                .bizType(bizType)
+                .bizId(bizId)
+                .userId(userId)
+                .payload(payload)
+                .retryCount(task.getRetryCount() == null ? 0 : task.getRetryCount())
+                .createdAt(LocalDateTime.now())
+                .build();
+        return new RetryDispatch(destination, envelope);
+    }
+
+    private Long resolveUserId(Long taskUserId, Long payloadUserId) {
+        return taskUserId != null ? taskUserId : payloadUserId;
     }
 
     private AdminAsyncTaskVO toTaskVO(AsyncTask task) {
@@ -457,13 +643,54 @@ public class AdminTaskController {
                     dl.getUserId(), payload);
             return;
         }
+        if (BIZ_RESUME_OPTIMIZE.equals(dl.getBizType())) {
+            ResumeOptimizePayload payload = readPayload(dl.getPayload(), ResumeOptimizePayload.class);
+            if (payload == null || payload.getOptimizeRecordId() == null
+                    || payload.getResumeId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter resume optimize payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_OPTIMIZE),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getOptimizeRecordId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_JOB_TARGET_PARSE.equals(dl.getBizType())) {
+            JobTargetParsePayload payload = readPayload(dl.getPayload(), JobTargetParsePayload.class);
+            if (payload == null || payload.getTargetJobId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter job target payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_JOB_TARGET_PARSE),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getTargetJobId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_RESUME_JOB_MATCH.equals(dl.getBizType())) {
+            ResumeJobMatchPayload payload = readPayload(dl.getPayload(), ResumeJobMatchPayload.class);
+            if (payload == null || payload.getReportId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter resume job match payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.JOB_MATCH, MqTopics.JOB_MATCH_TAG_ANALYZE),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getReportId()),
+                    dl.getUserId(), payload);
+            return;
+        }
         if (BIZ_QUESTION_GENERATE.equals(dl.getBizType()) || BIZ_QUESTION_AI_GENERATE.equals(dl.getBizType())) {
             QuestionGeneratePayload payload = readPayload(dl.getPayload(), QuestionGeneratePayload.class);
-            if (payload == null || payload.getBatchId() == null) {
+            if (payload == null || !StringUtils.hasText(payload.getBatchId())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter question payload is invalid");
             }
             producer.sendSync(MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
-                    BIZ_QUESTION_AI_GENERATE, resolveBizId(dl.getBizId(), payload.getBatchId()),
+                    BIZ_QUESTION_GENERATE, resolveBizId(dl.getBizId(), payload.getBatchId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_QUESTION_RECOMMENDATION_GENERATE.equals(dl.getBizType())) {
+            QuestionRecommendationGeneratePayload payload = readPayload(dl.getPayload(), QuestionRecommendationGeneratePayload.class);
+            if (payload == null || payload.getBatchId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter question recommendation payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_RECOMMENDATION_GENERATE),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getBatchId()),
                     dl.getUserId(), payload);
             return;
         }
@@ -477,6 +704,26 @@ public class AdminTaskController {
                     dl.getUserId(), payload);
             return;
         }
+        if (BIZ_STUDY_PLAN_GENERATE.equals(dl.getBizType())) {
+            StudyPlanGeneratePayload payload = readPayload(dl.getPayload(), StudyPlanGeneratePayload.class);
+            if (payload == null || payload.getPlanId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter study plan payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.STUDY_PLAN, MqTopics.STUDY_PLAN_TAG_GENERATE),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getPlanId()),
+                    dl.getUserId(), payload);
+            return;
+        }
+        if (BIZ_AGENT_DAILY_PLAN_GENERATE.equals(dl.getBizType())) {
+            AgentDailyPlanPayload payload = readPayload(dl.getPayload(), AgentDailyPlanPayload.class);
+            if (payload == null || payload.getRunId() == null || payload.getUserId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter agent daily plan payload is invalid");
+            }
+            producer.sendSync(MqTopics.dest(MqTopics.AGENT, MqTopics.AGENT_TAG_DAILY_PLAN),
+                    dl.getBizType(), resolveBizId(dl.getBizId(), payload.getRunId()),
+                    dl.getUserId(), payload);
+            return;
+        }
         if (BIZ_SEARCH_SYNC.equals(dl.getBizType())) {
             SearchSyncPayload payload = readPayload(dl.getPayload(), SearchSyncPayload.class);
             if (payload == null || !StringUtils.hasText(payload.getIndexName()) || !StringUtils.hasText(payload.getDocId())) {
@@ -487,7 +734,7 @@ public class AdminTaskController {
                     dl.getUserId(), payload);
             return;
         }
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported dead letter bizType: " + dl.getBizType());
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的死信业务类型：" + dl.getBizType());
     }
 
     private String resolveBizId(String deadLetterBizId, Object payloadBizId) {
@@ -505,7 +752,18 @@ public class AdminTaskController {
         if (INDEX_INTERVIEW.equals(indexName)) {
             return MqTopics.SEARCH_TAG_INTERVIEW;
         }
-        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported search index: " + indexName);
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的搜索索引：" + indexName);
+    }
+
+    private <T> T readTaskPayload(String payload, Class<T> type) {
+        if (!StringUtils.hasText(payload)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "async task payload is empty");
+        }
+        try {
+            return objectMapper.readValue(payload, type);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "async task payload cannot be parsed");
+        }
     }
 
     private <T> T readPayload(String payload, Class<T> type) {
@@ -536,5 +794,16 @@ public class AdminTaskController {
             wrapper.set(MessageDeadLetter::getHandlerUserId, handlerUserId);
         }
         deadLetterMapper.update(null, wrapper);
+    }
+
+    private static final class RetryDispatch {
+
+        private final String destination;
+        private final MqMessage<?> envelope;
+
+        private RetryDispatch(String destination, MqMessage<?> envelope) {
+            this.destination = destination;
+            this.envelope = envelope;
+        }
     }
 }

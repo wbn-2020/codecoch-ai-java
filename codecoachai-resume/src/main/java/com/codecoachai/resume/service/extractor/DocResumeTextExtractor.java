@@ -23,7 +23,7 @@ public class DocResumeTextExtractor extends AbstractResumeTextExtractor {
              WordExtractor extractor = new WordExtractor(document)) {
             return extractor.getText();
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "DOC text extraction failed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "DOC 简历文本提取失败，请更换文件或转为文本后重试");
         }
     }
 }

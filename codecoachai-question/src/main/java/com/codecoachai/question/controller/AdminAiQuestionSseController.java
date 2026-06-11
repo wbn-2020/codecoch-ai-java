@@ -27,7 +27,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @Slf4j
 @RestController
 @RequestMapping("/ai/sse/admin/questions")
-@Tag(name = "Admin AI Question SSE", description = "Admin SSE APIs for AI question generation. /inner/** AI APIs are internal only and must not be called by frontend clients.")
+@Tag(name = "后台 AI 出题进度", description = "后台 AI 出题的实时进度接口。/inner/** AI 接口仅供内部服务调用。")
 public class AdminAiQuestionSseController {
 
     private static final long TIMEOUT_MILLIS = 120_000L;
@@ -45,8 +45,8 @@ public class AdminAiQuestionSseController {
         this.adminPermissionGuard = adminPermissionGuard;
     }
 
-    @Operation(summary = "Stream AI question generation progress",
-            description = "Admin SSE endpoint. Emits start/progress/result/done/error events for AI question generation. POST /admin/ai/questions/generate remains the synchronous fallback.")
+    @Operation(summary = "实时返回 AI 出题进度",
+            description = "后台 SSE 接口，返回出题的开始、进度、结果、完成和失败事件。POST /admin/ai/questions/generate 保留同步兜底。")
     @GetMapping(value = "/generate", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter generate(@ModelAttribute AiQuestionGenerateRequestDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_GENERATE);
@@ -63,20 +63,20 @@ public class AdminAiQuestionSseController {
                                  LoginUser loginUser, AiQuestionGenerateRequestDTO dto) {
         try {
             LoginUserContext.setLoginUser(loginUser);
-            if (!send(emitter, active, "start", event(requestId, "start", "AI question generation started"))) {
+            if (!send(emitter, active, "start", event(requestId, "start", "AI 出题已开始"))) {
                 return;
             }
-            if (!sendProgress(emitter, active, requestId, "VALIDATE_REQUEST", "Validating generation request")) {
+            if (!sendProgress(emitter, active, requestId, "VALIDATE_REQUEST", "正在校验出题参数")) {
                 return;
             }
-            if (!sendProgress(emitter, active, requestId, "BUILD_PROMPT", "Preparing AI question generation prompt")) {
+            if (!sendProgress(emitter, active, requestId, "BUILD_PROMPT", "正在整理出题要求")) {
                 return;
             }
-            if (!sendProgress(emitter, active, requestId, "CALL_AI", "Calling AI question generation service")) {
+            if (!sendProgress(emitter, active, requestId, "CALL_AI", "正在生成题目")) {
                 return;
             }
             AiQuestionGenerateResultVO result = questionReviewService.generate(dto);
-            if (!sendProgress(emitter, active, requestId, "SAVE_REVIEW", "Saving generated questions to review pool")) {
+            if (!sendProgress(emitter, active, requestId, "SAVE_REVIEW", "正在保存待审核题目")) {
                 return;
             }
             if (!send(emitter, active, "metadata", metadataEvent(requestId, result))) {
@@ -125,7 +125,7 @@ public class AdminAiQuestionSseController {
     }
 
     private Map<String, Object> resultEvent(String requestId, AiQuestionGenerateResultVO result) {
-        Map<String, Object> data = event(requestId, "result", "AI question generation completed");
+        Map<String, Object> data = event(requestId, "result", "题目生成已完成");
         data.put("batchId", result == null ? null : result.getBatchId());
         data.put("reviewIds", result == null ? null : result.getReviewIds());
         data.put("aiCallLogId", result == null ? null : result.getAiCallLogId());
@@ -136,7 +136,7 @@ public class AdminAiQuestionSseController {
     }
 
     private Map<String, Object> doneEvent(String requestId, AiQuestionGenerateResultVO result) {
-        Map<String, Object> data = event(requestId, "done", "AI question generation done");
+        Map<String, Object> data = event(requestId, "done", "题目生成已完成");
         data.put("batchId", result == null ? null : result.getBatchId());
         data.put("result", result);
         data.put("metadata", resultMetadata(result));
@@ -144,7 +144,7 @@ public class AdminAiQuestionSseController {
     }
 
     private Map<String, Object> metadataEvent(String requestId, AiQuestionGenerateResultVO result) {
-        Map<String, Object> data = event(requestId, "metadata", "AI question generation metadata");
+        Map<String, Object> data = event(requestId, "metadata", "题目生成结果已记录");
         data.put("batchId", result == null ? null : result.getBatchId());
         data.put("reviewIds", result == null ? null : result.getReviewIds());
         data.put("aiCallLogId", result == null ? null : result.getAiCallLogId());
@@ -155,7 +155,7 @@ public class AdminAiQuestionSseController {
     }
 
     private Map<String, Object> errorEvent(String requestId) {
-        Map<String, Object> data = event(requestId, "error", "AI question generation failed. Please retry later.");
+        Map<String, Object> data = event(requestId, "error", "题目生成暂时失败，请稍后重试。");
         data.put("aiCallLogId", null);
         data.put("code", "AI_QUESTION_GENERATE_FAILED");
         data.put("metadata", stageMetadata("ERROR", "FAILED"));

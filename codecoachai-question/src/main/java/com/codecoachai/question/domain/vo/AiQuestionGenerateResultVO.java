@@ -10,4 +10,9 @@ public class AiQuestionGenerateResultVO {
     private Integer generatedCount;
     private List<Long> reviewIds;
     private Long aiCallLogId;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
 }

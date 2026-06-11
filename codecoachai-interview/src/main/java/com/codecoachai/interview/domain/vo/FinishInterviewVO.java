@@ -9,4 +9,9 @@ public class FinishInterviewVO {
     private String status;
     private String reportStatus;
     private InterviewReportVO report;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
 }

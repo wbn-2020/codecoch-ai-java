@@ -16,4 +16,10 @@ public class KnowledgeVectorRebuildVO {
     private Integer duplicateChunkCount;
     private List<Long> failedDocuments;
     private List<String> errors;
+    private Long jobId;
+    private Long vectorJobId;
+    private String vectorJobType;
+    private String vectorScopeType;
+    private String vectorScopeId;
+    private String vectorJobStatus;
 }

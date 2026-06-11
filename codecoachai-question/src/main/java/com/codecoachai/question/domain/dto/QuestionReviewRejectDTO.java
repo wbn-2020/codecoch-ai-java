@@ -7,7 +7,7 @@ import lombok.Data;
 @Data
 public class QuestionReviewRejectDTO {
 
-    @NotBlank(message = "rejectReason is required")
-    @Size(max = 500, message = "rejectReason must be at most 500 characters")
+    @NotBlank(message = "请填写驳回原因")
+    @Size(max = 500, message = "驳回原因不能超过 500 字")
     private String rejectReason;
 }

@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class SubmitQuestionAnswerDTO {
 
-    @NotBlank(message = "answerContent is required")
+    @NotBlank(message = "请填写练习回答")
     private String answerContent;
 
     private String masteryStatus;

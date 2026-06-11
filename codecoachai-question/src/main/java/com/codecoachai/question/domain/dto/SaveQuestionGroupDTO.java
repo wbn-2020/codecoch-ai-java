@@ -6,7 +6,7 @@ import lombok.Data;
 @Data
 public class SaveQuestionGroupDTO {
 
-    @NotBlank(message = "groupName is required")
+    @NotBlank(message = "请填写题组名称")
     private String groupName;
 
     private String canonicalTitle;

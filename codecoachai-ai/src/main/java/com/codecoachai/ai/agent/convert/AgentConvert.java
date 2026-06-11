@@ -6,6 +6,9 @@ import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.SkillTagVO;
+import java.util.ArrayList;
+import java.util.List;
+import org.springframework.util.StringUtils;
 
 public final class AgentConvert {
 
@@ -31,6 +34,7 @@ public final class AgentConvert {
         vo.setRelatedBizType(task.getRelatedBizType());
         vo.setRelatedBizId(task.getRelatedBizId());
         vo.setActionUrl(task.getActionUrl());
+        applyTaskTrustEvidence(vo, task);
         vo.setStatus(task.getStatus());
         vo.setSkipReason(task.getSkipReason());
         vo.setDueDate(task.getDueDate());
@@ -41,6 +45,84 @@ public final class AgentConvert {
         vo.setCreatedAt(task.getCreatedAt());
         vo.setUpdatedAt(task.getUpdatedAt());
         return vo;
+    }
+
+    private static void applyTaskTrustEvidence(AgentTaskVO vo, AgentTask task) {
+        String sourceType = firstText(task.getRelatedBizType(), task.getTaskType(), "JOB_COACH_AGENT_TASK");
+        Long sourceId = task.getRelatedBizId() != null ? task.getRelatedBizId() : task.getId();
+        boolean hasRun = task.getAgentRunId() != null;
+        boolean hasReason = StringUtils.hasText(task.getReason());
+        boolean hasBusinessEvidence = StringUtils.hasText(task.getRelatedBizType()) || task.getRelatedBizId() != null;
+        boolean hasAction = StringUtils.hasText(task.getActionUrl());
+        boolean degradedStatus = "SKIPPED".equalsIgnoreCase(task.getStatus()) || "EXPIRED".equalsIgnoreCase(task.getStatus());
+
+        String trustStatus;
+        if (degradedStatus || (!hasRun && !hasReason && !hasBusinessEvidence && !hasAction)) {
+            trustStatus = "FALLBACK";
+        } else if (hasRun && hasReason && (hasBusinessEvidence || hasAction)) {
+            trustStatus = "VERIFIED";
+        } else {
+            trustStatus = "PARTIAL";
+        }
+
+        vo.setSourceType(sourceType);
+        vo.setSourceId(sourceId);
+        vo.setTrustStatus(trustStatus);
+        vo.setFallback("FALLBACK".equals(trustStatus));
+        vo.setEvidenceSummary(taskEvidenceSummary(task, hasRun, hasReason, hasBusinessEvidence, hasAction, degradedStatus));
+    }
+
+    private static String taskEvidenceSummary(AgentTask task, boolean hasRun, boolean hasReason,
+                                              boolean hasBusinessEvidence, boolean hasAction, boolean degradedStatus) {
+        List<String> parts = new ArrayList<>();
+        if (hasRun) {
+            parts.add("计划生成详情可查看");
+        }
+        if (hasBusinessEvidence) {
+            String sourceLabel = businessSourceLabel(task.getRelatedBizType());
+            parts.add(task.getRelatedBizId() == null ? sourceLabel : sourceLabel + "已绑定");
+        }
+        if (StringUtils.hasText(task.getRelatedSkillName())) {
+            parts.add("聚焦技能：" + task.getRelatedSkillName());
+        }
+        if (hasReason) {
+            parts.add("推荐理由已返回");
+        }
+        if (hasAction) {
+            parts.add("行动入口已记录");
+        }
+        if (degradedStatus) {
+            parts.add("任务已跳过或过期");
+        }
+        if (parts.isEmpty()) {
+            return "基于现有资料生成入门任务，并已标注资料缺口";
+        }
+        return String.join("；", parts);
+    }
+
+    private static String businessSourceLabel(String sourceType) {
+        String type = StringUtils.hasText(sourceType) ? sourceType.trim().toUpperCase() : "";
+        return switch (type) {
+            case "TARGET_JOB" -> "来自目标岗位/JD";
+            case "RESUME_JOB_MATCH", "RESUME_MATCH" -> "来自匹配报告";
+            case "QUESTION_RECOMMENDATION" -> "来自推荐题";
+            case "QUESTION_PRACTICE" -> "来自题库练习";
+            case "WRONG_QUESTION_REVIEW" -> "来自错题复习";
+            case "INTERVIEW" -> "来自模拟面试";
+            case "INTERVIEW_REPORT" -> "来自面试报告";
+            case "RESUME_OPTIMIZE" -> "来自简历证据";
+            case "TRAINING_MATERIAL" -> "来自训练素材";
+            default -> "来自智能教练";
+        };
+    }
+
+    private static String firstText(String... values) {
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value;
+            }
+        }
+        return "";
     }
 
     public static AgentRunDetailVO toRunDetailVO(AgentRun run) {

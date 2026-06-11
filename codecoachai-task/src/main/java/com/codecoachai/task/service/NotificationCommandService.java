@@ -2,6 +2,7 @@ package com.codecoachai.task.service;
 
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.mapper.NotificationMapper;
+import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -34,6 +35,8 @@ public class NotificationCommandService {
         notification.setBizType(bizType);
         notification.setBizId(bizId);
         notification.setReadStatus(0);
+        notification.setSendStatus("SUCCESS");
+        notification.setSentAt(LocalDateTime.now());
         notificationMapper.insert(notification);
         return notification.getId();
     }

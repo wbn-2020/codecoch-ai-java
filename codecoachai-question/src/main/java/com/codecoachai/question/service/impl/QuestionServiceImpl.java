@@ -515,7 +515,7 @@ public class QuestionServiceImpl implements QuestionService {
     private Question getQuestionOrThrow(Long id) {
         Question question = questionMapper.selectById(id);
         if (question == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Question not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "题目不存在或已不可用");
         }
         return question;
     }

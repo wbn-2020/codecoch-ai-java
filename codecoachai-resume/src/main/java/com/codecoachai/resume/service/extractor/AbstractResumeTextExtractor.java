@@ -13,7 +13,7 @@ abstract class AbstractResumeTextExtractor implements ResumeTextExtractor {
 
     protected void requireContent(byte[] content) {
         if (content == null || content.length == 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file content is empty");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容为空，请更换文件后重试");
         }
     }
 }

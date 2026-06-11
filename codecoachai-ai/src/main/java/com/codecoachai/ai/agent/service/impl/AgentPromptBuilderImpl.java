@@ -34,8 +34,9 @@ public class AgentPromptBuilderImpl implements AgentPromptBuilder {
                 - 必须返回 %d 个任务，最少 1 个，最多 5 个。
                 - 全部任务 estimatedMinutes 总和不得超过 %d。
                 - summary、title、description、reason 必须是自然中文，可保留 Redis、Spring Cloud、Kafka、MySQL 等技术名。
-                - reason 必须说明它和目标岗位、JD 技能、能力短板或最近训练记录的关系。
-                - 不要输出 fallback、aiCallLogId、DTO、REST API、后端接口、DeepSeek、AGENT_、candidate task 等内部词。
+                - reason 必须说明它和目标岗位、岗位技能、能力短板或最近训练记录的关系。
+                - 当前上下文没有 SUCCESS 匹配报告时，不要写“匹配报告显示/匹配报告指出/报告证明”；只能表述为“目标岗位或岗位要求”。
+                - 不要输出 fallback、aiCallLogId、DTO、REST API、后端接口、具体模型名、AGENT_、candidate task 等内部词。
                 - 只输出 JSON，不要 Markdown、代码块或解释文字。
 
                 用户上下文：
