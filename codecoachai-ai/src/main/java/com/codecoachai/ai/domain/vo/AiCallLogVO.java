@@ -19,6 +19,9 @@ public class AiCallLogVO {
     private String traceIdShort;
     private String shortTraceId;
     private String routeTrace;
+    private String resultSource;
+    private String resultSourceLabel;
+    private Boolean fallback;
     private Double estimatedCost;
     private String inputVariablesJson;
     private String inputVariablesPreview;

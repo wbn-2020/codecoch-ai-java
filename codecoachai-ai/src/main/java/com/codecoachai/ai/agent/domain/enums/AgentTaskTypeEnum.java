@@ -8,5 +8,6 @@ public enum AgentTaskTypeEnum {
     STUDY_TASK,
     REPORT_REVIEW,
     SKILL_REVIEW,
-    KNOWLEDGE_REVIEW
+    KNOWLEDGE_REVIEW,
+    APPLICATION_FOLLOW_UP
 }

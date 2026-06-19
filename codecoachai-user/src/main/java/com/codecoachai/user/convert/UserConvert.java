@@ -36,7 +36,8 @@ public final class UserConvert {
         vo.setUsername(user.getUsername());
         vo.setNickname(user.getNickname());
         vo.setAvatarUrl(user.getAvatarUrl());
-        vo.setEmail(user.getEmail());
+        vo.setEmail(maskEmail(user.getEmail()));
+        vo.setEmailMasked(maskEmail(user.getEmail()));
         vo.setStatus(user.getStatus());
         vo.setStatusName(UserStatusEnum.labelOf(user.getStatus()));
         vo.setRoles(roles);
@@ -84,5 +85,21 @@ public final class UserConvert {
         vo.setRoleName(role.getRoleName());
         vo.setStatus(role.getStatus());
         return vo;
+    }
+
+    private static String maskEmail(String email) {
+        if (email == null || email.isBlank()) {
+            return email;
+        }
+        int atIndex = email.indexOf('@');
+        if (atIndex <= 0) {
+            return "******";
+        }
+        String local = email.substring(0, atIndex);
+        String domain = email.substring(atIndex);
+        if (local.length() <= 2) {
+            return local.charAt(0) + "***" + domain;
+        }
+        return local.substring(0, 2) + "***" + domain;
     }
 }

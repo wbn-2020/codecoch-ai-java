@@ -8,18 +8,18 @@ spring:
   # 数据源（dev 统一使用 codecoachai_v1，需与 Flyway 默认库名保持一致）
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: ${MYSQL_PASSWORD:}
+    password: ${MYSQL_PASSWORD}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
   data:
     redis:
-      host: 127.0.0.1
+      host: ${REDIS_HOST:redis}
       port: 6379
-      password:
+      password: ${REDIS_PASSWORD}
       database: 0
       timeout: 3000ms
       lettuce:
@@ -39,7 +39,7 @@ spring:
 # RocketMQ
 # ============================================================
 rocketmq:
-  name-server: 127.0.0.1:9876
+  name-server: ${ROCKETMQ_NAME_SERVER:rocketmq-namesrv:9876}
   producer:
     group: codecoachai-producer
     send-message-timeout: 5000
@@ -53,7 +53,7 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      secret: ${CODECOACHAI_INTERNAL_SECRET:}
+      secret: ${CODECOACHAI_INTERNAL_SECRET}
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
 
@@ -112,9 +112,9 @@ codecoachai:
   # Elasticsearch
   # ============================================================
   elasticsearch:
-    uris: http://127.0.0.1:9200
-    username:
-    password:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
+    username: elastic
+    password: ${ELASTIC_PASSWORD}
 
   # ============================================================
   # Vector store (Qdrant)
@@ -122,11 +122,14 @@ codecoachai:
   vector:
     enabled: ${CODECOACHAI_VECTOR_ENABLED:true}
     provider: qdrant
-    base-url: ${QDRANT_BASE_URL:http://127.0.0.1:6333}
-    api-key: ${QDRANT_API_KEY:}
+    base-url: ${QDRANT_BASE_URL:http://qdrant:6333}
+    api-key: ${QDRANT_API_KEY}
     connect-timeout: 3s
     request-timeout: 15s
     default-limit: 10
+
+  ops:
+    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|18080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9209|service}
 
 # ============================================================
 # MyBatis-Plus（标准配置）
@@ -147,10 +150,10 @@ mybatis-plus:
 # ============================================================
 sa-token:
   token-name: Authorization
-  timeout: 2592000
-  active-timeout: -1
+  timeout: 604800
+  active-timeout: 86400
   is-concurrent: true
-  is-share: true
+  is-share: false
   is-log: false
   is-read-cookie: false
   is-read-header: true

@@ -3,6 +3,8 @@ package com.codecoachai.question.controller;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
 import com.codecoachai.question.service.QuestionReviewService;
@@ -36,31 +38,42 @@ public class AdminAiQuestionSseController {
     private final QuestionReviewService questionReviewService;
     private final Executor questionSseStreamExecutor;
     private final AdminPermissionGuard adminPermissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     public AdminAiQuestionSseController(QuestionReviewService questionReviewService,
                                         @Qualifier("questionSseStreamExecutor") Executor questionSseStreamExecutor,
-                                        AdminPermissionGuard adminPermissionGuard) {
+                                        AdminPermissionGuard adminPermissionGuard,
+                                        AdminOperationConfirmationGuard operationConfirmationGuard) {
         this.questionReviewService = questionReviewService;
         this.questionSseStreamExecutor = questionSseStreamExecutor;
         this.adminPermissionGuard = adminPermissionGuard;
+        this.operationConfirmationGuard = operationConfirmationGuard;
     }
 
     @Operation(summary = "实时返回 AI 出题进度",
             description = "后台 SSE 接口，返回出题的开始、进度、结果、完成和失败事件。POST /admin/ai/questions/generate 保留同步兜底。")
+    @OperationLog(module = "question", action = "SSE_GENERATE_AI_QUESTION", description = "Stream AI question draft generation", logArgs = false, logResponse = false)
     @GetMapping(value = "/generate", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter generate(@ModelAttribute AiQuestionGenerateRequestDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_GENERATE);
+        String lockKey = requireConfirmedGenerate(dto);
         LoginUser loginUser = LoginUserContext.getLoginUser();
         String requestId = UUID.randomUUID().toString();
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
-        CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto),
-                questionSseStreamExecutor);
+        try {
+            CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto, lockKey),
+                    questionSseStreamExecutor);
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
         return emitter;
     }
 
     private void executeGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,
-                                 LoginUser loginUser, AiQuestionGenerateRequestDTO dto) {
+                                 LoginUser loginUser, AiQuestionGenerateRequestDTO dto, String lockKey) {
+        boolean generationAttempted = false;
         try {
             LoginUserContext.setLoginUser(loginUser);
             if (!send(emitter, active, "start", event(requestId, "start", "AI 出题已开始"))) {
@@ -75,6 +88,7 @@ public class AdminAiQuestionSseController {
             if (!sendProgress(emitter, active, requestId, "CALL_AI", "正在生成题目")) {
                 return;
             }
+            generationAttempted = true;
             AiQuestionGenerateResultVO result = questionReviewService.generate(dto);
             if (!sendProgress(emitter, active, requestId, "SAVE_REVIEW", "正在保存待审核题目")) {
                 return;
@@ -88,12 +102,25 @@ public class AdminAiQuestionSseController {
             send(emitter, active, "done", doneEvent(requestId, result));
             complete(emitter, active);
         } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
             log.warn("AI question generation SSE failed, requestId={}", requestId, ex);
             send(emitter, active, "error", errorEvent(requestId));
             complete(emitter, active);
         } finally {
+            if (!generationAttempted && !active.get()) {
+                operationConfirmationGuard.release(lockKey);
+            }
             LoginUserContext.clear();
         }
+    }
+
+    private String requireConfirmedGenerate(AiQuestionGenerateRequestDTO dto) {
+        return operationConfirmationGuard.requireConfirmed(
+                "question-ai-generate-sse",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey());
     }
 
     private boolean sendProgress(SseEmitter emitter, AtomicBoolean active, String requestId,

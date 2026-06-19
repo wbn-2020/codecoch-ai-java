@@ -7,6 +7,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.entity.SysAnnouncement;
@@ -17,6 +18,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.function.Supplier;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
@@ -45,6 +47,7 @@ public class AdminAnnouncementController {
 
     private final SysAnnouncementMapper announcementMapper;
     private final AdminPermissionGuard adminPermissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     // ==================== 管理端 ====================
 
@@ -79,6 +82,12 @@ public class AdminAnnouncementController {
     @PostMapping("/admin/announcements")
     public Result<Long> create(@Valid @RequestBody AnnouncementSaveDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
+        return runConfirmedOperation("announcement-create:" + (dto == null ? "new" : dto.getTitle()),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
         SysAnnouncement a = new SysAnnouncement();
         a.setTitle(dto.getTitle());
         a.setContent(dto.getContent());
@@ -91,7 +100,8 @@ public class AdminAnnouncementController {
         a.setCreatedAt(LocalDateTime.now());
         a.setUpdatedAt(LocalDateTime.now());
         announcementMapper.insert(a);
-        return Result.success(a.getId());
+                    return Result.success(a.getId());
+                });
     }
 
     @Operation(summary = "编辑公告")
@@ -99,6 +109,12 @@ public class AdminAnnouncementController {
     @PutMapping("/admin/announcements/{id}")
     public Result<Void> update(@PathVariable Long id, @Valid @RequestBody AnnouncementSaveDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
+        return runConfirmedOperation("announcement-update:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setTitle(dto.getTitle());
@@ -108,45 +124,81 @@ public class AdminAnnouncementController {
         a.setExpiredAt(dto.getExpiredAt());
         a.setUpdatedAt(LocalDateTime.now());
         announcementMapper.updateById(a);
-        return Result.success();
+                    return Result.success();
+                });
     }
 
     @Operation(summary = "发布公告")
     @OperationLog(module = "system", action = "PUBLISH_ANNOUNCEMENT", description = "发布公告")
     @PostMapping("/admin/announcements/{id}/publish")
-    public Result<Void> publish(@PathVariable Long id) {
+    public Result<Void> publish(@PathVariable Long id,
+                                @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_PUBLISH);
+        return runConfirmedOperation("announcement-publish:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setStatus(1);
         a.setPublishedAt(LocalDateTime.now());
         a.setUpdatedAt(LocalDateTime.now());
         announcementMapper.updateById(a);
-        return Result.success();
+                    return Result.success();
+                });
     }
 
     @Operation(summary = "下线公告")
     @OperationLog(module = "system", action = "OFFLINE_ANNOUNCEMENT", description = "下线公告")
     @PostMapping("/admin/announcements/{id}/offline")
-    public Result<Void> offline(@PathVariable Long id) {
+    public Result<Void> offline(@PathVariable Long id,
+                                @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_PUBLISH);
+        return runConfirmedOperation("announcement-offline:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
         SysAnnouncement a = announcementMapper.selectById(id);
         if (a == null) throw new BusinessException(ErrorCode.PARAM_ERROR, "公告不存在");
         a.setStatus(2);
         a.setUpdatedAt(LocalDateTime.now());
         announcementMapper.updateById(a);
-        return Result.success();
+                    return Result.success();
+                });
     }
 
     @Operation(summary = "删除公告")
     @OperationLog(module = "system", action = "DELETE_ANNOUNCEMENT", description = "删除公告")
     @DeleteMapping("/admin/announcements/{id}")
-    public Result<Void> delete(@PathVariable Long id) {
+    public Result<Void> delete(@PathVariable Long id,
+                               @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
+        return runConfirmedOperation("announcement-delete:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
         announcementMapper.deleteById(id);
-        return Result.success();
+                    return Result.success();
+                });
     }
 
+    private <T> Result<T> runConfirmedOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                String reason, String idempotencyKey,
+                                                Supplier<Result<T>> action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            return action.get();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
     // ==================== 用户端 ====================
 
     @Operation(summary = "查询已发布公告（用户端）")
@@ -171,5 +223,17 @@ public class AdminAnnouncementController {
         private String type;
         private String targetUsers;
         private LocalDateTime expiredAt;
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
+    }
+
+    @Data
+    public static class AdminOperationConfirmDTO {
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
     }
 }

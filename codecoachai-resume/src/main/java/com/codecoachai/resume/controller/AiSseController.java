@@ -85,8 +85,7 @@ public class AiSseController {
                 }
                 JobDescriptionAnalysisVO result = targetJobService.parseJobDescription(id, dto);
                 if (result == null || "FAILED".equalsIgnoreCase(result.getParseStatus())) {
-                    send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id,
-                            result == null ? "岗位分析生成失败" : result.getParseErrorMessage()));
+                    send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id, null));
                     complete(emitter, active);
                     return;
                 }
@@ -96,7 +95,7 @@ public class AiSseController {
                 complete(emitter, active);
             } catch (RuntimeException ex) {
                 log.warn("Job target parse SSE failed, requestId={}, targetJobId={}", requestId, id, ex);
-                send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id, ex.getMessage()));
+                send(emitter, active, "error", genericErrorEvent(requestId, "job-target-parse", id, null));
                 complete(emitter, active);
             } finally {
                 LoginUserContext.clear();
@@ -110,10 +109,12 @@ public class AiSseController {
     @GetMapping(value = "/resume-job-match/reports", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter resumeJobMatchCreate(@RequestParam Long resumeId,
                                            @RequestParam Long targetJobId,
+                                           @RequestParam(required = false) Long resumeVersionId,
                                            @RequestParam(required = false) Boolean forceRefresh) {
         ResumeJobMatchCreateDTO dto = new ResumeJobMatchCreateDTO();
         dto.setResumeId(resumeId);
         dto.setTargetJobId(targetJobId);
+        dto.setResumeVersionId(resumeVersionId);
         dto.setForceRefresh(forceRefresh);
         return streamResumeJobMatchCreate(dto);
     }
@@ -158,7 +159,7 @@ public class AiSseController {
                 complete(emitter, active);
             } catch (RuntimeException ex) {
                 log.warn("Resume job match SSE failed, requestId={}, reportId={}", requestId, id, ex);
-                send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", id, ex.getMessage()));
+                send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", id, null));
                 complete(emitter, active);
             } finally {
                 LoginUserContext.clear();
@@ -190,8 +191,7 @@ public class AiSseController {
                 }
                 ResumeJobMatchSubmitVO submitted = resumeJobMatchService.createReport(dto);
                 if (submitted == null || "FAILED".equalsIgnoreCase(submitted.getStatus())) {
-                    send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", bizId,
-                            submitted == null ? "匹配报告生成失败，请稍后重试" : submitted.getErrorMessage()));
+                    send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match", bizId, null));
                     complete(emitter, active);
                     return;
                 }
@@ -208,7 +208,7 @@ public class AiSseController {
             } catch (RuntimeException ex) {
                 log.warn("Resume job match create SSE failed, requestId={}", requestId, ex);
                 send(emitter, active, "error", genericErrorEvent(requestId, "resume-job-match",
-                        dto == null ? null : dto.getTargetJobId(), ex.getMessage()));
+                        dto == null ? null : dto.getTargetJobId(), null));
                 complete(emitter, active);
             } finally {
                 LoginUserContext.clear();
@@ -226,6 +226,7 @@ public class AiSseController {
                                      @RequestParam(required = false) String extraRequirements,
                                      @RequestParam(required = false) String optimizeFocus,
                                      @RequestParam(required = false) Integer experienceYears,
+                                     @RequestParam(required = false) Long targetJobId,
                                      @RequestParam(required = false) String industryDirection) {
         String requestId = UUID.randomUUID().toString();
         AtomicBoolean active = new AtomicBoolean(true);
@@ -247,6 +248,7 @@ public class AiSseController {
                     return;
                 }
                 ResumeOptimizeRequestDTO dto = new ResumeOptimizeRequestDTO();
+                dto.setTargetJobId(targetJobId);
                 dto.setTargetPosition(targetPosition);
                 dto.setTargetCompany(targetCompany);
                 dto.setExtraRequirements(extraRequirements);
@@ -307,9 +309,8 @@ public class AiSseController {
         return data;
     }
 
-    private Map<String, Object> genericErrorEvent(String requestId, String workflow, Long bizId, String message) {
-        Map<String, Object> data = genericEvent(requestId, workflow, bizId, null,
-                message == null || message.isBlank() ? "任务执行失败，请稍后重试" : message);
+    private Map<String, Object> genericErrorEvent(String requestId, String workflow, Long bizId, String ignoredMessage) {
+        Map<String, Object> data = genericEvent(requestId, workflow, bizId, null, safeWorkflowErrorMessage(workflow));
         data.put("code", "V3_SSE_TASK_FAILED");
         data.put("metadata", stageMetadata("ERROR", "FAILED"));
         return data;
@@ -381,7 +382,7 @@ public class AiSseController {
         Long resolvedResumeId = result == null ? resumeId : result.getResumeId();
         Long recordId = result == null ? null : result.getOptimizeRecordId();
         Long aiCallLogId = result == null ? null : result.getAiCallLogId();
-        Map<String, Object> data = event(requestId, "error", "简历优化失败，请稍后重试",
+        Map<String, Object> data = event(requestId, "error", safeResumeOptimizeErrorMessage(),
                 resolvedResumeId, recordId, aiCallLogId, null);
         data.put("code", "RESUME_OPTIMIZE_FAILED");
         data.put("metadata", result == null ? stageMetadata("ERROR", "FAILED") : resultMetadata(result));
@@ -403,8 +404,24 @@ public class AiSseController {
         payload.put("riskWarnings", result.getRiskWarnings());
         payload.put("possibleInterviewQuestions", result.getPossibleInterviewQuestions());
         payload.put("nextActions", result.getNextActions());
-        payload.put("errorMessage", result.getErrorMessage());
+        if (ResumeOptimizeStatus.FAILED.getCode().equals(result.getOptimizeStatus())) {
+            payload.put("errorMessage", safeResumeOptimizeErrorMessage());
+        }
         return payload;
+    }
+
+    private String safeWorkflowErrorMessage(String workflow) {
+        if ("job-target-parse".equals(workflow)) {
+            return "岗位分析生成失败，请稍后重试";
+        }
+        if ("resume-job-match".equals(workflow)) {
+            return "匹配报告生成失败，请稍后重试";
+        }
+        return "任务执行失败，请稍后重试";
+    }
+
+    private String safeResumeOptimizeErrorMessage() {
+        return "简历优化失败，请稍后重试";
     }
 
     private Map<String, Object> resultMetadata(ResumeOptimizeSubmitVO result) {

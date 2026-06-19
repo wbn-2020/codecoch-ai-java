@@ -10,6 +10,8 @@ public class AgentTaskQueryDTO {
     private Long pageSize = 10L;
     private Long targetJobId;
     private LocalDate date;
+    private LocalDate startDate;
+    private LocalDate endDate;
     private String taskType;
     private String status;
     private String priority;

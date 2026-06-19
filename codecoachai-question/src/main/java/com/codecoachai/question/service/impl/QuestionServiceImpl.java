@@ -21,8 +21,10 @@ import com.codecoachai.question.domain.entity.QuestionGroup;
 import com.codecoachai.question.domain.entity.QuestionRelation;
 import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
+import com.codecoachai.question.domain.entity.PracticeRecord;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.MasteryStatusEnum;
+import com.codecoachai.question.domain.enums.PracticeReviewStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationType;
 import com.codecoachai.question.domain.vo.InnerQuestionVO;
@@ -31,6 +33,8 @@ import com.codecoachai.question.domain.vo.QuestionListVO;
 import com.codecoachai.question.domain.vo.QuestionTagVO;
 import com.codecoachai.question.domain.vo.SubmitQuestionAnswerVO;
 import com.codecoachai.question.domain.vo.WrongQuestionVO;
+import com.codecoachai.question.feign.vo.AgentTaskVO;
+import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
@@ -47,8 +51,11 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -71,9 +78,11 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
+    private final PracticeRecordMapper practiceRecordMapper;
     private final QuestionDuplicateService questionDuplicateService;
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionMqDispatcher questionMqDispatcher;
+    private final AgentBusinessActionNotifier agentBusinessActionNotifier;
 
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
@@ -94,7 +103,8 @@ public class QuestionServiceImpl implements QuestionService {
     @Transactional(rollbackFor = Exception.class)
     public SubmitQuestionAnswerVO submitAnswer(Long id, SubmitQuestionAnswerDTO dto) {
         Question question = getQuestionOrThrow(id);
-        UserQuestionRecord record = getOrCreateRecord(requireCurrentUserId(), id);
+        Long userId = requireCurrentUserId();
+        UserQuestionRecord record = getOrCreateRecord(userId, id);
         String mastery = StringUtils.hasText(dto.getMasteryStatus())
                 ? dto.getMasteryStatus()
                 : inferMastery(dto.getAnswerContent());
@@ -103,6 +113,9 @@ public class QuestionServiceImpl implements QuestionService {
         record.setWrong(MasteryStatusEnum.NOT_MASTERED.name().equals(mastery) ? CommonConstants.YES : CommonConstants.NO);
         record.setLastAnswerAt(LocalDateTime.now());
         saveRecord(record);
+        PracticeRecord practiceRecord = createAgentPracticeEvidence(userId, question, record, dto);
+        AgentTaskVO completedAgentTask = practiceRecord == null ? null
+                : agentBusinessActionNotifier.completeQuestionPractice(userId, dto.getTargetJobId(), practiceRecord.getId());
 
         SubmitQuestionAnswerVO vo = new SubmitQuestionAnswerVO();
         vo.setRecordId(record.getId());
@@ -111,6 +124,7 @@ public class QuestionServiceImpl implements QuestionService {
         vo.setAnalysis(question.getAnalysis());
         vo.setMasteryStatus(record.getMasteryStatus());
         vo.setWrong(CommonConstants.YES.equals(record.getWrong()));
+        applyAgentTaskFeedback(vo, completedAgentTask);
         return vo;
     }
 
@@ -138,10 +152,15 @@ public class QuestionServiceImpl implements QuestionService {
                         .eq(UserQuestionRecord::getUserId, userId)
                         .eq(UserQuestionRecord::getFavorite, CommonConstants.YES)
                         .orderByDesc(UserQuestionRecord::getUpdatedAt));
+        Map<Long, Question> questions = loadAvailableQuestionsById(page.getRecords().stream()
+                .map(UserQuestionRecord::getQuestionId)
+                .toList());
         List<QuestionListVO> records = page.getRecords().stream()
-                .map(record -> questionMapper.selectById(record.getQuestionId()))
-                .filter(question -> question != null && CommonConstants.YES.equals(question.getStatus()))
-                .map(this::toListVO)
+                .map(record -> {
+                    Question question = questions.get(record.getQuestionId());
+                    return question == null ? null : toListVO(question, record);
+                })
+                .filter(vo -> vo != null)
                 .toList();
         return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -154,8 +173,15 @@ public class QuestionServiceImpl implements QuestionService {
                         .eq(UserQuestionRecord::getUserId, userId)
                         .eq(UserQuestionRecord::getWrong, CommonConstants.YES)
                         .orderByDesc(UserQuestionRecord::getLastAnswerAt));
+        Map<Long, Question> questions = loadAvailableQuestionsById(page.getRecords().stream()
+                .map(UserQuestionRecord::getQuestionId)
+                .toList());
         List<WrongQuestionVO> records = page.getRecords().stream()
-                .map(record -> QuestionConvert.toWrongVO(record, questionMapper.selectById(record.getQuestionId())))
+                .map(record -> {
+                    Question question = questions.get(record.getQuestionId());
+                    return question == null ? null : QuestionConvert.toWrongVO(record, question);
+                })
+                .filter(vo -> vo != null)
                 .toList();
         return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -458,8 +484,12 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private QuestionListVO toListVO(Question question) {
+        return toListVO(question, currentRecord(question.getId()));
+    }
+
+    private QuestionListVO toListVO(Question question, UserQuestionRecord record) {
         return QuestionConvert.toListVO(question, categoryName(question.getCategoryId()), questionTags(question.getId()),
-                currentRecord(question.getId()));
+                record);
     }
 
     private QuestionDetailVO toDetailVO(Question question) {
@@ -495,6 +525,27 @@ public class QuestionServiceImpl implements QuestionService {
                 .filter(tag -> tag != null)
                 .map(QuestionConvert::toTagVO)
                 .toList();
+    }
+
+    private Map<Long, Question> loadAvailableQuestionsById(List<Long> questionIds) {
+        List<Long> ids = questionIds.stream()
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Question> questions = questionMapper.selectBatchIds(ids);
+        if (questions == null || questions.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return questions.stream()
+                .filter(question -> question != null && CommonConstants.YES.equals(question.getStatus()))
+                .collect(Collectors.toMap(
+                        Question::getId,
+                        question -> question,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
     }
 
     private void validateQuestionRefs(AdminQuestionSaveDTO dto) {
@@ -554,6 +605,39 @@ public class QuestionServiceImpl implements QuestionService {
         } else {
             recordMapper.updateById(record);
         }
+    }
+
+    private PracticeRecord createAgentPracticeEvidence(Long userId, Question question, UserQuestionRecord record,
+                                                       SubmitQuestionAnswerDTO dto) {
+        if (dto == null || dto.getTargetJobId() == null || record == null || record.getId() == null) {
+            return null;
+        }
+        PracticeRecord practiceRecord = new PracticeRecord();
+        practiceRecord.setUserId(userId);
+        practiceRecord.setQuestionId(question.getId());
+        practiceRecord.setAnswerContent(record.getAnswerContent());
+        practiceRecord.setSource("QUESTION_BANK");
+        practiceRecord.setSourceType("TARGET_JOB");
+        practiceRecord.setSourceId(dto.getTargetJobId());
+        practiceRecord.setReviewStatus(PracticeReviewStatus.SUCCESS.name());
+        practiceRecord.setMasteryStatus(record.getMasteryStatus());
+        practiceRecord.setReferenceAnswerSnapshot(question.getReferenceAnswer());
+        practiceRecordMapper.insert(practiceRecord);
+        return practiceRecord;
+    }
+
+    private void applyAgentTaskFeedback(SubmitQuestionAnswerVO vo, AgentTaskVO task) {
+        if (vo == null || task == null || task.getId() == null) {
+            if (vo != null) {
+                vo.setAgentTaskCompleted(false);
+            }
+            return;
+        }
+        vo.setAgentTaskCompleted("DONE".equalsIgnoreCase(task.getStatus()));
+        vo.setAgentTaskId(task.getId());
+        vo.setAgentTaskTitle(task.getTitle());
+        vo.setAgentTaskStatus(task.getStatus());
+        vo.setAgentReviewSummary(task.getReviewSummary());
     }
 
     private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
@@ -629,4 +713,5 @@ public class QuestionServiceImpl implements QuestionService {
                 ? MasteryStatusEnum.MASTERED.name()
                 : MasteryStatusEnum.NOT_MASTERED.name();
     }
+
 }

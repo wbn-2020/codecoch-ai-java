@@ -26,6 +26,7 @@ import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.redis.constant.RedisKeyConstants;
 import com.codecoachai.common.redis.util.RedisCacheHelper;
 import com.codecoachai.common.security.context.LoginUserContext;
 import java.security.SecureRandom;
@@ -51,6 +52,10 @@ public class AuthServiceImpl implements AuthService {
     private static final String RESET_TOKEN_KEY_PREFIX = "auth:password-reset:";
     private static final String RESET_REQUEST_LIMIT_KEY_PREFIX = "auth:password-reset-limit:";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+
+    private static final int LOGIN_FAIL_MAX_ATTEMPTS = 5;
+    private static final Duration LOGIN_FAIL_WINDOW = Duration.ofMinutes(5);
+    private static final Duration LOGIN_LOCK_DURATION = Duration.ofMinutes(15);
 
     private final UserFeignClient userFeignClient;
     private final PasswordEncoder passwordEncoder;
@@ -81,21 +86,37 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public LoginVO login(LoginDTO dto) {
+        String username = dto.getUsername();
+        // 暴力破解防护：检查账号是否被临时锁定
+        String lockKey = RedisKeyConstants.loginLockKey(username);
+        if (StringUtils.hasText(redisCacheHelper.get(lockKey))) {
+            loginLogRecorder.recordFailed(username, "PASSWORD", "账号已被临时锁定");
+            throw new BusinessException(ErrorCode.ACCOUNT_LOCKED);
+        }
+
         InnerUserAuthVO user;
         try {
-            user = FeignResultUtils.unwrap(userFeignClient.getByUsername(dto.getUsername()));
+            user = FeignResultUtils.unwrap(userFeignClient.getByUsername(username));
         } catch (BusinessException ex) {
-            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", ex.getMessage());
+            recordLoginFailure(username);
+            loginLogRecorder.recordFailed(username, "PASSWORD", ex.getMessage());
             throw ex;
         }
         if (!passwordEncoder.matches(dto.getPassword(), user.getPasswordHash())) {
-            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", "密码错误");
+            recordLoginFailure(username);
+            loginLogRecorder.recordFailed(username, "PASSWORD", "密码错误");
             throw new BusinessException(ErrorCode.PASSWORD_ERROR);
         }
         if (!SecurityConstants.USER_STATUS_ENABLED.equals(user.getStatus())) {
-            loginLogRecorder.recordFailed(dto.getUsername(), "PASSWORD", "账号已禁用");
+            // 账号已禁用不累计失败次数，但也不暴露禁用原因之外的细节
+            loginLogRecorder.recordFailed(username, "PASSWORD", "账号已禁用");
             throw new BusinessException(ErrorCode.USER_DISABLED);
         }
+
+        // 登录成功：清除失败计数和锁定标记
+        redisCacheHelper.delete(RedisKeyConstants.loginFailCountKey(username));
+        redisCacheHelper.delete(lockKey);
+
         StpUtil.login(user.getId());
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
         List<String> permissions = resolvePermissions(roles);
@@ -159,7 +180,7 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public ResetPasswordVO resetPassword(ResetPasswordDTO dto) {
-        if (StringUtils.hasText(dto.getConfirmPassword()) && !dto.getNewPassword().equals(dto.getConfirmPassword())) {
+        if (!dto.getNewPassword().equals(dto.getConfirmPassword())) {
             throw new BusinessException(ErrorCode.PASSWORD_CONFIRM_NOT_MATCH);
         }
         if (!StringUtils.hasText(dto.getToken())) {
@@ -309,6 +330,21 @@ public class AuthServiceImpl implements AuthService {
             return "***" + (at >= 0 ? email.substring(at) : "");
         }
         return email.charAt(0) + "***" + email.substring(at);
+    }
+
+    /**
+     * 记录登录失败次数，在短窗口内超过阈值时锁定账号。
+     */
+    private void recordLoginFailure(String username) {
+        String failKey = RedisKeyConstants.loginFailCountKey(username);
+        Long count = redisCacheHelper.incrementAndExpire(failKey, LOGIN_FAIL_WINDOW);
+        if (count != null && count >= LOGIN_FAIL_MAX_ATTEMPTS) {
+            // 超过阈值，锁定账号，锁定期内忽略后续失败计数
+            redisCacheHelper.set(RedisKeyConstants.loginLockKey(username), "1", LOGIN_LOCK_DURATION);
+            // 同时清除失败计数窗口，避免解锁后立即重计数叠加
+            redisCacheHelper.delete(failKey);
+            log.warn("账号 {} 因登录失败次数过多已被临时锁定 {} 分钟", username, LOGIN_LOCK_DURATION.toMinutes());
+        }
     }
 
 }

@@ -28,7 +28,6 @@ import org.springframework.util.StringUtils;
 public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseService {
 
     private static final int DEFAULT_BATCH_SIZE = 5;
-    private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final String DEFAULT_ERROR_MESSAGE = "简历解析失败，请稍后重试";
 
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
@@ -134,19 +133,18 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
     }
 
     private void markFailed(ResumeAnalysisRecord record, String stage, RuntimeException ex) {
-        String errorMessage = truncateErrorMessage(ex == null ? null : ex.getMessage());
+        String errorMessage = resumeParseFailureMessage();
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.FAILED.getCode())
                 .set(ResumeAnalysisRecord::getErrorMessage, errorMessage)
                 .eq(ResumeAnalysisRecord::getId, record.getId())
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PARSING.getCode())
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO));
-        log.warn("Resume analysis record marked failed, analysisRecordId={}, fileId={}, stage={}, affectedRows={}, error={}",
-                record.getId(), record.getFileId(), stage, affectedRows, errorMessage);
+        log.warn("Resume analysis record marked failed, analysisRecordId={}, fileId={}, stage={}, affectedRows={}",
+                record.getId(), record.getFileId(), stage, affectedRows);
     }
 
-    private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : DEFAULT_ERROR_MESSAGE;
-        return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    private String resumeParseFailureMessage() {
+        return DEFAULT_ERROR_MESSAGE;
     }
 }

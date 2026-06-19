@@ -11,6 +11,8 @@ public class AdminAgentTaskQueryDTO {
     private Long userId;
     private Long targetJobId;
     private LocalDate date;
+    private LocalDate startDate;
+    private LocalDate endDate;
     private String taskType;
     private String status;
     private String priority;

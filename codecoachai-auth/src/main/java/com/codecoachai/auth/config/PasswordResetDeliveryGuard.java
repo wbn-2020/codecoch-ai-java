@@ -21,5 +21,19 @@ public class PasswordResetDeliveryGuard implements ApplicationRunner {
         if (properties.mockProvider() && (!properties.isAllowMock() || prodProfile)) {
             throw new IllegalStateException("Mock password reset delivery is not allowed for this environment");
         }
+        if (prodProfile && unsafeProductionResetUrl(properties.getResetUrlTemplate())) {
+            throw new IllegalStateException("Production password reset URL must be an HTTPS public URL");
+        }
+    }
+
+    private boolean unsafeProductionResetUrl(String resetUrlTemplate) {
+        if (resetUrlTemplate == null || resetUrlTemplate.isBlank()) {
+            return true;
+        }
+        String value = resetUrlTemplate.trim().toLowerCase();
+        return !value.startsWith("https://")
+                || value.contains("localhost")
+                || value.contains("127.0.0.1")
+                || value.contains("::1");
     }
 }

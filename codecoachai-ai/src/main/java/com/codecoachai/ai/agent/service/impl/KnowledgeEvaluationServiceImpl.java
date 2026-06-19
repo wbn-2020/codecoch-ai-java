@@ -29,6 +29,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
@@ -155,7 +156,7 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
         } catch (Exception ex) {
             run.setStatus("FAILED");
             run.setFinishedAt(LocalDateTime.now());
-            run.setErrorMessage(truncate(ex.getMessage(), 512));
+            run.setErrorMessage(safeEvaluationError(ex));
             transactionTemplate.executeWithoutResult(status -> evalRunMapper.updateById(run));
             throw ex;
         }
@@ -325,6 +326,28 @@ public class KnowledgeEvaluationServiceImpl implements KnowledgeEvaluationServic
                     .toList());
         }
         return vo;
+    }
+
+    private String safeEvaluationError(Exception ex) {
+        String message = ex == null ? null : ex.getMessage();
+        if (!StringUtils.hasText(message)) {
+            return "Knowledge evaluation failed. Check service logs with traceId.";
+        }
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (lower.contains("authorization") || lower.contains("bearer") || lower.contains("token")
+                || lower.contains("api key") || lower.contains("apikey") || lower.contains("secret")
+                || lower.contains("password")) {
+            return "Knowledge evaluation failed because an upstream credential or authorization check failed.";
+        }
+        if (lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection")
+                || lower.contains("connect") || lower.contains("503") || lower.contains("502")
+                || lower.contains("load balancer") || lower.contains("feign")) {
+            return "Knowledge evaluation failed because an upstream service is temporarily unavailable.";
+        }
+        if (lower.contains("json") || lower.contains("parse") || lower.contains("deserialize")) {
+            return "Knowledge evaluation failed because an upstream response could not be parsed.";
+        }
+        return "Knowledge evaluation failed. Check service logs with traceId.";
     }
 
     private KnowledgeEvalRunVO.ResultItem toResultVO(PersonalKnowledgeEvalResult result) {

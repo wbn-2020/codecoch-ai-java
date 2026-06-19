@@ -1,6 +1,9 @@
 package com.codecoachai.ai.agent.controller;
 
+import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.common.core.domain.Result;
@@ -27,5 +30,22 @@ public class InnerAgentController {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
         }
         return Result.success(jobCoachAgentService.executeDailyPlan(dto.getUserId(), runId, dto));
+    }
+
+    @PostMapping("/job-coach/daily-plan/runs/{runId}/fail")
+    public Result<DailyPlanVO> failDailyPlan(@PathVariable("runId") Long runId,
+                                             @RequestBody AgentRunFailureDTO dto) {
+        if (dto == null || dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        return Result.success(jobCoachAgentService.failDailyPlanRun(dto.getUserId(), runId, dto));
+    }
+
+    @PostMapping("/job-coach/business-actions/complete")
+    public Result<AgentTaskVO> completeBusinessAction(@RequestBody AgentBusinessActionCompleteDTO dto) {
+        if (dto == null || dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId is required");
+        }
+        return Result.success(jobCoachAgentService.completeBusinessAction(dto));
     }
 }

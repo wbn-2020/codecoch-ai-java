@@ -6,7 +6,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: ${MYSQL_PASSWORD:}
+    password: ${MYSQL_PASSWORD}
 
 codecoachai:
   ai:
@@ -43,4 +43,4 @@ codecoachai:
     crypto:
       # Required when saving AI model apiKey values from the admin UI.
       # Use at least 16 characters, or base64:<16/24/32-byte-key>.
-      secret-key: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY:}
+      secret-key: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY}

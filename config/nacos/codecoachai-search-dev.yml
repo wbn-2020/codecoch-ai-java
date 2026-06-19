@@ -9,9 +9,9 @@ codecoachai:
     default-page-size: 10
     fallback-to-record: true
   elasticsearch:
-    uris: http://127.0.0.1:9200
-    username:
-    password:
+    uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
+    username: elastic
+    password: ${ELASTIC_PASSWORD}
 
 rocketmq:
   consumer:

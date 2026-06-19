@@ -38,6 +38,8 @@ public interface AiService {
 
     EvaluateAnswerVO evaluate(EvaluateAnswerDTO dto);
 
+    EvaluateAnswerVO evaluateStream(EvaluateAnswerDTO dto, java.util.function.Consumer<String> tokenConsumer);
+
     GenerateFollowUpVO generateFollowUp(GenerateFollowUpDTO dto);
 
     GenerateReportVO generateReport(GenerateReportDTO dto);

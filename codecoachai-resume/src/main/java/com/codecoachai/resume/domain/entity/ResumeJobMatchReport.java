@@ -12,6 +12,7 @@ public class ResumeJobMatchReport extends BaseEntity {
 
     private Long userId;
     private Long resumeId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long jdAnalysisId;
     private Integer overallScore;

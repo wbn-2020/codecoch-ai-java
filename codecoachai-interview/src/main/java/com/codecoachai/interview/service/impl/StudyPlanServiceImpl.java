@@ -26,6 +26,7 @@ import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
 import com.codecoachai.interview.domain.vo.InnerStudyPlanSkillRelationVO;
 import com.codecoachai.interview.domain.vo.InnerStudyPlanVO;
 import com.codecoachai.interview.domain.vo.InnerStudyTaskVO;
+import com.codecoachai.interview.domain.vo.StudyPlanAgentEvidenceVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
@@ -194,6 +195,33 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .stream()
                 .map(this::toInnerRelationVO)
                 .toList());
+        return vo;
+    }
+
+    @Override
+    public StudyPlanAgentEvidenceVO getPlanEvidence(Long userId, Long planId) {
+        StudyPlan plan = studyPlanMapper.selectOne(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, planId)
+                .eq(StudyPlan::getUserId, userId)
+                .eq(StudyPlan::getPlanStatus, PLAN_ACTIVE)
+                .eq(StudyPlan::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (plan == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Study plan does not exist or is not active");
+        }
+        StudyPlanAgentEvidenceVO vo = new StudyPlanAgentEvidenceVO();
+        vo.setId(plan.getId());
+        vo.setUserId(plan.getUserId());
+        vo.setSourceType(plan.getSourceType());
+        vo.setSourceId(plan.getSourceId());
+        vo.setTargetJobId(plan.getTargetJobId());
+        vo.setSkillProfileId(plan.getSkillProfileId());
+        vo.setMatchReportId(plan.getMatchReportId());
+        vo.setReportId(plan.getReportId());
+        vo.setPlanStatus(plan.getPlanStatus());
+        vo.setStartDate(plan.getStartDate());
+        vo.setGeneratedAt(plan.getUpdatedAt());
+        vo.setCreatedAt(plan.getCreatedAt());
         return vo;
     }
 

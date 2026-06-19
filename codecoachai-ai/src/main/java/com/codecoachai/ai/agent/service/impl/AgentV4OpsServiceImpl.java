@@ -62,6 +62,7 @@ import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
 import com.codecoachai.ai.domain.vo.EmbeddingResponseVO;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import com.codecoachai.ai.security.SensitiveTextMasker;
 import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.EmbeddingService;
 import com.codecoachai.common.core.domain.PageResult;
@@ -1446,6 +1447,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         int vectorUpdated = 0;
         int duplicateChunkCount = 0;
         List<Long> failedDocuments = new ArrayList<>();
+        List<String> failedDocumentRefs = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         if (!semanticEnabled && !documents.isEmpty()) {
             errors.add(embeddingDisabledReason());
@@ -1467,7 +1469,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             } catch (Exception ex) {
                 markPersonalKnowledgeIndexFailed(chunks, ex);
                 failedDocuments.add(document.getId());
-                String error = "documentId=" + document.getId() + ": " + firstText(ex.getMessage(), ex.getClass().getSimpleName());
+                String documentRef = maskOperationalIdentifier(document.getId());
+                failedDocumentRefs.add(documentRef);
+                String error = "documentRef=" + documentRef + ": " + sanitizeOperationalError(ex);
                 errors.add(error);
                 log.warn("Personal knowledge vector rebuild failed userId={} documentId={}", ownerId, document.getId(), ex);
             }
@@ -1480,7 +1484,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setVectorUpdated(vectorUpdated);
         vo.setVectorDeleted(0);
         vo.setDuplicateChunkCount(duplicateChunkCount);
-        vo.setFailedDocuments(failedDocuments);
+        vo.setFailedDocuments(List.of());
+        vo.setFailedDocumentCount(failedDocuments.size());
+        vo.setFailedDocumentRefs(failedDocumentRefs);
         vo.setErrors(errors);
         return vo;
     }
@@ -1627,7 +1633,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 success++;
             } catch (Exception ex) {
                 failed++;
-                errors.add("userId=" + userId + ": " + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+                errors.add("userRef=" + maskOperationalIdentifier(userId) + ": " + sanitizeOperationalError(ex));
             }
         }
         output.put("mode", request.getUserIds() == null || request.getUserIds().isEmpty() ? "ALL_ACTIVE_USER_ROLE" : "SPECIFIED_USERS");
@@ -1719,7 +1725,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         } catch (Exception ex) {
             result.setStatus("FAILED");
             result.setScore(0);
-            result.setErrorMessage(ex.getMessage());
+            result.setErrorMessage(sanitizeOperationalError(ex));
             result.setOutputJson("{}");
         }
         promptRegressionResultMapper.insert(result);
@@ -2647,7 +2653,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private void markPersonalKnowledgeIndexFailed(List<PersonalKnowledgeChunk> chunks, Exception ex) {
-        String error = truncateText(firstText(ex == null ? null : ex.getMessage(), "unknown error"), 512);
+        String error = truncateText(sanitizeOperationalError(ex), 512);
         for (PersonalKnowledgeChunk chunk : chunks) {
             chunk.setIndexStatus("FAILED");
             chunk.setLastError(error);
@@ -2733,7 +2739,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     SET status = 'FAILED', retry_count = retry_count + 1, last_error = ?, updated_at = NOW()
                     WHERE collection_name = ? AND point_id IN (%s)
                     """.formatted(sqlPlaceholders(pointIds.size())),
-                    vectorDeleteSqlArgs(pointIds, truncateText(firstText(ex.getMessage(), "unknown error"), 512)).toArray());
+                    vectorDeleteSqlArgs(pointIds, truncateText(sanitizeOperationalError(ex), 512)).toArray());
             log.warn("Personal knowledge vector delete failed pointCount={}", pointIds.size(), ex);
             return 0;
         }
@@ -2982,14 +2988,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private String buildKnowledgeAskPrompt(Long userId, String question, List<KnowledgeSearchResultVO> references) {
         Map<Long, String> chunkContentMap = referenceChunkContentMap(userId, references);
+        String safeQuestion = sanitizeUserInput(question);
         StringBuilder prompt = new StringBuilder();
         prompt.append("You are a personal RAG assistant. Answer in the same language as the user question.\n")
                 .append("Use only the references below. If the references are insufficient, say what is missing.\n")
                 .append("Keep the answer concise and cite every factual claim with reference numbers like [1], [2].\n")
                 .append("Never cite a reference number that is not listed below.\n\n")
                 .append("Question:\n")
-                .append(question)
-                .append("\n\nReferences:\n");
+                .append("---BEGIN-USER-INPUT---\n")
+                .append(safeQuestion)
+                .append("\n---END-USER-INPUT---\n\nReferences:\n");
         for (int i = 0; i < references.size(); i++) {
             KnowledgeSearchResultVO ref = references.get(i);
             String content = ref.getChunkId() == null ? ref.getSnippet() : chunkContentMap.get(ref.getChunkId());
@@ -3115,6 +3123,52 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             return text;
         }
         return text.substring(0, maxLength);
+    }
+
+    /**
+     * Sanitize user input before injecting into the RAG prompt to prevent
+     * prompt injection / instruction override attacks.
+     * <ul>
+     *   <li>Removes newline characters to break instruction injection</li>
+     *   <li>Truncates excessively long input (max 2000 chars)</li>
+     *   <li>Normalises whitespace</li>
+     * </ul>
+     * Chinese content is preserved as-is.
+     */
+    private String sanitizeUserInput(String input) {
+        if (input == null) {
+            return "";
+        }
+        // Truncate to max 2000 characters
+        String truncated = input.length() > 2000 ? input.substring(0, 2000) : input;
+        // Remove newlines to prevent instruction injection
+        String noNewlines = truncated.replace('\n', ' ').replace('\r', ' ');
+        // Collapse multiple spaces into one
+        return noNewlines.replaceAll(" {2,}", " ").trim();
+    }
+
+    private String maskOperationalIdentifier(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value);
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        if (text.length() <= 4) {
+            return "***" + text;
+        }
+        return text.substring(0, 2) + "***" + text.substring(text.length() - 2);
+    }
+
+    private String sanitizeOperationalError(Exception ex) {
+        String text = firstText(ex == null ? null : ex.getMessage(),
+                ex == null ? null : ex.getClass().getSimpleName(),
+                "unknown error");
+        String sanitized = text
+                .replaceAll("https?://[^\\s,;]+", "[endpoint]")
+                .replaceAll("(?i)(token|secret|password|accessKey|apiKey|key)=([^\\s,;]+)", "$1=***");
+        return "errorRef=" + Integer.toHexString(text.hashCode()) + "; summary=" + truncateText(sanitized, 180);
     }
 
     private String snippet(String text, String keyword) {
@@ -3291,8 +3345,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setStartedAt(log.getStartedAt());
         vo.setFinishedAt(log.getFinishedAt());
         vo.setDurationMs(log.getDurationMs());
-        vo.setErrorMessage(log.getErrorMessage());
-        vo.setOutputJson(log.getOutputJson());
+        vo.setErrorMessage(SensitiveTextMasker.maskText(log.getErrorMessage()));
+        vo.setOutputJson(SensitiveTextMasker.maskText(log.getOutputJson()));
         vo.setCreatedAt(log.getCreatedAt());
         return vo;
     }
@@ -3316,9 +3370,9 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setCaseId(item.getCaseId());
         vo.setPromptVersionId(item.getPromptVersionId());
         vo.setStatus(item.getStatus());
-        vo.setOutputJson(item.getOutputJson());
+        vo.setOutputJson(SensitiveTextMasker.maskText(item.getOutputJson()));
         vo.setScore(item.getScore());
-        vo.setErrorMessage(item.getErrorMessage());
+        vo.setErrorMessage(SensitiveTextMasker.maskText(item.getErrorMessage()));
         vo.setCreatedAt(item.getCreatedAt());
         return vo;
     }

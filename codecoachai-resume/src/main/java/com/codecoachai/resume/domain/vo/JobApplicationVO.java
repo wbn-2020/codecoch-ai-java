@@ -8,6 +8,7 @@ public class JobApplicationVO {
     private Long id;
     private Long targetJobId;
     private Long resumeVersionId;
+    private Long matchReportId;
     private String companyName;
     private String jobTitle;
     private String source;

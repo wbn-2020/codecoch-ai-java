@@ -10,6 +10,7 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.search.constant.IndexNames;
+import com.codecoachai.search.controller.SearchRequestGuards.PageWindow;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -124,7 +125,10 @@ public class SearchController {
                                                    List<Query> filters) throws IOException {
         int safePageNo = pageNo == null || pageNo < 1 ? 1 : pageNo;
         int safePageSize = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
-        int from = (safePageNo - 1) * safePageSize;
+        PageWindow pageWindow = SearchRequestGuards.normalizePage(pageNo, pageSize);
+        safePageNo = pageWindow.pageNo();
+        safePageSize = pageWindow.pageSize();
+        int from = pageWindow.from();
 
         BoolQuery.Builder boolBuilder = new BoolQuery.Builder();
         if (StringUtils.hasText(keyword)) {
@@ -133,7 +137,7 @@ public class SearchController {
                     .fields("title^3", "content^2", "tags", "name", "summary^2", "targetPosition",
                             "weakPoints", "strengths", "mainProblems", "projectProblems",
                             "reviewSuggestions", "suggestions", "reportContent")
-                    .fuzziness("AUTO")
+                    .fuzziness(SearchRequestGuards.allowsFuzziness(keyword) ? "AUTO" : null)
             )));
         } else {
             boolBuilder.must(Query.of(q -> q.matchAll(ma -> ma)));
@@ -145,8 +149,8 @@ public class SearchController {
         SearchRequest searchRequest = SearchRequest.of(s -> s
                 .index(index)
                 .query(Query.of(q -> q.bool(boolBuilder.build())))
-                .from(from)
-                .size(safePageSize)
+                .from(pageWindow.from())
+                .size(pageWindow.pageSize())
         );
 
         SearchResponse<JsonNode> response;

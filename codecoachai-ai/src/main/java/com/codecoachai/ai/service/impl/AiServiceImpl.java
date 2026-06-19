@@ -40,6 +40,7 @@ import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.AiService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
+import com.codecoachai.ai.security.AiPiiMasker;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -166,7 +167,7 @@ public class AiServiceImpl implements AiService {
             if (ex instanceof BusinessException businessException) {
                 throw businessException;
             }
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "题目生成失败，请稍后重试"));
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "题目生成失败，请稍后重试");
         }
     }
 
@@ -228,9 +229,12 @@ public class AiServiceImpl implements AiService {
             vo.setRawResponse(rawResponse);
             return vo;
         } catch (RuntimeException ex) {
-            PracticeReviewVO fallback = mockPracticeReview(dto);
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getRecordId()),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            if (!mockEnabled()) {
+                throw toBusinessException(ex);
+            }
+            PracticeReviewVO fallback = mockPracticeReview(dto);
             fallback.setAiCallLogId(logId);
             fallback.setRawResponse(null);
             fallback.setSummary("本次点评不够贴合题目，已生成基础中文建议。建议先对照参考答案补齐核心概念、适用场景和边界条件。");
@@ -274,6 +278,48 @@ public class AiServiceImpl implements AiService {
             Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
                     businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
             fallback.setAiCallLogId(logId);
+            return fallback;
+        }
+    }
+
+    @Override
+    public EvaluateAnswerVO evaluateStream(EvaluateAnswerDTO dto, java.util.function.Consumer<String> tokenConsumer) {
+        long start = System.currentTimeMillis();
+        Map<String, String> variables = variables(null, dto);
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_EVALUATE, defaultEvaluatePrompt(),
+                variables, evaluatePromptPrefix(dto), null);
+        String rawResponse = null;
+        try {
+            EvaluateAnswerVO vo;
+            Long logId;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                vo = mockEvaluate(dto);
+                rawResponse = toJson(vo);
+                emitMockTokens(rawResponse, tokenConsumer);
+                logId = saveLog(promptResult, rawResponse,
+                        businessId(dto.getQuestionId()), start, null, null, AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callStreamAndLog(promptResult, null, businessId(dto.getQuestionId()), tokenConsumer);
+                rawResponse = routeResult.getContent();
+                vo = parseEvaluate(rawResponse, dto);
+                logId = routeResult.getAiCallLogId();
+            }
+            if (Boolean.TRUE.equals(vo.getFollowUpValid()) && isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
+                vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
+                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "杩介棶鍐呭涓嶅璐村悎锛屽凡鏀圭敤閫氱敤杩介棶")));
+                vo.setFollowUpValid(true);
+            }
+            vo.setAiCallLogId(logId);
+            return vo;
+        } catch (RuntimeException ex) {
+            if (!mockEnabled()) {
+                throw ex;
+            }
+            EvaluateAnswerVO fallback = mockEvaluate(dto);
+            Long logId = saveLog(promptResult, mergeRawAndFinal(rawResponse, fallback),
+                    businessId(dto.getQuestionId()), start, ex.getMessage(), null, failureType(ex));
+            fallback.setAiCallLogId(logId);
+            emitMockTokens(toJson(fallback), tokenConsumer);
             return fallback;
         }
     }
@@ -439,6 +485,9 @@ public class AiServiceImpl implements AiService {
         } catch (RuntimeException ex) {
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(dto.getLearningPlanId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            if (!mockEnabled()) {
+                throw toBusinessException(ex);
+            }
             GenerateLearningPlanVO fallback = mockLearningPlan(dto);
             fallback.setPlanSummary("学习计划内容暂时不够完整，系统已生成基础训练计划。你可以先按该计划训练，稍后再重新生成。");
             fallback.setAiCallLogId(logId);
@@ -474,6 +523,9 @@ public class AiServiceImpl implements AiService {
             Long logId = saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
                     businessId(firstLong(dto.getLearningPlanId(), dto.getSkillProfileId())),
                     start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            if (!mockEnabled()) {
+                throw toBusinessException(ex);
+            }
             GenerateLearningPlanVO fallback = mockTargetedStudyPlan(dto);
             fallback.setPlanSummary("针对性学习计划内容暂时不够完整，系统已按当前短板生成基础训练计划。你可以先执行任务，稍后再重新生成。");
             fallback.setAiCallLogId(logId);
@@ -762,10 +814,10 @@ public class AiServiceImpl implements AiService {
         if (ex instanceof BusinessException businessException) {
             return businessException;
         }
-        if (ex instanceof AiProviderException aiProviderException) {
-            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        if (ex instanceof AiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 服务暂时不可用，请稍后重试");
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "简历解析失败，请稍后重试"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 服务暂时不可用，请稍后重试");
     }
 
     private boolean mockEnabled() {
@@ -776,20 +828,20 @@ public class AiServiceImpl implements AiService {
         if (ex instanceof BusinessException businessException) {
             return businessException;
         }
-        if (ex instanceof AiProviderException aiProviderException) {
-            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        if (ex instanceof AiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, "简历建议生成失败，请稍后重试");
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "简历建议生成失败，请稍后重试"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, "简历建议生成失败，请稍后重试");
     }
 
     private BusinessException toJobDescriptionParseBusinessException(RuntimeException ex) {
         if (ex instanceof BusinessException businessException) {
             return businessException;
         }
-        if (ex instanceof AiProviderException aiProviderException) {
-            return new BusinessException(ErrorCode.SYSTEM_ERROR, aiProviderException.getMessage());
+        if (ex instanceof AiProviderException) {
+            return new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析生成失败，请稍后重试");
         }
-        return new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "岗位分析生成失败"));
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, "岗位分析生成失败，请稍后重试");
     }
 
     private boolean isProjectStage(String stageType) {
@@ -830,6 +882,16 @@ public class AiServiceImpl implements AiService {
 
     private String reportPromptPrefix(GenerateReportDTO dto) {
         String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
+        String jdContextBlock = hasReportJdContext(dto)
+                ? """
+                JD target context:
+                - targetJobId: {{targetJobId}}
+                - skillProfileId: {{skillProfileId}}
+                - matchReportId: {{matchReportId}}
+                - skillGapContext: {{skillGapContext}}
+                Use this context to make weakPoints, reviewSuggestions, recommendedQuestions, and reportContent reflect JD-specific missing skills, coverage gaps, and follow-up practice topics. Do not expose raw prompt, raw resume, raw JD, or raw AI output.
+                """
+                : "";
         String projectBlock = StringUtils.hasText(dto == null ? null : dto.getProjectContent())
                 ? """
                 项目深挖要求：
@@ -849,8 +911,17 @@ public class AiServiceImpl implements AiService {
                 - 只输出 JSON，不要 Markdown 代码块，不要解释文字。
                 """
                 + "\n" + industryBlock
+                + "\n" + jdContextBlock
                 + "\n" + projectBlock
                 + "\n";
+    }
+
+    private boolean hasReportJdContext(GenerateReportDTO dto) {
+        return dto != null
+                && (dto.getTargetJobId() != null
+                || dto.getSkillProfileId() != null
+                || dto.getMatchReportId() != null
+                || StringUtils.hasText(dto.getSkillGapContext()));
     }
 
     private String learningPlanPromptContent() {
@@ -970,6 +1041,10 @@ public class AiServiceImpl implements AiService {
 
     private Map<String, String> variables(GenerateReportDTO dto) {
         Map<String, String> values = new LinkedHashMap<>();
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("skillProfileId", dto.getSkillProfileId() == null ? "" : String.valueOf(dto.getSkillProfileId()));
+        values.put("matchReportId", dto.getMatchReportId() == null ? "" : String.valueOf(dto.getMatchReportId()));
+        values.put("skillGapContext", dto.getSkillGapContext());
         values.put("targetPosition", dto.getTargetPosition());
         values.put("experienceLevel", dto.getExperienceLevel());
         values.put("industry", dto.getIndustryDirection());
@@ -989,7 +1064,7 @@ public class AiServiceImpl implements AiService {
         values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
         values.put("originalFilename", dto.getOriginalFilename());
         values.put("fileExt", dto.getFileExt());
-        values.put("rawText", dto.getRawText());
+        values.put("rawText", AiPiiMasker.maskResumeJson(dto.getRawText()));
         return values;
     }
 
@@ -1004,8 +1079,8 @@ public class AiServiceImpl implements AiService {
         values.put("targetCompany", dto.getTargetCompany());
         values.put("extraRequirements", dto.getExtraRequirements());
         values.put("optimizeFocus", dto.getOptimizeFocus());
-        values.put("resumeJson", toJson(dto.getResume()));
-        values.put("projectsJson", toJson(dto.getProjects()));
+        values.put("resumeJson", AiPiiMasker.maskResumeJson(toJson(dto.getResume())));
+        values.put("projectsJson", AiPiiMasker.maskResumeJson(toJson(dto.getProjects())));
         return values;
     }
 
@@ -1027,10 +1102,11 @@ public class AiServiceImpl implements AiService {
         values.put("reportId", dto.getReportId() == null ? "" : String.valueOf(dto.getReportId()));
         values.put("userId", dto.getUserId() == null ? "" : String.valueOf(dto.getUserId()));
         values.put("resumeId", dto.getResumeId() == null ? "" : String.valueOf(dto.getResumeId()));
+        values.put("resumeVersionId", dto.getResumeVersionId() == null ? "" : String.valueOf(dto.getResumeVersionId()));
         values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
         values.put("jdAnalysisId", dto.getJdAnalysisId() == null ? "" : String.valueOf(dto.getJdAnalysisId()));
-        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
-        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
+        values.put("resumeAnalysisJson", AiPiiMasker.maskResumeJson(dto.getResumeAnalysisJson()));
+        values.put("resumeSnapshotJson", AiPiiMasker.maskResumeJson(dto.getResumeSnapshotJson()));
         values.put("jobDescriptionAnalysisJson", dto.getJobDescriptionAnalysisJson());
         values.put("targetJobJson", dto.getTargetJobJson());
         values.put("userExperienceYears", dto.getUserExperienceYears());
@@ -1052,8 +1128,8 @@ public class AiServiceImpl implements AiService {
         values.put("gapsJson", dto.getGapsJson());
         values.put("recommendedLearningTopicsJson", dto.getRecommendedLearningTopicsJson());
         values.put("recommendedInterviewTopicsJson", dto.getRecommendedInterviewTopicsJson());
-        values.put("resumeAnalysisJson", dto.getResumeAnalysisJson());
-        values.put("resumeSnapshotJson", dto.getResumeSnapshotJson());
+        values.put("resumeAnalysisJson", AiPiiMasker.maskResumeJson(dto.getResumeAnalysisJson()));
+        values.put("resumeSnapshotJson", AiPiiMasker.maskResumeJson(dto.getResumeSnapshotJson()));
         return values;
     }
 
@@ -3412,6 +3488,37 @@ public class AiServiceImpl implements AiService {
         ctx.setResponseFormat("JSON");
         ctx.setRequestBody(buildRequestMetadata(promptResult, AiFailureType.NONE, requestId, traceId));
         return aiCallLogService.callAndLog(ctx);
+    }
+
+    private RouteResult callStreamAndLog(PromptRenderResult promptResult, Long userId, String businessId,
+                                         java.util.function.Consumer<String> tokenConsumer) {
+        AiCallContext ctx = new AiCallContext();
+        String requestId = UUID.randomUUID().toString();
+        String traceId = currentTraceId();
+        ctx.setScene(promptResult.getScene());
+        ctx.setPrompt(promptResult.getRenderedPrompt());
+        ctx.setUserId(userId);
+        ctx.setBusinessId(businessId);
+        ctx.setRequestId(requestId);
+        ctx.setPromptTemplateId(promptResult.getPromptTemplateId());
+        ctx.setPromptTemplateVersionId(promptResult.getPromptTemplateVersionId());
+        ctx.setPromptVersion(promptResult.getPromptVersion());
+        ctx.setInputVariablesJson(promptResult.getInputVariablesJson());
+        ctx.setModelParamsJson(promptResult.getModelParamsJson());
+        ctx.setPromptHash(promptResult.getPromptHash());
+        ctx.setResponseFormat("JSON");
+        ctx.setRequestBody(buildRequestMetadata(promptResult, AiFailureType.NONE, requestId, traceId));
+        return aiCallLogService.callStreamAndLog(ctx, tokenConsumer);
+    }
+
+    private void emitMockTokens(String content, java.util.function.Consumer<String> tokenConsumer) {
+        if (tokenConsumer == null || !StringUtils.hasText(content)) {
+            return;
+        }
+        int chunkSize = 24;
+        for (int start = 0; start < content.length(); start += chunkSize) {
+            tokenConsumer.accept(content.substring(start, Math.min(content.length(), start + chunkSize)));
+        }
     }
 
     private String buildRequestMetadata(PromptRenderResult promptResult, AiFailureType failureType,

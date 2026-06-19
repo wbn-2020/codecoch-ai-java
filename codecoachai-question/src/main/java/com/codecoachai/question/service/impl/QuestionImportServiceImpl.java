@@ -58,7 +58,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ImportResult importQuestions(String fileName, InputStream inputStream, Long importedBy) {
+    public ImportResult importQuestions(String fileName, InputStream inputStream, Long importedBy, boolean dryRun) {
         String ext = getExtension(fileName);
         List<ParsedQuestion> parsed;
 
@@ -70,7 +70,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
             default -> throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的文件格式: " + ext);
         }
 
-        return saveQuestions(parsed, importedBy);
+        return saveQuestions(parsed, importedBy, dryRun);
     }
 
     // ==================== Excel 解析 ====================
@@ -107,7 +107,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             return parseMarkdownLines(reader.lines().toList());
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown 解析失败: " + e.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown 解析失败，请检查文件内容后重试");
         }
     }
 
@@ -190,7 +190,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
             }
             return parseMarkdownLines(lines);
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX 解析失败: " + e.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX 解析失败，请检查文件内容后重试");
         }
     }
 
@@ -206,13 +206,13 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 return parseMarkdownLines(lines);
             }
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF 解析失败: " + e.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF 解析失败，请检查文件内容后重试");
         }
     }
 
     // ==================== 保存逻辑 ====================
 
-    private ImportResult saveQuestions(List<ParsedQuestion> parsed, Long importedBy) {
+    private ImportResult saveQuestions(List<ParsedQuestion> parsed, Long importedBy, boolean dryRun) {
         ImportResult result = new ImportResult();
         result.setTotalCount(parsed.size());
         result.setErrors(new ArrayList<>());
@@ -308,8 +308,10 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setStatus(1);
                 question.setAuditStatus("APPROVED");
                 question.setSourceType("IMPORT");
-                questionMapper.insert(question);
-                importedQuestionIds.add(question.getId());
+                if (!dryRun) {
+                    questionMapper.insert(question);
+                    importedQuestionIds.add(question.getId());
+                }
                 if (StringUtils.hasText(normalizedTitleHash)) {
                     seenNormalizedTitleHashes.add(normalizedTitleHash);
                 }
@@ -319,10 +321,11 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 success++;
             } catch (Exception ex) {
                 fail++;
+                log.warn("Question import row failed, rowIndex={}, title={}", i + 1, pq.getTitle(), ex);
                 ImportError err = new ImportError();
                 err.setRowIndex(i + 1);
                 err.setTitle(pq.getTitle());
-                err.setReason(ex.getMessage());
+                err.setReason("行数据导入失败，请检查字段格式、分类和题目内容");
                 result.getErrors().add(err);
             }
         }
@@ -331,7 +334,9 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         result.setFailCount(fail);
         result.setDuplicateCount(duplicate);
         result.setDuplicateReasonCounts(duplicateReasonCounts);
-        syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIds, importedBy);
+        if (!dryRun) {
+            syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIds, importedBy);
+        }
         log.info("题目导入完成 total={} success={} fail={} duplicate={}", parsed.size(), success, fail, duplicate);
         return result;
     }

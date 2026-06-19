@@ -14,4 +14,7 @@ public class BatchQuestionDuplicateIgnoreDTO {
 
     /** 忽略原因（可选）。 */
     private String ignoredReason;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String idempotencyKey;
 }

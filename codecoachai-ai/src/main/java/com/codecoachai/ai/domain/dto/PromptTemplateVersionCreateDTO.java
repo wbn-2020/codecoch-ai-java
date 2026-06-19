@@ -18,4 +18,9 @@ public class PromptTemplateVersionCreateDTO {
     private String modelParamsJson;
     private String status;
     private String changeLog;
+
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

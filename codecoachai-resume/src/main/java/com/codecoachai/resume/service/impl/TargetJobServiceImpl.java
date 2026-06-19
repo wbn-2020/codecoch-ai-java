@@ -26,9 +26,14 @@ import com.codecoachai.resume.mq.JobTargetParseMqDispatcher;
 import com.codecoachai.resume.service.TargetJobService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Comparator;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -71,8 +76,10 @@ public class TargetJobServiceImpl implements TargetJobService {
                         ? CommonConstants.YES : CommonConstants.NO);
             }
         }
-        return targetJobMapper.selectList(wrapper).stream()
-                .map(job -> toTargetJobVO(job, latestAnalysis(job.getId(), userId)))
+        List<TargetJob> jobs = targetJobMapper.selectList(wrapper);
+        Map<Long, JobDescriptionAnalysis> latestAnalysisByTargetJobId = latestAnalysisByTargetJobId(jobs, userId);
+        return jobs.stream()
+                .map(job -> toTargetJobVO(job, latestAnalysisByTargetJobId.get(job.getId())))
                 .toList();
     }
 
@@ -80,6 +87,14 @@ public class TargetJobServiceImpl implements TargetJobService {
     @Transactional(rollbackFor = Exception.class)
     public TargetJobVO createTargetJob(TargetJobSaveDTO dto) {
         Long userId = requireCurrentUserId();
+        return distributedLockHelper.tryLockAndCall("lock:target-job:current:" + userId, 3, 10,
+                () -> createTargetJobInLock(userId, dto),
+                () -> {
+                    throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Target job create is busy");
+                });
+    }
+
+    private TargetJobVO createTargetJobInLock(Long userId, TargetJobSaveDTO dto) {
         TargetJob job = new TargetJob();
         job.setUserId(userId);
         applyTargetJob(job, dto);
@@ -328,12 +343,16 @@ public class TargetJobServiceImpl implements TargetJobService {
 
     private JobDescriptionAnalysis markParsing(TargetJob job, JobDescriptionAnalysis existing,
                                                JobDescriptionParseDTO request) {
-        targetJobMapper.update(null, new LambdaUpdateWrapper<TargetJob>()
+        int affectedRows = targetJobMapper.update(null, new LambdaUpdateWrapper<TargetJob>()
                 .set(TargetJob::getParseStatus, JobDescriptionParseStatus.PARSING.getCode())
                 .set(TargetJob::getParseErrorMessage, null)
                 .eq(TargetJob::getId, job.getId())
                 .eq(TargetJob::getUserId, job.getUserId())
+                .ne(TargetJob::getParseStatus, JobDescriptionParseStatus.PARSING.getCode())
                 .eq(TargetJob::getDeleted, CommonConstants.NO));
+        if (affectedRows <= 0) {
+            throw new BusinessException(ErrorCode.TOO_MANY_REQUESTS, "Job description parse is already running");
+        }
         JobDescriptionAnalysis analysis = existing == null || Boolean.TRUE.equals(request.getForceRefresh())
                 ? new JobDescriptionAnalysis() : existing;
         analysis.setTargetJobId(job.getId());
@@ -442,6 +461,41 @@ public class TargetJobServiceImpl implements TargetJobService {
                 .eq(JobDescriptionAnalysis::getDeleted, CommonConstants.NO)
                 .orderByDesc(JobDescriptionAnalysis::getUpdatedAt)
                 .last("limit 1"));
+    }
+
+    private Map<Long, JobDescriptionAnalysis> latestAnalysisByTargetJobId(List<TargetJob> jobs, Long userId) {
+        List<Long> targetJobIds = jobs.stream()
+                .map(TargetJob::getId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (targetJobIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<JobDescriptionAnalysis> analyses = analysisMapper.selectList(new LambdaQueryWrapper<JobDescriptionAnalysis>()
+                .eq(JobDescriptionAnalysis::getUserId, userId)
+                .eq(JobDescriptionAnalysis::getDeleted, CommonConstants.NO)
+                .in(JobDescriptionAnalysis::getTargetJobId, targetJobIds)
+                .orderByDesc(JobDescriptionAnalysis::getUpdatedAt)
+                .orderByDesc(JobDescriptionAnalysis::getId));
+        if (analyses == null || analyses.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return analyses.stream()
+                .filter(analysis -> analysis != null && analysis.getTargetJobId() != null)
+                .sorted(this::compareLatestAnalysisFirst)
+                .collect(Collectors.toMap(
+                        JobDescriptionAnalysis::getTargetJobId,
+                        analysis -> analysis,
+                        (first, ignored) -> first,
+                        LinkedHashMap::new));
+    }
+
+    private int compareLatestAnalysisFirst(JobDescriptionAnalysis left, JobDescriptionAnalysis right) {
+        Comparator<JobDescriptionAnalysis> latestFirst = Comparator
+                .comparing(JobDescriptionAnalysis::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                .thenComparing(JobDescriptionAnalysis::getId, Comparator.nullsLast(Comparator.reverseOrder()));
+        return latestFirst.compare(left, right);
     }
 
     private void applyTargetJob(TargetJob job, TargetJobSaveDTO dto) {

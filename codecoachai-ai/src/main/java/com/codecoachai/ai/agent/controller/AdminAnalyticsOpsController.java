@@ -5,11 +5,13 @@ import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
 import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsMetricDefinitionVO;
+import com.codecoachai.ai.agent.security.AdminOperationConfirmationGuard;
 import com.codecoachai.ai.agent.security.V4AdminPermissionGuard;
 import com.codecoachai.ai.agent.service.AgentAnalyticsService;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.web.log.OperationLog;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -32,6 +34,7 @@ public class AdminAnalyticsOpsController {
     private final AgentV4OpsService agentV4OpsService;
     private final AgentAnalyticsService agentAnalyticsService;
     private final V4AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/overview")
     public Result<Map<String, Object>> overview(@RequestParam(required = false) Integer days) {
@@ -76,18 +79,32 @@ public class AdminAnalyticsOpsController {
         }
     }
 
+    @OperationLog(module = "analytics", action = "CREATE_ANALYTICS_METRIC", description = "创建聚合指标", logArgs = false, logResponse = false)
     @PostMapping("/metrics")
     public Result<AnalyticsMetricDefinitionVO> createMetric(@RequestBody AdminAnalyticsMetricSaveDTO dto) {
         permissionGuard.require("admin:analytics:metric:write");
-        return Result.success(agentV4OpsService.saveMetric(dto));
+        String lockKey = requireConfirmedMetricSave("create", null, dto);
+        try {
+            return Result.success(agentV4OpsService.saveMetric(dto));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
+    @OperationLog(module = "analytics", action = "UPDATE_ANALYTICS_METRIC", description = "更新聚合指标", logArgs = false, logResponse = false)
     @PutMapping("/metrics/{id}")
     public Result<AnalyticsMetricDefinitionVO> updateMetric(@PathVariable Long id,
                                                             @RequestBody AdminAnalyticsMetricSaveDTO dto) {
         permissionGuard.require("admin:analytics:metric:write");
+        String lockKey = requireConfirmedMetricSave("update", id, dto);
         dto.setId(id);
-        return Result.success(agentV4OpsService.saveMetric(dto));
+        try {
+            return Result.success(agentV4OpsService.saveMetric(dto));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @GetMapping("/jobs")
@@ -103,16 +120,41 @@ public class AdminAnalyticsOpsController {
         }
     }
 
+    @OperationLog(module = "analytics", action = "RERUN_ANALYTICS_JOB", description = "重跑聚合任务", logArgs = false, logResponse = false)
     @PostMapping("/jobs/{id}/rerun")
-    public Result<AnalyticsJobLogVO> rerun(@PathVariable Long id) {
+    public Result<AnalyticsJobLogVO> rerun(@PathVariable Long id,
+                                           @RequestBody(required = false) AnalyticsJobRunDTO dto) {
         permissionGuard.require("admin:analytics:job:run");
-        return Result.success(agentV4OpsService.rerunJob(id));
+        String lockKey = operationConfirmationGuard.requireConfirmed(
+                "ANALYTICS_JOB_RERUN:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey());
+        try {
+            return Result.success(agentV4OpsService.rerunJob(id));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
+    @OperationLog(module = "analytics", action = "RUN_DAILY_PLAN_ANALYTICS_JOB", description = "手动运行每日计划聚合任务", logArgs = false, logResponse = false)
     @PostMapping("/jobs/agent-daily-plan/run")
     public Result<AnalyticsJobLogVO> runDailyPlan(@RequestBody(required = false) AnalyticsJobRunDTO dto) {
         permissionGuard.require("admin:analytics:job:run");
-        return Result.success(agentV4OpsService.runDailyPlanBatch(dto));
+        String lockKey = operationConfirmationGuard.requireConfirmed(
+                "ANALYTICS_JOB_RUN:AGENT_DAILY_PLAN",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey());
+        try {
+            return Result.success(agentV4OpsService.runDailyPlanBatch(dto));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @GetMapping("/agent/feedback")
@@ -127,6 +169,21 @@ public class AdminAnalyticsOpsController {
         } catch (RuntimeException ex) {
             return new AgentFeedbackStatsVO();
         }
+    }
+
+    private String requireConfirmedMetricSave(String action, Long id, AdminAnalyticsMetricSaveDTO dto) {
+        return operationConfirmationGuard.requireConfirmed(
+                "ANALYTICS_METRIC_" + action.toUpperCase() + ":" + (id == null ? metricCodeKey(dto) : id),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey());
+    }
+
+    private String metricCodeKey(AdminAnalyticsMetricSaveDTO dto) {
+        return dto != null && StringUtils.hasText(dto.getMetricCode())
+                ? dto.getMetricCode().trim()
+                : "new";
     }
 
     private boolean containsIgnoreCase(String value, String keyword) {

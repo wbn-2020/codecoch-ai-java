@@ -61,7 +61,6 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class SkillProfileServiceImpl implements SkillProfileService {
 
-    private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final long DEFAULT_PAGE_NO = 1L;
     private static final long DEFAULT_PAGE_SIZE = 10L;
     private static final long MAX_PAGE_SIZE = 100L;
@@ -293,8 +292,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             return toGenerateVO(success);
         } catch (RuntimeException ex) {
             SkillProfile failed = transactionTemplate.execute(status -> markFailed(profile.getId(), ex));
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "技能画像分析失败：" + failed.getErrorMessage());
+            throw new BusinessException(ErrorCode.PARAM_ERROR, skillProfileFailureMessage());
         }
     }
 
@@ -335,7 +333,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Skill profile missing");
         }
         profile.setStatus(SkillProfileStatus.FAILED.getCode());
-        profile.setErrorMessage(truncateErrorMessage(ex == null ? null : ex.getMessage()));
+        profile.setErrorMessage(skillProfileFailureMessage());
         profileMapper.updateById(profile);
         gapItemMapper.delete(new LambdaQueryWrapper<SkillGapItem>()
                 .eq(SkillGapItem::getProfileId, profileId)
@@ -554,7 +552,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         vo.setSourceType(profile.getSourceType());
         vo.setSourceBizId(profile.getSourceBizId());
         vo.setStatus(profile.getStatus());
-        vo.setErrorMessage(profile.getErrorMessage());
+        vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
         vo.setAiCallLogId(profile.getAiCallLogId());
         vo.setGapItems(listGapItems(profile));
         vo.setCreatedAt(profile.getCreatedAt());
@@ -575,7 +573,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         vo.setSourceType(profile.getSourceType());
         vo.setSourceBizId(profile.getSourceBizId());
         vo.setStatus(profile.getStatus());
-        vo.setErrorMessage(profile.getErrorMessage());
+        vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
         vo.setGapCount(listGapItems(profile).size());
         vo.setAiCallLogId(profile.getAiCallLogId());
         vo.setCreatedAt(profile.getCreatedAt());
@@ -590,7 +588,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         vo.setMatchReportId(profile.getMatchReportId());
         vo.setGapCount(listGapItems(profile).size());
         vo.setStatus(profile.getStatus());
-        vo.setErrorMessage(profile.getErrorMessage());
+        vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
         vo.setAiCallLogId(profile.getAiCallLogId());
         vo.setCreatedAt(profile.getCreatedAt());
         vo.setUpdatedAt(profile.getUpdatedAt());
@@ -659,7 +657,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         vo.setStatus(profile.getStatus());
         vo.setRawResultJson(profile.getRawResultJson());
         vo.setAiCallLogId(profile.getAiCallLogId());
-        vo.setErrorMessage(profile.getErrorMessage());
+        vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
         if (targetJob != null && CommonConstants.NO.equals(targetJob.getDeleted())) {
             vo.setTargetJobTitle(targetJob.getJobTitle());
             vo.setTargetCompanyName(targetJob.getCompanyName());
@@ -968,9 +966,12 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         return Math.min(pageSize, MAX_PAGE_SIZE);
     }
 
-    private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "技能画像分析失败";
-        return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    private String safeSkillProfileErrorMessage(String message) {
+        return StringUtils.hasText(message) ? skillProfileFailureMessage() : null;
+    }
+
+    private String skillProfileFailureMessage() {
+        return "技能画像分析失败，请稍后重试";
     }
 
     private String firstText(String... values) {

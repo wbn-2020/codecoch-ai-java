@@ -6,10 +6,15 @@ import com.codecoachai.ai.agent.security.V4AdminPermissionGuard;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
+import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.common.vector.config.VectorStoreProperties;
 import com.codecoachai.common.vector.domain.VectorCollectionInfo;
 import com.codecoachai.common.vector.service.VectorIndexJobService;
 import com.codecoachai.common.vector.service.VectorStoreClient;
+import java.net.URI;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -25,6 +30,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.util.StringUtils;
 
 @RestController
 @Slf4j
@@ -33,7 +39,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminVectorStoreController {
 
     private static final String QUESTION_COLLECTION = "question_embedding";
-    private static final String VECTOR_OPS_PERMISSION = "admin:analytics:ai";
+    private static final String VECTOR_VIEW_PERMISSION = "admin:analytics:ai";
+    private static final String VECTOR_MAINTENANCE_PERMISSION = "admin:question:embedding:rebuild";
     private static final String VECTOR_JOB_KNOWLEDGE_REBUILD = "KNOWLEDGE_REBUILD";
     private static final String VECTOR_JOB_KNOWLEDGE_RETRY = "KNOWLEDGE_RETRY";
     private static final String VECTOR_SCOPE_KNOWLEDGE = "KNOWLEDGE";
@@ -42,6 +49,7 @@ public class AdminVectorStoreController {
     private final VectorStoreClient vectorStoreClient;
     private final VectorIndexJobService vectorIndexJobService;
     private final V4AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
     private final JdbcTemplate jdbcTemplate;
     private final AgentV4OpsService agentV4OpsService;
     private final KnowledgeProperties knowledgeProperties;
@@ -49,7 +57,7 @@ public class AdminVectorStoreController {
 
     @GetMapping("/health")
     public Result<Map<String, Object>> health() {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+        permissionGuard.require(VECTOR_VIEW_PERMISSION);
         List<VectorCollectionInfo> collections = coreCollections().stream()
                 .map(vectorStoreClient::collectionInfo)
                 .toList();
@@ -81,7 +89,7 @@ public class AdminVectorStoreController {
     public Result<Map<String, Object>> failures(@RequestParam(required = false) String type,
                                                 @RequestParam(required = false) String status,
                                                 @RequestParam(required = false) Integer limit) {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+        permissionGuard.require(VECTOR_VIEW_PERMISSION);
         String normalizedType = normalizeFailureType(type);
         List<String> statuses = normalizeFailureStatuses(status);
         int size = clampFailureLimit(limit);
@@ -103,48 +111,87 @@ public class AdminVectorStoreController {
     }
 
     @PostMapping("/delete-outbox/retry")
-    public Result<Map<String, Object>> retryVectorDeletes(@RequestParam(required = false) Integer limit) {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+    @OperationLog(module = "vector", action = "DELETE_OUTBOX_RETRY", logArgs = false, logResponse = false)
+    public Result<Map<String, Object>> retryVectorDeletes(@RequestParam(required = false) Integer limit,
+                                                          @RequestParam(required = false) Boolean confirm,
+                                                          @RequestParam(required = false) String reason,
+                                                          @RequestParam(required = false) Boolean dryRun,
+                                                          @RequestParam(required = false) String idempotencyKey) {
+        permissionGuard.require(VECTOR_MAINTENANCE_PERMISSION);
+        String cleanReason = cleanReason(reason);
+        String cleanIdempotencyKey = cleanIdempotencyKey(idempotencyKey);
+        if (requiresMaintenancePreview(confirm, cleanReason, dryRun, cleanIdempotencyKey)) {
+            return Result.success(vectorMaintenancePreview("DELETE_OUTBOX_RETRY", limit, cleanReason, cleanIdempotencyKey));
+        }
+        String lockKey = acquireMaintenanceIdempotencyKey("DELETE_OUTBOX_RETRY", cleanReason, cleanIdempotencyKey);
         Long jobId = vectorIndexJobService.start("DELETE_OUTBOX_RETRY", "DELETE_OUTBOX", null, limit);
         try {
             Map<String, Object> result = new LinkedHashMap<>(retryVectorDeletesInternal(limit));
+            attachVectorMaintenanceConfirmation(result, "DELETE_OUTBOX_RETRY", limit, cleanReason, cleanIdempotencyKey);
             vectorIndexJobService.finish(jobId, "SUCCESS", result,
                     numberValue(result.get("matched")), numberValue(result.get("deleted")), numberValue(result.get("failed")),
                     numberValue(result.get("deleted")), 0L, null);
             vectorIndexJobService.attach(result, jobId);
             return Result.success(result);
         } catch (Exception ex) {
+            releaseMaintenanceIdempotencyKey(lockKey);
             vectorIndexJobService.fail(jobId, ex);
             throw ex;
         }
     }
 
     @PostMapping("/knowledge/rebuild")
-    public Result<KnowledgeVectorRebuildVO> rebuildKnowledgeVectors(@RequestParam(required = false) Integer limit) {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+    @OperationLog(module = "vector", action = "KNOWLEDGE_REBUILD", logArgs = false, logResponse = false)
+    public Result<KnowledgeVectorRebuildVO> rebuildKnowledgeVectors(@RequestParam(required = false) Integer limit,
+                                                                    @RequestParam(required = false) Boolean confirm,
+                                                                    @RequestParam(required = false) String reason,
+                                                                    @RequestParam(required = false) Boolean dryRun,
+                                                                    @RequestParam(required = false) String idempotencyKey) {
+        permissionGuard.require(VECTOR_MAINTENANCE_PERMISSION);
+        String cleanReason = cleanReason(reason);
+        String cleanIdempotencyKey = cleanIdempotencyKey(idempotencyKey);
+        if (requiresMaintenancePreview(confirm, cleanReason, dryRun, cleanIdempotencyKey)) {
+            return Result.success(knowledgeVectorPreview(VECTOR_JOB_KNOWLEDGE_REBUILD, limit, cleanReason, cleanIdempotencyKey));
+        }
+        String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_KNOWLEDGE_REBUILD, cleanReason, cleanIdempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, null, limit);
         try {
             KnowledgeVectorRebuildVO result = agentV4OpsService.rebuildAllKnowledgeVectors(limit);
+            attachKnowledgeMaintenanceConfirmation(result, VECTOR_JOB_KNOWLEDGE_REBUILD, limit, cleanReason, cleanIdempotencyKey);
             String status = finishKnowledgeVectorJob(jobId, result);
             attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_REBUILD, VECTOR_SCOPE_KNOWLEDGE, null, status);
             return Result.success(result);
         } catch (Exception ex) {
+            releaseMaintenanceIdempotencyKey(lockKey);
             vectorIndexJobService.fail(jobId, ex);
             throw ex;
         }
     }
 
     @PostMapping("/knowledge/retry-failed")
-    public Result<KnowledgeVectorRebuildVO> retryFailedKnowledgeVectors(@RequestParam(required = false) Integer limit) {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+    @OperationLog(module = "vector", action = "KNOWLEDGE_RETRY_FAILED", logArgs = false, logResponse = false)
+    public Result<KnowledgeVectorRebuildVO> retryFailedKnowledgeVectors(@RequestParam(required = false) Integer limit,
+                                                                        @RequestParam(required = false) Boolean confirm,
+                                                                        @RequestParam(required = false) String reason,
+                                                                        @RequestParam(required = false) Boolean dryRun,
+                                                                        @RequestParam(required = false) String idempotencyKey) {
+        permissionGuard.require(VECTOR_MAINTENANCE_PERMISSION);
+        String cleanReason = cleanReason(reason);
+        String cleanIdempotencyKey = cleanIdempotencyKey(idempotencyKey);
+        if (requiresMaintenancePreview(confirm, cleanReason, dryRun, cleanIdempotencyKey)) {
+            return Result.success(knowledgeVectorPreview(VECTOR_JOB_KNOWLEDGE_RETRY, limit, cleanReason, cleanIdempotencyKey));
+        }
+        String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_KNOWLEDGE_RETRY, cleanReason, cleanIdempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE, VECTOR_SCOPE_FAILED_OR_STALE, limit);
         try {
             KnowledgeVectorRebuildVO result = agentV4OpsService.retryAllFailedKnowledgeVectors(limit);
+            attachKnowledgeMaintenanceConfirmation(result, VECTOR_JOB_KNOWLEDGE_RETRY, limit, cleanReason, cleanIdempotencyKey);
             String status = finishKnowledgeVectorJob(jobId, result);
             attachKnowledgeVectorJob(result, jobId, VECTOR_JOB_KNOWLEDGE_RETRY, VECTOR_SCOPE_KNOWLEDGE,
                     VECTOR_SCOPE_FAILED_OR_STALE, status);
             return Result.success(result);
         } catch (Exception ex) {
+            releaseMaintenanceIdempotencyKey(lockKey);
             vectorIndexJobService.fail(jobId, ex);
             throw ex;
         }
@@ -157,7 +204,7 @@ public class AdminVectorStoreController {
                                                         @RequestParam(required = false) String status,
                                                         @RequestParam(required = false) Long pageNo,
                                                         @RequestParam(required = false) Long pageSize) {
-        permissionGuard.require(VECTOR_OPS_PERMISSION);
+        permissionGuard.require(VECTOR_VIEW_PERMISSION);
         return Result.success(vectorIndexJobService.page(jobId, jobType, scopeType, status, pageNo, pageSize));
     }
 
@@ -172,7 +219,7 @@ public class AdminVectorStoreController {
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("enabled", vectorStoreClient.isEnabled());
         config.put("provider", vectorStoreProperties.getProvider());
-        config.put("baseUrl", vectorStoreProperties.getBaseUrl());
+        config.put("baseUrlMasked", maskEndpoint(vectorStoreProperties.getBaseUrl()));
         config.put("defaultLimit", vectorStoreProperties.getDefaultLimit());
         config.put("requestTimeout", vectorStoreProperties.getRequestTimeout().toString());
         config.put("knowledgeCollection", knowledgeProperties.getCollection());
@@ -226,7 +273,7 @@ public class AdminVectorStoreController {
             metrics.put("callCount", 0L);
             metrics.put("failedCount", 0L);
             metrics.put("errorMessage", "ai_call_log embedding metrics are not available: "
-                    + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+                    + safeOperationalError(ex));
         }
         return metrics;
     }
@@ -269,7 +316,7 @@ public class AdminVectorStoreController {
             stats.put("total", 0L);
             stats.put("statusCounts", List.of());
             stats.put("modelCounts", List.of());
-            stats.put("errorMessage", firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+            stats.put("errorMessage", safeOperationalError(ex));
         }
         return stats;
     }
@@ -308,7 +355,7 @@ public class AdminVectorStoreController {
             stats.put("retryable", 0L);
             stats.put("clear", false);
             stats.put("errorMessage", "vector_delete_outbox is not available: "
-                    + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+                    + safeOperationalError(ex));
         }
         return stats;
     }
@@ -317,7 +364,7 @@ public class AdminVectorStoreController {
         try {
             List<Object> args = new ArrayList<>(statuses);
             args.add(limit);
-            return jdbcTemplate.queryForList("""
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                     SELECT question_id AS questionId,
                            COALESCE(index_status, 'PENDING') AS indexStatus,
                            embedding_model AS embeddingModel,
@@ -331,8 +378,9 @@ public class AdminVectorStoreController {
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """.formatted(sqlPlaceholders(statuses.size())), args.toArray());
+            return sanitizeQuestionFailures(rows);
         } catch (DataAccessException ex) {
-            errors.add("question_embedding query failed: " + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+            errors.add("question_embedding query failed: " + safeOperationalError(ex));
             return List.of();
         }
     }
@@ -341,7 +389,7 @@ public class AdminVectorStoreController {
         try {
             List<Object> args = new ArrayList<>(statuses);
             args.add(limit);
-            return jdbcTemplate.queryForList("""
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                     SELECT id AS chunkId,
                            user_id AS userId,
                            document_id AS documentId,
@@ -358,9 +406,9 @@ public class AdminVectorStoreController {
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """.formatted(sqlPlaceholders(statuses.size())), args.toArray());
+            return sanitizeKnowledgeFailures(rows);
         } catch (DataAccessException ex) {
-            errors.add("personal_knowledge_chunk query failed: "
-                    + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+            errors.add("personal_knowledge_chunk query failed: " + safeOperationalError(ex));
             return List.of();
         }
     }
@@ -369,7 +417,7 @@ public class AdminVectorStoreController {
         try {
             List<Object> args = new ArrayList<>(statuses);
             args.add(limit);
-            return jdbcTemplate.queryForList("""
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                     SELECT collection_name AS collectionName,
                            point_id AS pointId,
                            biz_type AS bizType,
@@ -383,9 +431,9 @@ public class AdminVectorStoreController {
                     ORDER BY updated_at DESC
                     LIMIT ?
                     """.formatted(sqlPlaceholders(statuses.size())), args.toArray());
+            return sanitizeDeleteOutboxFailures(rows);
         } catch (DataAccessException ex) {
-            errors.add("vector_delete_outbox query failed: "
-                    + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+            errors.add("vector_delete_outbox query failed: " + safeOperationalError(ex));
             return List.of();
         }
     }
@@ -422,6 +470,180 @@ public class AdminVectorStoreController {
         return limit == null ? 50 : Math.max(1, Math.min(limit, 200));
     }
 
+    private boolean requiresMaintenancePreview(Boolean confirm, String reason, Boolean dryRun, String idempotencyKey) {
+        return Boolean.TRUE.equals(dryRun)
+                || !Boolean.TRUE.equals(confirm)
+                || !StringUtils.hasText(reason)
+                || !StringUtils.hasText(idempotencyKey);
+    }
+
+    private String cleanReason(String reason) {
+        return operationConfirmationGuard.cleanReason(reason);
+    }
+
+    private String cleanIdempotencyKey(String idempotencyKey) {
+        return operationConfirmationGuard.cleanIdempotencyKey(idempotencyKey);
+    }
+
+    private Map<String, Object> vectorMaintenancePreview(String operation, Integer limit, String reason,
+                                                         String idempotencyKey) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("requiresConfirmation", true);
+        result.put("dryRun", true);
+        result.put("operation", operation);
+        result.put("requestedLimit", limit);
+        result.put("accessReason", reason);
+        result.put("idempotencyKey", idempotencyKey);
+        result.put("message", "Submit confirm=true, a non-empty reason, and an idempotencyKey to execute this vector maintenance operation.");
+        result.put("deleteOutbox", vectorDeleteOutboxStats());
+        return result;
+    }
+
+    private KnowledgeVectorRebuildVO knowledgeVectorPreview(String operation, Integer limit, String reason,
+                                                            String idempotencyKey) {
+        KnowledgeVectorRebuildVO result = new KnowledgeVectorRebuildVO();
+        result.setVectorEnabled(vectorStoreClient.isEnabled());
+        result.setEmbeddingEnabled(vectorStoreClient.isEnabled());
+        result.setSemanticEnabled(vectorStoreClient.isEnabled());
+        result.setRequiresConfirmation(true);
+        result.setDryRun(true);
+        result.setOperation(operation);
+        result.setRequestedLimit(limit);
+        result.setAccessReason(reason);
+        result.setIdempotencyKey(idempotencyKey);
+        result.setConfirmationMessage("Submit confirm=true, a non-empty reason, and an idempotencyKey to execute this vector maintenance operation.");
+        result.setErrors(List.of());
+        return result;
+    }
+
+    private void attachVectorMaintenanceConfirmation(Map<String, Object> result, String operation,
+                                                     Integer limit, String reason, String idempotencyKey) {
+        result.put("requiresConfirmation", false);
+        result.put("dryRun", false);
+        result.put("operation", operation);
+        result.put("requestedLimit", limit);
+        result.put("accessReason", reason);
+        result.put("idempotencyKey", idempotencyKey);
+    }
+
+    private void attachKnowledgeMaintenanceConfirmation(KnowledgeVectorRebuildVO result, String operation,
+                                                        Integer limit, String reason, String idempotencyKey) {
+        if (result == null) {
+            return;
+        }
+        result.setRequiresConfirmation(false);
+        result.setDryRun(false);
+        result.setOperation(operation);
+        result.setRequestedLimit(limit);
+        result.setAccessReason(reason);
+        result.setIdempotencyKey(idempotencyKey);
+    }
+
+    private String acquireMaintenanceIdempotencyKey(String operation, String reason, String idempotencyKey) {
+        return operationConfirmationGuard.requireConfirmed("admin-vector-maintenance:" + operation,
+                true, false, reason, idempotencyKey);
+    }
+
+    private void releaseMaintenanceIdempotencyKey(String lockKey) {
+        operationConfirmationGuard.release(lockKey);
+    }
+
+    private List<Map<String, Object>> sanitizeQuestionFailures(List<Map<String, Object>> rows) {
+        rows.forEach(row -> row.put("lastError", sanitizeOperationalError(row.get("lastError"))));
+        return rows;
+    }
+
+    private List<Map<String, Object>> sanitizeKnowledgeFailures(List<Map<String, Object>> rows) {
+        rows.forEach(row -> {
+            row.put("chunkIdMasked", maskIdentifier(row.remove("chunkId")));
+            row.put("userIdMasked", maskIdentifier(row.remove("userId")));
+            row.put("documentIdMasked", maskIdentifier(row.remove("documentId")));
+            row.put("lastError", sanitizeOperationalError(row.get("lastError")));
+        });
+        return rows;
+    }
+
+    private List<Map<String, Object>> sanitizeDeleteOutboxFailures(List<Map<String, Object>> rows) {
+        rows.forEach(row -> {
+            row.put("pointIdMasked", maskIdentifier(row.remove("pointId")));
+            row.put("lastError", sanitizeOperationalError(row.get("lastError")));
+        });
+        return rows;
+    }
+
+    private String sanitizeOperationalError(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value);
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        String hash = Integer.toHexString(text.hashCode());
+        return "errorRef=" + hash + "; summary=" + operationalErrorSummary(text);
+    }
+
+    private String safeOperationalError(Exception ex) {
+        return firstText(sanitizeOperationalError(ex == null ? null : ex.getMessage()),
+                ex == null ? "operational error occurred" : ex.getClass().getSimpleName());
+    }
+
+    private String operationalErrorSummary(String text) {
+        String lower = text.toLowerCase();
+        if (lower.contains("timeout") || lower.contains("timed out")) {
+            return "operation timed out";
+        }
+        if (lower.contains("connect") || lower.contains("connection") || lower.contains("refused")) {
+            return "dependency connection failed";
+        }
+        if (lower.contains("unauthorized") || lower.contains("forbidden") || lower.contains("permission")) {
+            return "dependency authorization failed";
+        }
+        if (lower.contains("sql") || lower.contains("jdbc") || lower.contains("database")) {
+            return "database operation failed";
+        }
+        return "operational error occurred";
+    }
+
+    private String maskIdentifier(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value);
+        if (!StringUtils.hasText(text)) {
+            return null;
+        }
+        if (text.length() <= 4) {
+            return "***" + text;
+        }
+        return text.substring(0, 2) + "***" + text.substring(text.length() - 2);
+    }
+
+    private String maskEndpoint(String baseUrl) {
+        if (!StringUtils.hasText(baseUrl)) {
+            return "";
+        }
+        try {
+            URI uri = URI.create(baseUrl.trim());
+            String scheme = StringUtils.hasText(uri.getScheme()) ? uri.getScheme() : "http";
+            String host = StringUtils.hasText(uri.getHost()) ? uri.getHost() : "configured";
+            String port = uri.getPort() > 0 ? ":" + uri.getPort() : "";
+            return scheme + "://" + maskHost(host) + port + "/***";
+        } catch (Exception ex) {
+            return "configured/***";
+        }
+    }
+
+    private String maskHost(String host) {
+        if (!StringUtils.hasText(host)) {
+            return "***";
+        }
+        if (host.length() <= 2) {
+            return "***";
+        }
+        return host.charAt(0) + "***" + host.charAt(host.length() - 1);
+    }
+
     private Map<String, Object> retryVectorDeletesInternal(Integer limit) {
         int size = limit == null ? 500 : Math.max(1, Math.min(limit, 5000));
         Map<String, Object> result = new LinkedHashMap<>();
@@ -449,7 +671,7 @@ public class AdminVectorStoreController {
             result.put("deleted", 0);
             result.put("failed", 0);
             result.put("errors", List.of("vector_delete_outbox query failed: "
-                    + firstText(ex.getMessage(), ex.getClass().getSimpleName())));
+                    + safeOperationalError(ex)));
             return result;
         }
         Map<String, List<String>> pointIdsByCollection = new LinkedHashMap<>();
@@ -474,7 +696,7 @@ public class AdminVectorStoreController {
             } catch (Exception ex) {
                 markVectorDeletesFailed(collectionName, pointIds, ex);
                 failed += pointIds.size();
-                errors.add(collectionName + ": " + firstText(ex.getMessage(), ex.getClass().getSimpleName()));
+                errors.add(collectionName + ": " + safeOperationalError(ex));
                 log.warn("Admin vector delete retry failed collection={} pointCount={}", collectionName, pointIds.size(), ex);
             }
         }
@@ -502,7 +724,7 @@ public class AdminVectorStoreController {
                 WHERE collection_name = ? AND point_id IN (%s)
                 """.formatted(sqlPlaceholders(pointIds.size())),
                 vectorDeleteSqlArgs(collectionName, pointIds,
-                        firstText(ex == null ? null : ex.getMessage(), "unknown error")).toArray());
+                        safeOperationalError(ex)).toArray());
     }
 
     private String finishKnowledgeVectorJob(Long jobId, KnowledgeVectorRebuildVO result) {

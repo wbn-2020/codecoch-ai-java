@@ -11,7 +11,10 @@ public class AdminAgentRunQueryDTO {
     private Long userId;
     private Long targetJobId;
     private LocalDate date;
+    private LocalDate startDate;
+    private LocalDate endDate;
     private String agentType;
+    private String triggerType;
     private String status;
     private String promptType;
 }

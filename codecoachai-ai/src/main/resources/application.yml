@@ -18,6 +18,11 @@ spring:
         file-extension: yml
 
 codecoachai:
+  v4:
+    features:
+      growth-enabled: false
+      knowledge-enabled: false
+
   knowledge:
     collection: personal_knowledge_chunk
     chunk-strategy: STRUCTURED_MARKDOWN_BLOCK_800_OVERLAP_80

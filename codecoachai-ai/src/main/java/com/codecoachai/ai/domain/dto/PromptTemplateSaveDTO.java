@@ -21,4 +21,11 @@ public class PromptTemplateSaveDTO {
     private Long activeVersionId;
     private Integer enabled;
     private Integer status;
+
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
+    private Integer expectedStatus;
+    private Long expectedActiveVersionId;
 }

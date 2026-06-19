@@ -676,9 +676,26 @@ public class QuestionEmbeddingIndexServiceImpl implements QuestionEmbeddingIndex
 
     private String trimError(String message) {
         if (!StringUtils.hasText(message)) {
-            return "unknown error";
+            return "operation failed";
         }
-        return message.length() <= 180 ? message : message.substring(0, 180);
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("authorization") || lower.contains("bearer") || lower.contains("token")
+                || lower.contains("api key") || lower.contains("apikey") || lower.contains("secret")
+                || lower.contains("password")) {
+            return "upstream authorization failed";
+        }
+        if (lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection")
+                || lower.contains("connect") || lower.contains("503") || lower.contains("502")
+                || lower.contains("load balancer")) {
+            return "upstream service unavailable";
+        }
+        if (lower.contains("json") || lower.contains("parse") || lower.contains("deserialize")) {
+            return "upstream response parse failed";
+        }
+        if (lower.contains("dimension") || lower.contains("vector count mismatch")) {
+            return "vector data shape mismatch";
+        }
+        return "operation failed";
     }
 
     private record InactiveCleanupResult(int metadataDeleted, int vectorDeleted) {

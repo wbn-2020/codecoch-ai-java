@@ -1,6 +1,9 @@
 package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.util.StringUtils;
 
 @RestController
 @RequiredArgsConstructor
@@ -34,19 +38,28 @@ public class QuestionEmbeddingController {
     private final QuestionDuplicateProperties questionDuplicateProperties;
     private final VectorIndexJobService vectorIndexJobService;
     private final AdminPermissionGuard adminPermissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @OperationLog(module = "question", action = "REBUILD_QUESTION_EMBEDDING", description = "重建题目向量索引", logArgs = false, logResponse = false)
     @PostMapping("/admin/questions/embedding/rebuild")
     public Result<Map<String, Object>> rebuild(@RequestBody(required = false) RebuildDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
+        String reason = cleanReason(dto == null ? null : dto.getReason());
+        String idempotencyKey = cleanIdempotencyKey(dto == null ? null : dto.getIdempotencyKey());
+        if (requiresPreview(dto, reason, idempotencyKey)) {
+            return Result.success(questionVectorPreview(VECTOR_JOB_QUESTION_REBUILD, limit, reason, idempotencyKey));
+        }
+        String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_QUESTION_REBUILD, reason, idempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_REBUILD, VECTOR_SCOPE_QUESTION, null, limit);
         try {
             Map<String, Object> result = new LinkedHashMap<>(questionEmbeddingIndexService.rebuild(limit));
+            attachOperationConfirmation(result, VECTOR_JOB_QUESTION_REBUILD, limit, reason, idempotencyKey);
             String status = finishQuestionVectorJob(jobId, result);
             attachQuestionVectorJob(result, jobId, VECTOR_JOB_QUESTION_REBUILD, VECTOR_SCOPE_QUESTION, null, status);
             return Result.success(result);
         } catch (Exception ex) {
+            releaseMaintenanceIdempotencyKey(lockKey);
             vectorIndexJobService.fail(jobId, ex);
             throw ex;
         }
@@ -63,14 +76,22 @@ public class QuestionEmbeddingController {
     public Result<Map<String, Object>> retryFailed(@RequestBody(required = false) RebuildDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_EMBEDDING_REBUILD);
         Integer limit = dto == null ? null : dto.getLimit();
+        String reason = cleanReason(dto == null ? null : dto.getReason());
+        String idempotencyKey = cleanIdempotencyKey(dto == null ? null : dto.getIdempotencyKey());
+        if (requiresPreview(dto, reason, idempotencyKey)) {
+            return Result.success(questionVectorPreview(VECTOR_JOB_QUESTION_RETRY, limit, reason, idempotencyKey));
+        }
+        String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_QUESTION_RETRY, reason, idempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_RETRY, VECTOR_SCOPE_QUESTION, VECTOR_SCOPE_FAILED_OR_STALE, limit);
         try {
             Map<String, Object> result = new LinkedHashMap<>(questionEmbeddingIndexService.retryFailed(limit));
+            attachOperationConfirmation(result, VECTOR_JOB_QUESTION_RETRY, limit, reason, idempotencyKey);
             String status = finishQuestionVectorJob(jobId, result);
             attachQuestionVectorJob(result, jobId, VECTOR_JOB_QUESTION_RETRY, VECTOR_SCOPE_QUESTION,
                     VECTOR_SCOPE_FAILED_OR_STALE, status);
             return Result.success(result);
         } catch (Exception ex) {
+            releaseMaintenanceIdempotencyKey(lockKey);
             vectorIndexJobService.fail(jobId, ex);
             throw ex;
         }
@@ -92,6 +113,59 @@ public class QuestionEmbeddingController {
     @Data
     public static class RebuildDTO {
         private Integer limit;
+        private Boolean confirm;
+        private String reason;
+        private Boolean dryRun;
+        private String idempotencyKey;
+    }
+
+    private boolean requiresPreview(RebuildDTO dto, String reason, String idempotencyKey) {
+        return dto == null
+                || Boolean.TRUE.equals(dto.getDryRun())
+                || !Boolean.TRUE.equals(dto.getConfirm())
+                || !StringUtils.hasText(reason)
+                || !StringUtils.hasText(idempotencyKey);
+    }
+
+    private String cleanReason(String reason) {
+        return operationConfirmationGuard.cleanReason(reason);
+    }
+
+    private String cleanIdempotencyKey(String idempotencyKey) {
+        return operationConfirmationGuard.cleanIdempotencyKey(idempotencyKey);
+    }
+
+    private Map<String, Object> questionVectorPreview(String operation, Integer limit, String reason,
+                                                      String idempotencyKey) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("requiresConfirmation", true);
+        result.put("dryRun", true);
+        result.put("operation", operation);
+        result.put("requestedLimit", limit);
+        result.put("accessReason", reason);
+        result.put("idempotencyKey", idempotencyKey);
+        result.put("message", "Submit confirm=true, a non-empty reason, and an idempotencyKey to execute this vector maintenance operation.");
+        result.put("stats", questionEmbeddingIndexService.stats());
+        return result;
+    }
+
+    private void attachOperationConfirmation(Map<String, Object> result, String operation, Integer limit,
+                                             String reason, String idempotencyKey) {
+        result.put("requiresConfirmation", false);
+        result.put("dryRun", false);
+        result.put("operation", operation);
+        result.put("requestedLimit", limit);
+        result.put("accessReason", reason);
+        result.put("idempotencyKey", idempotencyKey);
+    }
+
+    private String acquireMaintenanceIdempotencyKey(String operation, String reason, String idempotencyKey) {
+        return operationConfirmationGuard.requireConfirmed("question-vector-maintenance:" + operation,
+                true, false, reason, idempotencyKey);
+    }
+
+    private void releaseMaintenanceIdempotencyKey(String lockKey) {
+        operationConfirmationGuard.release(lockKey);
     }
 
     private String finishQuestionVectorJob(Long jobId, Map<String, Object> result) {

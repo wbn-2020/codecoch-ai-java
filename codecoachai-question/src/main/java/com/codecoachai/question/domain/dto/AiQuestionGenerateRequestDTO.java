@@ -27,4 +27,8 @@ public class AiQuestionGenerateRequestDTO {
     private Boolean generateTagSuggestions = true;
     private Boolean generateCategorySuggestion = true;
     private String extraRequirements;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

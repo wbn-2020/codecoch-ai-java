@@ -1,6 +1,7 @@
 package com.codecoachai.task.feign;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.task.feign.dto.AgentRunFailureDTO;
 import com.codecoachai.task.feign.dto.ExecuteAgentDailyPlanDTO;
 import com.codecoachai.task.feign.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.task.feign.dto.GenerateReportDTO;
@@ -34,4 +35,8 @@ public interface AiFeignClient {
     @PostMapping("/inner/agent/job-coach/daily-plan/runs/{runId}/execute")
     Result<AgentDailyPlanVO> executeAgentDailyPlan(@PathVariable("runId") Long runId,
                                                    @RequestBody ExecuteAgentDailyPlanDTO dto);
+
+    @PostMapping("/inner/agent/job-coach/daily-plan/runs/{runId}/fail")
+    Result<AgentDailyPlanVO> failAgentDailyPlan(@PathVariable("runId") Long runId,
+                                                @RequestBody AgentRunFailureDTO dto);
 }

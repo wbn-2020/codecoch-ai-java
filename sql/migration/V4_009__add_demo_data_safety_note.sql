@@ -1,0 +1,12 @@
+-- V4_009: 演示数据清理脚本已从 Flyway 迁移目录移出
+--
+-- 原文件 V4_009__clean_demo_business_data_and_seed_chinese_dataset.sql
+-- 已从 sql/migration/ 移至 sql/sandbox/ 目录。
+--
+-- 迁移原因：该脚本对 20+ 张业务表执行软删除 (UPDATE ... SET deleted = 1)，
+-- 仅适用于本地开发 / 演示环境，不能由 Flyway 自动执行。
+--
+-- 如需手动清理和重新初始化演示数据，请执行：
+--   sql/sandbox/V4_009__clean_demo_business_data_and_seed_chinese_dataset.sql
+--
+-- 执行前请确认当前数据库非生产环境，并已做好数据备份。

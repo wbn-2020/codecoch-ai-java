@@ -2,7 +2,10 @@ package com.codecoachai.question.controller;
 
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.question.domain.dto.BatchQuestionDuplicateIgnoreDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionDuplicateMergeDTO;
@@ -30,7 +33,11 @@ import com.codecoachai.question.service.QuestionDuplicateEvaluationService;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -49,11 +56,17 @@ public class AdminQuestionDuplicateReviewController {
     private final QuestionDuplicateService duplicateService;
     private final QuestionDuplicateEvaluationService duplicateEvaluationService;
     private final AdminPermissionGuard adminPermissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @PostMapping("/admin/questions/check-duplicate")
     public Result<QuestionDuplicateCheckResultVO> checkDuplicate(@RequestBody QuestionDuplicateCheckDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.checkDuplicate(dto));
+        return runConfirmedOperation("question-dedupe-check",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.checkDuplicate(dto)));
     }
 
     @GetMapping("/admin/question-duplicate-reviews")
@@ -75,9 +88,15 @@ public class AdminQuestionDuplicateReviewController {
     }
 
     @PostMapping("/admin/question-duplicate-reviews/evaluate")
+    @OperationLog(module = "question-duplicate", action = "EVALUATE", description = "Evaluate duplicate question review", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateEvaluationVO> evaluate(@RequestBody QuestionDuplicateEvaluationDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.evaluate(dto));
+        return runConfirmedOperation("question-dedupe-evaluate",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.evaluate(dto)));
     }
 
     @GetMapping({"/admin/question-duplicate-eval/cases", "/admin/question-duplicate-reviews/eval/cases"})
@@ -87,30 +106,57 @@ public class AdminQuestionDuplicateReviewController {
     }
 
     @PostMapping({"/admin/question-duplicate-eval/cases", "/admin/question-duplicate-reviews/eval/cases"})
+    @OperationLog(module = "question-duplicate", action = "SAVE_EVAL_CASE", description = "Save duplicate evaluation case", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateEvalCaseVO> saveEvalCase(@RequestBody QuestionDuplicateEvalCaseSaveDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateEvaluationService.saveCase(dto));
+        return runConfirmedOperation("question-dedupe-eval-case-save:" + (dto == null ? "new" : dto.getId()),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateEvaluationService.saveCase(dto)));
     }
 
     @DeleteMapping({"/admin/question-duplicate-eval/cases/{id}", "/admin/question-duplicate-reviews/eval/cases/{id}"})
-    public Result<Void> deleteEvalCase(@PathVariable Long id) {
+    @OperationLog(module = "question-duplicate", action = "DELETE_EVAL_CASE", description = "Delete duplicate evaluation case", logArgs = false, logResponse = false)
+    public Result<Void> deleteEvalCase(@PathVariable Long id,
+                                       @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        duplicateEvaluationService.deleteCase(id);
-        return Result.success();
+        return runConfirmedOperation("question-dedupe-eval-case-delete:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    duplicateEvaluationService.deleteCase(id);
+                    return Result.success();
+                });
     }
 
     @PostMapping({"/admin/question-duplicate-eval/runs", "/admin/question-duplicate-reviews/eval/runs"})
+    @OperationLog(module = "question-duplicate", action = "RUN_EVAL", description = "Run duplicate evaluation", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateEvalRunVO> runEval(@RequestBody(required = false) QuestionDuplicateEvalRunRequestDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateEvaluationService.run(dto));
+        return runConfirmedOperation("question-dedupe-eval-run",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateEvaluationService.run(dto)));
     }
 
     @PostMapping({"/admin/question-duplicate-eval/runs/threshold-sweep",
             "/admin/question-duplicate-reviews/eval/runs/threshold-sweep"})
+    @OperationLog(module = "question-duplicate", action = "THRESHOLD_SWEEP", description = "Run duplicate threshold sweep", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateThresholdSweepVO> thresholdSweep(
             @RequestBody(required = false) QuestionDuplicateThresholdSweepDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateEvaluationService.thresholdSweep(dto));
+        return runConfirmedOperation("question-dedupe-threshold-sweep",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateEvaluationService.thresholdSweep(dto)));
     }
 
     @GetMapping({"/admin/question-duplicate-eval/runs", "/admin/question-duplicate-reviews/eval/runs"})
@@ -133,33 +179,53 @@ public class AdminQuestionDuplicateReviewController {
     }
 
     @PostMapping("/admin/question-duplicate-reviews/{id}/merge")
-    @OperationLog(module = "question-duplicate", action = "MERGE", description = "Merge duplicate question review")
+    @OperationLog(module = "question-duplicate", action = "MERGE", description = "Merge duplicate question review", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateReviewDetailVO> merge(@PathVariable Long id,
                                                          @RequestBody(required = false) QuestionDuplicateMergeDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.merge(id, dto));
+        return runConfirmedOperation("question-dedupe-merge:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.merge(id, dto)));
     }
 
     @PostMapping("/admin/question-duplicate-reviews/{id}/ignore")
-    @OperationLog(module = "question-duplicate", action = "IGNORE", description = "Ignore duplicate question review")
+    @OperationLog(module = "question-duplicate", action = "IGNORE", description = "Ignore duplicate question review", logArgs = false, logResponse = false)
     public Result<QuestionDuplicateReviewDetailVO> ignore(@PathVariable Long id,
                                                           @RequestBody(required = false) QuestionDuplicateIgnoreDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.ignore(id, dto));
+        return runConfirmedOperation("question-dedupe-ignore:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getIgnoredReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.ignore(id, dto)));
     }
 
     @PostMapping("/admin/question-duplicate-reviews/batch-merge")
-    @OperationLog(module = "question-duplicate", action = "BATCH_MERGE", description = "Batch merge duplicate question reviews")
+    @OperationLog(module = "question-duplicate", action = "BATCH_MERGE", description = "Batch merge duplicate question reviews", logArgs = false, logResponse = false)
     public Result<BatchQuestionDuplicateResultVO> batchMerge(@RequestBody BatchQuestionDuplicateMergeDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.batchMerge(dto));
+        return runConfirmedOperation("question-dedupe-batch-merge",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.batchMerge(dto)));
     }
 
     @PostMapping("/admin/question-duplicate-reviews/batch-ignore")
-    @OperationLog(module = "question-duplicate", action = "BATCH_IGNORE", description = "Batch ignore duplicate question reviews")
+    @OperationLog(module = "question-duplicate", action = "BATCH_IGNORE", description = "Batch ignore duplicate question reviews", logArgs = false, logResponse = false)
     public Result<BatchQuestionDuplicateResultVO> batchIgnore(@RequestBody BatchQuestionDuplicateIgnoreDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_DEDUPE);
-        return Result.success(duplicateService.batchIgnore(dto));
+        return runConfirmedOperation("question-dedupe-batch-ignore",
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getIgnoredReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.batchIgnore(dto)));
     }
 
     @GetMapping("/admin/questions/{id}/relations")
@@ -169,16 +235,47 @@ public class AdminQuestionDuplicateReviewController {
     }
 
     @PostMapping("/admin/questions/{id}/relations")
+    @OperationLog(module = "question-duplicate", action = "CREATE_RELATION", description = "Create question relation", logArgs = false, logResponse = false)
     public Result<QuestionRelationVO> createRelation(@PathVariable Long id,
                                                      @Valid @RequestBody QuestionRelationCreateDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_RELATION);
-        return Result.success(duplicateService.createRelation(id, dto));
+        return runConfirmedOperation("question-relation-create:" + id,
+                dto.getConfirm(), dto.getDryRun(), dto.getReason(), dto.getIdempotencyKey(),
+                () -> Result.success(duplicateService.createRelation(id, dto)));
     }
 
     @DeleteMapping("/admin/questions/{id}/relations/{relationId}")
-    public Result<Void> deleteRelation(@PathVariable Long id, @PathVariable Long relationId) {
+    @OperationLog(module = "question-duplicate", action = "DELETE_RELATION", description = "Delete question relation", logArgs = false, logResponse = false)
+    public Result<Void> deleteRelation(@PathVariable Long id, @PathVariable Long relationId,
+                                       @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         adminPermissionGuard.require(PERM_QUESTION_RELATION);
-        duplicateService.deleteRelation(id, relationId);
-        return Result.success();
+        return runConfirmedOperation("question-relation-delete:" + id + ":" + relationId,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    duplicateService.deleteRelation(id, relationId);
+                    return Result.success();
+                });
+    }
+
+    private <T> Result<T> runConfirmedOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                String reason, String idempotencyKey,
+                                                Supplier<Result<T>> action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            return action.get();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+    @Data
+    public static class AdminOperationConfirmDTO {
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
     }
 }

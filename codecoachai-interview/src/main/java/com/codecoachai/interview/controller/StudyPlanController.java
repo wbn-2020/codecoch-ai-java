@@ -86,7 +86,7 @@ public class StudyPlanController {
     }
 
     @GetMapping("/study-plans/{planId}/daily-view")
-    @OperationLog(module = "study", action = "QUERY_DAILY_VIEW", description = "查询每日学习任务", logArgs = true, logResponse = false)
+    @OperationLog(module = "study", action = "QUERY_DAILY_VIEW", description = "查询每日学习任务", logArgs = false, logResponse = false)
     @Operation(summary = "Get daily study task view",
             description = "Returns task statistics and task list for one day in a user-owned study plan. "
                     + "date is optional and uses yyyy-MM-dd; when omitted, the server uses today.")
@@ -98,7 +98,7 @@ public class StudyPlanController {
     }
 
     @GetMapping("/daily-tasks")
-    @OperationLog(module = "study", action = "QUERY_DAILY_TASKS", description = "查询每日任务入口", logArgs = true, logResponse = false)
+    @OperationLog(module = "study", action = "QUERY_DAILY_TASKS", description = "查询每日任务入口", logArgs = false, logResponse = false)
     public Result<StudyPlanDailyViewVO> dailyTasks(@RequestParam(required = false) Long planId,
                                                    @RequestParam(required = false) String date) {
         if (planId != null) {

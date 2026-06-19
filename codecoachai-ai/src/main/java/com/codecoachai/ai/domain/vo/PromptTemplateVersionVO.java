@@ -12,8 +12,12 @@ public class PromptTemplateVersionVO {
     private String versionCode;
     private String versionName;
     private String content;
+    private Integer contentLength;
+    private String contentHash;
     private String variablesJson;
     private String modelParamsJson;
+    private Integer modelParamsLength;
+    private String modelParamsHash;
     private String status;
     private Integer isActive;
     private Long createdBy;
@@ -22,4 +26,7 @@ public class PromptTemplateVersionVO {
     private String changeLog;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private Boolean rawFieldsAvailable;
+    private Boolean rawFieldsIncluded;
+    private String rawAccessPermission;
 }

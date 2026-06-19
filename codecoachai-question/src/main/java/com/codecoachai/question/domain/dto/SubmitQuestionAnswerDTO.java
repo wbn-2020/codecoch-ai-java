@@ -10,4 +10,6 @@ public class SubmitQuestionAnswerDTO {
     private String answerContent;
 
     private String masteryStatus;
+
+    private Long targetJobId;
 }

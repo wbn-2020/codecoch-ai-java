@@ -1,5 +1,6 @@
 package com.codecoachai.question.domain.vo;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDateTime;
 import lombok.Data;
 
@@ -39,10 +40,17 @@ public class PracticeRecordVO {
     private String suggestedFollowUps;
     private String referenceAnswer;
     private String referenceAnswerSnapshot;
+    @JsonIgnore
     private String questionSnapshotJson;
+    @JsonIgnore
     private String reviewJson;
     private Long aiCallLogId;
     private String errorMessage;
+    private Boolean agentTaskCompleted;
+    private Long agentTaskId;
+    private String agentTaskTitle;
+    private String agentTaskStatus;
+    private String agentReviewSummary;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

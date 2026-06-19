@@ -20,6 +20,7 @@ import com.codecoachai.question.domain.enums.QuestionRecommendationPracticeStatu
 import com.codecoachai.question.domain.vo.PracticeRecordVO;
 import com.codecoachai.question.feign.AiPracticeFeignClient;
 import com.codecoachai.question.feign.dto.PracticeReviewDTO;
+import com.codecoachai.question.feign.vo.AgentTaskVO;
 import com.codecoachai.question.feign.vo.PracticeReviewVO;
 import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
@@ -47,6 +48,7 @@ public class PracticeServiceImpl implements PracticeService {
     private final QuestionRecommendationItemMapper recommendationItemMapper;
     private final QuestionRecommendationBatchMapper recommendationBatchMapper;
     private final AiPracticeFeignClient aiPracticeFeignClient;
+    private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -85,7 +87,11 @@ public class PracticeServiceImpl implements PracticeService {
         }
         practiceRecordMapper.updateById(record);
         markRecommendationCompleted(recommendationContext);
-        return toVO(record, question);
+        AgentTaskVO completedAgentTask = agentBusinessActionNotifier.completeQuestionPractice(
+                userId, resolveTargetJobId(record, dto), record.getId());
+        PracticeRecordVO vo = toVO(record, question);
+        applyAgentTaskFeedback(vo, completedAgentTask);
+        return vo;
     }
 
     @Override
@@ -196,8 +202,6 @@ public class PracticeServiceImpl implements PracticeService {
         vo.setSuggestedFollowUps(record.getSuggestedFollowUps());
         vo.setReferenceAnswer(record.getReferenceAnswerSnapshot());
         vo.setReferenceAnswerSnapshot(record.getReferenceAnswerSnapshot());
-        vo.setQuestionSnapshotJson(record.getQuestionSnapshotJson());
-        vo.setReviewJson(record.getReviewJson());
         vo.setAiCallLogId(record.getAiCallLogId());
         vo.setErrorMessage(record.getErrorMessage());
         vo.setCreatedAt(record.getCreatedAt());
@@ -264,8 +268,13 @@ public class PracticeServiceImpl implements PracticeService {
         }
         record.setRecommendationItemId(dto.getRecommendationItemId());
         record.setBatchId(dto.getBatchId());
-        record.setSourceType(dto.getSourceType());
-        record.setSourceId(dto.getSourceId());
+        if (dto.getTargetJobId() != null && (!StringUtils.hasText(dto.getSourceType()) || dto.getSourceId() == null)) {
+            record.setSourceType("TARGET_JOB");
+            record.setSourceId(dto.getTargetJobId());
+        } else {
+            record.setSourceType(dto.getSourceType());
+            record.setSourceId(dto.getSourceId());
+        }
         record.setSkillProfileId(dto.getSkillProfileId());
         record.setStudyPlanId(dto.getStudyPlanId());
     }
@@ -277,6 +286,30 @@ public class PracticeServiceImpl implements PracticeService {
         QuestionRecommendationItem item = context.item();
         item.setPracticeStatus(QuestionRecommendationPracticeStatus.COMPLETED.getCode());
         recommendationItemMapper.updateById(item);
+    }
+
+    private Long resolveTargetJobId(PracticeRecord record, PracticeSubmitDTO dto) {
+        if (dto != null && dto.getTargetJobId() != null) {
+            return dto.getTargetJobId();
+        }
+        if (record != null && "TARGET_JOB".equalsIgnoreCase(record.getSourceType())) {
+            return record.getSourceId();
+        }
+        return null;
+    }
+
+    private void applyAgentTaskFeedback(PracticeRecordVO vo, AgentTaskVO task) {
+        if (vo == null || task == null || task.getId() == null) {
+            if (vo != null) {
+                vo.setAgentTaskCompleted(false);
+            }
+            return;
+        }
+        vo.setAgentTaskCompleted("DONE".equalsIgnoreCase(task.getStatus()));
+        vo.setAgentTaskId(task.getId());
+        vo.setAgentTaskTitle(task.getTitle());
+        vo.setAgentTaskStatus(task.getStatus());
+        vo.setAgentReviewSummary(task.getReviewSummary());
     }
 
     private Long requireCurrentUserId() {

@@ -42,6 +42,20 @@ import org.springframework.web.client.RestClientResponseException;
 @RequiredArgsConstructor
 public class ProviderAiCaller {
 
+    /**
+     * 共享 SimpleClientHttpRequestFactory，复用 JDK HttpURLConnection 的 Keep-Alive 连接缓存。
+     * connectTimeout=5000ms, readTimeout=60000ms。
+     * 如需更大规模的连接池（例如 maxTotal=50, defaultMaxPerRoute=20），
+     * 可添加 org.apache.httpcomponents:httpclient 依赖并改用 HttpComponentsClientHttpRequestFactory。
+     */
+    private static final org.springframework.http.client.SimpleClientHttpRequestFactory SHARED_REQUEST_FACTORY;
+
+    static {
+        SHARED_REQUEST_FACTORY = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+        SHARED_REQUEST_FACTORY.setConnectTimeout(5000);
+        SHARED_REQUEST_FACTORY.setReadTimeout(60000);
+    }
+
     private final AiRouterProperties routerProperties;
     private final AiModelConfigMapper modelConfigMapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
@@ -80,7 +94,7 @@ public class ProviderAiCaller {
         long started = System.currentTimeMillis();
         try {
             String response = RestClient.builder()
-                    .requestFactory(requestFactory(cfg.timeout()))
+                    .requestFactory(SHARED_REQUEST_FACTORY)
                     .build()
                     .post()
                     .uri(url)
@@ -146,7 +160,7 @@ public class ProviderAiCaller {
         long started = System.currentTimeMillis();
         try {
             String response = RestClient.builder()
-                    .requestFactory(requestFactory(cfg.timeout()))
+                    .requestFactory(SHARED_REQUEST_FACTORY)
                     .build()
                     .post()
                     .uri(normalizeEmbeddingUrl(cfg.getBaseUrl()))
@@ -384,14 +398,6 @@ public class ProviderAiCaller {
             cursor = cursor.getCause();
         }
         return false;
-    }
-
-    private org.springframework.http.client.ClientHttpRequestFactory requestFactory(Duration timeout) {
-        org.springframework.http.client.SimpleClientHttpRequestFactory factory =
-                new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(timeout);
-        factory.setReadTimeout(timeout);
-        return factory;
     }
 
     /** chat 结果（含计费信息） */

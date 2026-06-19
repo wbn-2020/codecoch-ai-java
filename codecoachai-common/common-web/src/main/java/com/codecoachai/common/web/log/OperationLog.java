@@ -27,8 +27,8 @@ public @interface OperationLog {
     /** 描述（可选） */
     String description() default "";
 
-    /** 是否记录请求参数（默认 true，敏感接口可关闭） */
-    boolean logArgs() default true;
+    /** 是否记录请求参数（默认 false，敏感接口需显式开启并经过脱敏） */
+    boolean logArgs() default false;
 
     /** 是否记录响应（默认 false，大响应体不建议开） */
     boolean logResponse() default false;

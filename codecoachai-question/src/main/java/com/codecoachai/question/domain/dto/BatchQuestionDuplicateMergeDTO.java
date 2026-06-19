@@ -17,4 +17,7 @@ public class BatchQuestionDuplicateMergeDTO {
 
     /** 确认原因（可选）。 */
     private String reason;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String idempotencyKey;
 }

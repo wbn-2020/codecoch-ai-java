@@ -95,7 +95,7 @@ public class InnerResumeAnalysisController {
             upd.set(ResumeAnalysisRecord::getRawText, dto.getRawText());
         }
         if (StringUtils.hasText(dto.getErrorMessage())) {
-            upd.set(ResumeAnalysisRecord::getErrorMessage, dto.getErrorMessage());
+            upd.set(ResumeAnalysisRecord::getErrorMessage, safeParseErrorMessage());
         }
         analysisRecordMapper.update(null, upd);
         log.info("Resume analysis record {} updated to {}", id, status);
@@ -120,6 +120,10 @@ public class InnerResumeAnalysisController {
         private String parseStatus;
         private String errorMessage;
         private String modelTrace;
+    }
+
+    private String safeParseErrorMessage() {
+        return "简历解析失败，请稍后重试";
     }
 
     private record RawTextPayload(String rawText, String originalFilename, String fileExt) {

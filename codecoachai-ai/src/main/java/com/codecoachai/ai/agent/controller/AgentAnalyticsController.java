@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.controller;
 
+import com.codecoachai.ai.agent.config.V4FeatureGate;
 import com.codecoachai.ai.agent.domain.vo.analytics.MetricPointVO;
 import com.codecoachai.ai.agent.domain.vo.analytics.PersonalAgentOverviewVO;
 import com.codecoachai.ai.agent.domain.vo.analytics.TrendPointVO;
@@ -9,6 +10,7 @@ import com.codecoachai.common.security.util.SecurityAssert;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,6 +21,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentAnalyticsController {
 
     private final AgentAnalyticsService agentAnalyticsService;
+    private final V4FeatureGate v4FeatureGate;
+
+    @ModelAttribute
+    public void requirePersonalAnalyticsEnabled() {
+        SecurityAssert.requireLoginUserId();
+        v4FeatureGate.requireGrowthEnabled();
+    }
 
     @GetMapping("/agent-overview")
     public Result<PersonalAgentOverviewVO> agentOverview() {

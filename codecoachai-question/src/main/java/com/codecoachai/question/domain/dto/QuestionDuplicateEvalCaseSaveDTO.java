@@ -12,4 +12,8 @@ public class QuestionDuplicateEvalCaseSaveDTO {
     private String expected;
     private String note;
     private Integer enabled;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

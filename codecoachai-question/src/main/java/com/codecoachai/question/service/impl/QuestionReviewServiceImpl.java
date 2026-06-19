@@ -334,9 +334,10 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
             new TransactionTemplate(transactionManager).executeWithoutResult(status -> action.run());
             result.getSuccessIds().add(reviewId);
         } catch (Exception ex) {
+            log.warn("Batch question review operation failed reviewId={}", reviewId, ex);
             BatchQuestionReviewFailureVO failure = new BatchQuestionReviewFailureVO();
             failure.setReviewId(reviewId);
-            failure.setReason(StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : "Question review failed");
+            failure.setReason("Question review failed");
             result.getFailures().add(failure);
         }
     }

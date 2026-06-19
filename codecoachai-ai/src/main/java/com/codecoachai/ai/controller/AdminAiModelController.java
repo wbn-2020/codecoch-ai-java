@@ -11,10 +11,14 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -37,6 +41,7 @@ public class AdminAiModelController {
     private final AiModelConfigMapper mapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
     private final AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/admin/ai/models")
     public Result<List<AiModelConfig>> list(@RequestParam(required = false) String keyword,
@@ -68,69 +73,137 @@ public class AdminAiModelController {
 
     @PostMapping("/admin/ai/models")
     @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logArgs = false, logResponse = false)
+    @Transactional(rollbackFor = Exception.class)
     public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
-        AiModelConfig entity = new AiModelConfig();
-        apply(entity, dto);
-        if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-            clearDefault(entity.getProvider(), null);
-        }
-        encryptPlainApiKeyBeforeSave(entity);
-        mapper.insert(entity);
-        return Result.success(maskApiKey(entity));
+        return runConfirmedOperation("ai-model-create:" + modelOperationTarget(dto),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig entity = new AiModelConfig();
+                    apply(entity, dto);
+                    if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
+                        clearDefault(entity.getProvider(), null);
+                    }
+                    encryptPlainApiKeyBeforeSave(entity);
+                    mapper.insert(entity);
+                    return Result.success(maskApiKey(entity));
+                });
     }
 
     @PutMapping("/admin/ai/models/{id}")
     @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logArgs = false, logResponse = false)
+    @Transactional(rollbackFor = Exception.class)
     public Result<AiModelConfig> update(@PathVariable Long id, @RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
-        AiModelConfig entity = get(id);
-        apply(entity, dto);
-        if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-            clearDefault(entity.getProvider(), id);
-        }
-        encryptPlainApiKeyBeforeSave(entity);
-        mapper.updateById(entity);
-        return Result.success(maskApiKey(entity));
+        return runConfirmedOperation("ai-model-update:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig entity = get(id);
+                    apply(entity, dto);
+                    if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
+                        clearDefault(entity.getProvider(), id);
+                    }
+                    encryptPlainApiKeyBeforeSave(entity);
+                    mapper.updateById(entity);
+                    return Result.success(maskApiKey(entity));
+                });
     }
 
     @PostMapping("/admin/ai/models/{id}/set-default")
     @OperationLog(module = "ai", action = "SET_DEFAULT_AI_MODEL", description = "Set default AI model", logResponse = false)
-    public Result<AiModelConfig> setDefault(@PathVariable Long id) {
+    @Transactional(rollbackFor = Exception.class)
+    public Result<AiModelConfig> setDefault(@PathVariable Long id,
+                                            @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         permissionGuard.require(PERM_MODEL_PUBLISH);
-        AiModelConfig entity = get(id);
-        clearDefault(entity.getProvider(), id);
-        entity.setDefaultModel(1);
-        entity.setEnabled(1);
-        encryptPlainApiKeyBeforeSave(entity);
-        mapper.updateById(entity);
-        return Result.success(maskApiKey(entity));
+        return runConfirmedOperation("ai-model-default:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig entity = get(id);
+                    clearDefault(entity.getProvider(), id);
+                    entity.setDefaultModel(1);
+                    entity.setEnabled(1);
+                    encryptPlainApiKeyBeforeSave(entity);
+                    mapper.updateById(entity);
+                    return Result.success(maskApiKey(entity));
+                });
     }
 
     @PutMapping("/admin/ai/models/{id}/default")
     @OperationLog(module = "ai", action = "SET_DEFAULT_AI_MODEL_COMPAT", description = "Set default AI model via compatibility endpoint", logResponse = false)
-    public Result<AiModelConfig> setDefaultCompat(@PathVariable Long id) {
-        return setDefault(id);
+    @Transactional(rollbackFor = Exception.class)
+    public Result<AiModelConfig> setDefaultCompat(@PathVariable Long id,
+                                                  @RequestBody(required = false) AdminOperationConfirmDTO dto) {
+        return setDefault(id, dto);
     }
 
     @PutMapping("/admin/ai/models/{id}/status")
     @OperationLog(module = "ai", action = "UPDATE_AI_MODEL_STATUS", description = "Update AI model status", logResponse = false)
+    @Transactional(rollbackFor = Exception.class)
     public Result<AiModelConfig> updateStatus(@PathVariable Long id, @RequestBody ModelStatusDTO dto) {
         permissionGuard.require(PERM_MODEL_PUBLISH);
-        AiModelConfig entity = get(id);
-        Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
-        entity.setEnabled(enabled == null ? 1 : enabled);
-        encryptPlainApiKeyBeforeSave(entity);
-        mapper.updateById(entity);
-        return Result.success(maskApiKey(entity));
+        return runConfirmedOperation("ai-model-status:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig entity = get(id);
+                    Integer enabled = dto == null ? null : (dto.getEnabled() != null ? dto.getEnabled() : dto.getStatus());
+                    ensureDefaultModelNotDisabled(entity, enabled);
+                    entity.setEnabled(enabled == null ? 1 : enabled);
+                    encryptPlainApiKeyBeforeSave(entity);
+                    mapper.updateById(entity);
+                    return Result.success(maskApiKey(entity));
+                });
     }
 
     @DeleteMapping("/admin/ai/models/{id}")
     @OperationLog(module = "ai", action = "DELETE_AI_MODEL", description = "Delete AI model config", logResponse = false)
-    public Result<Void> delete(@PathVariable Long id) {
+    @Transactional(rollbackFor = Exception.class)
+    public Result<Void> delete(@PathVariable Long id,
+                               @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
-        mapper.deleteById(id);
-        return Result.success();
+        return runConfirmedOperation("ai-model-delete:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig entity = get(id);
+                    ensureDefaultModelNotDeleted(entity);
+                    mapper.deleteById(id);
+                    return Result.success();
+                });
+    }
+
+    private <T> Result<T> runConfirmedOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                String reason, String idempotencyKey,
+                                                Supplier<Result<T>> action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            return action.get();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+
+    private String modelOperationTarget(AiModelConfigSaveDTO dto) {
+        if (dto == null) {
+            return "new";
+        }
+        String modelCode = StringUtils.hasText(dto.getModelCode()) ? dto.getModelCode() : dto.getModelName();
+        return (dto.getProvider() == null ? "" : dto.getProvider().trim())
+                + ":" + (modelCode == null ? "" : modelCode.trim());
     }
 
     private void apply(AiModelConfig entity, AiModelConfigSaveDTO dto) {
@@ -170,6 +243,20 @@ public class AdminAiModelController {
                 .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    private void ensureDefaultModelNotDisabled(AiModelConfig entity, Integer enabled) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel()) && Integer.valueOf(0).equals(enabled)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Default AI model cannot be disabled. Set another default model first.");
+        }
+    }
+
+    private void ensureDefaultModelNotDeleted(AiModelConfig entity) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Default AI model cannot be deleted. Set another default model first.");
+        }
     }
 
     private AiModelConfig maskApiKey(AiModelConfig entity) {
@@ -213,5 +300,17 @@ public class AdminAiModelController {
     public static class ModelStatusDTO {
         private Integer status;
         private Integer enabled;
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
+    }
+
+    @lombok.Data
+    public static class AdminOperationConfirmDTO {
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
     }
 }

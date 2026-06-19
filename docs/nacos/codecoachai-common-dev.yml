@@ -44,7 +44,7 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      secret: ${CODECOACHAI_INTERNAL_SECRET:}
+      secret: ${CODECOACHAI_INTERNAL_SECRET}
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
 
@@ -52,10 +52,13 @@ codecoachai:
     enabled: ${CODECOACHAI_VECTOR_ENABLED:true}
     provider: qdrant
     base-url: ${QDRANT_BASE_URL:http://127.0.0.1:6333}
-    api-key: ${QDRANT_API_KEY:}
+    api-key: ${QDRANT_API_KEY}
     connect-timeout: 3s
     request-timeout: 15s
     default-limit: 10
+
+  ops:
+    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|18080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9209|service}
 
 feign:
   client:

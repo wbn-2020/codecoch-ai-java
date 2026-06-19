@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.convert.AiConvert;
 import com.codecoachai.ai.domain.dto.AiCallLogQueryDTO;
+import com.codecoachai.ai.domain.dto.PromptTemplateActionDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateQueryDTO;
 import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
@@ -41,6 +42,7 @@ import java.security.MessageDigest;
 import java.util.Collections;
 import java.util.HexFormat;
 import java.util.Map;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -93,6 +95,9 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public PromptTemplateVO createPrompt(PromptTemplateSaveDTO dto) {
         PromptTemplate template = new PromptTemplate();
         apply(template, dto);
+        template.setActiveVersionId(null);
+        template.setEnabled(CommonConstants.NO);
+        template.setStatus(CommonConstants.NO);
         promptTemplateMapper.insert(template);
         return AiConvert.toPromptVO(template);
     }
@@ -105,8 +110,18 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     public PromptTemplateDetailVO getPromptDetail(Long id) {
         PromptTemplate template = getTemplate(id);
+        return toPromptDetail(template, false);
+    }
+
+    @Override
+    public PromptTemplateDetailVO getPromptRaw(Long id) {
+        PromptTemplate template = getTemplate(id);
+        return toPromptDetail(template, true);
+    }
+
+    private PromptTemplateDetailVO toPromptDetail(PromptTemplate template, boolean includeRawFields) {
         PromptTemplateDetailVO vo = new PromptTemplateDetailVO();
-        PromptTemplateVO base = AiConvert.toPromptVO(template);
+        PromptTemplateVO base = AiConvert.toPromptVO(template, includeRawFields);
         vo.setId(base.getId());
         vo.setScene(base.getScene());
         vo.setName(base.getName());
@@ -114,15 +129,22 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         vo.setDescription(base.getDescription());
         vo.setContent(base.getContent());
         vo.setTemplateContent(base.getTemplateContent());
+        vo.setContentLength(base.getContentLength());
+        vo.setContentHash(base.getContentHash());
+        vo.setTemplateContentLength(base.getTemplateContentLength());
+        vo.setTemplateContentHash(base.getTemplateContentHash());
         vo.setVariables(base.getVariables());
         vo.setVersion(base.getVersion());
         vo.setActiveVersionId(base.getActiveVersionId());
         vo.setEnabled(base.getEnabled());
         vo.setStatus(base.getStatus());
+        vo.setRawFieldsAvailable(base.getRawFieldsAvailable());
+        vo.setRawFieldsIncluded(base.getRawFieldsIncluded());
+        vo.setRawAccessPermission(base.getRawAccessPermission());
         if (template.getActiveVersionId() != null) {
             PromptTemplateVersion version = promptTemplateVersionMapper.selectById(template.getActiveVersionId());
             if (version != null) {
-                vo.setActiveVersion(AiConvert.toVersionVO(version));
+                vo.setActiveVersion(AiConvert.toVersionVO(version, includeRawFields));
             }
         }
         return vo;
@@ -131,6 +153,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     public PromptTemplateVO updatePrompt(Long id, PromptTemplateSaveDTO dto) {
         PromptTemplate template = getTemplate(id);
+        assertExpectedTemplateState(template, dto.getExpectedStatus(), dto.getExpectedActiveVersionId());
         if (hasPromptContent(dto)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "提示词正文请通过版本管理修改");
@@ -141,8 +164,14 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
-    public void deletePrompt(Long id) {
+    public void deletePrompt(Long id, PromptTemplateActionDTO dto) {
         PromptTemplate template = getTemplate(id);
+        PromptTemplateActionDTO action = dto == null ? new PromptTemplateActionDTO() : dto;
+        assertExpectedTemplateState(template, action.getExpectedStatus(), action.getExpectedActiveVersionId());
+        if (isTemplateEnabled(template)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Disable the prompt template before deleting it.");
+        }
         template.setStatus(CommonConstants.NO);
         template.setEnabled(CommonConstants.NO);
         promptTemplateMapper.updateById(template);
@@ -151,8 +180,14 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     public void updateStatus(Long id, UpdatePromptStatusDTO dto) {
         PromptTemplate template = getTemplate(id);
-        template.setStatus(dto.getStatus());
-        template.setEnabled(dto.getStatus());
+        assertExpectedTemplateState(template, dto.getExpectedStatus(), dto.getExpectedActiveVersionId());
+        Integer nextStatus = normalizeTemplateStatus(dto.getStatus());
+        if (CommonConstants.YES.equals(nextStatus)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt templates can be enabled only by activating a prompt version.");
+        }
+        template.setStatus(nextStatus);
+        template.setEnabled(nextStatus);
         promptTemplateMapper.updateById(template);
     }
 
@@ -171,6 +206,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                         .orderByDesc(PromptTemplateVersion::getCreatedAt));
         return PageResult.of(page.getRecords().stream().map(AiConvert::toVersionVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public PromptTemplateVersionVO getVersionRaw(Long versionId) {
+        return AiConvert.toVersionVO(getVersion(versionId), true);
     }
 
     @Override
@@ -201,6 +241,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "已禁用的提示词版本不能启用");
         }
         PromptTemplate template = getTemplate(version.getTemplateId());
+        assertExpectedActiveVersion(template, dto);
         promptTemplateVersionMapper.update(null, new LambdaUpdateWrapper<PromptTemplateVersion>()
                 .eq(PromptTemplateVersion::getTemplateId, template.getId())
                 .eq(PromptTemplateVersion::getIsActive, CommonConstants.YES)
@@ -213,14 +254,12 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         version.setChangeLog(dto == null ? version.getChangeLog() : firstText(dto.getChangeLog(), version.getChangeLog()));
         promptTemplateVersionMapper.updateById(version);
 
-        template.setActiveVersionId(version.getId());
-        template.setContent(version.getContent());
-        template.setTemplateContent(version.getContent());
-        template.setVariables(version.getVariablesJson());
-        template.setVersion(version.getVersionCode());
-        template.setEnabled(CommonConstants.YES);
-        template.setStatus(CommonConstants.YES);
-        promptTemplateMapper.updateById(template);
+        disableOtherTemplatesForScene(template);
+        int updated = updateTemplateForActivation(template, version, expectedActiveVersion(dto));
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template changed while publishing. Refresh and confirm again.");
+        }
         return AiConvert.toVersionVO(version);
     }
 
@@ -232,6 +271,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     public void disableVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
+        PromptTemplate template = getTemplate(version.getTemplateId());
+        assertExpectedActiveVersion(template, dto);
         if (CommonConstants.YES.equals(version.getIsActive())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "当前生效版本不能直接禁用，请先切换到其他版本");
         }
@@ -248,7 +289,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 ? Collections.emptyMap()
                 : dto.getInputVariables();
         String renderedPrompt = render(version.getContent(), variables);
-        boolean callAi = dto == null || !Boolean.FALSE.equals(dto.getCallAi());
+        boolean callAi = dto != null && Boolean.TRUE.equals(dto.getCallAi());
         PromptTestResult testResult = testAiResponse(template, version, renderedPrompt, variables, callAi);
 
         PromptVersionTestVO vo = new PromptVersionTestVO();
@@ -256,11 +297,18 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         vo.setTemplateId(template.getId());
         vo.setScene(version.getScene());
         vo.setVersionCode(version.getVersionCode());
-        vo.setRenderedPrompt(renderedPrompt);
-        vo.setInputVariables(variables);
-        vo.setAiResponse(testResult.response());
+        vo.setRenderedPromptLength(renderedPrompt == null ? 0 : renderedPrompt.length());
+        vo.setRenderedPromptHash(sha256(renderedPrompt));
+        vo.setInputVariableCount(variables.size());
+        vo.setInputVariableKeys(variables.keySet().stream().sorted().toList());
+        vo.setInputVariablesHash(sha256(toJson(variables)));
+        vo.setAiResponseLength(testResult.response() == null ? 0 : testResult.response().length());
+        vo.setAiResponseHash(sha256(testResult.response()));
         vo.setAiCallLogId(testResult.logId());
         vo.setMockMode(Boolean.TRUE.equals(aiProperties.getMockEnabled()));
+        vo.setRawFieldsAvailable(true);
+        vo.setRawFieldsIncluded(false);
+        vo.setRawAccessPermission("admin:ai:log:raw:view");
         return vo;
     }
 
@@ -350,8 +398,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                                             String renderedPrompt, Map<String, String> variables, boolean callAi) {
         if (!callAi) {
             String response = "PROMPT_RENDER_ONLY";
-            return new PromptTestResult(response,
-                    savePromptTestLog(template, version, renderedPrompt, variables, response));
+            return new PromptTestResult(response, null);
         }
         if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
             String response = "提示词版本测试模拟响应";
@@ -372,11 +419,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             ctx.setPromptHash(sha256(renderedPrompt));
             ctx.setResponseFormat("TEXT");
             ctx.setRequestBody("promptVersionTest=true");
-            ctx.setCheckQuota(false);
+            ctx.setCheckQuota(true);
             RouteResult result = aiCallLogService.callAndLog(ctx);
             return new PromptTestResult(result.getContent(), result.getAiCallLogId());
         } catch (RuntimeException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, firstText(ex.getMessage(), "提示词版本测试失败，请稍后重试"));
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Prompt version test failed. Please retry later.");
         }
     }
 
@@ -444,9 +491,9 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         template.setTemplateContent(StringUtils.hasText(dto.getTemplateContent()) ? dto.getTemplateContent() : dto.getContent());
         template.setVariables(dto.getVariables());
         template.setVersion(dto.getVersion());
-        template.setActiveVersionId(dto.getActiveVersionId());
-        template.setEnabled(dto.getEnabled() == null ? CommonConstants.YES : dto.getEnabled());
-        template.setStatus(dto.getStatus() == null ? CommonConstants.YES : dto.getStatus());
+        template.setActiveVersionId(null);
+        template.setEnabled(CommonConstants.NO);
+        template.setStatus(CommonConstants.NO);
     }
 
     private void applyMetadata(PromptTemplate template, PromptTemplateSaveDTO dto) {
@@ -458,12 +505,6 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         }
         if (dto.getDescription() != null) {
             template.setDescription(dto.getDescription());
-        }
-        if (dto.getEnabled() != null) {
-            template.setEnabled(dto.getEnabled());
-        }
-        if (dto.getStatus() != null) {
-            template.setStatus(dto.getStatus());
         }
     }
 
@@ -510,6 +551,65 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词模板不存在或已不可用");
         }
         return template;
+    }
+
+    private void assertExpectedTemplateState(PromptTemplate template, Integer expectedStatus,
+                                             Long expectedActiveVersionId) {
+        if (!Objects.equals(template.getStatus(), expectedStatus)
+                || !Objects.equals(template.getActiveVersionId(), expectedActiveVersionId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template state changed. Refresh and confirm again.");
+        }
+    }
+
+    private void assertExpectedActiveVersion(PromptTemplate template, PromptVersionActionDTO dto) {
+        Long expectedActiveVersionId = expectedActiveVersion(dto);
+        if (!Objects.equals(template.getActiveVersionId(), expectedActiveVersionId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt active version changed. Refresh and confirm again.");
+        }
+    }
+
+    private Long expectedActiveVersion(PromptVersionActionDTO dto) {
+        return dto == null ? null : dto.getExpectedCurrentActiveVersionId();
+    }
+
+    private Integer normalizeTemplateStatus(Integer status) {
+        if (!CommonConstants.YES.equals(status) && !CommonConstants.NO.equals(status)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt template status must be 0 or 1.");
+        }
+        return status;
+    }
+
+    private boolean isTemplateEnabled(PromptTemplate template) {
+        return CommonConstants.YES.equals(template.getStatus()) || CommonConstants.YES.equals(template.getEnabled());
+    }
+
+    private void disableOtherTemplatesForScene(PromptTemplate template) {
+        promptTemplateMapper.update(null, new LambdaUpdateWrapper<PromptTemplate>()
+                .eq(PromptTemplate::getScene, template.getScene())
+                .ne(PromptTemplate::getId, template.getId())
+                .set(PromptTemplate::getEnabled, CommonConstants.NO)
+                .set(PromptTemplate::getStatus, CommonConstants.NO));
+    }
+
+    private int updateTemplateForActivation(PromptTemplate template, PromptTemplateVersion version,
+                                            Long expectedActiveVersionId) {
+        LambdaUpdateWrapper<PromptTemplate> wrapper = new LambdaUpdateWrapper<PromptTemplate>()
+                .eq(PromptTemplate::getId, template.getId())
+                .set(PromptTemplate::getActiveVersionId, version.getId())
+                .set(PromptTemplate::getContent, version.getContent())
+                .set(PromptTemplate::getTemplateContent, version.getContent())
+                .set(PromptTemplate::getVariables, version.getVariablesJson())
+                .set(PromptTemplate::getVersion, version.getVersionCode())
+                .set(PromptTemplate::getEnabled, CommonConstants.YES)
+                .set(PromptTemplate::getStatus, CommonConstants.YES);
+        if (expectedActiveVersionId == null) {
+            wrapper.isNull(PromptTemplate::getActiveVersionId);
+        } else {
+            wrapper.eq(PromptTemplate::getActiveVersionId, expectedActiveVersionId);
+        }
+        return promptTemplateMapper.update(null, wrapper);
     }
 
     private long defaultPage(Long pageNo) {

@@ -1,7 +1,10 @@
 package com.codecoachai.system.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.dto.SystemConfigStatusDTO;
@@ -11,7 +14,11 @@ import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.service.SystemConfigService;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Supplier;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,6 +37,7 @@ public class SystemConfigController {
 
     private final SystemConfigService systemConfigService;
     private final AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/admin/configs")
     @OperationLog(module = "system", action = "QUERY_CONFIG", description = "查询系统配置", logArgs = false)
@@ -42,7 +50,12 @@ public class SystemConfigController {
     @OperationLog(module = "system", action = "CREATE_CONFIG", description = "新增系统配置", logArgs = false)
     public Result<SystemConfigVO> createConfig(@Valid @RequestBody SystemConfigSaveDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
-        return Result.success(systemConfigService.createConfig(dto));
+        return runConfirmedOperation("system-config-create:" + (dto == null ? "new" : dto.getConfigKey()),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> systemConfigService.createConfig(dto));
     }
 
     @GetMapping("/admin/configs/{key}")
@@ -56,7 +69,12 @@ public class SystemConfigController {
     @OperationLog(module = "system", action = "UPDATE_CONFIG", description = "编辑系统配置", logArgs = false)
     public Result<SystemConfigVO> updateConfig(@PathVariable String key, @RequestBody SystemConfigSaveDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
-        return Result.success(systemConfigService.updateConfig(key, dto));
+        return runConfirmedOperation("system-config-update:" + key,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> systemConfigService.updateConfig(key, dto));
     }
 
     @PutMapping("/admin/configs/{key}/status")
@@ -64,15 +82,55 @@ public class SystemConfigController {
     public Result<SystemConfigVO> updateConfigStatus(@PathVariable String key,
                                                      @Valid @RequestBody SystemConfigStatusDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
-        return Result.success(systemConfigService.updateConfigStatus(key, dto));
+        return runConfirmedOperation("system-config-status:" + key,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> systemConfigService.updateConfigStatus(key, dto));
     }
 
     @DeleteMapping("/admin/configs/{id}")
     @OperationLog(module = "system", action = "DELETE_CONFIG", description = "删除系统配置")
-    public Result<Void> deleteConfig(@PathVariable String id) {
+    public Result<Void> deleteConfig(@PathVariable String id,
+                                     @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
-        systemConfigService.deleteConfig(id);
-        return Result.success();
+        return runConfirmedVoidOperation("system-config-delete:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> systemConfigService.deleteConfig(id));
+    }
+
+    private <T> Result<T> runConfirmedOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                String reason, String idempotencyKey, Supplier<T> action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            return Result.success(action.get());
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+
+    private Result<Void> runConfirmedVoidOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                   String reason, String idempotencyKey, Runnable action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            action.run();
+            return Result.success();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+    @Data
+    public static class AdminOperationConfirmDTO {
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
     }
 
     @GetMapping("/admin/system/overview")

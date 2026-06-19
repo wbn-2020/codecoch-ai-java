@@ -10,8 +10,8 @@ codecoachai:
     fallback-to-record: true
   elasticsearch:
     uris: http://127.0.0.1:9200
-    username:
-    password:
+    username: elastic
+    password: ${ELASTIC_PASSWORD}
 
 rocketmq:
   consumer:

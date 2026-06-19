@@ -12,9 +12,16 @@ public class PromptTemplateVO {
     private String description;
     private String content;
     private String templateContent;
+    private Integer contentLength;
+    private String contentHash;
+    private Integer templateContentLength;
+    private String templateContentHash;
     private String variables;
     private String version;
     private Long activeVersionId;
     private Integer enabled;
     private Integer status;
+    private Boolean rawFieldsAvailable;
+    private Boolean rawFieldsIncluded;
+    private String rawAccessPermission;
 }

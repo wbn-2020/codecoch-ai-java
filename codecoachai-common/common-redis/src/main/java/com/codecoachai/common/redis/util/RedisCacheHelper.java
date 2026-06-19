@@ -24,4 +24,20 @@ public class RedisCacheHelper {
     public Boolean delete(String key) {
         return stringRedisTemplate.delete(key);
     }
+
+    public Long increment(String key) {
+        return stringRedisTemplate.opsForValue().increment(key);
+    }
+
+    public Long increment(String key, long delta) {
+        return stringRedisTemplate.opsForValue().increment(key, delta);
+    }
+
+    public Long incrementAndExpire(String key, Duration ttl) {
+        Long count = stringRedisTemplate.opsForValue().increment(key);
+        if (count != null && count == 1) {
+            stringRedisTemplate.expire(key, ttl);
+        }
+        return count;
+    }
 }

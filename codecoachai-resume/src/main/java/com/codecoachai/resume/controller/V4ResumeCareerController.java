@@ -8,11 +8,13 @@ import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCreateDTO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -86,6 +88,12 @@ public class V4ResumeCareerController {
     public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status) {
         SecurityAssert.requireLoginUserId();
         return Result.success(v4ResumeCareerService.listApplications(status));
+    }
+
+    @GetMapping("/applications/stats")
+    public Result<JobApplicationStatsVO> getApplicationStats() {
+        SecurityAssert.requireLoginUserId();
+        return Result.success(v4ResumeCareerService.getApplicationStats(LocalDateTime.now()));
     }
 
     @PostMapping("/applications")

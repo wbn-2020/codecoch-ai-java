@@ -2,9 +2,14 @@ package com.codecoachai.ai.agent.service.impl;
 
 import com.codecoachai.ai.agent.domain.context.CandidateTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
+import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import org.springframework.stereotype.Service;
@@ -21,6 +26,7 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     @Override
     public List<CandidateTask> build(JobCoachAgentContext context, int taskCount) {
         List<CandidateTask> candidates = new ArrayList<>();
+        candidates.addAll(applicationFollowUpTasks(context));
         TargetJobSnapshot target = context.getTargetJob();
         List<String> skills = inferSkillNames(target);
         String skillName = skills.get(0);
@@ -34,7 +40,7 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 "完成一组围绕 " + skillName + " 的题目练习，并记录没有答完整的知识点。",
                 "目标岗位或岗位分析中出现了 " + skillName + "，先用题目练习找出当前短板。", "HIGH", 30,
                 skillCode, skillName, "TARGET_JOB", targetJobId,
-                "/questions/recommendations?targetJobId=" + targetJobId));
+                practiceActionUrl(targetJobId, skillName)));
         candidates.add(task("resume-optimize-1", "RESUME_OPTIMIZE", "补齐 " + skillName + " 的项目表达",
                 "检查项目经历里是否写清了 " + skillName + " 的使用场景、个人职责、难点和结果。",
                 "目标岗位和岗位要求需要清晰的项目经历支撑；把岗位技能转成简历里的项目表达。", "MEDIUM", 25,
@@ -62,6 +68,87 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         return candidates.subList(0, size);
     }
 
+    private List<CandidateTask> applicationFollowUpTasks(JobCoachAgentContext context) {
+        if (context == null || context.getApplications() == null || context.getApplications().isEmpty()) {
+            return List.of();
+        }
+        return context.getApplications().stream()
+                .filter(this::isActionableApplication)
+                .sorted(Comparator.comparingInt(this::applicationFollowUpRank)
+                        .thenComparing(ApplicationSnapshot::getNextFollowUpAt,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(ApplicationSnapshot::getId))
+                .limit(2)
+                .map(this::applicationFollowUpTask)
+                .toList();
+    }
+
+    private boolean isActionableApplication(ApplicationSnapshot application) {
+        if (application == null || application.getId() == null) {
+            return false;
+        }
+        String status = normalizeStatus(application.getStatus());
+        return !"REJECTED".equals(status) && !"CLOSED".equals(status);
+    }
+
+    private int applicationFollowUpRank(ApplicationSnapshot application) {
+        if (Boolean.TRUE.equals(application.getFollowUpOverdue())) {
+            return 0;
+        }
+        if (Boolean.TRUE.equals(application.getFollowUpDueToday())) {
+            return 1;
+        }
+        if ("INTERVIEWING".equals(normalizeStatus(application.getStatus()))) {
+            return 2;
+        }
+        if (application.getNextFollowUpAt() != null) {
+            return 3;
+        }
+        return 4;
+    }
+
+    private CandidateTask applicationFollowUpTask(ApplicationSnapshot application) {
+        String companyName = firstText(application.getCompanyName(), "目标公司");
+        String jobTitle = firstText(application.getJobTitle(), "投递岗位");
+        return task("application-follow-up-" + application.getId(),
+                AgentTaskTypeEnum.APPLICATION_FOLLOW_UP.name(),
+                "跟进" + companyName + "的" + jobTitle + "投递",
+                "查看这条投递的最新状态，补充沟通记录，并安排下一次跟进。",
+                applicationFollowUpReason(application),
+                applicationFollowUpPriority(application),
+                15,
+                null,
+                null,
+                "JOB_APPLICATION",
+                application.getId(),
+                "/applications");
+    }
+
+    private String applicationFollowUpReason(ApplicationSnapshot application) {
+        if (Boolean.TRUE.equals(application.getFollowUpOverdue())) {
+            return "这条投递的跟进时间已经逾期，今天优先补一次沟通记录。";
+        }
+        if (Boolean.TRUE.equals(application.getFollowUpDueToday())) {
+            return "这条投递今天需要跟进，及时确认进展可以减少遗漏。";
+        }
+        if ("INTERVIEWING".equals(normalizeStatus(application.getStatus()))) {
+            return "当前处于面试流程，适合同步准备进展和下一步安排。";
+        }
+        if (application.getNextFollowUpAt() != null) {
+            return "这条投递已有下次跟进时间，提前整理沟通要点。";
+        }
+        return "这条投递仍在流程中，保持轻量跟进有助于推动反馈。";
+    }
+
+    private String applicationFollowUpPriority(ApplicationSnapshot application) {
+        return Boolean.TRUE.equals(application.getFollowUpOverdue())
+                || Boolean.TRUE.equals(application.getFollowUpDueToday()) ? "HIGH" : "MEDIUM";
+    }
+
+    private String normalizeStatus(String status) {
+        return StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : "";
+    }
+
     private CandidateTask task(String candidateId, String type, String title, String description, String reason,
                                String priority, Integer estimatedMinutes, String skillCode, String skillName,
                                String relatedBizType, Long relatedBizId, String actionUrl) {
@@ -79,6 +166,21 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         task.setRelatedBizId(relatedBizId);
         task.setActionUrl(actionUrl);
         return task;
+    }
+
+    private String practiceActionUrl(Long targetJobId, String skillName) {
+        String encodedSkill = URLEncoder.encode(firstText(skillName, "Java 后端"), StandardCharsets.UTF_8);
+        StringBuilder builder = new StringBuilder("/questions/practice?mode=category")
+                .append("&keyword=").append(encodedSkill)
+                .append("&skillName=").append(encodedSkill)
+                .append("&topic=").append(encodedSkill)
+                .append("&sourceType=TARGET_JOB")
+                .append("&trustStatus=VERIFIED")
+                .append("&fallback=false");
+        if (targetJobId != null) {
+            builder.append("&targetJobId=").append(targetJobId);
+        }
+        return builder.toString();
     }
 
     private List<String> inferSkillNames(TargetJobSnapshot target) {

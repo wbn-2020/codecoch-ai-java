@@ -5,11 +5,14 @@ import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCreateDTO;
+import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface V4ResumeCareerService {
@@ -22,8 +25,10 @@ public interface V4ResumeCareerService {
     ResumeVersionVO rollbackVersion(Long resumeId, Long versionId);
     ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto);
     List<JobApplicationVO> listApplications(String status);
+    JobApplicationStatsVO getApplicationStats(LocalDateTime now);
     JobApplicationVO createApplication(JobApplicationSaveDTO dto);
     JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto);
     List<JobApplicationEventVO> listApplicationEvents(Long applicationId);
     JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto);
+    List<JobApplicationAgentContextVO> listAgentApplicationContextForUser(Long userId, Long targetJobId, LocalDateTime now);
 }

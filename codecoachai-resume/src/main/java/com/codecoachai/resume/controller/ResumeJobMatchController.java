@@ -48,7 +48,8 @@ public class ResumeJobMatchController {
 
     @GetMapping("/latest")
     public Result<ResumeJobMatchReportDetailVO> latest(@RequestParam(required = false) Long resumeId,
-                                                       @RequestParam(required = false) Long targetJobId) {
-        return Result.success(resumeJobMatchService.getLatest(resumeId, targetJobId));
+                                                       @RequestParam(required = false) Long targetJobId,
+                                                       @RequestParam(required = false) Long resumeVersionId) {
+        return Result.success(resumeJobMatchService.getLatest(resumeId, targetJobId, resumeVersionId));
     }
 }

@@ -39,6 +39,18 @@ public final class RedisKeyConstants {
     public static final String SEARCH_CONSUMED_PREFIX = NS + "search:consumed:";
     public static final String SEARCH_SYNC_FAILURE_PREFIX = NS + "search:failure:";
 
+    // ========== 登录失败计数（暴力破解防护） ==========
+    public static final String LOGIN_FAIL_COUNT_PREFIX = NS + "auth:login-fail:";
+    public static final String LOGIN_LOCK_PREFIX = NS + "auth:login-lock:";
+
+    public static String loginFailCountKey(String username) {
+        return LOGIN_FAIL_COUNT_PREFIX + username;
+    }
+
+    public static String loginLockKey(String username) {
+        return LOGIN_LOCK_PREFIX + username;
+    }
+
     private RedisKeyConstants() {
     }
 

@@ -176,11 +176,22 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, Result<?> result) {
-        exchange.getResponse().setStatusCode(HttpStatus.OK);
+        exchange.getResponse().setStatusCode(httpStatusFor(result));
         exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
         byte[] bytes = toJsonBytes(result);
         DataBuffer buffer = exchange.getResponse().bufferFactory().wrap(bytes);
         return exchange.getResponse().writeWith(Mono.just(buffer));
+    }
+
+    private HttpStatus httpStatusFor(Result<?> result) {
+        Integer code = result == null ? null : result.getCode();
+        if (ErrorCode.UNAUTHORIZED.getCode() == code || ErrorCode.TOKEN_INVALID.getCode() == code) {
+            return HttpStatus.UNAUTHORIZED;
+        }
+        if (ErrorCode.FORBIDDEN.getCode() == code) {
+            return HttpStatus.FORBIDDEN;
+        }
+        return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private byte[] toJsonBytes(Result<?> result) {

@@ -7,6 +7,7 @@ import lombok.Data;
 public class JobApplicationSaveDTO {
     private Long targetJobId;
     private Long resumeVersionId;
+    private Long matchReportId;
     private String companyName;
     private String jobTitle;
     private String source;
