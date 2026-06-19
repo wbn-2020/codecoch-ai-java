@@ -13,6 +13,7 @@ import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
@@ -69,4 +70,6 @@ public interface ResumeService {
     InnerResumeDetailVO getDefaultInnerResume();
 
     InnerResumeOptimizeRecordVO getInnerOptimizeRecord(Long recordId);
+
+    ResumeOptimizeRecordAgentEvidenceVO getOptimizeRecordEvidence(Long userId, Long recordId);
 }

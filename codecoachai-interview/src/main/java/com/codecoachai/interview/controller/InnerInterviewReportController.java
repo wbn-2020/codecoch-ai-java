@@ -2,16 +2,20 @@ package com.codecoachai.interview.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
+import com.codecoachai.interview.domain.vo.InterviewReportAgentEvidenceVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -43,6 +47,7 @@ public class InnerInterviewReportController {
     private final InterviewMessageMapper messageMapper;
     private final InterviewReportMapper reportMapper;
     private final InterviewMqDispatcher interviewMqDispatcher;
+    private final AgentBusinessActionNotifier agentBusinessActionNotifier;
 
     /**
      * 获取面试报告生成所需的上下文（session + messages）。
@@ -128,8 +133,44 @@ public class InnerInterviewReportController {
         log.info("Interview report completed sessionId={} status={}", sessionId, status);
         if (success) {
             interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, session.getUserId());
+            completeAgentInterviewTask(session, report);
         }
         return Result.success();
+    }
+
+    @GetMapping("/reports/users/{userId}/{reportId}/agent-evidence")
+    public Result<InterviewReportAgentEvidenceVO> getAgentEvidence(@PathVariable Long userId,
+                                                                  @PathVariable Long reportId) {
+        InterviewReport report = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
+                .eq(InterviewReport::getId, reportId)
+                .eq(InterviewReport::getUserId, userId)
+                .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (report == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report evidence not found");
+        }
+        InterviewSession session = sessionMapper.selectById(report.getSessionId());
+        if (session == null || !userId.equals(session.getUserId())
+                || Integer.valueOf(CommonConstants.YES).equals(session.getDeleted())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report session evidence not found");
+        }
+        InterviewReportAgentEvidenceVO vo = new InterviewReportAgentEvidenceVO();
+        vo.setId(report.getId());
+        vo.setUserId(report.getUserId());
+        vo.setSessionId(report.getSessionId());
+        vo.setTargetJobId(session.getTargetJobId());
+        vo.setStatus(report.getStatus());
+        vo.setGeneratedAt(report.getGeneratedAt());
+        vo.setCreatedAt(report.getCreatedAt());
+        return Result.success(vo);
+    }
+
+    private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
+        if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+            return;
+        }
+        agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),
+                report.getId());
     }
 
     private String firstText(String... values) {

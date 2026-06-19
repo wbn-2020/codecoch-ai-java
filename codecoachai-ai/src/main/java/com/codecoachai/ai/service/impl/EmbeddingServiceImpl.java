@@ -6,6 +6,7 @@ import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.vo.EmbeddingResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
+import com.codecoachai.ai.security.AiErrorSanitizer;
 import com.codecoachai.ai.service.EmbeddingService;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -115,7 +116,7 @@ public class EmbeddingServiceImpl implements EmbeddingService {
                 logEntry.setStatus(0);
             }
             if (error != null) {
-                logEntry.setErrorMessage(error.getMessage() == null ? null : truncate(error.getMessage(), 2000));
+                logEntry.setErrorMessage(AiErrorSanitizer.safeFailureSummary(error));
             }
             logEntry.setElapsedMs(elapsedMs);
             logEntry.setCostMillis(elapsedMs);

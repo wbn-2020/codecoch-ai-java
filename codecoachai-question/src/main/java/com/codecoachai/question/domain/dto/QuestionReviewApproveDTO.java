@@ -19,4 +19,8 @@ public class QuestionReviewApproveDTO {
     private Integer isHighFrequency;
     private String experienceLevel;
     private String editedReason;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

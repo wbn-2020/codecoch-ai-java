@@ -49,6 +49,8 @@ public class AdminLogController {
     private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
     private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
     private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;]+)");
+    private static final Pattern SENSITIVE_SQL_IDENTIFIER = Pattern.compile(
+            "(?i)\\b(password_hash|passwordHash|password|reset_token|refresh_token|access_token|token|authorization|api_key|apiKey|secret|access_key|accessKey)\\b");
 
     private final LoginLogMapper loginLogMapper;
     private final OperationLogMapper operationLogMapper;
@@ -326,10 +328,10 @@ public class AdminLogController {
         vo.setId(log.getId());
         vo.setMapperId(log.getMapperId());
         vo.setSqlCommandType(log.getSqlCommandType());
-        vo.setSqlText(safePreview(log.getSqlText(), 240));
+        vo.setSqlText(safePreview(maskSensitiveSql(log.getSqlText()), 240));
         vo.setSqlTextPreview(vo.getSqlText());
         vo.setSqlTextHash(sha256Prefix(log.getSqlText()));
-        vo.setParameterSummary(safePreview(log.getParameterSummary(), 200));
+        vo.setParameterSummary(safePreview(maskSensitiveSql(log.getParameterSummary()), 200));
         vo.setParameterSummaryHash(sha256Prefix(log.getParameterSummary()));
         vo.setRawAvailable(false);
         vo.setDatabaseName(log.getDatabaseName());
@@ -410,6 +412,10 @@ public class AdminLogController {
         masked = ID_CARD.matcher(masked).replaceAll("******************");
         masked = JSON_SECRET.matcher(masked).replaceAll("$1******$2");
         return KV_SECRET.matcher(masked).replaceAll("$1=******");
+    }
+
+    private String maskSensitiveSql(String value) {
+        return value == null ? null : SENSITIVE_SQL_IDENTIFIER.matcher(value).replaceAll("[sensitive]");
     }
 
     private String sha256Prefix(String value) {

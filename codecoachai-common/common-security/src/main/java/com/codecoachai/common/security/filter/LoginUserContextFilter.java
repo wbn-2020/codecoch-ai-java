@@ -32,7 +32,7 @@ public class LoginUserContextFilter extends OncePerRequestFilter {
             LoginUserContext.setLoginUser(HeaderUserContextReader.read(request, internalAuthProperties));
             filterChain.doFilter(request, response);
         } catch (IllegalStateException ex) {
-            response.setStatus(HttpServletResponse.SC_OK);
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
             response.setCharacterEncoding("UTF-8");
             response.setContentType(JSON_UTF8);
             response.getWriter().write(objectMapper.writeValueAsString(Result.fail(ErrorCode.FORBIDDEN)));

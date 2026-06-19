@@ -23,6 +23,8 @@ public class DemoReadOnlyGatewayFilter implements GlobalFilter, Ordered {
 
     private static final List<String> WRITE_WHITE_PATHS = List.of(
             "/auth/login",
+            "/auth/logout",
+            "/auth/register",
             "/auth/refresh-token",
             "/health",
             "/ai/health");

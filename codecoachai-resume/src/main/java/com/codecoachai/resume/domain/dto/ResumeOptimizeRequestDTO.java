@@ -6,6 +6,7 @@ import lombok.Data;
 @Data
 public class ResumeOptimizeRequestDTO {
 
+    private Long targetJobId;
     private String targetPosition;
     private Integer experienceYears;
     private String industryDirection;

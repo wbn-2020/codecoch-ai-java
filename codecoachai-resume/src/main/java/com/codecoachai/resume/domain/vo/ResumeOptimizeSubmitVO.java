@@ -8,6 +8,7 @@ public class ResumeOptimizeSubmitVO {
 
     private Long optimizeRecordId;
     private Long resumeId;
+    private Long targetJobId;
     private Long aiCallLogId;
     private String asyncMessageId;
     private String asyncTraceId;

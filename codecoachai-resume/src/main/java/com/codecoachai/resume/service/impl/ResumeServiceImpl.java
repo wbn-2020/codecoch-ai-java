@@ -20,6 +20,7 @@ import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeOptimizeRecord;
 import com.codecoachai.resume.domain.entity.ResumeProject;
+import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
@@ -31,6 +32,7 @@ import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
@@ -44,6 +46,7 @@ import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
+import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeMqDispatcher;
 import com.codecoachai.resume.service.ResumeService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -79,7 +82,6 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String APPLY_MODE_CREATE_DRAFT = "CREATE_DRAFT";
     private static final String APPLY_MODE_STRUCTURED_PATCH = "STRUCTURED_PATCH";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
-    private static final int MAX_ERROR_MESSAGE_LENGTH = 1000;
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
     private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
@@ -90,11 +92,13 @@ public class ResumeServiceImpl implements ResumeService {
     private final ResumeProjectMapper projectMapper;
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final ResumeOptimizeRecordMapper optimizeRecordMapper;
+    private final TargetJobMapper targetJobMapper;
     private final FileFeignClient fileFeignClient;
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final Optional<ResumeMqDispatcher> resumeMqDispatcher;
+    private final AgentBusinessActionNotifier agentBusinessActionNotifier;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -252,7 +256,7 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setFileId(record.getFileId());
         vo.setResumeId(record.getResumeId());
         vo.setParseStatus(record.getParseStatus());
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeParseErrorMessage(record.getErrorMessage()));
         vo.setUpdatedAt(record.getUpdatedAt());
 
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
@@ -536,12 +540,35 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setOptimizeRecordId(record.getId());
         vo.setUserId(record.getUserId());
         vo.setResumeId(record.getResumeId());
+        vo.setTargetJobId(record.getTargetJobId());
         vo.setTargetPosition(record.getTargetPosition());
         vo.setExperienceYears(record.getExperienceYears());
         vo.setIndustryDirection(record.getIndustryDirection());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         vo.setResultJson(record.getResultJson());
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeOptimizeErrorMessage(record.getErrorMessage()));
+        return vo;
+    }
+
+    @Override
+    public ResumeOptimizeRecordAgentEvidenceVO getOptimizeRecordEvidence(Long userId, Long recordId) {
+        ResumeOptimizeRecord record = optimizeRecordMapper.selectOne(new LambdaQueryWrapper<ResumeOptimizeRecord>()
+                .eq(ResumeOptimizeRecord::getId, recordId)
+                .eq(ResumeOptimizeRecord::getUserId, userId)
+                .eq(ResumeOptimizeRecord::getOptimizeStatus, ResumeOptimizeStatus.SUCCESS.getCode())
+                .eq(ResumeOptimizeRecord::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (record == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历优化记录不存在或未成功生成");
+        }
+        ResumeOptimizeRecordAgentEvidenceVO vo = new ResumeOptimizeRecordAgentEvidenceVO();
+        vo.setId(record.getId());
+        vo.setUserId(record.getUserId());
+        vo.setResumeId(record.getResumeId());
+        vo.setTargetJobId(record.getTargetJobId());
+        vo.setStatus(record.getOptimizeStatus());
+        vo.setOptimizedAt(record.getUpdatedAt());
+        vo.setCreatedAt(record.getCreatedAt());
         return vo;
     }
 
@@ -617,7 +644,7 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setResumeId(record.getResumeId());
         vo.setFileId(record.getFileId());
         vo.setParseStatus(record.getParseStatus());
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeParseErrorMessage(record.getErrorMessage()));
         vo.setMessage(status == null ? "简历解析状态异常" : status.getMessage());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
@@ -851,11 +878,13 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeOptimizeRequestDTO request = normalizeOptimizeRequest(dto);
         Resume resume = getOwnedResume(resumeId, userId);
         List<ResumeProject> selectedProjects = selectProjects(resumeId, request.getSelectedProjectIds());
+        Long targetJobId = resolveOptimizeTargetJobId(request.getTargetJobId(), userId);
         String targetPosition = firstText(request.getTargetPosition(), resume.getTargetPosition());
 
         ResumeOptimizeRecord record = new ResumeOptimizeRecord();
         record.setUserId(userId);
         record.setResumeId(resumeId);
+        record.setTargetJobId(targetJobId);
         record.setTargetPosition(targetPosition);
         record.setExperienceYears(request.getExperienceYears());
         record.setIndustryDirection(request.getIndustryDirection());
@@ -869,11 +898,27 @@ public class ResumeServiceImpl implements ResumeService {
         return new OptimizeContext(resume, selectedProjects, record, aiRequest);
     }
 
+    private Long resolveOptimizeTargetJobId(Long targetJobId, Long userId) {
+        if (targetJobId == null) {
+            return null;
+        }
+        TargetJob targetJob = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
+                .eq(TargetJob::getId, targetJobId)
+                .eq(TargetJob::getUserId, userId)
+                .eq(TargetJob::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (targetJob == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job does not exist or is unavailable");
+        }
+        return targetJob.getId();
+    }
+
     private ResumeOptimizeRequestDTO normalizeOptimizeRequest(ResumeOptimizeRequestDTO source) {
         ResumeOptimizeRequestDTO target = new ResumeOptimizeRequestDTO();
         if (source == null) {
             return target;
         }
+        target.setTargetJobId(source.getTargetJobId());
         target.setTargetPosition(repairPossibleMojibake(source.getTargetPosition()));
         target.setExperienceYears(source.getExperienceYears());
         target.setIndustryDirection(repairPossibleMojibake(source.getIndustryDirection()));
@@ -953,6 +998,7 @@ public class ResumeServiceImpl implements ResumeService {
         request.setOptimizeRecordId(optimizeRecordId);
         request.setUserId(userId);
         request.setResumeId(resume.getId());
+        request.setTargetJobId(dto.getTargetJobId());
         request.setTargetPosition(targetPosition);
         request.setExperienceYears(dto.getExperienceYears());
         request.setIndustryDirection(dto.getIndustryDirection());
@@ -997,13 +1043,33 @@ public class ResumeServiceImpl implements ResumeService {
         record.setOptimizeStatus(ResumeOptimizeStatus.SUCCESS.getCode());
         record.setErrorMessage(null);
         optimizeRecordMapper.updateById(record);
-        return optimizeRecordMapper.selectById(recordId);
+        ResumeOptimizeRecord latestRecord = optimizeRecordMapper.selectById(recordId);
+        completeAgentResumeOptimizeAfterCommit(latestRecord);
+        return latestRecord;
+    }
+
+    private void completeAgentResumeOptimizeAfterCommit(ResumeOptimizeRecord record) {
+        if (record == null || record.getUserId() == null || record.getTargetJobId() == null || record.getId() == null) {
+            return;
+        }
+        Runnable action = () -> agentBusinessActionNotifier.completeResumeOptimize(
+                record.getUserId(), record.getTargetJobId(), record.getId());
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 
     private ResumeOptimizeRecord markOptimizeFailed(Long recordId, RuntimeException ex) {
         ResumeOptimizeRecord record = optimizeRecordMapper.selectById(recordId);
         record.setOptimizeStatus(ResumeOptimizeStatus.FAILED.getCode());
-        record.setErrorMessage(truncateErrorMessage(ex == null ? null : ex.getMessage()));
+        record.setErrorMessage(resumeOptimizeFailureMessage());
         optimizeRecordMapper.updateById(record);
         return optimizeRecordMapper.selectById(recordId);
     }
@@ -1012,10 +1078,11 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeOptimizeSubmitVO vo = new ResumeOptimizeSubmitVO();
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
+        vo.setTargetJobId(record.getTargetJobId());
         vo.setAiCallLogId(record.getAiCallLogId());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         fillOptimizeSubmitResult(vo, resultJson == null ? parseNullableJson(record.getResultJson()) : resultJson);
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeOptimizeErrorMessage(record.getErrorMessage()));
         return vo;
     }
 
@@ -1024,13 +1091,14 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeOptimizeRecordVO vo = new ResumeOptimizeRecordVO();
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
+        vo.setTargetJobId(record.getTargetJobId());
         vo.setTargetPosition(record.getTargetPosition());
         vo.setExperienceYears(record.getExperienceYears());
         vo.setIndustryDirection(record.getIndustryDirection());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         vo.setSummary(textField(resultJson, "overallComment"));
         vo.setOverallComment(textField(resultJson, "overallComment"));
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeOptimizeErrorMessage(record.getErrorMessage()));
         vo.setCreatedAt(record.getCreatedAt());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
@@ -1041,13 +1109,14 @@ public class ResumeServiceImpl implements ResumeService {
         JsonNode resultJson = parseNullableJson(record.getResultJson());
         vo.setOptimizeRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
+        vo.setTargetJobId(record.getTargetJobId());
         vo.setTargetPosition(record.getTargetPosition());
         vo.setExperienceYears(record.getExperienceYears());
         vo.setIndustryDirection(record.getIndustryDirection());
         vo.setOptimizeStatus(record.getOptimizeStatus());
         fillOptimizeDetailResult(vo, resultJson);
         vo.setFieldPatches(extractFieldPatches(resultJson, null));
-        vo.setErrorMessage(record.getErrorMessage());
+        vo.setErrorMessage(safeResumeOptimizeErrorMessage(record.getErrorMessage()));
         vo.setCreatedAt(record.getCreatedAt());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
@@ -1405,9 +1474,22 @@ public class ResumeServiceImpl implements ResumeService {
         }
     }
 
-    private String truncateErrorMessage(String message) {
-        String value = StringUtils.hasText(message) ? message : "简历优化失败，请稍后重试";
-        return value.length() <= MAX_ERROR_MESSAGE_LENGTH ? value : value.substring(0, MAX_ERROR_MESSAGE_LENGTH);
+    private String safeResumeParseErrorMessage(String message) {
+        if (!StringUtils.hasText(message)) {
+            return null;
+        }
+        if ("异步解析任务暂时不可用，系统将通过补偿任务重试".equals(message)) {
+            return message;
+        }
+        return "简历解析失败，请稍后重试";
+    }
+
+    private String safeResumeOptimizeErrorMessage(String message) {
+        return StringUtils.hasText(message) ? resumeOptimizeFailureMessage() : null;
+    }
+
+    private String resumeOptimizeFailureMessage() {
+        return "简历优化失败，请稍后重试";
     }
 
     private List<ResumeProjectVO> projects(Long resumeId) {

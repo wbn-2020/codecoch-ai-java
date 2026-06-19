@@ -459,7 +459,7 @@ public class V3DashboardController {
         if (vo.getCurrentTargetJob() == null) {
             actions.add(action("CREATE_TARGET_JOB", "创建目标岗位", "先录入目标岗位和岗位描述，才能开启求职训练闭环。", "/job-targets", 1));
         } else if (vo.getLatestMatch() == null) {
-            actions.add(action("RUN_MATCH", "生成岗位匹配报告", "用当前简历和目标岗位描述生成匹配度与差距。", "/resume-job-match", 1));
+            actions.add(action("RUN_MATCH", "生成岗位匹配报告", "用当前简历和目标岗位描述生成匹配度与差距。", "/resume-match", 1));
         } else if (!isTrustedSuccessfulMatch(vo.getLatestMatch())) {
             V3DashboardVO.MatchSummaryVO match = vo.getLatestMatch();
             String status = StringUtils.hasText(match.getStatus()) ? match.getStatus().toUpperCase() : "";

@@ -14,11 +14,11 @@ public class RegisterDTO {
     private String username;
 
     @NotBlank(message = "不能为空")
-    @Size(min = 6, max = 32, message = "长度必须在6到32之间")
+    @Size(min = 8, max = 32, message = "长度必须在8到32之间")
     private String password;
 
     @NotBlank(message = "不能为空")
-    @Size(min = 6, max = 32, message = "长度必须在6到32之间")
+    @Size(min = 8, max = 32, message = "长度必须在8到32之间")
     private String confirmPassword;
 
     @Size(max = 50, message = "长度不能超过50")

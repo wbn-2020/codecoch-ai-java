@@ -477,15 +477,15 @@ migration 重复执行验证
 - `/admin/ai/prompt-regression`
 - `/agent/tasks`
 - `/agent/runs/:id`
-- `/knowledge`
-- `/applications`
+- `/knowledge`（previewOnly，V4-E 预留）
+- `/applications`（已作为 Agent 投递跟进闭环入口开放；完整 V4-D 能力另行验收）
 - `/resumes`
 
 前端联调建议优先检查这几条能力：
 
 - 登录后能正常进入管理后台与用户侧主页面
 - Prompt 回归页能正常加载、筛选、创建与执行
-- 简历上传、文件下载、知识库检索、投递管理等页面能正常调用后端接口
+- 简历上传、文件下载等已开放页面能正常调用后端接口；知识库仍是 previewOnly，投递管理当前按 Agent 投递跟进闭环最小范围验收
 
 ## 发布前检查建议
 

@@ -4,6 +4,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
+import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -44,6 +45,12 @@ public class InnerResumeController {
     @GetMapping("/optimize-records/{recordId}")
     public Result<InnerResumeOptimizeRecordVO> getOptimizeRecord(@PathVariable Long recordId) {
         return Result.success(resumeService.getInnerOptimizeRecord(recordId));
+    }
+
+    @GetMapping("/users/{userId}/optimize-records/{recordId}/agent-evidence")
+    public Result<ResumeOptimizeRecordAgentEvidenceVO> getOptimizeRecordEvidence(@PathVariable Long userId,
+                                                                                 @PathVariable Long recordId) {
+        return Result.success(resumeService.getOptimizeRecordEvidence(userId, recordId));
     }
 
     @PostMapping("/optimize-records/{recordId}/execute")

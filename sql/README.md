@@ -53,3 +53,16 @@ spring:
 ```
 
 Keep `sql/migration/*.sql` aligned with `src/main/resources/db/migration/` if you copy scripts there.
+
+## Safety: Demo data script isolated
+
+The file `V4_009__clean_demo_business_data_and_seed_chinese_dataset.sql` has been moved from
+`sql/migration/` to `sql/sandbox/`. It resets business/demo data (soft-deletes 20+ tables
+and re-seeds Chinese demo data) and **must not** run in production.
+
+Flyway will skip it automatically. To manually reset demo data in a local/dev/demo/test
+schema, run:
+
+```sql
+source sql/sandbox/V4_009__clean_demo_business_data_and_seed_chinese_dataset.sql;
+```

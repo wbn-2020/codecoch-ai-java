@@ -16,6 +16,9 @@ public class DailyPlanVO {
     private String status;
     private String errorCode;
     private String errorMessage;
+    private String failureAction;
+    private String failureActionLabel;
+    private String failureSuggestion;
     private Long durationMs;
     private List<SkillTagVO> focusSkills = new ArrayList<>();
     private List<AgentTaskVO> tasks = new ArrayList<>();

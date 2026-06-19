@@ -6,4 +6,7 @@ import lombok.Data;
 public class QuestionDuplicateIgnoreDTO {
 
     private String ignoredReason;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String idempotencyKey;
 }

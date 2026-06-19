@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS resume_optimize_record (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
   resume_id BIGINT NOT NULL,
+  target_job_id BIGINT DEFAULT NULL,
   target_position VARCHAR(100) DEFAULT NULL,
   experience_years INT DEFAULT NULL,
   industry_direction VARCHAR(100) DEFAULT NULL,
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS resume_optimize_record (
   PRIMARY KEY (id),
   KEY idx_user_resume (user_id, resume_id),
   KEY idx_user_status (user_id, optimize_status),
+  KEY idx_resume_optimize_user_target_status (user_id, target_job_id, optimize_status, deleted),
   KEY idx_resume_created (resume_id, created_at),
   KEY idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

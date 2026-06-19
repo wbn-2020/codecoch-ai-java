@@ -374,6 +374,30 @@ CREATE TABLE IF NOT EXISTS resume_project (
   KEY idx_resume_project_resume (resume_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS resume_optimize_record (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  resume_id BIGINT NOT NULL,
+  target_job_id BIGINT DEFAULT NULL COMMENT 'Optional target_job id used by Agent task completion evidence',
+  target_position VARCHAR(100) DEFAULT NULL,
+  experience_years INT DEFAULT NULL,
+  industry_direction VARCHAR(100) DEFAULT NULL,
+  request_json LONGTEXT DEFAULT NULL,
+  result_json LONGTEXT DEFAULT NULL,
+  optimize_status VARCHAR(32) NOT NULL DEFAULT 'PROCESSING',
+  error_message VARCHAR(1000) DEFAULT NULL,
+  ai_call_log_id BIGINT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_user_resume (user_id, resume_id),
+  KEY idx_user_status (user_id, optimize_status),
+  KEY idx_resume_optimize_user_target_status (user_id, target_job_id, optimize_status, deleted),
+  KEY idx_resume_created (resume_id, created_at),
+  KEY idx_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS target_job (
   id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
   user_id BIGINT NOT NULL COMMENT 'user id',
@@ -431,6 +455,7 @@ CREATE TABLE IF NOT EXISTS resume_job_match_report (
   id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'primary id',
   user_id BIGINT NOT NULL COMMENT 'user id',
   resume_id BIGINT NOT NULL COMMENT 'resume id',
+  resume_version_id BIGINT DEFAULT NULL COMMENT 'Optional resume_version id used as the match snapshot source',
   target_job_id BIGINT NOT NULL COMMENT 'target job id',
   jd_analysis_id BIGINT NOT NULL COMMENT 'job description analysis id',
   overall_score INT DEFAULT NULL COMMENT 'overall match score',
@@ -455,9 +480,11 @@ CREATE TABLE IF NOT EXISTS resume_job_match_report (
   PRIMARY KEY (id),
   KEY idx_resume_match_user (user_id),
   KEY idx_resume_match_resume (resume_id, deleted),
+  KEY idx_resume_match_resume_version (resume_version_id, deleted),
   KEY idx_resume_match_target_job (target_job_id, deleted),
   KEY idx_resume_match_status (status, deleted),
   KEY idx_resume_match_user_resume_job (user_id, resume_id, target_job_id, deleted),
+  KEY idx_resume_match_user_version_job (user_id, resume_version_id, target_job_id, deleted),
   KEY idx_resume_match_ai_log (ai_call_log_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V3 resume job match report';
 

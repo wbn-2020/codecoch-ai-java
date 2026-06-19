@@ -3,6 +3,7 @@ package com.codecoachai.resume.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.domain.BaseEntity;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -17,11 +18,13 @@ import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchDetail;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
+import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.JobDescriptionParseStatus;
 import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchDetailItemVO;
+import com.codecoachai.resume.domain.vo.ResumeJobMatchReportAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchReportDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchReportListVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchSubmitVO;
@@ -34,6 +37,7 @@ import com.codecoachai.resume.mapper.ResumeJobMatchDetailMapper;
 import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
+import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
 import com.codecoachai.resume.service.ResumeJobMatchService;
@@ -41,10 +45,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -75,6 +81,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private final JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper;
     private final ResumeJobMatchReportMapper reportMapper;
     private final ResumeJobMatchDetailMapper detailMapper;
+    private final ResumeVersionMapper resumeVersionMapper;
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
@@ -83,10 +90,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     @Override
     public ResumeJobMatchSubmitVO createReport(ResumeJobMatchCreateDTO dto) {
         Long userId = requireCurrentUserId();
-        MatchContext context = prepareContext(dto.getResumeId(), dto.getTargetJobId(), userId);
+        MatchContext context = prepareContext(dto.getResumeId(), dto.getTargetJobId(), userId,
+                dto.getResumeVersionId(), null);
         if (!Boolean.TRUE.equals(dto.getForceRefresh())) {
-            ResumeJobMatchReport existing = latestSuccessfulReport(dto.getResumeId(), dto.getTargetJobId(), userId);
-            if (existing != null) {
+            ResumeJobMatchReport existing = latestSuccessfulReport(dto.getResumeId(), dto.getTargetJobId(), userId,
+                    dto.getResumeVersionId());
+            if (existing != null && !isReportStale(existing, context)) {
                 return toSubmitVO(existing);
             }
         }
@@ -112,6 +121,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (request.getResumeId() != null) {
             wrapper.eq(ResumeJobMatchReport::getResumeId, request.getResumeId());
         }
+        if (request.getResumeVersionId() != null) {
+            wrapper.eq(ResumeJobMatchReport::getResumeVersionId, request.getResumeVersionId());
+        }
         if (request.getTargetJobId() != null) {
             wrapper.eq(ResumeJobMatchReport::getTargetJobId, request.getTargetJobId());
         }
@@ -133,7 +145,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     @Override
-    public ResumeJobMatchReportDetailVO getLatest(Long resumeId, Long targetJobId) {
+    public ResumeJobMatchReportDetailVO getLatest(Long resumeId, Long targetJobId, Long resumeVersionId) {
         Long userId = requireCurrentUserId();
         LambdaQueryWrapper<ResumeJobMatchReport> wrapper = new LambdaQueryWrapper<ResumeJobMatchReport>()
                 .eq(ResumeJobMatchReport::getUserId, userId)
@@ -143,6 +155,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (resumeId != null) {
             getOwnedResume(resumeId, userId);
             wrapper.eq(ResumeJobMatchReport::getResumeId, resumeId);
+        }
+        if (resumeVersionId != null) {
+            getOwnedResumeVersion(resumeVersionId, resumeId, userId);
+            wrapper.eq(ResumeJobMatchReport::getResumeVersionId, resumeVersionId);
+        } else if (resumeId != null) {
+            wrapper.isNull(ResumeJobMatchReport::getResumeVersionId);
         }
         if (targetJobId != null) {
             getOwnedTargetJob(targetJobId, userId);
@@ -163,10 +181,38 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     @Override
+    public ResumeJobMatchReportAgentEvidenceVO getReportEvidence(Long userId, Long reportId) {
+        if (userId == null || reportId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "userId and reportId are required");
+        }
+        ResumeJobMatchReport report = reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, reportId)
+                .eq(ResumeJobMatchReport::getUserId, userId)
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.SUCCESS.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (report == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume job match report evidence not found");
+        }
+        ResumeJobMatchReportAgentEvidenceVO vo = new ResumeJobMatchReportAgentEvidenceVO();
+        vo.setId(report.getId());
+        vo.setUserId(report.getUserId());
+        vo.setResumeId(report.getResumeId());
+        vo.setTargetJobId(report.getTargetJobId());
+        vo.setResumeVersionId(report.getResumeVersionId());
+        vo.setJdAnalysisId(report.getJdAnalysisId());
+        vo.setStatus(report.getStatus());
+        vo.setGeneratedAt(report.getUpdatedAt() == null ? report.getCreatedAt() : report.getUpdatedAt());
+        vo.setCreatedAt(report.getCreatedAt());
+        return vo;
+    }
+
+    @Override
     public ResumeJobMatchSubmitVO regenerate(Long id) {
         Long userId = requireCurrentUserId();
         ResumeJobMatchReport oldReport = getOwnedReport(id, userId);
-        MatchContext context = prepareContext(oldReport.getResumeId(), oldReport.getTargetJobId(), userId);
+        MatchContext context = prepareContext(oldReport.getResumeId(), oldReport.getTargetJobId(), userId,
+                oldReport.getResumeVersionId(), oldReport.getJdAnalysisId());
         ResumeJobMatchReport newReport = transactionTemplate.execute(status -> createProcessingReport(context));
         MqDispatchReceipt receipt = dispatchAnalyze(newReport);
         if (receipt != null) {
@@ -186,7 +232,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
         try {
-            MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId());
+            MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId(),
+                    report.getResumeVersionId(), report.getJdAnalysisId());
             AnalyzeResumeJobMatchVO response = FeignResultUtils.unwrap(aiFeignClient.analyzeResumeJobMatch(toAiRequest(report, context)));
             JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
             ResumeJobMatchReport success = transactionTemplate.execute(status ->
@@ -205,8 +252,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
                 .orElse(null);
     }
 
-    private MatchContext prepareContext(Long resumeId, Long targetJobId, Long userId) {
+    private MatchContext prepareContext(Long resumeId, Long targetJobId, Long userId,
+                                        Long resumeVersionId, Long jdAnalysisId) {
         Resume resume = getOwnedResume(resumeId, userId);
+        ResumeVersion resumeVersion = resumeVersionId == null
+                ? null
+                : getOwnedResumeVersion(resumeVersionId, resumeId, userId);
         List<ResumeProject> projects = projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                 .eq(ResumeProject::getResumeId, resumeId)
                 .eq(ResumeProject::getDeleted, CommonConstants.NO)
@@ -215,14 +266,17 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
                 .orderByDesc(ResumeProject::getUpdatedAt));
         ResumeAnalysisRecord resumeAnalysis = latestSuccessfulResumeAnalysis(resumeId, userId);
         TargetJob targetJob = getOwnedTargetJob(targetJobId, userId);
-        JobDescriptionAnalysis jdAnalysis = latestParsedJdAnalysis(targetJobId, userId);
-        return new MatchContext(resume, projects, resumeAnalysis, targetJob, jdAnalysis);
+        JobDescriptionAnalysis jdAnalysis = jdAnalysisId == null
+                ? latestParsedJdAnalysis(targetJobId, userId)
+                : getOwnedJdAnalysis(jdAnalysisId, targetJobId, userId);
+        return new MatchContext(resume, resumeVersion, projects, resumeAnalysis, targetJob, jdAnalysis);
     }
 
     private ResumeJobMatchReport createProcessingReport(MatchContext context) {
         ResumeJobMatchReport report = new ResumeJobMatchReport();
         report.setUserId(context.resume().getUserId());
         report.setResumeId(context.resume().getId());
+        report.setResumeVersionId(context.resumeVersion() == null ? null : context.resumeVersion().getId());
         report.setTargetJobId(context.targetJob().getId());
         report.setJdAnalysisId(context.jdAnalysis().getId());
         report.setStatus(ResumeJobMatchStatus.PROCESSING.getCode());
@@ -235,13 +289,16 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         request.setReportId(report.getId());
         request.setUserId(report.getUserId());
         request.setResumeId(report.getResumeId());
+        request.setResumeVersionId(report.getResumeVersionId());
         request.setTargetJobId(report.getTargetJobId());
         request.setJdAnalysisId(report.getJdAnalysisId());
-        request.setResumeAnalysisJson(context.resumeAnalysis() == null ? null : context.resumeAnalysis().getStructuredJson());
-        request.setResumeSnapshotJson(toJson(resumeSnapshot(context.resume(), context.projects())));
+        request.setResumeAnalysisJson(context.resumeVersion() == null && context.resumeAnalysis() != null
+                ? context.resumeAnalysis().getStructuredJson()
+                : null);
+        request.setResumeSnapshotJson(resumeSnapshotJson(context));
         request.setJobDescriptionAnalysisJson(toJson(jobDescriptionSnapshot(context.jdAnalysis())));
         request.setTargetJobJson(toJson(targetJobSnapshot(context.targetJob())));
-        request.setUserExperienceYears(context.resume().getWorkExperience());
+        request.setUserExperienceYears(userExperienceYears(context));
         return request;
     }
 
@@ -381,6 +438,24 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return resume;
     }
 
+    private ResumeVersion getOwnedResumeVersion(Long versionId, Long resumeId, Long userId) {
+        if (versionId == null) {
+            return null;
+        }
+        ResumeVersion version = resumeVersionMapper.selectOne(new LambdaQueryWrapper<ResumeVersion>()
+                .eq(ResumeVersion::getId, versionId)
+                .eq(ResumeVersion::getUserId, userId)
+                .eq(ResumeVersion::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (version == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历版本不存在或已不可用");
+        }
+        if (resumeId != null && !Objects.equals(resumeId, version.getResumeId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历版本不属于当前简历");
+        }
+        return version;
+    }
+
     private TargetJob getOwnedTargetJob(Long id, Long userId) {
         if (id == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择目标岗位");
@@ -436,10 +511,28 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return analysis;
     }
 
-    private ResumeJobMatchReport latestSuccessfulReport(Long resumeId, Long targetJobId, Long userId) {
+    private JobDescriptionAnalysis getOwnedJdAnalysis(Long jdAnalysisId, Long targetJobId, Long userId) {
+        JobDescriptionAnalysis analysis = jobDescriptionAnalysisMapper.selectOne(
+                new LambdaQueryWrapper<JobDescriptionAnalysis>()
+                        .eq(JobDescriptionAnalysis::getId, jdAnalysisId)
+                        .eq(JobDescriptionAnalysis::getUserId, userId)
+                        .eq(JobDescriptionAnalysis::getTargetJobId, targetJobId)
+                        .eq(JobDescriptionAnalysis::getParseStatus, JobDescriptionParseStatus.PARSED.getCode())
+                        .eq(JobDescriptionAnalysis::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (analysis == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告绑定的岗位分析记录已不可用，请重新生成报告");
+        }
+        return analysis;
+    }
+
+    private ResumeJobMatchReport latestSuccessfulReport(Long resumeId, Long targetJobId, Long userId,
+                                                        Long resumeVersionId) {
         ResumeJobMatchReport report = reportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()
                 .eq(ResumeJobMatchReport::getUserId, userId)
                 .eq(ResumeJobMatchReport::getResumeId, resumeId)
+                .eq(resumeVersionId != null, ResumeJobMatchReport::getResumeVersionId, resumeVersionId)
+                .isNull(resumeVersionId == null, ResumeJobMatchReport::getResumeVersionId)
                 .eq(ResumeJobMatchReport::getTargetJobId, targetJobId)
                 .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.SUCCESS.getCode())
                 .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
@@ -448,13 +541,60 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return isTrustedSuccessReport(report) ? report : null;
     }
 
+    private boolean isReportStale(ResumeJobMatchReport report, MatchContext context) {
+        Long contextVersionId = context.resumeVersion() == null ? null : context.resumeVersion().getId();
+        if (!Objects.equals(report.getResumeVersionId(), contextVersionId)) {
+            return true;
+        }
+        LocalDateTime reportUpdatedAt = effectiveUpdatedAt(report);
+        if (reportUpdatedAt == null) {
+            return true;
+        }
+        if (context.resumeVersion() == null) {
+            if (isNewerThanReport(context.resume(), reportUpdatedAt)) {
+                return true;
+            }
+            if (isNewerThanReport(context.resumeAnalysis(), reportUpdatedAt)) {
+                return true;
+            }
+        } else if (isNewerThanReport(context.resumeVersion(), reportUpdatedAt)) {
+            return true;
+        }
+        if (isNewerThanReport(context.targetJob(), reportUpdatedAt)) {
+            return true;
+        }
+        if (isNewerThanReport(context.jdAnalysis(), reportUpdatedAt)) {
+            return true;
+        }
+        if (context.resumeVersion() != null && resumeVersionSnapshotHasProjects(context.resumeVersion())) {
+            return false;
+        }
+        return context.projects().stream().anyMatch(project -> isNewerThanReport(project, reportUpdatedAt));
+    }
+
+    private boolean isNewerThanReport(BaseEntity entity, LocalDateTime reportUpdatedAt) {
+        LocalDateTime updatedAt = effectiveUpdatedAt(entity);
+        return updatedAt != null && updatedAt.isAfter(reportUpdatedAt);
+    }
+
+    private LocalDateTime effectiveUpdatedAt(BaseEntity entity) {
+        if (entity == null) {
+            return null;
+        }
+        return entity.getUpdatedAt() != null ? entity.getUpdatedAt() : entity.getCreatedAt();
+    }
+
     private ResumeJobMatchReportListVO toListVO(ResumeJobMatchReport report) {
         Resume resume = resumeMapper.selectById(report.getResumeId());
         TargetJob job = targetJobMapper.selectById(report.getTargetJobId());
+        ResumeVersion version = findReportVersion(report);
         ResumeJobMatchReportListVO vo = new ResumeJobMatchReportListVO();
         vo.setReportId(report.getId());
         vo.setResumeId(report.getResumeId());
         vo.setResumeTitle(resume == null ? null : resume.getTitle());
+        vo.setResumeVersionId(report.getResumeVersionId());
+        vo.setResumeVersionNo(version == null ? null : version.getVersionNo());
+        vo.setResumeVersionName(version == null ? null : version.getVersionName());
         vo.setTargetJobId(report.getTargetJobId());
         vo.setJobTitle(job == null ? null : job.getJobTitle());
         vo.setCompanyName(job == null ? null : job.getCompanyName());
@@ -481,11 +621,15 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private ResumeJobMatchReportDetailVO toDetailVO(ResumeJobMatchReport report) {
         Resume resume = resumeMapper.selectById(report.getResumeId());
         TargetJob job = targetJobMapper.selectById(report.getTargetJobId());
+        ResumeVersion version = findReportVersion(report);
         ResumeJobMatchReportDetailVO vo = new ResumeJobMatchReportDetailVO();
         vo.setReportId(report.getId());
         vo.setUserId(report.getUserId());
         vo.setResumeId(report.getResumeId());
         vo.setResumeTitle(resume == null ? null : resume.getTitle());
+        vo.setResumeVersionId(report.getResumeVersionId());
+        vo.setResumeVersionNo(version == null ? null : version.getVersionNo());
+        vo.setResumeVersionName(version == null ? null : version.getVersionName());
         vo.setTargetJobId(report.getTargetJobId());
         vo.setJobTitle(job == null ? null : job.getJobTitle());
         vo.setCompanyName(job == null ? null : job.getCompanyName());
@@ -553,9 +697,13 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private ResumeJobMatchSubmitVO toSubmitVO(ResumeJobMatchReport report) {
+        ResumeVersion version = findReportVersion(report);
         ResumeJobMatchSubmitVO vo = new ResumeJobMatchSubmitVO();
         vo.setReportId(report.getId());
         vo.setResumeId(report.getResumeId());
+        vo.setResumeVersionId(report.getResumeVersionId());
+        vo.setResumeVersionNo(version == null ? null : version.getVersionNo());
+        vo.setResumeVersionName(version == null ? null : version.getVersionName());
         vo.setTargetJobId(report.getTargetJobId());
         vo.setJdAnalysisId(report.getJdAnalysisId());
         vo.setAiCallLogId(report.getAiCallLogId());
@@ -571,6 +719,13 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         vo.setCreatedAt(report.getCreatedAt());
         vo.setUpdatedAt(report.getUpdatedAt());
         return vo;
+    }
+
+    private ResumeVersion findReportVersion(ResumeJobMatchReport report) {
+        if (report == null || report.getResumeVersionId() == null) {
+            return null;
+        }
+        return resumeVersionMapper.selectById(report.getResumeVersionId());
     }
 
     private ResumeJobMatchSubmitVO withAsyncReceipt(ResumeJobMatchSubmitVO vo, MqDispatchReceipt receipt) {
@@ -634,7 +789,10 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (report == null) {
             return "匹配报告缺少上下文来源。";
         }
-        String context = (report.getResumeId() == null ? "简历来源待确认" : "来自已绑定简历")
+        String resumeContext = report.getResumeVersionId() == null
+                ? (report.getResumeId() == null ? "简历来源待确认" : "来自已绑定简历")
+                : "来自已绑定简历版本 #" + report.getResumeVersionId();
+        String context = resumeContext
                 + " 与 " + (report.getTargetJobId() == null ? "目标岗位待确认" : "已绑定目标岗位");
         String jdAnalysis = report.getJdAnalysisId() == null ? "未绑定岗位分析记录" : "岗位分析已绑定";
         if (ResumeJobMatchStatus.FAILED.getCode().equals(report.getStatus())) {
@@ -790,6 +948,61 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         snapshot.put("description", project.getDescription());
         snapshot.put("highlights", project.getHighlights());
         return snapshot;
+    }
+
+    private String resumeSnapshotJson(MatchContext context) {
+        if (context.resumeVersion() == null) {
+            return toJson(resumeSnapshot(context.resume(), context.projects()));
+        }
+        ObjectNode snapshot = objectMapper.createObjectNode();
+        JsonNode versionSnapshot = readResumeVersionSnapshot(context.resumeVersion());
+        if (versionSnapshot != null && versionSnapshot.isObject()) {
+            snapshot.setAll((ObjectNode) versionSnapshot.deepCopy());
+        } else if (versionSnapshot != null) {
+            snapshot.set("snapshot", versionSnapshot);
+        }
+        snapshot.put("snapshotSource", "RESUME_VERSION");
+        snapshot.put("resumeVersionId", context.resumeVersion().getId());
+        snapshot.put("resumeVersionNo", context.resumeVersion().getVersionNo());
+        snapshot.put("resumeVersionName", context.resumeVersion().getVersionName());
+        if (!snapshot.has("projects") || !snapshot.path("projects").isArray()) {
+            snapshot.set("projects", objectMapper.valueToTree(
+                    context.projects().stream().map(this::projectSnapshot).toList()));
+            snapshot.put("projectSnapshotSource", "CURRENT_RESUME_PROJECTS");
+        } else if (!StringUtils.hasText(snapshot.path("projectSnapshotSource").asText(null))) {
+            snapshot.put("projectSnapshotSource", "RESUME_VERSION");
+        }
+        return snapshot.toString();
+    }
+
+    private String userExperienceYears(MatchContext context) {
+        if (context.resumeVersion() != null) {
+            JsonNode snapshot = readResumeVersionSnapshot(context.resumeVersion());
+            String workExperience = textValue(snapshot, "workExperience");
+            if (StringUtils.hasText(workExperience)) {
+                return workExperience;
+            }
+        }
+        return context.resume().getWorkExperience();
+    }
+
+    private JsonNode readResumeVersionSnapshot(ResumeVersion version) {
+        if (version == null) {
+            return null;
+        }
+        if (!StringUtils.hasText(version.getSnapshotJson())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历版本快照缺失，请重新创建版本后再生成匹配报告");
+        }
+        try {
+            return objectMapper.readTree(version.getSnapshotJson());
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历版本快照格式异常，请重新创建版本后再生成匹配报告");
+        }
+    }
+
+    private boolean resumeVersionSnapshotHasProjects(ResumeVersion version) {
+        JsonNode snapshot = readResumeVersionSnapshot(version);
+        return snapshot != null && snapshot.path("projects").isArray();
     }
 
     private Map<String, Object> targetJobSnapshot(TargetJob job) {
@@ -1543,7 +1756,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return null;
     }
 
-    private record MatchContext(Resume resume, List<ResumeProject> projects, ResumeAnalysisRecord resumeAnalysis,
-                                TargetJob targetJob, JobDescriptionAnalysis jdAnalysis) {
+    private record MatchContext(Resume resume, ResumeVersion resumeVersion, List<ResumeProject> projects,
+                                ResumeAnalysisRecord resumeAnalysis, TargetJob targetJob,
+                                JobDescriptionAnalysis jdAnalysis) {
     }
 }

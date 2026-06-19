@@ -1,7 +1,9 @@
 package com.codecoachai.ai.agent.service.impl;
 
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
@@ -17,6 +19,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -42,6 +45,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setTargetJobId(targetJob.getId());
         context.setPlanDate(planDate);
         context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(userId, targetJob.getId())));
+        context.setApplications(resolveApplications(userId, targetJob.getId(), context));
         context.setRecentMemories(recentMemories(userId));
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
         context.getContextWarnings().add("上下文已包含目标岗位、JD 分析、近期计划任务和已启用记忆。");
@@ -62,6 +66,45 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
             log.info("Target job analysis unavailable targetJobId={}, reason={}", targetJobId, ex.getMessage());
             return null;
         }
+    }
+
+    private List<ApplicationSnapshot> resolveApplications(Long userId, Long targetJobId, JobCoachAgentContext context) {
+        try {
+            List<JobApplicationAgentContextVO> applications = FeignResultUtils.unwrap(
+                    resumeFeignClient.listAgentApplications(userId, targetJobId));
+            if (applications == null || applications.isEmpty()) {
+                return List.of();
+            }
+            return applications.stream()
+                    .filter(Objects::nonNull)
+                    .map(this::toApplicationSnapshot)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.info("Application context unavailable targetJobId={}, reason={}", targetJobId, ex.getMessage());
+            context.getContextWarnings().add("投递上下文暂不可用，已跳过投递跟进候选任务。");
+            return List.of();
+        }
+    }
+
+    private ApplicationSnapshot toApplicationSnapshot(JobApplicationAgentContextVO application) {
+        ApplicationSnapshot snapshot = new ApplicationSnapshot();
+        snapshot.setId(application.getId());
+        snapshot.setTargetJobId(application.getTargetJobId());
+        snapshot.setResumeVersionId(application.getResumeVersionId());
+        snapshot.setMatchReportId(application.getMatchReportId());
+        snapshot.setCompanyName(application.getCompanyName());
+        snapshot.setJobTitle(application.getJobTitle());
+        snapshot.setSource(application.getSource());
+        snapshot.setStatus(application.getStatus());
+        snapshot.setAppliedAt(application.getAppliedAt());
+        snapshot.setNextFollowUpAt(application.getNextFollowUpAt());
+        snapshot.setFollowUpOverdue(application.getFollowUpOverdue());
+        snapshot.setFollowUpDueToday(application.getFollowUpDueToday());
+        snapshot.setDaysUntilFollowUp(application.getDaysUntilFollowUp());
+        snapshot.setNote(application.getNote());
+        snapshot.setCreatedAt(application.getCreatedAt());
+        snapshot.setUpdatedAt(application.getUpdatedAt());
+        return snapshot;
     }
 
     private TargetJobSnapshot toSnapshot(TargetJobContextVO targetJob, JobDescriptionAnalysisContextVO analysis) {

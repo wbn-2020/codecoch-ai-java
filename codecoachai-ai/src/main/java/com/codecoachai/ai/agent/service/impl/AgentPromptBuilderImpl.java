@@ -54,7 +54,7 @@ public class AgentPromptBuilderImpl implements AgentPromptBuilder {
                   "tasks": [
                     {
                       "candidateId": "candidate task id",
-                      "type": "QUESTION_PRACTICE|RESUME_OPTIMIZE|INTERVIEW|SKILL_REVIEW|KNOWLEDGE_REVIEW",
+                      "type": "QUESTION_PRACTICE|RESUME_OPTIMIZE|INTERVIEW|SKILL_REVIEW|KNOWLEDGE_REVIEW|APPLICATION_FOLLOW_UP",
                       "title": "任务标题",
                       "description": "任务说明",
                       "reason": "为什么今天要做",

@@ -6,6 +6,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.system.domain.dto.RoleMenuAssignDTO;
 import com.codecoachai.system.domain.dto.SysMenuSaveDTO;
@@ -21,6 +22,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -45,6 +48,7 @@ public class AdminMenuController {
     private final SysMenuMapper menuMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/admin/menus")
     public Result<List<SysMenuTreeVO>> tree() {
@@ -60,29 +64,49 @@ public class AdminMenuController {
     @OperationLog(module = "system", action = "CREATE_MENU", description = "新增菜单权限")
     public Result<SysMenu> create(@RequestBody SysMenuSaveDTO dto) {
         permissionGuard.require(PERM_MENU_WRITE);
-        SysMenu menu = new SysMenu();
-        apply(menu, dto);
-        menuMapper.insert(menu);
-        return Result.success(menu);
+        return runConfirmedOperation("menu-create:" + (dto == null ? "new" : dto.getMenuName()),
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    SysMenu menu = new SysMenu();
+                    apply(menu, dto);
+                    menuMapper.insert(menu);
+                    return menu;
+                });
     }
 
     @PutMapping("/admin/menus/{id}")
     @OperationLog(module = "system", action = "UPDATE_MENU", description = "编辑菜单权限")
     public Result<SysMenu> update(@PathVariable Long id, @RequestBody SysMenuSaveDTO dto) {
         permissionGuard.require(PERM_MENU_WRITE);
-        SysMenu menu = get(id);
-        apply(menu, dto);
-        menuMapper.updateById(menu);
-        return Result.success(menu);
+        return runConfirmedOperation("menu-update:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    SysMenu menu = get(id);
+                    apply(menu, dto);
+                    menuMapper.updateById(menu);
+                    return menu;
+                });
     }
 
     @DeleteMapping("/admin/menus/{id}")
     @OperationLog(module = "system", action = "DELETE_MENU", description = "删除菜单权限")
-    public Result<Void> delete(@PathVariable Long id) {
+    public Result<Void> delete(@PathVariable Long id, @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         permissionGuard.require(PERM_MENU_WRITE);
-        roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getMenuId, id));
-        menuMapper.deleteById(id);
-        return Result.success();
+        return runConfirmedVoidOperation("menu-delete:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    roleMenuMapper.delete(new LambdaQueryWrapper<SysRoleMenu>().eq(SysRoleMenu::getMenuId, id));
+                    menuMapper.deleteById(id);
+                });
     }
 
     @GetMapping("/admin/roles/{roleId}/menus")
@@ -98,8 +122,12 @@ public class AdminMenuController {
     @OperationLog(module = "system", action = "ASSIGN_ROLE_MENU", description = "分配角色菜单权限")
     public Result<Void> assignRoleMenus(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
         permissionGuard.require(PERM_ROLE_ASSIGN);
-        doAssignRoleMenus(roleId, dto);
-        return Result.success();
+        return runConfirmedVoidOperation("role-menu-assign:" + roleId,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> doAssignRoleMenus(roleId, dto));
     }
 
     @PostMapping("/admin/roles/{roleId}/menus")
@@ -107,8 +135,42 @@ public class AdminMenuController {
     @OperationLog(module = "system", action = "ASSIGN_ROLE_MENU_COMPAT", description = "兼容入口分配角色菜单权限")
     public Result<Void> assignRoleMenusByPost(@PathVariable Long roleId, @RequestBody RoleMenuAssignDTO dto) {
         permissionGuard.require(PERM_ROLE_ASSIGN);
-        doAssignRoleMenus(roleId, dto);
-        return Result.success();
+        return runConfirmedVoidOperation("role-menu-assign:" + roleId,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> doAssignRoleMenus(roleId, dto));
+    }
+
+    private <T> Result<T> runConfirmedOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                String reason, String idempotencyKey, Supplier<T> action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            return Result.success(action.get());
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+
+    private Result<Void> runConfirmedVoidOperation(String operation, Boolean confirm, Boolean dryRun,
+                                                   String reason, String idempotencyKey, Runnable action) {
+        String lockKey = operationConfirmationGuard.requireConfirmed(operation, confirm, dryRun, reason, idempotencyKey);
+        try {
+            action.run();
+            return Result.success();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+    @Data
+    public static class AdminOperationConfirmDTO {
+        private Boolean confirm;
+        private Boolean dryRun;
+        private String reason;
+        private String idempotencyKey;
     }
 
     private void doAssignRoleMenus(Long roleId, RoleMenuAssignDTO dto) {

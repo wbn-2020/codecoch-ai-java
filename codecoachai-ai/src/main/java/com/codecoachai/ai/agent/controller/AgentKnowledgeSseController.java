@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.controller;
 
+import com.codecoachai.ai.agent.config.V4FeatureGate;
 import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
@@ -39,8 +40,11 @@ public class AgentKnowledgeSseController {
 
     private final AgentV4OpsService agentV4OpsService;
 
-    public AgentKnowledgeSseController(AgentV4OpsService agentV4OpsService) {
+    private final V4FeatureGate v4FeatureGate;
+
+    public AgentKnowledgeSseController(AgentV4OpsService agentV4OpsService, V4FeatureGate v4FeatureGate) {
         this.agentV4OpsService = agentV4OpsService;
+        this.v4FeatureGate = v4FeatureGate;
     }
 
     @Operation(summary = "Stream personal knowledge ask",
@@ -48,6 +52,7 @@ public class AgentKnowledgeSseController {
     @PostMapping(value = "/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter askStream(@RequestBody KnowledgeAskDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
+        v4FeatureGate.requireKnowledgeEnabled();
         LoginUser loginUser = LoginUserContext.getLoginUser();
         String requestId = UUID.randomUUID().toString();
         AtomicBoolean active = new AtomicBoolean(true);

@@ -16,4 +16,8 @@ public class SysMenuSaveDTO {
     private Integer visible;
     private Integer status;
     private String remark;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

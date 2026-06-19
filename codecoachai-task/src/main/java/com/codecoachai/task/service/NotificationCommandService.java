@@ -1,7 +1,6 @@
 package com.codecoachai.task.service;
 
 import com.codecoachai.task.domain.entity.Notification;
-import com.codecoachai.task.mapper.NotificationMapper;
 import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,7 +18,7 @@ public class NotificationCommandService {
 
     private static final Long BROADCAST_USER_ID = 0L;
 
-    private final NotificationMapper notificationMapper;
+    private final NotificationService notificationService;
 
     /**
      * 创建一条用户通知。userId 为空时落为系统公告（0=所有人）。
@@ -37,7 +36,7 @@ public class NotificationCommandService {
         notification.setReadStatus(0);
         notification.setSendStatus("SUCCESS");
         notification.setSentAt(LocalDateTime.now());
-        notificationMapper.insert(notification);
+        notificationService.saveNotification(notification);
         return notification.getId();
     }
 }

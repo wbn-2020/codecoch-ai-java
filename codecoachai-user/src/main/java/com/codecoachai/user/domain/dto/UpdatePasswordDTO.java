@@ -11,10 +11,10 @@ public class UpdatePasswordDTO {
     private String oldPassword;
 
     @NotBlank(message = "不能为空")
-    @Size(min = 6, max = 32, message = "长度必须在6到32之间")
+    @Size(min = 8, max = 32, message = "长度必须在8到32之间")
     private String newPassword;
 
     @NotBlank(message = "不能为空")
-    @Size(min = 6, max = 32, message = "长度必须在6到32之间")
+    @Size(min = 8, max = 32, message = "长度必须在8到32之间")
     private String confirmPassword;
 }

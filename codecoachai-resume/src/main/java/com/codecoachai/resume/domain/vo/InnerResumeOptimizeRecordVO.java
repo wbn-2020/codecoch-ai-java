@@ -8,6 +8,7 @@ public class InnerResumeOptimizeRecordVO {
     private Long optimizeRecordId;
     private Long userId;
     private Long resumeId;
+    private Long targetJobId;
     private String targetPosition;
     private Integer experienceYears;
     private String industryDirection;

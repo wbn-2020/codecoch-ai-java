@@ -4,6 +4,7 @@ import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.client.ProviderAiCaller.CallResult;
 import com.codecoachai.ai.config.AiRouterProperties;
+import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import com.codecoachai.ai.guard.RetryGuard;
 import com.codecoachai.ai.guard.TokenAccountant;
 import lombok.Data;
@@ -65,7 +66,7 @@ public class AiModelRouter {
             routeTrace.append(primary);
             CallResult result = retryGuard.execute("ai-router:" + ctx.getScene() + ":" + primary,
                     () -> providerAiCaller.chat(primary, ctx.getPrompt(), modelType));
-            return toRouteResult(result, routeTrace.toString(), ctx);
+            return toRouteResult(result, routeTrace.toString(), AiResultSourceEnum.LLM.name(), ctx);
         } catch (AiProviderException primaryEx) {
             if (StringUtils.hasText(fallback)) {
                 log.warn("主 provider [{}] 失败 ({})，尝试降级到 [{}]", primary, primaryEx.getFailureType(), fallback);
@@ -73,7 +74,7 @@ public class AiModelRouter {
                 try {
                     CallResult result = retryGuard.execute("ai-router:" + ctx.getScene() + ":" + fallback,
                             () -> providerAiCaller.chat(fallback, ctx.getPrompt(), modelType));
-                    return toRouteResult(result, routeTrace.toString(), ctx);
+                    return toRouteResult(result, routeTrace.toString(), AiResultSourceEnum.FALLBACK.name(), ctx);
                 } catch (AiProviderException fallbackEx) {
                     // 失败回退分钟配额
                     tokenAccountant.rollbackMinuteCount(ctx.getUserId());
@@ -103,14 +104,14 @@ public class AiModelRouter {
         String modelType = StringUtils.hasText(ctx.getModelType()) ? ctx.getModelType() : "chat";
         try {
             CallResult result = providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, onDelta);
-            return toRouteResult(result, primary, ctx);
+            return toRouteResult(result, primary, AiResultSourceEnum.LLM.name(), ctx);
         } catch (AiProviderException ex) {
             tokenAccountant.rollbackMinuteCount(ctx.getUserId());
             throw ex;
         }
     }
 
-    private RouteResult toRouteResult(CallResult call, String trace, AiCallContext ctx) {
+    private RouteResult toRouteResult(CallResult call, String trace, String resultSource, AiCallContext ctx) {
         tokenAccountant.accumulate(
                 ctx.getUserId(),
                 call.getPromptTokens() == null ? 0 : call.getPromptTokens(),
@@ -127,6 +128,7 @@ public class AiModelRouter {
         r.setEstimatedCost(call.getEstimatedCost());
         r.setElapsedMs(call.getElapsedMs());
         r.setRouteTrace(trace);
+        r.setResultSource(resultSource);
         return r;
     }
 
@@ -181,5 +183,7 @@ public class AiModelRouter {
         private Long aiCallLogId;
         /** 路由轨迹，例：deepseek 或 deepseek -> dashscope */
         private String routeTrace;
+        /** 结果来源：LLM / MOCK / FALLBACK */
+        private String resultSource;
     }
 }

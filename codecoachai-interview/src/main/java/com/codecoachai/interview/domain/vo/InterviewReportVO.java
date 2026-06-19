@@ -14,6 +14,10 @@ public class InterviewReportVO {
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
+    private String targetJobTitle;
+    private String targetCompanyName;
+    private String jdEvidenceSummary;
+    private List<InterviewReportMissingSkillVO> missingSkills;
     private String status;
     private Integer totalScore;
     private String summary;
@@ -25,6 +29,7 @@ public class InterviewReportVO {
     private List<String> projectProblems;
     private List<String> reviewSuggestions;
     private List<String> recommendedQuestions;
+    private List<InterviewReportNextActionVO> nextActions;
     private List<Map<String, Object>> questionReviews;
     private String reportContent;
     private LocalDateTime generatedAt;

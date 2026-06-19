@@ -15,4 +15,8 @@ public class BatchQuestionReviewApproveDTO {
 
     @Valid
     private QuestionReviewApproveDTO approveData;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

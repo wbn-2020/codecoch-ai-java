@@ -2,6 +2,8 @@ package com.codecoachai.ai.agent.service;
 
 import com.codecoachai.ai.agent.domain.dto.AdminAgentRunQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentTaskQueryDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
@@ -20,6 +22,8 @@ public interface JobCoachAgentService {
 
     DailyPlanVO executeDailyPlan(Long userId, Long runId, DailyPlanGenerateDTO dto);
 
+    DailyPlanVO failDailyPlanRun(Long userId, Long runId, AgentRunFailureDTO dto);
+
     DailyPlanVO latestDailyPlan(Long userId, Long targetJobId, LocalDate date);
 
     List<AgentTaskVO> todayTasks(Long userId, Long targetJobId, LocalDate date, String status);
@@ -27,6 +31,8 @@ public interface JobCoachAgentService {
     PageResult<AgentTaskVO> pageTasks(Long userId, AgentTaskQueryDTO query);
 
     AgentTaskVO completeTask(Long userId, Long taskId, AgentTaskCompleteDTO dto);
+
+    AgentTaskVO completeBusinessAction(AgentBusinessActionCompleteDTO dto);
 
     AgentTaskVO startTask(Long userId, Long taskId);
 

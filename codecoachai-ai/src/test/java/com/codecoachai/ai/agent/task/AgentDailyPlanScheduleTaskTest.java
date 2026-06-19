@@ -1,0 +1,78 @@
+package com.codecoachai.ai.agent.task;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
+import com.codecoachai.ai.agent.service.AgentV4OpsService;
+import com.codecoachai.ai.agent.domain.vo.ops.AnalyticsJobLogVO;
+import com.codecoachai.common.redis.lock.DistributedLockHelper;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Test;
+
+class AgentDailyPlanScheduleTaskTest {
+
+    @Test
+    void runDailyPlanBatchSkipsConcurrentSchedulerInvocation() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean locked = new AtomicBoolean(false);
+        AgentV4OpsService service = mock(AgentV4OpsService.class);
+        DistributedLockHelper lockHelper = mock(DistributedLockHelper.class);
+        when(lockHelper.tryLockAndRun(anyString(), anyLong(), anyLong(), any(Runnable.class))).thenAnswer(invocation -> {
+            if (!locked.compareAndSet(false, true)) {
+                return false;
+            }
+            try {
+                Runnable task = invocation.getArgument(3);
+                task.run();
+                return true;
+            } finally {
+                locked.set(false);
+            }
+        });
+        when(service.runDailyPlanBatch(isNull(AnalyticsJobRunDTO.class))).thenAnswer(invocation -> {
+            calls.incrementAndGet();
+            entered.countDown();
+            await(release);
+            return new AnalyticsJobLogVO();
+        });
+        AgentDailyPlanScheduleTask task = new AgentDailyPlanScheduleTask(service, lockHelper);
+        setEnabled(task, true);
+
+        Thread first = new Thread(task::runDailyPlanBatch);
+        Thread second = new Thread(task::runDailyPlanBatch);
+        first.start();
+        assertEquals(true, entered.await(3, TimeUnit.SECONDS), "first scheduler invocation should start");
+        second.start();
+        Thread.sleep(200L);
+        release.countDown();
+        first.join(3000L);
+        second.join(3000L);
+
+        assertEquals(1, calls.get(), "concurrent scheduler invocation must be skipped");
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void setEnabled(AgentDailyPlanScheduleTask task, boolean enabled) throws Exception {
+        var field = AgentDailyPlanScheduleTask.class.getDeclaredField("enabled");
+        field.setAccessible(true);
+        field.setBoolean(task, enabled);
+    }
+}

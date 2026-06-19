@@ -12,9 +12,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.util.StringUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -39,27 +42,9 @@ public class AsyncTaskService {
      * @return true=首次处理（请继续）；false=重复消息（请跳过）
      */
     public boolean acquire(MqMessage<?> envelope, int maxRetry) {
-        String mqKey = RedisKeyConstants.mqConsumedKey(envelope.getMessageId());
-        Boolean ok = redisTemplate.opsForValue().setIfAbsent(mqKey, "1", Duration.ofDays(7));
-        if (!Boolean.TRUE.equals(ok)) {
-            log.info("MQ 重复消费，跳过 messageId={}", envelope.getMessageId());
-            return false;
-        }
-
-        // Redis 幂等键先占位，数据库记录用于后台可视化追踪；重复记录会被重新置为 RUNNING。
-        AsyncTask existing = asyncTaskMapper.selectOne(
-                new LambdaQueryWrapper<AsyncTask>()
-                        .eq(AsyncTask::getMessageId, envelope.getMessageId())
-                        .last("limit 1"));
+        AsyncTask existing = findByMessageId(envelope.getMessageId());
         if (existing != null) {
-            asyncTaskMapper.update(null,
-                    new LambdaUpdateWrapper<AsyncTask>()
-                            .eq(AsyncTask::getId, existing.getId())
-                            .set(AsyncTask::getStatus, "RUNNING")
-                            .set(AsyncTask::getFailureReason, null)
-                            .set(AsyncTask::getCompletedAt, null)
-                            .set(AsyncTask::getStartedAt, LocalDateTime.now()));
-            return true;
+            return acquireExisting(envelope, existing);
         }
 
         AsyncTask task = new AsyncTask();
@@ -73,8 +58,55 @@ public class AsyncTaskService {
         task.setMaxRetry(maxRetry);
         task.setPayload(toJson(envelope.getPayload()));
         task.setStartedAt(LocalDateTime.now());
-        asyncTaskMapper.insert(task);
+        try {
+            asyncTaskMapper.insert(task);
+        } catch (DuplicateKeyException duplicate) {
+            AsyncTask concurrent = findByMessageId(envelope.getMessageId());
+            if (concurrent != null) {
+                return acquireExisting(envelope, concurrent);
+            }
+            throw duplicate;
+        }
+        Boolean ok = rememberConsumed(envelope.getMessageId());
+        if (!Boolean.TRUE.equals(ok)) {
+            log.info("MQ Redis consumed key already exists after durable task insert, continue messageId={}",
+                    envelope.getMessageId());
+        }
         return true;
+    }
+
+    private AsyncTask findByMessageId(String messageId) {
+        return asyncTaskMapper.selectOne(
+                new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getMessageId, messageId)
+                        .last("limit 1"));
+    }
+
+    private boolean acquireExisting(MqMessage<?> envelope, AsyncTask existing) {
+        if ("SUCCESS".equals(existing.getStatus()) || "DEAD".equals(existing.getStatus())) {
+            log.info("MQ duplicate terminal task, skip messageId={}, status={}",
+                    envelope.getMessageId(), existing.getStatus());
+            return false;
+        }
+        Boolean ok = rememberConsumed(envelope.getMessageId());
+        if (!Boolean.TRUE.equals(ok)) {
+            log.info("MQ duplicate active task, skip messageId={}, status={}",
+                    envelope.getMessageId(), existing.getStatus());
+            return false;
+        }
+        asyncTaskMapper.update(null,
+                new LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, existing.getId())
+                        .set(AsyncTask::getStatus, "RUNNING")
+                        .set(AsyncTask::getFailureReason, null)
+                        .set(AsyncTask::getCompletedAt, null)
+                        .set(AsyncTask::getStartedAt, LocalDateTime.now()));
+        return true;
+    }
+
+    private Boolean rememberConsumed(String messageId) {
+        return redisTemplate.opsForValue()
+                .setIfAbsent(RedisKeyConstants.mqConsumedKey(messageId), "1", Duration.ofDays(7));
     }
 
     public void markSuccess(String messageId, Object result) {
@@ -91,7 +123,7 @@ public class AsyncTaskService {
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getMessageId, messageId)
                         .set(AsyncTask::getStatus, "FAILED")
-                        .set(AsyncTask::getFailureReason, truncate(reason, 2000))
+                        .set(AsyncTask::getFailureReason, truncate(safeFailureReason(reason), 2000))
                         .set(AsyncTask::getCompletedAt, LocalDateTime.now())
                         .setSql("retry_count = retry_count + 1"));
         // 失败后释放 Redis 幂等键，交给 MQ 或人工补偿流程再次投递。
@@ -103,7 +135,7 @@ public class AsyncTaskService {
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getMessageId, messageId)
                         .set(AsyncTask::getStatus, "FAILED")
-                        .set(AsyncTask::getFailureReason, truncate(reason, 2000))
+                        .set(AsyncTask::getFailureReason, truncate(safeFailureReason(reason), 2000))
                         .set(AsyncTask::getCompletedAt, LocalDateTime.now()));
     }
 
@@ -121,7 +153,7 @@ public class AsyncTaskService {
         dlq.setUserId(envelope.getUserId());
         dlq.setTraceId(envelope.getTraceId());
         dlq.setPayload(toJson(envelope.getPayload()));
-        dlq.setLastFailureReason(truncate(reason, 2000));
+        dlq.setLastFailureReason(truncate(safeFailureReason(reason), 2000));
         dlq.setTotalRetry(envelope.getRetryCount() == null ? 0 : envelope.getRetryCount());
         dlq.setHandleStatus("UNHANDLED");
         deadLetterMapper.insert(dlq);
@@ -147,7 +179,7 @@ public class AsyncTaskService {
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getId, taskId)
                         .set(AsyncTask::getStatus, "FAILED")
-                        .set(AsyncTask::getFailureReason, truncate(reason, 2000))
+                        .set(AsyncTask::getFailureReason, truncate(safeFailureReason(reason), 2000))
                         .set(AsyncTask::getCompletedAt, LocalDateTime.now())
                         .set(AsyncTask::getUpdatedAt, LocalDateTime.now()));
     }
@@ -164,5 +196,26 @@ public class AsyncTaskService {
     private String truncate(String text, int max) {
         if (text == null) return null;
         return text.length() > max ? text.substring(0, max) : text;
+    }
+
+    private String safeFailureReason(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return "Async task failed. Check service logs with traceId.";
+        }
+        String lower = reason.toLowerCase(Locale.ROOT);
+        if (lower.contains("authorization") || lower.contains("bearer") || lower.contains("token")
+                || lower.contains("api key") || lower.contains("apikey") || lower.contains("secret")
+                || lower.contains("password")) {
+            return "Async task failed because an upstream credential or authorization check failed.";
+        }
+        if (lower.contains("timeout") || lower.contains("timed out") || lower.contains("connection")
+                || lower.contains("connect") || lower.contains("503") || lower.contains("502")
+                || lower.contains("load balancer") || lower.contains("feign")) {
+            return "Async task failed because an upstream service is temporarily unavailable.";
+        }
+        if (lower.contains("json") || lower.contains("parse") || lower.contains("deserialize")) {
+            return "Async task failed because an upstream response could not be parsed.";
+        }
+        return "Async task failed. Check service logs with traceId.";
     }
 }

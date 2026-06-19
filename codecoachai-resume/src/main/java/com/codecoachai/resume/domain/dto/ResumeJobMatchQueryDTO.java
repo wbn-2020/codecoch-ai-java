@@ -6,6 +6,7 @@ import lombok.Data;
 public class ResumeJobMatchQueryDTO {
 
     private Long resumeId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private String status;
     private Long pageNo = 1L;

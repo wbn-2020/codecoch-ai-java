@@ -9,6 +9,9 @@ public class ResumeJobMatchSubmitVO {
 
     private Long reportId;
     private Long resumeId;
+    private Long resumeVersionId;
+    private Integer resumeVersionNo;
+    private String resumeVersionName;
     private Long targetJobId;
     private Long jdAnalysisId;
     private Long aiCallLogId;

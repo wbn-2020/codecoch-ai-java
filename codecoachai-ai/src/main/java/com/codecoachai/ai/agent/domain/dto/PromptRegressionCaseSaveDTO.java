@@ -15,4 +15,8 @@ public class PromptRegressionCaseSaveDTO {
     @JsonAlias({"schema", "expectedJson", "expectedOutputSchema"})
     private String expectedSchemaJson;
     private Integer enabled;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

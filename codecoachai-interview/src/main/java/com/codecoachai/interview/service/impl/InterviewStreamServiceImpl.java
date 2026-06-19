@@ -17,13 +17,14 @@ import com.codecoachai.interview.util.SseEmitterUtils;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Slf4j
@@ -34,11 +35,11 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private final InterviewService interviewService;
     private final StudyPlanService studyPlanService;
-    private final Executor sseStreamExecutor;
+    private final ThreadPoolTaskExecutor sseStreamExecutor;
 
     public InterviewStreamServiceImpl(InterviewService interviewService,
                                       StudyPlanService studyPlanService,
-                                      @Qualifier("sseStreamExecutor") Executor sseStreamExecutor) {
+                                      @Qualifier("sseStreamExecutor") ThreadPoolTaskExecutor sseStreamExecutor) {
         this.interviewService = interviewService;
         this.studyPlanService = studyPlanService;
         this.sseStreamExecutor = sseStreamExecutor;
@@ -50,7 +51,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "question stream started") || !active.get()) {
                 return;
             }
@@ -62,7 +63,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                     question == null ? null : question.getMessageId(), questionMetadata(question));
             sendQuestionResult(emitter, active, requestId, sessionId, question);
             sendQuestionDone(emitter, active, requestId, sessionId, question, fullContent);
-        }), sseStreamExecutor);
+        }));
+        bindCancellation(emitter, task);
         return emitter;
     }
 
@@ -72,13 +74,16 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             try {
                 if (!sendAnswerReviewStart(emitter, active, requestId, sessionId) || !active.get()) {
                     return;
                 }
+                AtomicInteger tokenIndex = new AtomicInteger(1);
                 SubmitInterviewAnswerVO answer = interviewService.answerForSse(sessionId, dto,
-                        stage -> sendAnswerReviewProgress(emitter, active, requestId, sessionId, stage));
+                        stage -> sendAnswerReviewProgress(emitter, active, requestId, sessionId, stage),
+                        token -> sendAnswerReviewToken(emitter, active, requestId, sessionId,
+                                token, tokenIndex.getAndIncrement()));
                 if (!active.get()) {
                     return;
                 }
@@ -88,7 +93,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 log.warn("Interview answer review SSE failed, requestId={}, interviewId={}", requestId, sessionId, ex);
                 sendAnswerReviewError(emitter, active, requestId, sessionId);
             }
-        }), sseStreamExecutor);
+        }));
+        bindCancellation(emitter, task);
         return emitter;
     }
 
@@ -98,7 +104,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "report stream started") || !active.get()) {
                 return;
             }
@@ -109,7 +115,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId, null, reportMetadata(report));
             sendDone(emitter, active, requestId, sessionId, null, fullContent);
-        }), sseStreamExecutor);
+        }));
+        bindCancellation(emitter, task);
         return emitter;
     }
 
@@ -119,7 +126,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             try {
                 if (!sendInterviewReportStart(emitter, active, requestId, interviewId) || !active.get()) {
                     return;
@@ -135,7 +142,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 log.warn("Interview report SSE failed, requestId={}, interviewId={}", requestId, interviewId, ex);
                 sendInterviewReportError(emitter, active, requestId, interviewId, reportId);
             }
-        }), sseStreamExecutor);
+        }));
+        bindCancellation(emitter, task);
         return emitter;
     }
 
@@ -145,7 +153,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, null, "study plan stream started") || !active.get()) {
                 return;
             }
@@ -155,7 +163,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             sendChunks(emitter, active, requestId, null, fullContent);
             sendMetadata(emitter, active, requestId, null, null, studyPlanMetadata(plan));
             sendDone(emitter, active, requestId, null, null, fullContent);
-        }), sseStreamExecutor);
+        }));
+        bindCancellation(emitter, task);
         return emitter;
     }
 
@@ -170,6 +179,12 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         } finally {
             LoginUserContext.clear();
         }
+    }
+
+    private void bindCancellation(SseEmitter emitter, Future<?> task) {
+        emitter.onCompletion(() -> task.cancel(true));
+        emitter.onTimeout(() -> task.cancel(true));
+        emitter.onError(ex -> task.cancel(true));
     }
 
     private boolean sendStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String message) {
@@ -453,6 +468,24 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 .sessionId(interviewId)
                 .stage(stage)
                 .message(message)
+                .build());
+    }
+
+    private void sendAnswerReviewToken(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                       Long interviewId, String token, int index) {
+        if (!StringUtils.hasText(token)) {
+            return;
+        }
+        SseEmitterUtils.send(emitter, active, "token", SseEventVO.builder()
+                .type("token")
+                .requestId(requestId)
+                .interviewId(interviewId)
+                .sessionId(interviewId)
+                .stage("CALL_AI_REVIEW")
+                .message(token)
+                .content(token)
+                .index(index)
+                .metadata(Map.of("streamKind", "LLM_TOKEN"))
                 .build());
     }
 

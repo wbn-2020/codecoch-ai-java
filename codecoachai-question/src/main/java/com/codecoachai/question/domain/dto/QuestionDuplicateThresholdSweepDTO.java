@@ -11,4 +11,8 @@ public class QuestionDuplicateThresholdSweepDTO {
     private Integer minThreshold = 70;
     private Integer maxThreshold = 95;
     private Integer step = 5;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

@@ -12,4 +12,8 @@ public class AdminAnalyticsMetricSaveDTO {
     private String dataSource;
     private String refreshFrequency;
     private Integer enabled;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

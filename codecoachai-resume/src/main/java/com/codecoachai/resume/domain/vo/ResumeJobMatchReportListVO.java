@@ -10,6 +10,9 @@ public class ResumeJobMatchReportListVO {
     private Long reportId;
     private Long resumeId;
     private String resumeTitle;
+    private Long resumeVersionId;
+    private Integer resumeVersionNo;
+    private String resumeVersionName;
     private Long targetJobId;
     private String jobTitle;
     private String companyName;

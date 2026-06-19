@@ -15,7 +15,16 @@ public class KnowledgeVectorRebuildVO {
     private Integer vectorDeleted;
     private Integer duplicateChunkCount;
     private List<Long> failedDocuments;
+    private Integer failedDocumentCount;
+    private List<String> failedDocumentRefs;
     private List<String> errors;
+    private Boolean requiresConfirmation;
+    private Boolean dryRun;
+    private String operation;
+    private Integer requestedLimit;
+    private String accessReason;
+    private String idempotencyKey;
+    private String confirmationMessage;
     private Long jobId;
     private Long vectorJobId;
     private String vectorJobType;

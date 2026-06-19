@@ -22,4 +22,8 @@ public class AdminQuestionSaveDTO {
     private Integer isHighFrequency;
     private Integer status;
     private List<Long> tagIds;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

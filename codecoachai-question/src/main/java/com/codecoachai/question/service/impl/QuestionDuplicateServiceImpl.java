@@ -278,8 +278,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 transactionTemplate.executeWithoutResult(status -> merge(id, mergeDTO));
                 success++;
             } catch (Exception ex) {
+                log.warn("Batch duplicate review merge failed reviewId={}", id, ex);
                 result.getFailures().add(new BatchQuestionDuplicateResultVO.Failure(id,
-                        firstText(ex.getMessage(), "merge failed")));
+                        "merge failed"));
             }
         }
         result.setSuccessCount(success);
@@ -304,8 +305,9 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
                 transactionTemplate.executeWithoutResult(status -> ignore(id, ignoreDTO));
                 success++;
             } catch (Exception ex) {
+                log.warn("Batch duplicate review ignore failed reviewId={}", id, ex);
                 result.getFailures().add(new BatchQuestionDuplicateResultVO.Failure(id,
-                        firstText(ex.getMessage(), "ignore failed")));
+                        "ignore failed"));
             }
         }
         result.setSuccessCount(success);

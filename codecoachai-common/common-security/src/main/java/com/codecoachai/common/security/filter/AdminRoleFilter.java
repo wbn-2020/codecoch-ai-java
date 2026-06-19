@@ -48,7 +48,7 @@ public class AdminRoleFilter extends OncePerRequestFilter {
     }
 
     private void writeForbidden(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_OK);
+        response.setStatus(HttpServletResponse.SC_FORBIDDEN);
         response.setCharacterEncoding("UTF-8");
         response.setContentType(JSON_UTF8);
         response.getWriter().write(objectMapper.writeValueAsString(Result.fail(ErrorCode.FORBIDDEN)));

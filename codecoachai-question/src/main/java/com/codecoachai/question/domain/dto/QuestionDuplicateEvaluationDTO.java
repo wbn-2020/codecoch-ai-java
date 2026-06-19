@@ -7,6 +7,10 @@ import lombok.Data;
 public class QuestionDuplicateEvaluationDTO {
 
     private List<Sample> samples;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 
     @Data
     public static class Sample {

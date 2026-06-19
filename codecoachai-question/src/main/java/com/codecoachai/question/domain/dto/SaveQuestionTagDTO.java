@@ -13,4 +13,8 @@ public class SaveQuestionTagDTO {
     private Long pageNo = 1L;
     private Long pageSize = 10L;
     private Integer status;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

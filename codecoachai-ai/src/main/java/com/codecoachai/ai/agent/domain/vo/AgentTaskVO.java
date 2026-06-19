@@ -2,6 +2,8 @@ package com.codecoachai.ai.agent.domain.vo;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -27,6 +29,12 @@ public class AgentTaskVO {
     private String trustStatus;
     private String evidenceSummary;
     private Boolean fallback;
+    private Long reviewId;
+    private String reviewSummary;
+    private List<String> reviewNextActions = new ArrayList<>();
+    private String reviewSource;
+    private String reviewSourceLabel;
+    private String reviewNote;
     private String status;
     private String skipReason;
     private LocalDate dueDate;

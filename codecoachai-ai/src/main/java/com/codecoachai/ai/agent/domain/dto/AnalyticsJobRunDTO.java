@@ -14,4 +14,8 @@ public class AnalyticsJobRunDTO {
     private Long targetJobId;
     private Integer taskCount;
     private Integer maxTotalMinutes;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

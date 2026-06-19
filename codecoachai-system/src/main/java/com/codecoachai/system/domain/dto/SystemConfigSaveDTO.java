@@ -15,4 +15,8 @@ public class SystemConfigSaveDTO {
     private String valueType;
     private String description;
     private Integer status;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

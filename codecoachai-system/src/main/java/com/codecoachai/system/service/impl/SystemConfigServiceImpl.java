@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.RedisConnection;
@@ -46,6 +47,9 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private final HttpClient healthHttpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofMillis(600))
             .build();
+
+    @Value("${codecoachai.ops.health-services:}")
+    private String healthServices;
 
     @Override
     public List<SystemConfigVO> listConfigs() {
@@ -409,26 +413,44 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private AdminDashboardOverviewVO.SystemStatusVO systemStatus(LocalDateTime generatedAt) {
         AdminDashboardOverviewVO.SystemStatusVO vo = new AdminDashboardOverviewVO.SystemStatusVO();
-        // 这里只做本服务可直接验证的探测；其他微服务未接入注册中心健康查询前显式标记 UNKNOWN。
-        List<AdminDashboardOverviewVO.ServiceStatusVO> services = List.of(
-                serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"),
-                serviceStatus("database", databaseHealthy() ? "HEALTHY" : "DOWN",
-                        databaseHealthy() ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"),
-                probeGateway("codecoachai-gateway", "codecoachai-gateway", 18080),
-                probeService("codecoachai-auth", "codecoachai-auth", 9201),
-                probeService("codecoachai-user", "codecoachai-user", 9202),
-                probeService("codecoachai-resume", "codecoachai-resume", 9204),
-                probeService("codecoachai-interview", "codecoachai-interview", 9205),
-                probeService("codecoachai-question", "codecoachai-question", 9203),
-                probeService("codecoachai-ai", "codecoachai-ai", 9206),
-                probeService("codecoachai-task", "codecoachai-task", 8090),
-                probeService("codecoachai-file", "codecoachai-file", 9209)
-        );
+        boolean dbHealthy = databaseHealthy();
+        List<AdminDashboardOverviewVO.ServiceStatusVO> services = new ArrayList<>();
+        services.add(serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"));
+        services.add(serviceStatus("database", dbHealthy ? "HEALTHY" : "DOWN",
+                dbHealthy ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"));
+        configuredHealthTargets().forEach(target -> services.add(
+                "gateway".equalsIgnoreCase(target.type())
+                        ? probeGateway(target.name(), target.host(), target.port())
+                        : probeService(target.name(), target.host(), target.port())
+        ));
         vo.setServices(services);
         vo.setStatus(services.stream().anyMatch(service -> "DOWN".equals(service.getStatus())) ? "DEGRADED" : "HEALTHY");
         vo.setOpsMetrics(opsMetrics());
         vo.setGeneratedAt(generatedAt);
         return vo;
+    }
+
+    private List<HealthTarget> configuredHealthTargets() {
+        if (!org.springframework.util.StringUtils.hasText(healthServices)) {
+            return List.of();
+        }
+        List<HealthTarget> targets = new ArrayList<>();
+        for (String item : healthServices.split(",")) {
+            String[] parts = item.trim().split("\\|");
+            if (parts.length < 3) {
+                continue;
+            }
+            try {
+                String type = parts.length >= 4 && org.springframework.util.StringUtils.hasText(parts[3]) ? parts[3].trim() : "service";
+                targets.add(new HealthTarget(parts[0].trim(), parts[1].trim(), Integer.parseInt(parts[2].trim()), type));
+            } catch (NumberFormatException ex) {
+                log.warn("Skip invalid health service config item: {}", item);
+            }
+        }
+        return targets;
+    }
+
+    private record HealthTarget(String name, String host, int port, String type) {
     }
 
     private AdminDashboardOverviewVO.ServiceStatusVO probeService(String name, String host, int port) {

@@ -69,7 +69,7 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      secret: ${CODECOACHAI_INTERNAL_SECRET:}
+      secret: ${CODECOACHAI_INTERNAL_SECRET}
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
 ```

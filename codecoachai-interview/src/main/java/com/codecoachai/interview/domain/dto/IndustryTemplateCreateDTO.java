@@ -21,4 +21,8 @@ public class IndustryTemplateCreateDTO {
     private String promptContext;
     private Integer enabled;
     private Integer sortOrder;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String reason;
+    private String idempotencyKey;
 }

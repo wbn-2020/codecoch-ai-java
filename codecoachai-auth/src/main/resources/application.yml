@@ -2,7 +2,7 @@ spring:
   application:
     name: codecoachai-auth
   profiles:
-    active: dev
+    active: ${SPRING_PROFILES_ACTIVE:dev}
   config:
     import:
       - optional:nacos:codecoachai-common-dev.yml?group=DEFAULT_GROUP&refreshEnabled=true

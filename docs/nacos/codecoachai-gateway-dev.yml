@@ -159,8 +159,12 @@ spring:
 
 codecoachai:
   gateway:
+    # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
-      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://103.236.98.149,http://103.236.98.149:30080"
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+      allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+      allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
+    trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"
     auth:
       white-paths:
         - /auth/login

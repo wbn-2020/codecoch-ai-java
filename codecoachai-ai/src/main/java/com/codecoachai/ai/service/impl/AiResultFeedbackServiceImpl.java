@@ -2,10 +2,12 @@ package com.codecoachai.ai.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.ai.domain.dto.AiResultFeedbackCreateDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiResultFeedback;
 import com.codecoachai.ai.domain.vo.AiResultFeedbackStatsVO;
 import com.codecoachai.ai.domain.vo.AiResultFeedbackStatsVO.FeedbackTypeCount;
 import com.codecoachai.ai.domain.vo.AiResultFeedbackVO;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiResultFeedbackMapper;
 import com.codecoachai.ai.service.AiResultFeedbackService;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -34,6 +36,7 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
     );
 
     private final AiResultFeedbackMapper feedbackMapper;
+    private final AiCallLogMapper aiCallLogMapper;
 
     @Override
     public AiResultFeedbackVO create(Long userId, AiResultFeedbackCreateDTO dto) {
@@ -47,6 +50,7 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
         if (!ALLOWED_TYPES.contains(feedbackType)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的反馈类型");
         }
+        validateAiCallLogOwnership(userId, dto.getAiCallLogId());
 
         AiResultFeedback feedback = new AiResultFeedback();
         feedback.setUserId(userId);
@@ -109,6 +113,16 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
         vo.setPagePath(feedback.getPagePath());
         vo.setCreatedAt(feedback.getCreatedAt());
         return vo;
+    }
+
+    private void validateAiCallLogOwnership(Long userId, Long aiCallLogId) {
+        if (aiCallLogId == null) {
+            return;
+        }
+        AiCallLog log = aiCallLogMapper.selectById(aiCallLogId);
+        if (log == null || !userId.equals(log.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用记录不存在或无权反馈");
+        }
     }
 
     private String normalizeType(String value) {

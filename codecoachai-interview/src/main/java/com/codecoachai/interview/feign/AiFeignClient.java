@@ -12,6 +12,7 @@ import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateLearningPlanVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import feign.Response;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,6 +25,9 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/interview/evaluate")
     Result<EvaluateAnswerVO> evaluate(@RequestBody EvaluateAnswerDTO dto);
+
+    @PostMapping(value = "/inner/ai/interview/evaluate/stream")
+    Response evaluateStream(@RequestBody EvaluateAnswerDTO dto);
 
     @PostMapping("/inner/ai/interview/follow-up")
     Result<GenerateFollowUpVO> followUp(@RequestBody GenerateFollowUpDTO dto);

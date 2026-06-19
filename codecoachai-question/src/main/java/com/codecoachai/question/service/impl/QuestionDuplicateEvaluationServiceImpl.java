@@ -144,11 +144,12 @@ public class QuestionDuplicateEvaluationServiceImpl implements QuestionDuplicate
             evalRunMapper.updateById(run);
             return getRun(run.getId());
         } catch (Exception ex) {
+            log.warn("Question duplicate evaluation run failed runId={}", run.getId(), ex);
             run.setStatus("FAILED");
             run.setFinishedAt(LocalDateTime.now());
-            run.setErrorMessage(truncate(ex.getMessage(), 512));
+            run.setErrorMessage("重复题评估运行失败，请稍后重试。");
             evalRunMapper.updateById(run);
-            throw ex;
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "重复题评估运行失败，请稍后重试。");
         }
     }
 

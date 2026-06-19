@@ -8,6 +8,7 @@ public class ResumeOptimizeRecordVO {
 
     private Long optimizeRecordId;
     private Long resumeId;
+    private Long targetJobId;
     private String targetPosition;
     private Integer experienceYears;
     private String industryDirection;

@@ -11,4 +11,9 @@ public class SubmitQuestionAnswerVO {
     private String analysis;
     private String masteryStatus;
     private Boolean wrong;
+    private Boolean agentTaskCompleted;
+    private Long agentTaskId;
+    private String agentTaskTitle;
+    private String agentTaskStatus;
+    private String agentReviewSummary;
 }

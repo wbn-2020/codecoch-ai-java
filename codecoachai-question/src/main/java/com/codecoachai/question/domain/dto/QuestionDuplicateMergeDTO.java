@@ -7,4 +7,7 @@ public class QuestionDuplicateMergeDTO {
 
     private String relationType;
     private String reason;
+    private Boolean confirm;
+    private Boolean dryRun;
+    private String idempotencyKey;
 }

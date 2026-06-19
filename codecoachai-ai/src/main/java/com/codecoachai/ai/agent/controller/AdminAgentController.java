@@ -4,13 +4,12 @@ import com.codecoachai.ai.agent.domain.dto.AdminAgentRunQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
+import com.codecoachai.ai.agent.security.AdminOperationConfirmationGuard;
 import com.codecoachai.ai.agent.security.V4AdminPermissionGuard;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.ai.domain.dto.AiLogRawAccessDTO;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.core.enums.ErrorCode;
-import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.web.log.OperationLog;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +31,7 @@ public class AdminAgentController {
 
     private final JobCoachAgentService jobCoachAgentService;
     private final V4AdminPermissionGuard permissionGuard;
+    private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/runs")
     public Result<PageResult<AgentRunDetailVO>> pageRuns(@ModelAttribute AdminAgentRunQueryDTO query) {
@@ -57,10 +57,15 @@ public class AdminAgentController {
                                            @Valid @RequestBody AiLogRawAccessDTO dto) {
         permissionGuard.require("admin:agent:run:list");
         permissionGuard.require(RAW_ACCESS_PERMISSION);
-        validateRawAccess(dto.getAccessReason(), dto.isConfirmSensitiveAccess());
-        AgentRunDetailVO detail = jobCoachAgentService.adminGetRunDetail(id);
-        applyRawAccess(detail, true);
-        return Result.success(detail);
+        String lockKey = requireRawAccess("agent-run-raw:" + id, dto);
+        try {
+            AgentRunDetailVO detail = jobCoachAgentService.adminGetRunDetail(id);
+            applyRawAccess(detail, true);
+            return Result.success(detail);
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @GetMapping("/tasks")
@@ -88,15 +93,12 @@ public class AdminAgentController {
                 || StringUtils.hasText(detail.getRawOutputText());
     }
 
-    private void validateRawAccess(String accessReason, boolean confirmSensitiveAccess) {
-        if (!confirmSensitiveAccess) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "请先确认本次敏感原文访问");
-        }
-        if (!StringUtils.hasText(accessReason)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写本次查看 AI 原文的访问原因");
-        }
-        if (accessReason.trim().length() > 300) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "访问原因不能超过 300 个字符");
-        }
+    private String requireRawAccess(String operation, AiLogRawAccessDTO dto) {
+        return operationConfirmationGuard.requireConfirmed(
+                operation,
+                dto.isConfirmSensitiveAccess(),
+                dto.getDryRun(),
+                dto.getAccessReason(),
+                dto.getIdempotencyKey());
     }
 }

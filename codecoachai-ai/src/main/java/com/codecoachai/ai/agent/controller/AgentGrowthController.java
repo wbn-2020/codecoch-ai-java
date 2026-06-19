@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.controller;
 import com.codecoachai.ai.agent.domain.dto.AgentMemoryCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentMemoryQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentReviewGenerateDTO;
+import com.codecoachai.ai.agent.config.V4FeatureGate;
 import com.codecoachai.ai.agent.domain.vo.growth.GrowthOverviewVO;
 import com.codecoachai.ai.agent.domain.vo.growth.ReadinessScoreRecordVO;
 import com.codecoachai.ai.agent.domain.vo.growth.SkillGrowthSnapshotVO;
@@ -30,6 +31,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentGrowthController {
 
     private final AgentGrowthService agentGrowthService;
+
+    private final V4FeatureGate v4FeatureGate;
+
+    @ModelAttribute
+    public void requireGrowthFeatureEnabled() {
+        SecurityAssert.requireLoginUserId();
+        v4FeatureGate.requireGrowthEnabled();
+    }
 
     @PostMapping("/job-coach/review")
     public Result<AgentReviewVO> generateReview(@RequestBody(required = false) AgentReviewGenerateDTO dto) {

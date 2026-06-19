@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.util.Map;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;
@@ -36,6 +37,16 @@ public class OperationLogAspect {
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
 
+    private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
+    private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
+    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
+    private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;]+)");
+    private static final Pattern JSON_SENSITIVE_TEXT = Pattern.compile(
+            "(?i)(\"(?:resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
+                    + "requestPrompt|responseContent|requestBody|responseBody|answer|comment|remark|feedback|"
+                    + "projectExperience|description|content)\"\\s*:\\s*\")[^\"]*(\")");
+
     private static final String INSERT_SQL =
             "INSERT INTO operation_log (trace_id, user_id, username, module, action, target_type, target_id, " +
                     "method, request_uri, request_args, response, status, error_msg, ip, user_agent, cost_ms, created_at) " +
@@ -53,7 +64,7 @@ public class OperationLogAspect {
             return result;
         } catch (Throwable ex) {
             status = "FAILED";
-            errorMsg = truncate(ex.getMessage(), 1000);
+            errorMsg = safeAuditText(ex.getMessage(), 1000);
             throw ex;
         } finally {
             long costMs = System.currentTimeMillis() - start;
@@ -84,11 +95,11 @@ public class OperationLogAspect {
         String argsJson = null;
         if (annotation.logArgs()) {
             // 请求参数和响应体可能较大，入库前截断，避免审计表字段溢出影响业务接口。
-            argsJson = truncate(toJson(joinPoint.getArgs()), 4000);
+            argsJson = safeAuditText(toJson(joinPoint.getArgs()), 4000);
         }
         String responseJson = null;
         if (annotation.logResponse() && result != null) {
-            responseJson = truncate(toJson(result), 4000);
+            responseJson = safeAuditText(toJson(result), 4000);
         }
 
         jdbcTemplate.update(INSERT_SQL,
@@ -137,5 +148,21 @@ public class OperationLogAspect {
     private String truncate(String text, int max) {
         if (text == null) return null;
         return text.length() > max ? text.substring(0, max) : text;
+    }
+
+    private String safeAuditText(String text, int max) {
+        return truncate(maskSensitive(text), max);
+    }
+
+    private String maskSensitive(String text) {
+        if (!StringUtils.hasText(text)) {
+            return text;
+        }
+        String masked = JSON_SECRET.matcher(text).replaceAll("$1******$2");
+        masked = JSON_SENSITIVE_TEXT.matcher(masked).replaceAll("$1******$2");
+        masked = KV_SECRET.matcher(masked).replaceAll("$1=******");
+        masked = EMAIL.matcher(masked).replaceAll("***@***");
+        masked = CHINA_MOBILE.matcher(masked).replaceAll("1**********");
+        return ID_CARD.matcher(masked).replaceAll("******************");
     }
 }

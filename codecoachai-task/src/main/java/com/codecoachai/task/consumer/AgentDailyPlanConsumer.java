@@ -7,6 +7,7 @@ import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
 import com.codecoachai.common.mq.payload.AgentDailyPlanPayload;
 import com.codecoachai.task.feign.AiFeignClient;
+import com.codecoachai.task.feign.dto.AgentRunFailureDTO;
 import com.codecoachai.task.feign.dto.ExecuteAgentDailyPlanDTO;
 import com.codecoachai.task.feign.vo.AgentDailyPlanVO;
 import com.codecoachai.task.service.AsyncTaskService;
@@ -38,6 +39,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
 
     private static final int MAX_RETRY = 3;
     private static final String NOTIFY_BIZ_TYPE = "AGENT_DAILY_PLAN";
+    private static final String AGENT_ASYNC_TASK_FAILED = "AGENT_ASYNC_TASK_FAILED";
 
     private final AsyncTaskService asyncTaskService;
     private final AiFeignClient aiFeignClient;
@@ -76,6 +78,18 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                 log.warn("Agent daily plan failed runId={} reason={}", payload.getRunId(), reason);
                 return;
             }
+            if ("CANCELED".equalsIgnoreCase(result.getStatus())) {
+                String reason = StringUtils.hasText(result.getErrorMessage())
+                        ? result.getErrorMessage()
+                        : "agent daily plan canceled";
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
+                log.info("Agent daily plan canceled runId={} reason={}", payload.getRunId(), reason);
+                return;
+            }
+            if (!"SUCCESS".equalsIgnoreCase(result.getStatus())) {
+                throw new RuntimeException("agent daily plan execute returned non-success status: "
+                        + result.getStatus());
+            }
 
             asyncTaskService.markSuccess(envelope.getMessageId(), result);
             notificationService.notifyTaskDone(payload.getUserId(), NOTIFY_BIZ_TYPE,
@@ -84,6 +98,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
         } catch (TerminalTaskFailureException ex) {
             log.warn("Agent daily plan task terminal failed messageId={}", envelope.getMessageId(), ex);
             asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
+            failAgentRun(envelope.getPayload(), ex.getMessage());
             notifyFailed(envelope.getPayload(), ex.getMessage());
         } catch (NonRetryableMqException ex) {
             log.error("Agent daily plan task is not retryable messageId={}", envelope.getMessageId(), ex);
@@ -115,6 +130,21 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
         }
         notificationService.notifyTaskFailed(payload.getUserId(), NOTIFY_BIZ_TYPE,
                 String.valueOf(payload.getRunId()), "今日计划生成失败", reason);
+    }
+
+    private void failAgentRun(AgentDailyPlanPayload payload, String reason) {
+        if (payload == null || payload.getRunId() == null || payload.getUserId() == null) {
+            return;
+        }
+        AgentRunFailureDTO dto = new AgentRunFailureDTO();
+        dto.setUserId(payload.getUserId());
+        dto.setErrorCode(AGENT_ASYNC_TASK_FAILED);
+        dto.setErrorMessage(reason);
+        try {
+            aiFeignClient.failAgentDailyPlan(payload.getRunId(), dto);
+        } catch (RuntimeException ex) {
+            log.warn("Agent daily plan terminal failure writeback failed runId={}", payload.getRunId(), ex);
+        }
     }
 
     private boolean isBusinessFailure(Integer code) {

@@ -9,9 +9,12 @@ import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -30,13 +33,38 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @RequiredArgsConstructor
 public class AutoOperationLogFilter extends OncePerRequestFilter {
 
+    private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
+    private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
+    private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
+    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
+    private static final Pattern JSON_SENSITIVE_TEXT = Pattern.compile(
+            "(?i)(\"(?:resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
+                    + "requestPrompt|responseContent|requestBody|responseBody|answer|comment|remark|feedback|"
+                    + "projectExperience|description|content)\"\\s*:\\s*\")[^\"]*(\")");
+    private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;&]+)");
+    private static final Pattern QUERY_SENSITIVE_PARAM = Pattern.compile(
+            "(?i)(^|[&?])((?:api[-_]?key|authorization|bearer|token|password|secret|idempotencyKey|reason|"
+                    + "resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
+                    + "requestPrompt|responseContent|requestBody|responseBody|answer|comment|remark|feedback|"
+                    + "projectExperience|description|content)=)[^&]*");
+
     private static final String INSERT_SQL =
             "INSERT INTO operation_log (trace_id, user_id, username, module, action, target_type, target_id, " +
                     "method, request_uri, request_args, response, status, error_msg, ip, user_agent, cost_ms, created_at) " +
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    private static final int AUDIT_LOG_THREADS = 2;
+    private static final int AUDIT_LOG_QUEUE_CAPACITY = 1024;
 
     private final JdbcTemplate jdbcTemplate;
-    private final ExecutorService logExecutor = Executors.newFixedThreadPool(2, new AuditThreadFactory());
+    private final ExecutorService logExecutor = new ThreadPoolExecutor(
+            AUDIT_LOG_THREADS,
+            AUDIT_LOG_THREADS,
+            0L,
+            TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(AUDIT_LOG_QUEUE_CAPACITY),
+            new AuditThreadFactory(),
+            (runnable, executor) -> log.warn("自动操作日志队列已满，丢弃本次审计日志 taskCount={} queued={}",
+                    executor.getTaskCount(), executor.getQueue().size()));
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -80,7 +108,7 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
     private void submitAuditLog(HttpServletRequest request, HttpServletResponse response, long start, Exception failure) {
         long costMs = System.currentTimeMillis() - start;
         String status = failure == null && response.getStatus() < 400 ? "SUCCESS" : "FAILED";
-        String errorMsg = failure == null ? null : truncate(failure.getMessage(), 1000);
+        String errorMsg = failure == null ? null : safeAuditText(failure.getMessage(), 1000);
         String uri = request.getRequestURI();
         AuditLogEntry entry = new AuditLogEntry(
                 MDC.get("traceId"),
@@ -92,7 +120,7 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
                 resolveTargetId(uri),
                 request.getMethod(),
                 truncate(uri, 500),
-                truncate(request.getQueryString(), 4000),
+                safeAuditText(request.getQueryString(), 4000),
                 status,
                 errorMsg,
                 getClientIp(request),
@@ -201,6 +229,23 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
     private String truncate(String text, int max) {
         if (text == null) return null;
         return text.length() > max ? text.substring(0, max) : text;
+    }
+
+    private String safeAuditText(String text, int max) {
+        return truncate(maskSensitive(text), max);
+    }
+
+    private String maskSensitive(String text) {
+        if (!StringUtils.hasText(text)) {
+            return text;
+        }
+        String masked = QUERY_SENSITIVE_PARAM.matcher(text).replaceAll("$1$2******");
+        masked = JSON_SECRET.matcher(masked).replaceAll("$1******$2");
+        masked = JSON_SENSITIVE_TEXT.matcher(masked).replaceAll("$1******$2");
+        masked = KV_SECRET.matcher(masked).replaceAll("$1=******");
+        masked = EMAIL.matcher(masked).replaceAll("***@***");
+        masked = CHINA_MOBILE.matcher(masked).replaceAll("1**********");
+        return ID_CARD.matcher(masked).replaceAll("******************");
     }
 
     private record AuditLogEntry(String traceId, Long userId, String username, String module, String action,

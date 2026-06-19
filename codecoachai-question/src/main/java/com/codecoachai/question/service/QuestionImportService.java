@@ -20,7 +20,7 @@ public interface QuestionImportService {
      * @param importedBy  导入人 userId
      * @return 导入结果
      */
-    ImportResult importQuestions(String fileName, InputStream inputStream, Long importedBy);
+    ImportResult importQuestions(String fileName, InputStream inputStream, Long importedBy, boolean dryRun);
 
     @Data
     class ImportResult {

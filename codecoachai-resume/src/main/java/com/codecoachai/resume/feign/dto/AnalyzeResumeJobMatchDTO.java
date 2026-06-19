@@ -8,6 +8,7 @@ public class AnalyzeResumeJobMatchDTO {
     private Long reportId;
     private Long userId;
     private Long resumeId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long jdAnalysisId;
     private String resumeAnalysisJson;

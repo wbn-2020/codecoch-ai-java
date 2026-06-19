@@ -20,6 +20,9 @@ public class AgentRunUserDetailVO {
     private Long durationMs;
     private String errorCode;
     private String errorMessage;
+    private String failureAction;
+    private String failureActionLabel;
+    private String failureSuggestion;
     private List<AgentTaskVO> tasks = new ArrayList<>();
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;

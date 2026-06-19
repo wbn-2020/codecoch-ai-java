@@ -4,6 +4,7 @@ import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.router.AiModelRouter;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
+import com.codecoachai.ai.security.AiErrorSanitizer;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
 import java.util.UUID;
@@ -109,7 +110,7 @@ public class AiCallLogService {
             if (error != null) {
                 logEntry.setSuccess(0);
                 logEntry.setStatus(0);
-                logEntry.setErrorMessage(truncate(error.getMessage(), 2000));
+                logEntry.setErrorMessage(AiErrorSanitizer.safeFailureSummary(error));
             }
 
             logEntry.setElapsedMs(elapsed);

@@ -17,6 +17,7 @@ public enum ErrorCode {
     USER_NOT_FOUND(42002, "用户不存在"),
     PASSWORD_ERROR(42003, "用户名或密码错误"),
     USER_DISABLED(42004, "账号已禁用"),
+    ACCOUNT_LOCKED(42005, "账号已被临时锁定，请15分钟后再试"),
     PASSWORD_CONFIRM_NOT_MATCH(42006, "两次密码不一致"),
     OLD_PASSWORD_ERROR(42007, "原密码错误"),
     DISABLE_SELF_NOT_ALLOWED(42008, "不能禁用自己"),

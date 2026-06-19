@@ -27,5 +27,7 @@ public class PracticeSubmitDTO {
 
     private Long studyPlanId;
 
+    private Long targetJobId;
+
     private Long questionId;
 }

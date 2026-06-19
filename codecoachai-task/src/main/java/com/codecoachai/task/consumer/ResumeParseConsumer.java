@@ -24,6 +24,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.util.function.Supplier;
+
 /**
  * 简历解析任务消费者。
  *
@@ -57,6 +59,45 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
     private final ResumeFeignClient resumeFeignClient;
     private final com.codecoachai.task.service.NotificationService notificationService;
 
+    // ==================== 对 Feign 调用的本地重试 ====================
+
+    /**
+     * 带指数退避本地重试的 Feign 调用封装。
+     * 最多重试 maxRetries 次，间隔依次为 initialIntervalMs * 2^(attempt-1)。
+     * 所有重试均耗尽后抛 {@link NonRetryableMqException}，由外层 catch
+     * 转入死信处理（markDead），避免触发 MQ 级重试。
+     */
+    private <T> T retryableFeignCall(String description, int maxRetries, long initialIntervalMs,
+                                     Supplier<T> call) {
+        RuntimeException lastEx = null;
+        for (int attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return call.get();
+            } catch (RuntimeException ex) {
+                lastEx = ex;
+                // 业务失败（参数错误/权限等）不重试
+                if (ex instanceof TerminalTaskFailureException) {
+                    throw ex;
+                }
+                if (attempt < maxRetries) {
+                    long interval = initialIntervalMs * (1L << (attempt - 1)); // 1s, 2s, 4s
+                    log.warn("{} 失败 (第{}/{}次)，{}ms 后重试: {}",
+                            description, attempt, maxRetries, interval, ex.getMessage());
+                    try {
+                        Thread.sleep(interval);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new NonRetryableMqException(description + " 重试被中断", ie);
+                    }
+                }
+            }
+        }
+        // 全部重试耗尽 -> 转入死信，不触发 MQ 级重试
+        log.error("{} 重试 {}/{} 次全部失败，转入死信队列", description, maxRetries, maxRetries);
+        throw new NonRetryableMqException(description + " 本地重试 " + maxRetries + " 次耗尽: "
+                + (lastEx != null ? lastEx.getMessage() : "unknown"));
+    }
+
     @Override
     public void onMessage(MqMessage<ResumeParsePayload> envelope) {
         if (StringUtils.hasText(envelope.getTraceId())) {
@@ -77,11 +118,14 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             log.info("开始消费简历解析 resumeId={} fileId={} userId={}",
                     payload.getResumeId(), payload.getFileId(), payload.getUserId());
 
-            // 1. 通过 resume-service 拉取 analysis 记录的 rawText
+            // 1. 通过 resume-service 拉取 analysis 记录的 rawText（带本地重试）
             //    约定：payload.resumeId 既可以是简历ID也可以承担 analysisRecordId，
             //    上游 dispatcher 应传 analysisRecordId（更准确）；这里以 resumeId 作为兜底标识。
             Long analysisRecordId = payload.getResumeId();
-            Result<ResumeAnalysisRawVO> rawResp = resumeFeignClient.getAnalysisRaw(analysisRecordId);
+            Result<ResumeAnalysisRawVO> rawResp = retryableFeignCall(
+                    "拉取简历解析记录 analysisId=" + analysisRecordId, 3, 1000L,
+                    () -> resumeFeignClient.getAnalysisRaw(analysisRecordId)
+            );
             if (rawResp == null) {
                 throw new RuntimeException("拉取简历解析记录失败：null");
             }
@@ -101,7 +145,7 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
                 return;
             }
 
-            // 2. 调用 AI 解析
+            // 2. 调用 AI 解析（带本地重试）
             ParseResumeDTO aiDto = new ParseResumeDTO();
             aiDto.setAnalysisRecordId(analysisRecordId);
             aiDto.setUserId(payload.getUserId());
@@ -109,7 +153,10 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             aiDto.setOriginalFilename(raw.getOriginalFilename());
             aiDto.setFileExt(raw.getFileExt());
 
-            Result<ParseResumeVO> aiResp = aiFeignClient.parseResume(aiDto);
+            Result<ParseResumeVO> aiResp = retryableFeignCall(
+                    "AI 简历解析 analysisId=" + analysisRecordId, 3, 1000L,
+                    () -> aiFeignClient.parseResume(aiDto)
+            );
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
                 if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
                     throw new TerminalTaskFailureException("AI 简历解析业务失败: " + aiResp.getMessage());
@@ -118,13 +165,16 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
             }
             String structured = aiResp.getData().getStructuredJson();
 
-            // 3. 回写
+            // 3. 回写（带本地重试）
             CompleteResumeParseDTO complete = new CompleteResumeParseDTO();
             complete.setParseStatus("WAIT_CONFIRM");
             complete.setStructuredJson(structured);
             complete.setRawText(raw.getRawText());
             complete.setModelTrace("deepseek");
-            Result<Void> completeResp = resumeFeignClient.completeParse(analysisRecordId, complete);
+            Result<Void> completeResp = retryableFeignCall(
+                    "回写简历解析结果 analysisId=" + analysisRecordId, 3, 1000L,
+                    () -> resumeFeignClient.completeParse(analysisRecordId, complete)
+            );
             if (completeResp == null || completeResp.getCode() != 0) {
                 if (completeResp != null && isBusinessFailure(completeResp.getCode())) {
                     throw new TerminalTaskFailureException("回写简历解析结果失败: " + completeResp.getMessage());

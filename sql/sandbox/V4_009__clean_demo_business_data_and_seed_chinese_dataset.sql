@@ -1,3 +1,21 @@
+-- ============================================================================
+--  WARNING  WARNING  WARNING  WARNING  WARNING  WARNING  WARNING  WARNING
+-- ============================================================================
+-- 此脚本会清空几乎所有业务表的数据并通过软删除 (deleted = 1) 重新写入
+-- 中文演示数据，包括题库、简历、岗位匹配、学习计划、面试记录、通知等。
+--
+-- 适用环境：本地开发环境 / 演示环境 / 测试环境  ONLY
+-- 严禁在生产环境、预发布环境或任何包含真实用户数据的数据库中运行！
+--
+-- 该脚本已从 sql/migration/ 移出至 sql/sandbox/，不再由 Flyway 自动管理。
+-- 如需手动执行，请先确认当前数据库实例和目标 schema 均为非生产环境。
+--
+-- 执行前建议：
+--   1. 备份当前业务数据
+--   2. 确认 schema 名称包含 dev/demo/test/local 等关键字
+--   3. 或设置会话变量 SET @codecoachai_allow_v4_009_demo_seed = '1';
+-- ============================================================================
+
 -- V4_009: clean low-quality demo business data and seed realistic Chinese interview dataset.
 -- Scope:
 --   1) Soft-delete business/demo data only.

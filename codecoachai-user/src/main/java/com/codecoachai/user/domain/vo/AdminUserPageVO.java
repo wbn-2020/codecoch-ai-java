@@ -13,6 +13,7 @@ public class AdminUserPageVO {
     private String nickname;
     private String avatarUrl;
     private String email;
+    private String emailMasked;
     private Integer status;
     private String statusName;
     private List<String> roles;
