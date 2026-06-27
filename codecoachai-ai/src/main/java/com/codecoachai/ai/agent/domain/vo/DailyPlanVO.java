@@ -12,8 +12,10 @@ public class DailyPlanVO {
     private Long runId;
     private Long targetJobId;
     private LocalDate date;
+    private LocalDate planDate;
     private String summary;
     private String status;
+    private String requestId;
     private String errorCode;
     private String errorMessage;
     private String failureAction;
@@ -31,4 +33,5 @@ public class DailyPlanVO {
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime createdAt;
+    private List<ActivationHandoffVO> activationHandoffs = new ArrayList<>();
 }

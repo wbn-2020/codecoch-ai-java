@@ -1,9 +1,11 @@
 package com.codecoachai.ai.agent.controller;
 
+import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.vo.AgentCoachActionVO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
@@ -66,6 +68,13 @@ public class AgentController {
                                             @RequestBody(required = false) AgentTaskCompleteDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(jobCoachAgentService.completeTask(userId, id, dto));
+    }
+
+    @PostMapping("/coach/contextual-actions")
+    @OperationLog(module = "agent", action = "RUN_AGENT_CONTEXTUAL_COACH_ACTION", description = "Run contextual Agent coach action", logResponse = false)
+    public Result<AgentCoachActionVO> performCoachAction(@Valid @RequestBody AgentCoachActionDTO dto) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(jobCoachAgentService.performCoachAction(userId, dto));
     }
 
     @PostMapping("/tasks/{id}/start")

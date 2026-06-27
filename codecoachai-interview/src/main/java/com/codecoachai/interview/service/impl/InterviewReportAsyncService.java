@@ -1,6 +1,7 @@
 package com.codecoachai.interview.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
@@ -34,8 +35,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
@@ -69,46 +68,49 @@ public class InterviewReportAsyncService {
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final ObjectMapper objectMapper;
     private final InterviewMqDispatcher interviewMqDispatcher;
+    private final InterviewReportTransactionService interviewReportTransactionService;
 
     @Async("interviewReportExecutor")
-    public void generateReportAsync(Long sessionId) {
+    public void generateReportAsync(Long sessionId, Long reportId, String generationToken) {
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null) {
             return;
         }
-        InterviewReport report = currentOrInitReport(session);
-        if (report == null) {
+        InterviewReport report = currentReport(sessionId, reportId, generationToken);
+        if (report == null || !ReportStatusEnum.GENERATING.name().equals(report.getStatus())) {
+            log.info("Skip stale async interview report task, sessionId={}, reportId={}", sessionId, reportId);
             return;
         }
         try {
             List<InterviewMessage> messages = messageEntities(session.getId());
             if (!hasScorableAnswers(messages)) {
-                markReportSampleInsufficient(session, report);
+                InterviewReport current = currentReport(sessionId, reportId, generationToken);
+                if (current == null) {
+                    log.info("Skip stale async insufficient-report write-back, sessionId={}, reportId={}",
+                            sessionId, reportId);
+                    return;
+                }
+                markReportSampleInsufficient(session, current);
                 return;
             }
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(buildReportDTO(session, messages)));
-            completeReportSuccess(session, report, aiReport, messages);
+            interviewReportTransactionService.completeReportSuccess(
+                    () -> doCompleteReportSuccess(session, reportId, generationToken, aiReport, messages));
         } catch (RuntimeException ex) {
             log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
-            completeReportFailed(report, session);
+            interviewReportTransactionService.completeReportFailed(
+                    () -> doCompleteReportFailed(session, reportId, generationToken));
         }
     }
 
-    private InterviewReport currentOrInitReport(InterviewSession session) {
-        InterviewReport report = currentReport(session.getId());
+    private void doCompleteReportSuccess(InterviewSession session, Long reportId, String generationToken,
+                                         GenerateReportVO aiReport, List<InterviewMessage> messages) {
+        InterviewReport report = currentReport(session.getId(), reportId, generationToken);
         if (report == null) {
-            report = new InterviewReport();
-            report.setSessionId(session.getId());
-            report.setUserId(session.getUserId());
-            report.setStatus(ReportStatusEnum.GENERATING.name());
-            reportMapper.insert(report);
+            log.info("Skip stale async report success write-back, sessionId={}, reportId={}",
+                    session.getId(), reportId);
+            return;
         }
-        return report;
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    protected void completeReportSuccess(InterviewSession session, InterviewReport report,
-                                          GenerateReportVO aiReport, List<InterviewMessage> messages) {
         report.setStatus(ReportStatusEnum.GENERATED.name());
         applyReportContent(report, aiReport, messages);
         if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
@@ -134,15 +136,21 @@ public class InterviewReportAsyncService {
         }
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    protected void completeReportFailed(InterviewReport report, InterviewSession session) {
+    private void doCompleteReportFailed(InterviewSession session, Long reportId, String generationToken) {
+        InterviewReport report = currentReport(session.getId(), reportId, generationToken);
+        if (report == null) {
+            log.info("Skip stale async report failure write-back, sessionId={}, reportId={}",
+                    session.getId(), reportId);
+            return;
+        }
         try {
             report.setStatus(ReportStatusEnum.FAILED.name());
+            report.setTotalScore(null);
             report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             saveReport(report);
-
             session.setStatus(InterviewStatusEnum.FAILED.name());
             session.setReportStatus(ReportStatusEnum.FAILED.name());
+            session.setTotalScore(null);
             session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             sessionMapper.updateById(session);
         } catch (RuntimeException ex) {
@@ -223,7 +231,23 @@ public class InterviewReportAsyncService {
     private InterviewReport currentReport(Long sessionId) {
         return reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
                 .eq(InterviewReport::getSessionId, sessionId)
+                .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                .orderByDesc(InterviewReport::getId)
                 .last("limit 1"));
+    }
+
+    private InterviewReport currentReport(Long sessionId, Long reportId, String generationToken) {
+        InterviewReport latest = currentReport(sessionId);
+        if (latest == null) {
+            return null;
+        }
+        if (reportId != null && !reportId.equals(latest.getId())) {
+            return null;
+        }
+        if (StringUtils.hasText(generationToken) && !generationToken.equals(latest.getGenerationToken())) {
+            return null;
+        }
+        return latest;
     }
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {

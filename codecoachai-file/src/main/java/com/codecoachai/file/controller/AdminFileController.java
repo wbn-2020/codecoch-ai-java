@@ -13,6 +13,7 @@ import com.codecoachai.file.domain.vo.FileInfoVO;
 import com.codecoachai.file.service.FileStorageService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -48,7 +49,7 @@ public class AdminFileController {
 
     @GetMapping("/{id}/download")
     @OperationLog(module = "file", action = "DOWNLOAD_ADMIN_FILE", description = "管理端下载用户文件", logResponse = false)
-    public ResponseEntity<byte[]> download(@PathVariable Long id) {
+    public ResponseEntity<Resource> download(@PathVariable Long id) {
         permissionGuard.require(PERM_FILE_DOWNLOAD);
         throw new BusinessException(ErrorCode.PARAM_ERROR,
                 "Admin file download requires POST with confirmSensitiveAccess=true, confirm=true, dryRun=false, reason, and idempotencyKey.");
@@ -56,7 +57,7 @@ public class AdminFileController {
 
     @PostMapping("/{id}/download")
     @OperationLog(module = "file", action = "DOWNLOAD_ADMIN_FILE", description = "Admin user file download", logArgs = true, logResponse = false)
-    public ResponseEntity<byte[]> downloadConfirmed(@PathVariable Long id,
+    public ResponseEntity<Resource> downloadConfirmed(@PathVariable Long id,
                                                      @Valid @RequestBody AdminFileDownloadAccessDTO dto) {
         permissionGuard.require(PERM_FILE_DOWNLOAD);
         String lockKey = acquireDownloadAccess(id, dto);

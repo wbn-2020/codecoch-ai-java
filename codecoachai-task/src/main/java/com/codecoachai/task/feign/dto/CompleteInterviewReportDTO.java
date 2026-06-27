@@ -5,6 +5,9 @@ import lombok.Data;
 @Data
 public class CompleteInterviewReportDTO {
 
+    private Long reportId;
+    private String generationToken;
+
     /** 报告 JSON（结构化） */
     private String reportJson;
 

@@ -41,8 +41,11 @@ import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionRecommendationService;
+import com.codecoachai.question.util.QuestionRecommendationRequestPayloadUtils;
+import com.codecoachai.question.util.QuestionRecommendationResultPayloadUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -51,6 +54,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -69,6 +73,34 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private static final String TRUST_VERIFIED = "VERIFIED";
     private static final String TRUST_PARTIAL = "PARTIAL";
     private static final String TRUST_FALLBACK = "FALLBACK";
+    private static final Set<String> SAFE_STORED_REQUEST_FIELDS = Set.of(
+            "storageMode",
+            "questionRecommendationRequestStored",
+            "batchId",
+            "userId",
+            "sourceType",
+            "sourceId",
+            "questionCount",
+            "difficultyPreference",
+            "strategy",
+            "targetJobId",
+            "matchReportId",
+            "skillProfileId",
+            "gapItemIds",
+            "studyPlanId");
+    private static final Set<String> SAFE_DETAIL_REQUEST_FIELDS = Set.of(
+            "storageMode",
+            "questionRecommendationRequestStored",
+            "batchId",
+            "sourceType",
+            "sourceId",
+            "questionCount",
+            "difficultyPreference",
+            "strategy",
+            "matchReportId",
+            "skillProfileId",
+            "gapItemIds",
+            "studyPlanId");
 
     private final QuestionRecommendationBatchMapper batchMapper;
     private final QuestionRecommendationItemMapper itemMapper;
@@ -177,7 +209,8 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         InnerStudyPlanVO plan = FeignResultUtils.unwrap(studyPlanFeignClient.getStudyPlan(dto.getStudyPlanId()));
         validateOwnedPlan(plan, userId);
         if (plan.getSkillProfileId() == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前学习计划缺少能力画像依据，请先生成能力画像");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "当前学习计划缺少能力画像依据，请先生成能力画像");
         }
         InnerSkillProfileVO profile = loadOwnedProfile(plan.getSkillProfileId(), userId);
         List<Long> requestedGapIds = dto.getGapItemIds();
@@ -225,21 +258,76 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         LambdaQueryWrapper<QuestionRecommendationBatch> wrapper = new LambdaQueryWrapper<QuestionRecommendationBatch>()
                 .eq(QuestionRecommendationBatch::getUserId, userId)
                 .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
-                .eq(sourceType != null, QuestionRecommendationBatch::getSourceType, sourceType)
                 .eq(status != null, QuestionRecommendationBatch::getStatus, status)
-                .eq(request.getJobTargetId() != null, QuestionRecommendationBatch::getJobTargetId, request.getJobTargetId())
-                .eq(request.getMatchReportId() != null, QuestionRecommendationBatch::getMatchReportId, request.getMatchReportId())
-                .eq(request.getSkillProfileId() != null, QuestionRecommendationBatch::getSkillProfileId, request.getSkillProfileId())
-                .eq(request.getStudyPlanId() != null, QuestionRecommendationBatch::getStudyPlanId, request.getStudyPlanId())
                 .orderByDesc(QuestionRecommendationBatch::getUpdatedAt);
-        long candidatePageSize = pageNo == 1L ? Math.max(pageSize, 10L) : pageSize;
-        Page<QuestionRecommendationBatch> page = batchMapper.selectPage(Page.of(pageNo, candidatePageSize), wrapper);
-        List<QuestionRecommendationBatchListVO> trustedRecords = page.getRecords().stream()
-                .filter(this::hasTrustedBatchEvidence)
-                .limit(pageSize)
-                .map(this::toListVO)
-                .toList();
-        return PageResult.of(trustedRecords, page.getTotal(), pageNo, pageSize);
+        return listBatchesByTrustedEvidence(pageNo, pageSize, wrapper,
+                batch -> matchesTrustedBatchQuery(
+                        batch,
+                        sourceType,
+                        request.getJobTargetId(),
+                        request.getMatchReportId(),
+                        request.getSkillProfileId(),
+                        request.getStudyPlanId()));
+    }
+
+    // Trusted list pages must paginate after inference because historical rows can carry sparse or stale metadata.
+    private PageResult<QuestionRecommendationBatchListVO> listBatchesByTrustedEvidence(
+            long pageNo,
+            long pageSize,
+            LambdaQueryWrapper<QuestionRecommendationBatch> wrapper,
+            Predicate<QuestionRecommendationBatch> trustedBatchPredicate) {
+        long candidatePageSize = Math.max(pageSize, 10L);
+        long requestedOffset = (pageNo - 1) * pageSize;
+        long filteredTotal = 0L;
+        long candidatePageNo = 1L;
+        List<QuestionRecommendationBatchListVO> records = new ArrayList<>();
+        while (true) {
+            Page<QuestionRecommendationBatch> candidatePage =
+                    batchMapper.selectPage(Page.of(candidatePageNo, candidatePageSize), wrapper);
+            List<QuestionRecommendationBatch> candidateRecords = candidatePage.getRecords();
+            if (candidateRecords == null || candidateRecords.isEmpty()) {
+                break;
+            }
+            for (QuestionRecommendationBatch batch : candidateRecords) {
+                if (!trustedBatchPredicate.test(batch)) {
+                    continue;
+                }
+                filteredTotal++;
+                if (filteredTotal > requestedOffset && records.size() < pageSize) {
+                    records.add(toListVO(batch));
+                }
+            }
+            if (candidatePageNo >= candidatePage.getPages()) {
+                break;
+            }
+            candidatePageNo++;
+        }
+        return PageResult.of(records, filteredTotal, pageNo, pageSize);
+    }
+
+    private QuestionRecommendationBatch findFirstTrustedBatch(
+            LambdaQueryWrapper<QuestionRecommendationBatch> wrapper,
+            Predicate<QuestionRecommendationBatch> trustedBatchPredicate,
+            long candidatePageSize) {
+        long candidatePageNo = 1L;
+        long effectivePageSize = Math.max(candidatePageSize, 10L);
+        while (true) {
+            Page<QuestionRecommendationBatch> candidatePage =
+                    batchMapper.selectPage(Page.of(candidatePageNo, effectivePageSize), wrapper);
+            List<QuestionRecommendationBatch> candidateRecords = candidatePage.getRecords();
+            if (candidateRecords == null || candidateRecords.isEmpty()) {
+                return null;
+            }
+            for (QuestionRecommendationBatch batch : candidateRecords) {
+                if (trustedBatchPredicate.test(batch)) {
+                    return batch;
+                }
+            }
+            if (candidatePageNo >= candidatePage.getPages()) {
+                return null;
+            }
+            candidatePageNo++;
+        }
     }
 
     @Override
@@ -272,17 +360,13 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择目标岗位后再生成推荐题");
         }
         Long userId = requireCurrentUserId();
-        List<QuestionRecommendationBatch> batches = batchMapper.selectList(new LambdaQueryWrapper<QuestionRecommendationBatch>()
+        QuestionRecommendationBatch batch = findFirstTrustedBatch(new LambdaQueryWrapper<QuestionRecommendationBatch>()
                 .eq(QuestionRecommendationBatch::getUserId, userId)
-                .eq(QuestionRecommendationBatch::getJobTargetId, targetJobId)
                 .eq(QuestionRecommendationBatch::getStatus, QuestionRecommendationBatchStatus.SUCCESS.getCode())
                 .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
-                .orderByDesc(QuestionRecommendationBatch::getUpdatedAt)
-                .last("limit 10"));
-        QuestionRecommendationBatch batch = batches.stream()
-                .filter(this::hasTrustedBatchEvidence)
-                .findFirst()
-                .orElse(null);
+                .orderByDesc(QuestionRecommendationBatch::getUpdatedAt),
+                candidate -> matchesTrustedBatchQuery(candidate, null, targetJobId, null, null, null),
+                20L);
         if (batch == null) {
             return List.of();
         }
@@ -292,53 +376,60 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     @Override
     public List<QuestionRecommendationItemVO> recommendBySkill(Long skillProfileId, String skillCode,
                                                                String skillName, Integer limit) {
+        if (skillProfileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "\u8bf7\u9009\u62e9\u80fd\u529b\u753b\u50cf\u540e\u518d\u67e5\u770b\u6280\u80fd\u63a8\u8350\u9898");
+        }
         Long userId = requireCurrentUserId();
         LambdaQueryWrapper<QuestionRecommendationBatch> batchWrapper = new LambdaQueryWrapper<QuestionRecommendationBatch>()
                 .eq(QuestionRecommendationBatch::getUserId, userId)
-                .eq(skillProfileId != null, QuestionRecommendationBatch::getSkillProfileId, skillProfileId)
                 .eq(QuestionRecommendationBatch::getStatus, QuestionRecommendationBatchStatus.SUCCESS.getCode())
                 .eq(QuestionRecommendationBatch::getDeleted, CommonConstants.NO)
                 .orderByDesc(QuestionRecommendationBatch::getUpdatedAt);
-        List<QuestionRecommendationBatch> batches = batchMapper.selectList(batchWrapper);
-        if (batches.isEmpty()) {
-            return List.of();
-        }
         int itemLimit = normalizeRecommendationLimit(limit);
         List<QuestionRecommendationItemVO> result = new java.util.ArrayList<>();
-        for (QuestionRecommendationBatch batch : batches) {
-            if (!hasTrustedBatchEvidence(batch)) {
-                continue;
-            }
-            LambdaQueryWrapper<QuestionRecommendationItem> wrapper = new LambdaQueryWrapper<QuestionRecommendationItem>()
-                    .eq(QuestionRecommendationItem::getBatchId, batch.getId())
-                    .eq(QuestionRecommendationItem::getUserId, userId)
-                    .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
-                    .eq(StringUtils.hasText(skillCode), QuestionRecommendationItem::getSkillCode, skillCode)
-                    .like(StringUtils.hasText(skillName), QuestionRecommendationItem::getSkillName, skillName)
-                    .orderByAsc(QuestionRecommendationItem::getSortOrder)
-                    .orderByAsc(QuestionRecommendationItem::getId)
-                    .last("limit " + (itemLimit - result.size()));
-            result.addAll(itemMapper.selectList(wrapper).stream().map(item -> toItemVO(item, batch)).toList());
-            if (result.size() >= itemLimit) {
+        long candidatePageNo = 1L;
+        long candidatePageSize = Math.max((long) itemLimit, 20L);
+        while (result.size() < itemLimit) {
+            Page<QuestionRecommendationBatch> candidatePage =
+                    batchMapper.selectPage(Page.of(candidatePageNo, candidatePageSize), batchWrapper);
+            List<QuestionRecommendationBatch> candidateRecords = candidatePage.getRecords();
+            if (candidateRecords == null || candidateRecords.isEmpty()) {
                 break;
             }
+            for (QuestionRecommendationBatch batch : candidateRecords) {
+                if (!matchesTrustedBatchQuery(batch, null, null, null, skillProfileId, null)) {
+                    continue;
+                }
+                LambdaQueryWrapper<QuestionRecommendationItem> wrapper = new LambdaQueryWrapper<QuestionRecommendationItem>()
+                        .eq(QuestionRecommendationItem::getBatchId, batch.getId())
+                        .eq(QuestionRecommendationItem::getUserId, userId)
+                        .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
+                        .eq(StringUtils.hasText(skillCode), QuestionRecommendationItem::getSkillCode, skillCode)
+                        .like(StringUtils.hasText(skillName), QuestionRecommendationItem::getSkillName, skillName)
+                        .orderByAsc(QuestionRecommendationItem::getSortOrder)
+                        .orderByAsc(QuestionRecommendationItem::getId)
+                        .last("limit " + (itemLimit - result.size()));
+                result.addAll(itemMapper.selectList(wrapper).stream().map(item -> toItemVO(item, batch)).toList());
+                if (result.size() >= itemLimit) {
+                    break;
+                }
+            }
+            if (candidatePageNo >= candidatePage.getPages()) {
+                break;
+            }
+            candidatePageNo++;
         }
         return result;
     }
 
     private QuestionRecommendationGenerateVO generate(RecommendationRequest request, Long userId) {
         QuestionRecommendationBatch batch = createBatch(request, userId);
-        GenerateQuestionRecommendationDTO aiRequest = buildAiRequest(batch, request, userId);
-        batch.setRequestJson(toJson(aiRequest));
-        batchMapper.updateById(batch);
         return executeBatch(batch, true);
     }
 
     private QuestionRecommendationGenerateVO submit(RecommendationRequest request, Long userId) {
         QuestionRecommendationBatch batch = createBatch(request, userId);
-        GenerateQuestionRecommendationDTO aiRequest = buildAiRequest(batch, request, userId);
-        batch.setRequestJson(toJson(aiRequest));
-        batchMapper.updateById(batch);
         MqDispatchReceipt receipt = dispatchRecommendationGenerate(batch);
         if (receipt == null) {
             batch.setStatus(QuestionRecommendationBatchStatus.FAILED.getCode());
@@ -366,7 +457,10 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             batch.setStatus(QuestionRecommendationBatchStatus.SUCCESS.getCode());
             batch.setAiCallLogId(aiResult.getAiCallLogId());
             batch.setQuestionCount(aiResult.getQuestions().size());
-            batch.setResultJson(firstText(aiResult.getRawResponse(), toJson(aiResult)));
+            batch.setResultJson(toJson(QuestionRecommendationResultPayloadUtils.buildMinimizedMetadata(
+                    aiResult.getAiCallLogId(),
+                    batch.getId(),
+                    aiResult.getQuestions().size())));
             batch.setErrorMessage(null);
             batchMapper.updateById(batch);
             return toGenerateVO(batchMapper.selectById(batch.getId()));
@@ -385,27 +479,245 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private GenerateQuestionRecommendationDTO readAiRequest(QuestionRecommendationBatch batch) {
         if (!StringUtils.hasText(batch.getRequestJson())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "推荐题生成记录暂时无法读取，请重新提交");
+            assertReplaySnapshotCarriesGapSelection(null);
+            return rebuildAiRequestFromBatch(batch);
         }
         try {
-            GenerateQuestionRecommendationDTO dto = objectMapper.readValue(
-                    batch.getRequestJson(), GenerateQuestionRecommendationDTO.class);
+            JsonNode stored = objectMapper.readTree(batch.getRequestJson());
+            if (QuestionRecommendationRequestPayloadUtils.MINIMIZED_METADATA_STORAGE_MODE
+                    .equals(nodeText(stored, "storageMode"))) {
+                return rebuildAiRequest(batch, stored);
+            }
+            if (!hasStoredAiRequestPayload(stored)) {
+                return rebuildAiRequest(batch, stored);
+            }
+            GenerateQuestionRecommendationDTO dto = objectMapper.treeToValue(
+                    stored, GenerateQuestionRecommendationDTO.class);
             if (dto.getBatchId() == null || !dto.getBatchId().equals(batch.getId())) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR,
-                        "推荐题生成记录暂时无法读取，请重新提交");
+                return rebuildAiRequestFromBatch(batch);
             }
             if (dto.getUserId() == null || !dto.getUserId().equals(batch.getUserId())) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR,
-                        "推荐题生成记录暂时无法读取，请重新提交");
+                return rebuildAiRequestFromBatch(batch);
             }
             return dto;
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "推荐题生成记录暂时无法读取，请重新提交");
+            assertReplaySnapshotCarriesGapSelection(null);
+            return rebuildAiRequestFromBatch(batch);
         }
+    }
+
+    private void assertReplaySnapshotCarriesGapSelection(JsonNode snapshot) {
+        List<Long> gapItemIds = nodeLongList(snapshot, "gapItemIds");
+        requireStoredGapSelection(gapItemIds);
+    }
+
+    private GenerateQuestionRecommendationDTO rebuildAiRequestFromBatch(QuestionRecommendationBatch batch) {
+        try {
+            return rebuildAiRequest(batch, null);
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw invalidStoredRequest();
+        }
+    }
+
+    private JsonNode validatedStoredRequestSnapshot(QuestionRecommendationBatch batch) {
+        if (batch == null || !StringUtils.hasText(batch.getRequestJson())) {
+            return null;
+        }
+        try {
+            JsonNode stored = objectMapper.readTree(batch.getRequestJson());
+            if (stored == null || !stored.isObject()) {
+                return null;
+            }
+            if (isTrustedSafeStoredRequestSnapshot(batch, stored)) {
+                return stored;
+            }
+            if (isSafeStoredRequestSnapshot(stored)) {
+                return null;
+            }
+            if (!hasStoredAiRequestPayload(stored)) {
+                return null;
+            }
+            Long storedBatchId = nodeLong(stored, "batchId");
+            Long storedUserId = nodeLong(stored, "userId");
+            if (storedBatchId == null || !storedBatchId.equals(batch.getId())) {
+                return null;
+            }
+            if (storedUserId == null || !storedUserId.equals(batch.getUserId())) {
+                return null;
+            }
+            return stored;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private boolean hasStoredAiRequestPayload(JsonNode stored) {
+        if (stored == null || !stored.isObject()) {
+            return false;
+        }
+        if (QuestionRecommendationRequestPayloadUtils.MINIMIZED_METADATA_STORAGE_MODE
+                .equals(nodeText(stored, "storageMode"))) {
+            return false;
+        }
+        return StringUtils.hasText(nodeText(stored, "targetJobJson"))
+                || StringUtils.hasText(nodeText(stored, "matchReportJson"))
+                || StringUtils.hasText(nodeText(stored, "skillProfileJson"))
+                || StringUtils.hasText(nodeText(stored, "skillGapsJson"))
+                || StringUtils.hasText(nodeText(stored, "studyPlanJson"))
+                || StringUtils.hasText(nodeText(stored, "studyTasksJson"));
+    }
+
+    private GenerateQuestionRecommendationDTO rebuildAiRequest(QuestionRecommendationBatch batch,
+                                                               JsonNode snapshot) {
+        RecommendationRequest request = rebuildStoredRequest(batch, snapshot);
+        alignBatchWithRequest(batch, request);
+        return buildAiRequest(batch, request, batch.getUserId());
+    }
+
+    private RecommendationRequest rebuildStoredRequest(QuestionRecommendationBatch batch,
+                                                       JsonNode snapshot) {
+        QuestionRecommendationSourceType sourceType = resolveStoredSourceType(batch, snapshot);
+        Integer questionCount = normalizeQuestionCount(
+                nodeInt(snapshot, "questionCount") != null ? nodeInt(snapshot, "questionCount") : batch.getQuestionCount());
+        String difficultyPreference = normalizeDifficulty(nodeText(snapshot, "difficultyPreference"));
+        String strategy = normalizeStrategy(
+                firstText(nodeText(snapshot, "strategy"), batch.getStrategy()));
+        List<Long> gapItemIds = nodeLongList(snapshot, "gapItemIds");
+        if (sourceType == QuestionRecommendationSourceType.JD_GAP) {
+            requireStoredGapSelection(gapItemIds);
+            Long profileId = requireStoredId(firstNonNull(
+                    nodeLong(snapshot, "skillProfileId"),
+                    batch.getSkillProfileId(),
+                    batch.getSourceId()));
+            InnerSkillProfileVO profile = loadOwnedProfile(profileId, batch.getUserId());
+            if (isWeakStandaloneGapEvidence(batch, snapshot) && profile.getMatchReportId() != null) {
+                throw invalidStoredRequest();
+            }
+            List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, gapItemIds);
+            return new RecommendationRequest(
+                    QuestionRecommendationSourceType.JD_GAP,
+                    firstNonNull(batch.getSourceId(), nodeLong(snapshot, "sourceId"), profileId),
+                    profile,
+                    gaps,
+                    null,
+                    questionCount,
+                    difficultyPreference,
+                    strategy);
+        }
+        if (sourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH) {
+            Long matchReportId = requireStoredId(firstNonNull(
+                    batch.getSourceId(),
+                    nodeLong(snapshot, "sourceId"),
+                    batch.getMatchReportId()));
+            Long preservedProfileId = firstNonNull(nodeLong(snapshot, "skillProfileId"), batch.getSkillProfileId());
+            InnerSkillProfileVO profile = null;
+            if (preservedProfileId != null) {
+                InnerSkillProfileVO preservedProfile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSkillProfile(preservedProfileId));
+                if (isTrustedMatchReportProfile(preservedProfile, batch.getUserId(), matchReportId)) {
+                    profile = preservedProfile;
+                }
+            }
+            if (profile == null) {
+                profile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(matchReportId));
+                if (!isTrustedMatchReportProfile(profile, batch.getUserId(), matchReportId)) {
+                    throw invalidStoredRequest();
+                }
+            }
+            requireStoredGapSelection(gapItemIds);
+            List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, gapItemIds);
+            return new RecommendationRequest(
+                    QuestionRecommendationSourceType.RESUME_JOB_MATCH,
+                    matchReportId,
+                    profile,
+                    gaps,
+                    null,
+                    questionCount,
+                    difficultyPreference,
+                    strategy);
+        }
+        Long planId = requireStoredId(firstNonNull(
+                batch.getStudyPlanId(),
+                nodeLong(snapshot, "studyPlanId"),
+                batch.getSourceId(),
+                nodeLong(snapshot, "sourceId")));
+        InnerStudyPlanVO plan = FeignResultUtils.unwrap(studyPlanFeignClient.getStudyPlan(planId));
+        validateOwnedPlanForReplay(plan, batch.getUserId());
+        Long preservedProfileId = firstNonNull(
+                nodeLong(snapshot, "skillProfileId"),
+                batch.getSkillProfileId(),
+                plan.getSkillProfileId());
+        if (preservedProfileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "历史学习计划缺少能力画像依据，请重新生成推荐题");
+        }
+        InnerSkillProfileVO profile = loadOwnedProfile(preservedProfileId, batch.getUserId());
+        requireStoredGapSelection(gapItemIds);
+        List<InnerSkillGapItemVO> gaps = resolveSelectedGaps(profile, gapItemIds);
+        return new RecommendationRequest(
+                QuestionRecommendationSourceType.STUDY_PLAN,
+                planId,
+                profile,
+                gaps,
+                plan,
+                questionCount,
+                difficultyPreference,
+                strategy);
+    }
+
+    private QuestionRecommendationSourceType resolveStoredSourceType(QuestionRecommendationBatch batch,
+                                                                     JsonNode snapshot) {
+        Long studyPlanId = firstNonNull(batch.getStudyPlanId(), nodeLong(snapshot, "studyPlanId"));
+        Long sourceId = firstNonNull(batch.getSourceId(), nodeLong(snapshot, "sourceId"));
+        Long matchReportId = firstNonNull(batch.getMatchReportId(), nodeLong(snapshot, "matchReportId"));
+        Long skillProfileId = firstNonNull(batch.getSkillProfileId(), nodeLong(snapshot, "skillProfileId"));
+        QuestionRecommendationSourceType strongEvidenceSourceType = resolveStrongDedicatedSourceType(
+                studyPlanId, sourceId, matchReportId, skillProfileId);
+        if (strongEvidenceSourceType != null) {
+            return strongEvidenceSourceType;
+        }
+        QuestionRecommendationSourceType explicitSourceType = parseExplicitSourceType(
+                firstText(nodeText(snapshot, "sourceType"), batch.getSourceType()));
+        QuestionRecommendationSourceType boundedExplicitSourceType = recoverFromExplicitSourceType(
+                explicitSourceType, studyPlanId, sourceId, matchReportId, skillProfileId);
+        if (boundedExplicitSourceType != null) {
+            return boundedExplicitSourceType;
+        }
+        if (hasConflictingDedicatedSourceEvidence(studyPlanId, sourceId, matchReportId, skillProfileId)) {
+            throw conflictingStoredRequest();
+        }
+        if (explicitSourceType != null) {
+            return explicitSourceType;
+        }
+        QuestionRecommendationSourceType weakEvidenceSourceType = resolveWeakDedicatedSourceType(
+                sourceId, matchReportId, skillProfileId);
+        if (weakEvidenceSourceType != null) {
+            return weakEvidenceSourceType;
+        }
+        throw invalidStoredRequest();
+    }
+
+    private void alignBatchWithRequest(QuestionRecommendationBatch batch, RecommendationRequest request) {
+        batch.setSourceType(request.sourceType().getCode());
+        batch.setSourceId(request.sourceId());
+        batch.setJobTargetId(request.profile().getTargetJobId());
+        batch.setMatchReportId(request.profile().getMatchReportId());
+        batch.setSkillProfileId(request.profile().getProfileId());
+        batch.setStudyPlanId(request.studyPlan() == null ? null : request.studyPlan().getPlanId());
+        batch.setStrategy(request.strategy());
+        batch.setQuestionCount(request.questionCount());
+    }
+
+    private Long requireStoredId(Long id) {
+        if (id == null) {
+            throw invalidStoredRequest();
+        }
+        return id;
     }
 
     private QuestionRecommendationBatch createBatch(RecommendationRequest request, Long userId) {
@@ -420,8 +732,9 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         batch.setStrategy(request.strategy());
         batch.setQuestionCount(request.questionCount());
         batch.setStatus(QuestionRecommendationBatchStatus.GENERATING.getCode());
-        batch.setRequestJson(toJson(requestSnapshot(request)));
         batchMapper.insert(batch);
+        batch.setRequestJson(toJson(requestSnapshot(batch, request)));
+        batchMapper.updateById(batch);
         return batch;
     }
 
@@ -547,6 +860,12 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         }
     }
 
+    private void validateOwnedPlanForReplay(InnerStudyPlanVO plan, Long userId) {
+        if (plan == null || !userId.equals(plan.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或无权访问");
+        }
+    }
+
     private List<InnerSkillGapItemVO> resolveSelectedGaps(InnerSkillProfileVO profile, List<Long> gapItemIds) {
         List<InnerSkillGapItemVO> gaps = profile.getGapItems().stream()
                 .filter(Objects::nonNull)
@@ -583,49 +902,495 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private void assertTrustedBatchEvidence(QuestionRecommendationBatch batch) {
         if (!hasTrustedBatchEvidence(batch)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "推荐题依据的匹配报告证据待复核，请重新生成可信报告后再继续训练");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, trustedBatchEvidenceFailureMessage(batch));
         }
     }
 
-    private boolean hasTrustedBatchEvidence(QuestionRecommendationBatch batch) {
+    private String trustedBatchEvidenceFailureMessage(QuestionRecommendationBatch batch) {
+        JsonNode storedSnapshot = validatedStoredRequestSnapshot(batch);
+        return hasConflictingTrustedSourceEvidence(batch, storedSnapshot)
+                ? conflictingStoredRequestMessage()
+                : "历史推荐依据待复核，请重新生成推荐题";
+    }
+
+    private boolean hasConflictingTrustedSourceEvidence(QuestionRecommendationBatch batch, JsonNode storedSnapshot) {
         if (batch == null) {
-            return true;
+            return false;
+        }
+        Long studyPlanId = firstNonNull(batch.getStudyPlanId(), nodeLong(storedSnapshot, "studyPlanId"));
+        Long sourceId = firstNonNull(batch.getSourceId(), nodeLong(storedSnapshot, "sourceId"));
+        Long matchReportId = firstNonNull(batch.getMatchReportId(), nodeLong(storedSnapshot, "matchReportId"));
+        Long skillProfileId = firstNonNull(batch.getSkillProfileId(), nodeLong(storedSnapshot, "skillProfileId"));
+        return hasConflictingDedicatedSourceEvidence(studyPlanId, sourceId, matchReportId, skillProfileId);
+    }
+
+    private boolean matchesTrustedBatchQuery(QuestionRecommendationBatch batch,
+                                             String sourceType,
+                                             Long jobTargetId,
+                                             Long matchReportId,
+                                             Long skillProfileId,
+                                             Long studyPlanId) {
+        if (batch == null) {
+            return false;
+        }
+        if (sourceType != null) {
+            if (!matchesTrustedBatchSourceType(batch, sourceType)) {
+                return false;
+            }
+        } else if (!hasTrustedBatchEvidence(batch)) {
+            return false;
+        }
+        return matchesTrustedBatchMetadataFilters(batch, jobTargetId, matchReportId, skillProfileId, studyPlanId);
+    }
+
+    private boolean matchesTrustedBatchMetadataFilters(QuestionRecommendationBatch batch,
+                                                       Long jobTargetId,
+                                                       Long matchReportId,
+                                                       Long skillProfileId,
+                                                       Long studyPlanId) {
+        if (batch == null) {
+            return false;
+        }
+        JsonNode storedSnapshot = validatedStoredRequestSnapshot(batch);
+        QuestionRecommendationSourceType effectiveSourceType = resolveMetadataSourceType(batch, storedSnapshot);
+        if (jobTargetId != null && !jobTargetId.equals(effectiveTargetJobId(batch, storedSnapshot))) {
+            return false;
+        }
+        if (matchReportId != null
+                && !matchReportId.equals(effectiveMatchReportId(batch, effectiveSourceType, storedSnapshot))) {
+            return false;
+        }
+        if (skillProfileId != null
+                && !skillProfileId.equals(effectiveEvidenceProfileId(batch, effectiveSourceType, null, storedSnapshot))) {
+            return false;
+        }
+        if (studyPlanId != null
+                && !studyPlanId.equals(effectiveStudyPlanId(batch, effectiveSourceType, storedSnapshot))) {
+            return false;
+        }
+        return true;
+    }
+
+    private QuestionRecommendationSourceType resolveMetadataSourceType(QuestionRecommendationBatch batch,
+                                                                       JsonNode storedSnapshot) {
+        QuestionRecommendationSourceType sourceType = resolveBatchEvidenceSourceType(batch);
+        if (sourceType != null || storedSnapshot == null) {
+            return sourceType;
         }
         try {
-            if (isMatchReportSourceType(batch.getSourceType())) {
-                Long matchReportId = effectiveMatchReportId(batch);
-                if (matchReportId == null) {
-                    return false;
-                }
-                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
-                        resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(matchReportId));
-                return profile != null
-                        && batch.getUserId().equals(profile.getUserId())
-                        && matchReportId.equals(profile.getMatchReportId());
-            }
-            if (batch.getSkillProfileId() != null) {
-                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
-                        resumeProfileFeignClient.getSkillProfile(batch.getSkillProfileId()));
-                return profile != null && batch.getUserId().equals(profile.getUserId());
-            }
-            return batch.getMatchReportId() == null;
+            return resolveStoredSourceType(batch, storedSnapshot);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private boolean matchesTrustedBatchSourceType(QuestionRecommendationBatch batch, String sourceType) {
+        if (batch == null || !StringUtils.hasText(sourceType)) {
+            return false;
+        }
+        QuestionRecommendationSourceType effectiveSourceType = resolveBatchEvidenceSourceType(batch);
+        if (effectiveSourceType != null
+                && sourceType.equals(effectiveSourceType.getCode())
+                && hasTrustedBatchEvidence(batch, effectiveSourceType, null)) {
+            return true;
+        }
+        JsonNode storedSnapshot = validatedStoredRequestSnapshot(batch);
+        if (storedSnapshot == null) {
+            return false;
+        }
+        try {
+            QuestionRecommendationSourceType storedSourceType = resolveStoredSourceType(batch, storedSnapshot);
+            return storedSourceType != null
+                    && sourceType.equals(storedSourceType.getCode())
+                    && hasTrustedBatchEvidence(batch, storedSourceType, storedSnapshot);
         } catch (RuntimeException ex) {
             return false;
         }
     }
 
-    private Long effectiveMatchReportId(QuestionRecommendationBatch batch) {
+    private boolean hasTrustedBatchEvidence(QuestionRecommendationBatch batch) {
+        if (batch == null) {
+            return false;
+        }
+        QuestionRecommendationSourceType sourceType = resolveBatchEvidenceSourceType(batch);
+        if (hasTrustedBatchEvidence(batch, sourceType, null)) {
+            return true;
+        }
+        JsonNode storedSnapshot = validatedStoredRequestSnapshot(batch);
+        if (storedSnapshot == null) {
+            return false;
+        }
+        try {
+            return hasTrustedBatchEvidence(batch, resolveStoredSourceType(batch, storedSnapshot), storedSnapshot);
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private boolean hasTrustedBatchEvidence(QuestionRecommendationBatch batch,
+                                            QuestionRecommendationSourceType sourceType) {
+        return hasTrustedBatchEvidence(batch, sourceType, null);
+    }
+
+    private boolean hasTrustedBatchEvidence(QuestionRecommendationBatch batch,
+                                            QuestionRecommendationSourceType sourceType,
+                                            JsonNode storedSnapshot) {
+        if (batch == null) {
+            return false;
+        }
+        try {
+            if (sourceType == QuestionRecommendationSourceType.STUDY_PLAN) {
+                Long studyPlanId = effectiveStudyPlanId(batch, sourceType, storedSnapshot);
+                if (studyPlanId == null) {
+                    return false;
+                }
+                InnerStudyPlanVO plan = FeignResultUtils.unwrap(studyPlanFeignClient.getStudyPlan(studyPlanId));
+                validateOwnedPlanForReplay(plan, batch.getUserId());
+                Long profileId = effectiveEvidenceProfileId(batch, sourceType, plan, storedSnapshot);
+                if (profileId == null) {
+                    return false;
+                }
+                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSkillProfile(profileId));
+                return isOwnedSuccessfulProfile(profile, batch.getUserId());
+            }
+            if (sourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH) {
+                Long matchReportId = effectiveMatchReportId(batch, sourceType, storedSnapshot);
+                if (matchReportId == null) {
+                    return false;
+                }
+                Long preservedProfileId = effectiveEvidenceProfileId(batch, sourceType, null, storedSnapshot);
+                if (preservedProfileId != null) {
+                    InnerSkillProfileVO preservedProfile = FeignResultUtils.unwrap(
+                            resumeProfileFeignClient.getSkillProfile(preservedProfileId));
+                    if (isTrustedMatchReportProfile(preservedProfile, batch.getUserId(), matchReportId)) {
+                        return true;
+                    }
+                }
+                InnerSkillProfileVO currentProfile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(matchReportId));
+                return isTrustedMatchReportProfile(currentProfile, batch.getUserId(), matchReportId);
+            }
+            if (sourceType == null) {
+                return false;
+            }
+            Long profileId = effectiveEvidenceProfileId(batch, sourceType, null, storedSnapshot);
+            if (profileId != null) {
+                InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSkillProfile(profileId));
+                if (!isOwnedSuccessfulProfile(profile, batch.getUserId())) {
+                    return false;
+                }
+                return !isWeakStandaloneGapEvidence(batch, storedSnapshot) || profile.getMatchReportId() == null;
+            }
+            return false;
+        } catch (RuntimeException ex) {
+            return false;
+        }
+    }
+
+    private QuestionRecommendationSourceType resolveBatchEvidenceSourceType(QuestionRecommendationBatch batch) {
+        if (batch == null) {
+            return null;
+        }
+        Long studyPlanId = batch.getStudyPlanId();
+        Long sourceId = batch.getSourceId();
+        Long matchReportId = batch.getMatchReportId();
+        Long skillProfileId = batch.getSkillProfileId();
+        QuestionRecommendationSourceType strongEvidenceSourceType = resolveStrongDedicatedSourceType(
+                studyPlanId, sourceId, matchReportId, skillProfileId);
+        if (strongEvidenceSourceType != null) {
+            return strongEvidenceSourceType;
+        }
+        QuestionRecommendationSourceType explicitSourceType = parseExplicitSourceType(batch.getSourceType());
+        QuestionRecommendationSourceType boundedExplicitSourceType = recoverFromExplicitSourceType(
+                explicitSourceType, studyPlanId, sourceId, matchReportId, skillProfileId);
+        if (boundedExplicitSourceType != null) {
+            return boundedExplicitSourceType;
+        }
+        if (hasConflictingDedicatedSourceEvidence(
+                studyPlanId, sourceId, matchReportId, skillProfileId)) {
+            return null;
+        }
+        if (explicitSourceType != null) {
+            return explicitSourceType;
+        }
+        return resolveWeakDedicatedSourceType(sourceId, matchReportId, skillProfileId);
+    }
+
+    private QuestionRecommendationSourceType resolveStrongDedicatedSourceType(Long studyPlanId,
+                                                                              Long sourceId,
+                                                                              Long matchReportId,
+                                                                              Long skillProfileId) {
+        if (studyPlanId != null) {
+            return QuestionRecommendationSourceType.STUDY_PLAN;
+        }
+        boolean alignedMatchReport = sourceId != null && matchReportId != null && sourceId.equals(matchReportId);
+        boolean alignedSkillProfile = sourceId != null && skillProfileId != null && sourceId.equals(skillProfileId);
+        if (alignedMatchReport && !alignedSkillProfile) {
+            return QuestionRecommendationSourceType.RESUME_JOB_MATCH;
+        }
+        if (alignedSkillProfile && !alignedMatchReport) {
+            return QuestionRecommendationSourceType.JD_GAP;
+        }
+        return null;
+    }
+
+    private QuestionRecommendationSourceType resolveWeakDedicatedSourceType(Long sourceId,
+                                                                            Long matchReportId,
+                                                                            Long skillProfileId) {
+        if (sourceId == null && matchReportId != null) {
+            return QuestionRecommendationSourceType.RESUME_JOB_MATCH;
+        }
+        if (sourceId == null && skillProfileId != null && matchReportId == null) {
+            return QuestionRecommendationSourceType.JD_GAP;
+        }
+        return null;
+    }
+
+    private boolean isWeakStandaloneGapEvidence(QuestionRecommendationBatch batch, JsonNode storedSnapshot) {
+        if (batch == null) {
+            return false;
+        }
+        if (batch.getSourceId() != null || batch.getMatchReportId() != null) {
+            return false;
+        }
+        return nodeLong(storedSnapshot, "sourceId") == null
+                && nodeLong(storedSnapshot, "matchReportId") == null;
+    }
+
+    private boolean hasConflictingDedicatedSourceEvidence(Long studyPlanId,
+                                                          Long sourceId,
+                                                          Long matchReportId,
+                                                          Long skillProfileId) {
+        if (studyPlanId != null) {
+            return false;
+        }
+        boolean alignedMatchReport = sourceId != null && matchReportId != null && sourceId.equals(matchReportId);
+        boolean alignedSkillProfile = sourceId != null && skillProfileId != null && sourceId.equals(skillProfileId);
+        if (alignedMatchReport && alignedSkillProfile) {
+            return true;
+        }
+        if (sourceId != null && matchReportId != null && skillProfileId == null && !alignedMatchReport) {
+            return true;
+        }
+        if (sourceId != null && skillProfileId != null && matchReportId == null && !alignedSkillProfile) {
+            return true;
+        }
+        return sourceId != null
+                && matchReportId != null
+                && skillProfileId != null
+                && !alignedMatchReport
+                && !alignedSkillProfile;
+    }
+
+    private QuestionRecommendationSourceType recoverFromExplicitSourceType(
+            QuestionRecommendationSourceType explicitSourceType,
+            Long studyPlanId,
+            Long sourceId,
+            Long matchReportId,
+            Long skillProfileId) {
+        if (explicitSourceType == null) {
+            return null;
+        }
+        if (explicitSourceType == QuestionRecommendationSourceType.STUDY_PLAN) {
+            if (studyPlanId != null) {
+                return QuestionRecommendationSourceType.STUDY_PLAN;
+            }
+            if (sourceId == null) {
+                return null;
+            }
+            return !sourceId.equals(matchReportId) && !sourceId.equals(skillProfileId)
+                    ? QuestionRecommendationSourceType.STUDY_PLAN
+                    : null;
+        }
+        if (sourceId == null) {
+            return null;
+        }
+        if (explicitSourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH) {
+            if (sourceId.equals(skillProfileId)) {
+                return null;
+            }
+            return matchReportId == null || sourceId.equals(matchReportId)
+                    ? QuestionRecommendationSourceType.RESUME_JOB_MATCH
+                    : null;
+        }
+        if (explicitSourceType == QuestionRecommendationSourceType.JD_GAP) {
+            if (sourceId.equals(matchReportId)) {
+                return null;
+            }
+            return skillProfileId == null || sourceId.equals(skillProfileId)
+                    ? QuestionRecommendationSourceType.JD_GAP
+                    : null;
+        }
+        return null;
+    }
+
+    private Long effectiveTargetJobId(QuestionRecommendationBatch batch, JsonNode storedSnapshot) {
+        if (batch == null) {
+            return null;
+        }
+        if (batch.getJobTargetId() != null) {
+            return batch.getJobTargetId();
+        }
+        JsonNode snapshot = storedSnapshot != null ? storedSnapshot : validatedStoredRequestSnapshot(batch);
+        Long storedTargetJobId = nodeLong(snapshot, "targetJobId");
+        if (storedTargetJobId != null) {
+            return storedTargetJobId;
+        }
+        Long nestedTargetJobId = nodeLong(readJsonOrNull(nodeText(snapshot, "targetJobJson")), "targetJobId");
+        if (nestedTargetJobId != null) {
+            return nestedTargetJobId;
+        }
+        QuestionRecommendationSourceType sourceType = resolveBatchEvidenceSourceType(batch);
+        if (sourceType == null && snapshot != null) {
+            try {
+                sourceType = resolveStoredSourceType(batch, snapshot);
+            } catch (RuntimeException ignored) {
+                return null;
+            }
+        }
+        if (sourceType == null) {
+            return null;
+        }
+        try {
+            if (sourceType == QuestionRecommendationSourceType.STUDY_PLAN) {
+                Long studyPlanId = effectiveStudyPlanId(batch, sourceType, snapshot);
+                if (studyPlanId == null) {
+                    return null;
+                }
+                InnerStudyPlanVO plan = FeignResultUtils.unwrap(studyPlanFeignClient.getStudyPlan(studyPlanId));
+                return plan != null && batch.getUserId() != null && batch.getUserId().equals(plan.getUserId())
+                        ? plan.getTargetJobId()
+                        : null;
+            }
+            if (sourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH) {
+                Long matchReportId = effectiveMatchReportId(batch, sourceType, snapshot);
+                if (matchReportId == null) {
+                    return null;
+                }
+                Long preservedProfileId = effectiveEvidenceProfileId(batch, sourceType, null, snapshot);
+                if (preservedProfileId != null) {
+                    InnerSkillProfileVO preservedProfile = FeignResultUtils.unwrap(
+                            resumeProfileFeignClient.getSkillProfile(preservedProfileId));
+                    if (isTrustedMatchReportProfile(preservedProfile, batch.getUserId(), matchReportId)) {
+                        return preservedProfile.getTargetJobId();
+                    }
+                }
+                InnerSkillProfileVO currentProfile = FeignResultUtils.unwrap(
+                        resumeProfileFeignClient.getSuccessSkillProfileByMatchReport(matchReportId));
+                return isTrustedMatchReportProfile(currentProfile, batch.getUserId(), matchReportId)
+                        ? currentProfile.getTargetJobId()
+                        : null;
+            }
+            Long profileId = effectiveEvidenceProfileId(batch, sourceType, null, snapshot);
+            if (profileId == null) {
+                return null;
+            }
+            InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                    resumeProfileFeignClient.getSkillProfile(profileId));
+            return isOwnedSuccessfulProfile(profile, batch.getUserId())
+                    ? profile.getTargetJobId()
+                    : null;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private Long effectiveMatchReportId(QuestionRecommendationBatch batch,
+                                        QuestionRecommendationSourceType sourceType) {
+        return effectiveMatchReportId(batch, sourceType, null);
+    }
+
+    private Long effectiveMatchReportId(QuestionRecommendationBatch batch,
+                                        QuestionRecommendationSourceType sourceType,
+                                        JsonNode storedSnapshot) {
         if (batch.getMatchReportId() != null) {
             return batch.getMatchReportId();
         }
-        return isMatchReportSourceType(batch.getSourceType()) ? batch.getSourceId() : null;
+        Long storedMatchReportId = nodeLong(storedSnapshot, "matchReportId");
+        if (storedMatchReportId != null) {
+            return storedMatchReportId;
+        }
+        return sourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH
+                ? firstNonNull(batch.getSourceId(), nodeLong(storedSnapshot, "sourceId"))
+                : null;
+    }
+
+    private Long effectiveStudyPlanId(QuestionRecommendationBatch batch,
+                                      QuestionRecommendationSourceType sourceType) {
+        return effectiveStudyPlanId(batch, sourceType, null);
+    }
+
+    private Long effectiveStudyPlanId(QuestionRecommendationBatch batch,
+                                      QuestionRecommendationSourceType sourceType,
+                                      JsonNode storedSnapshot) {
+        if (batch.getStudyPlanId() != null) {
+            return batch.getStudyPlanId();
+        }
+        Long storedStudyPlanId = nodeLong(storedSnapshot, "studyPlanId");
+        if (storedStudyPlanId != null) {
+            return storedStudyPlanId;
+        }
+        return sourceType == QuestionRecommendationSourceType.STUDY_PLAN
+                ? firstNonNull(batch.getSourceId(), nodeLong(storedSnapshot, "sourceId"))
+                : null;
+    }
+
+    private Long effectiveEvidenceProfileId(QuestionRecommendationBatch batch,
+                                            QuestionRecommendationSourceType sourceType,
+                                            InnerStudyPlanVO plan) {
+        return effectiveEvidenceProfileId(batch, sourceType, plan, null);
+    }
+
+    private Long effectiveEvidenceProfileId(QuestionRecommendationBatch batch,
+                                            QuestionRecommendationSourceType sourceType,
+                                            InnerStudyPlanVO plan,
+                                            JsonNode storedSnapshot) {
+        if (batch.getSkillProfileId() != null) {
+            return batch.getSkillProfileId();
+        }
+        Long storedSkillProfileId = nodeLong(storedSnapshot, "skillProfileId");
+        if (storedSkillProfileId != null) {
+            return storedSkillProfileId;
+        }
+        if (sourceType == QuestionRecommendationSourceType.STUDY_PLAN && plan != null) {
+            return plan.getSkillProfileId();
+        }
+        return sourceType == QuestionRecommendationSourceType.JD_GAP
+                ? firstNonNull(batch.getSourceId(), nodeLong(storedSnapshot, "sourceId"))
+                : null;
     }
 
     private boolean isMatchReportSourceType(String sourceType) {
         String value = String.valueOf(sourceType).trim().toUpperCase(Locale.ROOT);
         return QuestionRecommendationSourceType.RESUME_JOB_MATCH.getCode().equals(value)
                 || "MATCH_REPORT".equals(value);
+    }
+
+    private QuestionRecommendationSourceType parseExplicitSourceType(String sourceType) {
+        if (!StringUtils.hasText(sourceType)) {
+            return null;
+        }
+        try {
+            return QuestionRecommendationSourceType.valueOf(normalizeSourceType(sourceType));
+        } catch (RuntimeException ignored) {
+            // Fall back to bounded dedicated metadata inference when historical rows carry a stale sourceType token.
+            return null;
+        }
+    }
+
+    private boolean isTrustedMatchReportProfile(InnerSkillProfileVO profile, Long userId, Long matchReportId) {
+        return isOwnedSuccessfulProfile(profile, userId)
+                && matchReportId != null
+                && matchReportId.equals(profile.getMatchReportId());
+    }
+
+    private boolean isOwnedSuccessfulProfile(InnerSkillProfileVO profile, Long userId) {
+        return profile != null
+                && userId != null
+                && userId.equals(profile.getUserId())
+                && "SUCCESS".equals(profile.getStatus());
     }
 
     private List<QuestionRecommendationItemVO> listBatchItems(QuestionRecommendationBatch batch, int limit) {
@@ -643,10 +1408,11 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private QuestionRecommendationBatchListVO toListVO(QuestionRecommendationBatch batch) {
         QuestionRecommendationBatchListVO vo = new QuestionRecommendationBatchListVO();
+        PresentationEvidence presentation = presentationEvidence(batch);
         vo.setBatchId(batch.getId());
         vo.setUserId(batch.getUserId());
-        vo.setSourceType(batch.getSourceType());
-        vo.setSourceId(batch.getSourceId());
+        vo.setSourceType(presentation.sourceType());
+        vo.setSourceId(presentation.sourceId());
         vo.setJobTargetId(batch.getJobTargetId());
         vo.setMatchReportId(batch.getMatchReportId());
         vo.setSkillProfileId(batch.getSkillProfileId());
@@ -685,16 +1451,17 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setFallback(base.getFallback());
         vo.setCreatedAt(base.getCreatedAt());
         vo.setUpdatedAt(base.getUpdatedAt());
-        vo.setRequest(readJsonOrNull(batch.getRequestJson()));
-        vo.setResult(readJsonOrNull(batch.getResultJson()));
+        vo.setRequest(defaultDetailRequest(batch));
+        vo.setResult(defaultDetailResult(batch));
         return vo;
     }
 
     private QuestionRecommendationGenerateVO toGenerateVO(QuestionRecommendationBatch batch) {
         QuestionRecommendationGenerateVO vo = new QuestionRecommendationGenerateVO();
+        PresentationEvidence presentation = presentationEvidence(batch);
         vo.setBatchId(batch.getId());
-        vo.setSourceType(batch.getSourceType());
-        vo.setSourceId(batch.getSourceId());
+        vo.setSourceType(presentation.sourceType());
+        vo.setSourceId(presentation.sourceId());
         vo.setStatus(batch.getStatus());
         vo.setQuestionCount(batch.getQuestionCount());
         vo.setAiCallLogId(batch.getAiCallLogId());
@@ -722,6 +1489,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private QuestionRecommendationItemVO toItemVO(QuestionRecommendationItem item, QuestionRecommendationBatch batch) {
         QuestionRecommendationItemVO vo = new QuestionRecommendationItemVO();
+        PresentationEvidence presentation = presentationEvidence(batch);
         vo.setId(item.getId());
         vo.setBatchId(item.getBatchId());
         vo.setQuestionId(item.getQuestionId());
@@ -742,8 +1510,8 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setPracticeStatus(defaultPracticeStatus(item, canPractice));
         vo.setCanPractice(canPractice);
         vo.setPracticeQuestionId(canPractice ? item.getQuestionId() : null);
-        vo.setSourceType(batch == null ? null : batch.getSourceType());
-        vo.setSourceId(batch == null ? null : batch.getSourceId());
+        vo.setSourceType(presentation.sourceType());
+        vo.setSourceId(presentation.sourceId());
         vo.setTrustStatus(itemTrustStatus(item, batch, canPractice));
         vo.setEvidenceSummary(itemEvidenceSummary(item, batch, canPractice));
         vo.setFallback(!canPractice);
@@ -778,16 +1546,18 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     }
 
     private Boolean batchFallback(QuestionRecommendationBatch batch) {
+        PresentationEvidence presentation = presentationEvidence(batch);
         return batch == null || !QuestionRecommendationBatchStatus.SUCCESS.getCode().equals(batch.getStatus())
-                || batch.getSourceId() == null;
+                || presentation.sourceId() == null;
     }
 
     private String batchEvidenceSummary(QuestionRecommendationBatch batch) {
         if (batch == null) {
             return "推荐批次缺少上下文证据。";
         }
-        String source = sourceEvidenceLabel(batch.getSourceType());
-        String sourceId = batch.getSourceId() == null ? "推荐依据待确认" : "推荐依据已绑定";
+        PresentationEvidence presentation = presentationEvidence(batch);
+        String source = sourceEvidenceLabel(presentation.sourceType());
+        String sourceId = presentation.sourceId() == null ? "推荐依据待确认" : "推荐依据已绑定";
         if (QuestionRecommendationBatchStatus.FAILED.getCode().equals(batch.getStatus())) {
             return source + " " + sourceId + " 生成失败：" + firstText(batch.getErrorMessage(), "失败原因待确认");
         }
@@ -814,14 +1584,58 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
 
     private String itemEvidenceSummary(QuestionRecommendationItem item, QuestionRecommendationBatch batch,
                                        boolean canPractice) {
-        String source = batch == null ? "推荐来源" : sourceEvidenceLabel(batch.getSourceType());
-        String sourceId = batch == null || batch.getSourceId() == null ? "未绑定上下文" : "#" + batch.getSourceId();
+        PresentationEvidence presentation = presentationEvidence(batch);
+        String source = batch == null ? "推荐来源" : sourceEvidenceLabel(presentation.sourceType());
+        String sourceId = batch == null || presentation.sourceId() == null ? "未绑定上下文" : "#" + presentation.sourceId();
         String skill = firstText(item.getSkillName(), item.getSkillCode(), "未标注技能");
         if (!canPractice) {
             return source + " " + sourceId + " · " + skill + " · AI 推荐方向尚未匹配正式题库。";
         }
         String reason = firstText(item.getRecommendReason(), item.getAnswerHint(), item.getEvaluatePoints(), "已匹配正式题库，可直接练习。");
         return source + " " + sourceId + " · " + skill + " · " + reason;
+    }
+
+    private PresentationEvidence presentationEvidence(QuestionRecommendationBatch batch) {
+        if (batch == null) {
+            return new PresentationEvidence(null, null);
+        }
+        JsonNode storedSnapshot = validatedStoredRequestSnapshot(batch);
+        QuestionRecommendationSourceType sourceType = resolvePresentationSourceType(batch, storedSnapshot);
+        if (sourceType == null) {
+            return new PresentationEvidence(null, null);
+        }
+        if (sourceType == QuestionRecommendationSourceType.STUDY_PLAN) {
+            return new PresentationEvidence(sourceType.getCode(),
+                    firstNonNull(effectiveStudyPlanId(batch, sourceType, storedSnapshot), batch.getSourceId()));
+        }
+        if (sourceType == QuestionRecommendationSourceType.RESUME_JOB_MATCH) {
+            return new PresentationEvidence(sourceType.getCode(),
+                    firstNonNull(effectiveMatchReportId(batch, sourceType, storedSnapshot), batch.getSourceId()));
+        }
+        return new PresentationEvidence(sourceType.getCode(),
+                firstNonNull(batch.getSourceId(), effectiveEvidenceProfileId(batch, sourceType, null, storedSnapshot)));
+    }
+
+    private QuestionRecommendationSourceType resolvePresentationSourceType(QuestionRecommendationBatch batch,
+                                                                           JsonNode storedSnapshot) {
+        QuestionRecommendationSourceType batchSourceType = resolveBatchEvidenceSourceType(batch);
+        if (batchSourceType != null && hasTrustedBatchEvidence(batch, batchSourceType, null)) {
+            return batchSourceType;
+        }
+        if (storedSnapshot == null) {
+            return null;
+        }
+        try {
+            QuestionRecommendationSourceType storedSourceType = resolveStoredSourceType(batch, storedSnapshot);
+            if (storedSourceType != null && hasTrustedBatchEvidence(batch, storedSourceType, storedSnapshot)) {
+                return storedSourceType;
+            }
+        } catch (RuntimeException ignored) {
+            if (batchSourceType == null) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private String sourceEvidenceLabel(String sourceType) {
@@ -837,17 +1651,19 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         return "来自推荐上下文";
     }
 
-    private Map<String, Object> requestSnapshot(RecommendationRequest request) {
+    private Map<String, Object> requestSnapshot(QuestionRecommendationBatch batch, RecommendationRequest request) {
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("sourceType", request.sourceType().getCode());
         snapshot.put("sourceId", request.sourceId());
         snapshot.put("questionCount", request.questionCount());
         snapshot.put("difficultyPreference", request.difficultyPreference());
         snapshot.put("strategy", request.strategy());
+        snapshot.put("targetJobId", request.profile().getTargetJobId());
+        snapshot.put("matchReportId", request.profile().getMatchReportId());
         snapshot.put("skillProfileId", request.profile().getProfileId());
         snapshot.put("gapItemIds", request.gaps().stream().map(InnerSkillGapItemVO::getId).toList());
         snapshot.put("studyPlanId", request.studyPlan() == null ? null : request.studyPlan().getPlanId());
-        return snapshot;
+        return QuestionRecommendationRequestPayloadUtils.withStoredRequestMarker(snapshot, batch);
     }
 
     private Map<String, Object> targetJobSnapshot(InnerSkillProfileVO profile) {
@@ -875,7 +1691,6 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         snapshot.put("overallLevel", profile.getOverallLevel());
         snapshot.put("overallScore", profile.getOverallScore());
         snapshot.put("summary", profile.getSummary());
-        snapshot.put("rawResult", readJsonOrNull(profile.getRawResultJson()));
         return snapshot;
     }
 
@@ -1018,6 +1833,105 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         }
     }
 
+    private JsonNode defaultDetailResult(QuestionRecommendationBatch batch) {
+        if (batch == null || !StringUtils.hasText(batch.getResultJson())) {
+            return null;
+        }
+        JsonNode stored = readJsonOrNull(batch.getResultJson());
+        if (stored != null && stored.isObject()
+                && "MINIMIZED_METADATA".equals(stored.path("storageMode").asText())) {
+            return stored;
+        }
+        return objectMapper.valueToTree(QuestionRecommendationResultPayloadUtils.buildMinimizedMetadata(
+                batch.getAiCallLogId(),
+                batch.getId(),
+                batch.getQuestionCount() == null ? 0 : batch.getQuestionCount()));
+    }
+
+    private JsonNode defaultDetailRequest(QuestionRecommendationBatch batch) {
+        if (batch == null || !StringUtils.hasText(batch.getRequestJson())) {
+            return batch == null ? null : objectMapper.valueToTree(detailRequestMetadata(batch));
+        }
+        JsonNode stored = readJsonOrNull(batch.getRequestJson());
+        JsonNode safeStoredSnapshot = normalizeSafeDetailRequestSnapshot(batch, stored);
+        if (safeStoredSnapshot != null) {
+            return safeStoredSnapshot;
+        }
+        return objectMapper.valueToTree(detailRequestMetadata(batch));
+    }
+
+    private JsonNode normalizeSafeDetailRequestSnapshot(QuestionRecommendationBatch batch, JsonNode stored) {
+        if (!isDetailSafeStoredRequestSnapshot(batch, stored)) {
+            return null;
+        }
+        Map<String, Object> values = detailRequestMetadata(batch);
+        for (String fieldName : SAFE_DETAIL_REQUEST_FIELDS) {
+            if ("sourceType".equals(fieldName) || "sourceId".equals(fieldName)) {
+                continue;
+            }
+            JsonNode fieldValue = stored.get(fieldName);
+            if (fieldValue == null || fieldValue.isMissingNode()) {
+                continue;
+            }
+            values.put(fieldName, objectMapper.convertValue(fieldValue, Object.class));
+        }
+        return objectMapper.valueToTree(QuestionRecommendationRequestPayloadUtils.withStoredRequestMarker(values));
+    }
+
+    private Map<String, Object> detailRequestMetadata(QuestionRecommendationBatch batch) {
+        Map<String, Object> values = QuestionRecommendationRequestPayloadUtils.buildMinimizedMetadata(batch);
+        PresentationEvidence presentation = presentationEvidence(batch);
+        values.put("sourceType", presentation.sourceType());
+        values.put("sourceId", presentation.sourceId());
+        return values;
+    }
+
+    private boolean isDetailSafeStoredRequestSnapshot(QuestionRecommendationBatch batch, JsonNode stored) {
+        return isTrustedSafeStoredRequestSnapshot(batch, stored);
+    }
+
+    private boolean isTrustedSafeStoredRequestSnapshot(QuestionRecommendationBatch batch, JsonNode stored) {
+        if (!isSafeStoredRequestSnapshot(stored)) {
+            return false;
+        }
+        Long storedBatchId = nodeLong(stored, "batchId");
+        Long storedUserId = nodeLong(stored, "userId");
+        if (storedBatchId == null && storedUserId == null) {
+            return true;
+        }
+        return isOwnedSafeStoredRequestSnapshot(batch, stored);
+    }
+
+    private boolean isOwnedSafeStoredRequestSnapshot(QuestionRecommendationBatch batch, JsonNode stored) {
+        return batch != null
+                && isSafeStoredRequestSnapshot(stored)
+                && batch.getId() != null
+                && batch.getUserId() != null
+                && batch.getId().equals(nodeLong(stored, "batchId"))
+                && batch.getUserId().equals(nodeLong(stored, "userId"));
+    }
+
+    private boolean isSafeStoredRequestSnapshot(JsonNode stored) {
+        if (stored == null || !stored.isObject()) {
+            return false;
+        }
+        boolean hasStructuredField = false;
+        java.util.Iterator<String> fieldNames = stored.fieldNames();
+        while (fieldNames.hasNext()) {
+            String fieldName = fieldNames.next();
+            if (!SAFE_STORED_REQUEST_FIELDS.contains(fieldName)) {
+                return false;
+            }
+            if (!"storageMode".equals(fieldName)
+                    && !"questionRecommendationRequestStored".equals(fieldName)
+                    && !"batchId".equals(fieldName)
+                    && !"userId".equals(fieldName)) {
+                hasStructuredField = true;
+            }
+        }
+        return hasStructuredField;
+    }
+
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
@@ -1062,6 +1976,91 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         return null;
     }
 
+    @SafeVarargs
+    private final <T> T firstNonNull(T... values) {
+        if (values == null) {
+            return null;
+        }
+        for (T value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String nodeText(JsonNode node, String fieldName) {
+        if (node == null || !StringUtils.hasText(fieldName)) {
+            return null;
+        }
+        JsonNode value = node.get(fieldName);
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        String text = value.asText(null);
+        return StringUtils.hasText(text) ? text.trim() : null;
+    }
+
+    private Long nodeLong(JsonNode node, String fieldName) {
+        if (node == null || !StringUtils.hasText(fieldName)) {
+            return null;
+        }
+        JsonNode value = node.get(fieldName);
+        if (value == null || value.isNull() || !value.canConvertToLong()) {
+            return null;
+        }
+        return value.longValue();
+    }
+
+    private Integer nodeInt(JsonNode node, String fieldName) {
+        if (node == null || !StringUtils.hasText(fieldName)) {
+            return null;
+        }
+        JsonNode value = node.get(fieldName);
+        if (value == null || value.isNull() || !value.canConvertToInt()) {
+            return null;
+        }
+        return value.intValue();
+    }
+
+    private List<Long> nodeLongList(JsonNode node, String fieldName) {
+        if (node == null || !StringUtils.hasText(fieldName)) {
+            return null;
+        }
+        JsonNode value = node.get(fieldName);
+        if (value == null || value.isNull() || !value.isArray()) {
+            return null;
+        }
+        return java.util.stream.StreamSupport.stream(value.spliterator(), false)
+                .filter(JsonNode::canConvertToLong)
+                .map(JsonNode::longValue)
+                .toList();
+    }
+
+    private void requireStoredGapSelection(List<Long> gapItemIds) {
+        if (gapItemIds == null || gapItemIds.isEmpty()) {
+            throw missingStoredGapSelection();
+        }
+    }
+
+    private BusinessException missingStoredGapSelection() {
+        return new BusinessException(ErrorCode.PARAM_ERROR,
+                "历史推荐依据缺少原始选题范围，请重新生成推荐题");
+    }
+
+    private String conflictingStoredRequestMessage() {
+        return "历史推荐依据存在冲突，请重新生成推荐题";
+    }
+
+    private BusinessException conflictingStoredRequest() {
+        return new BusinessException(ErrorCode.PARAM_ERROR, conflictingStoredRequestMessage());
+    }
+
+    private BusinessException invalidStoredRequest() {
+        return new BusinessException(ErrorCode.PARAM_ERROR,
+                "历史推荐依据快照已不足以安全恢复，请重新生成推荐题");
+    }
+
     private Long requireCurrentUserId() {
         Long userId = LoginUserContext.getUserId();
         if (userId == null) {
@@ -1076,6 +2075,11 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         }
     }
 
+    private record PresentationEvidence(
+            String sourceType,
+            Long sourceId) {
+    }
+
     private record RecommendationRequest(
             QuestionRecommendationSourceType sourceType,
             Long sourceId,
@@ -1086,4 +2090,5 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             String difficultyPreference,
             String strategy) {
     }
+
 }

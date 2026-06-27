@@ -46,6 +46,9 @@ public interface AgentV4OpsService {
 
     KnowledgeDocumentVO uploadKnowledgeDocument(Long userId, MultipartFile file, String documentType);
 
+    PageResult<KnowledgeDocumentVO> pageKnowledgeDocuments(Long userId, String title, String documentType, String status,
+                                                           Long pageNo, Long pageSize);
+
     List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status);
 
     List<String> listKnowledgeDocumentTypes(Long userId);

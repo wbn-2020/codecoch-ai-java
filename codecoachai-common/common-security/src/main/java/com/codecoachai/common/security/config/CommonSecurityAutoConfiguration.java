@@ -14,7 +14,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 @Configuration
-@EnableConfigurationProperties(InternalAuthProperties.class)
+@EnableConfigurationProperties({InternalAuthProperties.class, AdminPermissionCacheProperties.class})
 public class CommonSecurityAutoConfiguration {
 
     @Bean

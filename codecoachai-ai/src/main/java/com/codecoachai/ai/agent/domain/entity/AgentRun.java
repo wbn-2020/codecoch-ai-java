@@ -18,6 +18,7 @@ public class AgentRun extends BaseEntity {
     private LocalDate planDate;
     private String triggerType;
     private String status;
+    private String executionToken;
     private String inputSnapshotJson;
     private String outputJson;
     private String rawOutputText;
@@ -26,6 +27,7 @@ public class AgentRun extends BaseEntity {
     private String modelName;
     private String traceId;
     private Long aiCallLogId;
+    private String resultSource;
     private Integer tokenInput;
     private Integer tokenOutput;
     private Long durationMs;

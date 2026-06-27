@@ -174,7 +174,7 @@ SELECT 'agent_success_rate','Agent success rate','AGENT','SUCCESS run / total ru
 WHERE NOT EXISTS (SELECT 1 FROM analytics_metric_definition WHERE metric_code='agent_success_rate' AND deleted=0);
 
 INSERT INTO analytics_metric_definition(metric_code, metric_name, category, definition, data_source, refresh_frequency)
-SELECT 'task_adoption_rate','Task adoption rate','AGENT','ADOPT feedback / generated task','agent_feedback,agent_task','REALTIME'
+SELECT 'task_adoption_rate','Task adoption rate','AGENT','HELPFUL feedback / total feedback','agent_feedback','REALTIME'
 WHERE NOT EXISTS (SELECT 1 FROM analytics_metric_definition WHERE metric_code='task_adoption_rate' AND deleted=0);
 
 INSERT INTO analytics_metric_definition(metric_code, metric_name, category, definition, data_source, refresh_frequency)

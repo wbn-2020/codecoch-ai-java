@@ -63,6 +63,8 @@ public class AgentKnowledgeController {
     private static final String KNOWLEDGE_OP_DUPLICATE_CLEANUP = "KNOWLEDGE_DUPLICATE_CLEANUP";
     private static final String KNOWLEDGE_OP_DELETE_CHUNK = "KNOWLEDGE_DELETE_CHUNK";
     private static final String KNOWLEDGE_OP_DELETE_DOCUMENT = "KNOWLEDGE_DELETE_DOCUMENT";
+    private static final String KNOWLEDGE_OP_RESTORE_DOCUMENT_VERSION = "KNOWLEDGE_RESTORE_DOCUMENT_VERSION";
+    private static final String KNOWLEDGE_OP_DELETE_EVAL_CASE = "KNOWLEDGE_DELETE_EVAL_CASE";
 
     private final AgentV4OpsService agentV4OpsService;
 
@@ -101,11 +103,13 @@ public class AgentKnowledgeController {
     }
 
     @GetMapping("/documents")
-    public Result<List<KnowledgeDocumentVO>> listDocuments(@RequestParam(required = false) String title,
-                                                          @RequestParam(required = false) String documentType,
-                                                          @RequestParam(required = false) String status) {
+    public Result<PageResult<KnowledgeDocumentVO>> listDocuments(@RequestParam(required = false) String title,
+                                                                 @RequestParam(required = false) String documentType,
+                                                                 @RequestParam(required = false) String status,
+                                                                 @RequestParam(required = false) Long pageNo,
+                                                                 @RequestParam(required = false) Long pageSize) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.listKnowledgeDocuments(userId, title, documentType, status));
+        return Result.success(agentV4OpsService.pageKnowledgeDocuments(userId, title, documentType, status, pageNo, pageSize));
     }
 
     @GetMapping("/documents/types")
@@ -144,11 +148,27 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.listKnowledgeDocumentVersions(userId, id));
     }
 
+    @OperationLog(module = "knowledge", action = "RESTORE_KNOWLEDGE_DOCUMENT_VERSION", description = "Restore personal knowledge document version", logArgs = false, logResponse = false)
     @PostMapping("/documents/{id}/versions/{versionId}/restore")
     public Result<KnowledgeDocumentVO> restoreDocumentVersion(@PathVariable Long id,
-                                                              @PathVariable Long versionId) {
+                                                              @PathVariable Long versionId,
+                                                              @RequestParam(required = false) Boolean confirm,
+                                                              @RequestParam(required = false) Boolean dryRun,
+                                                              @RequestParam(required = false) String reason,
+                                                              @RequestParam(required = false) String idempotencyKey) {
         Long userId = SecurityAssert.requireLoginUserId();
-        return Result.success(agentV4OpsService.restoreKnowledgeDocumentVersion(userId, id, versionId));
+        String lockKey = operationConfirmationGuard.requireConfirmed(
+                KNOWLEDGE_OP_RESTORE_DOCUMENT_VERSION + ":" + userId + ":" + id + ":" + versionId,
+                confirm,
+                dryRun,
+                reason,
+                idempotencyKey);
+        try {
+            return Result.success(agentV4OpsService.restoreKnowledgeDocumentVersion(userId, id, versionId));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @GetMapping("/documents/{id}/chunks")
@@ -304,11 +324,27 @@ public class AgentKnowledgeController {
         return Result.success(knowledgeEvaluationService.saveCase(userId, dto));
     }
 
+    @OperationLog(module = "knowledge", action = "DELETE_KNOWLEDGE_EVAL_CASE", description = "Delete personal knowledge evaluation case", logArgs = false, logResponse = false)
     @DeleteMapping("/eval/cases/{id}")
-    public Result<Void> deleteEvalCase(@PathVariable Long id) {
+    public Result<Void> deleteEvalCase(@PathVariable Long id,
+                                       @RequestParam(required = false) Boolean confirm,
+                                       @RequestParam(required = false) Boolean dryRun,
+                                       @RequestParam(required = false) String reason,
+                                       @RequestParam(required = false) String idempotencyKey) {
         Long userId = SecurityAssert.requireLoginUserId();
-        knowledgeEvaluationService.deleteCase(userId, id);
-        return Result.success();
+        String lockKey = operationConfirmationGuard.requireConfirmed(
+                KNOWLEDGE_OP_DELETE_EVAL_CASE + ":" + userId + ":" + id,
+                confirm,
+                dryRun,
+                reason,
+                idempotencyKey);
+        try {
+            knowledgeEvaluationService.deleteCase(userId, id);
+            return Result.success();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @PostMapping("/eval/runs")

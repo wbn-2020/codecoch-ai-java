@@ -7,6 +7,7 @@ import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.service.NotificationQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -84,6 +85,10 @@ public class NotificationController {
         private String sendStatus;
         private String sendError;
         private LocalDateTime sentAt;
+        private String actionUrl;
+        private String fallbackPath;
+        private String fallbackLabel;
+        private LocalDate planDate;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
 

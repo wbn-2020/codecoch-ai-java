@@ -13,4 +13,8 @@ public class QuestionRecommendationQueryDTO {
     private Long studyPlanId;
     private Long pageNo = 1L;
     private Long pageSize = 10L;
+
+    public void setTargetJobId(Long targetJobId) {
+        this.jobTargetId = targetJobId;
+    }
 }

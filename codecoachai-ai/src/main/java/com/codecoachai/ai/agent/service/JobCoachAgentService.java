@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.service;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentRunQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
@@ -10,6 +11,7 @@ import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
+import com.codecoachai.ai.agent.domain.vo.AgentCoachActionVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.common.core.domain.PageResult;
@@ -31,6 +33,8 @@ public interface JobCoachAgentService {
     PageResult<AgentTaskVO> pageTasks(Long userId, AgentTaskQueryDTO query);
 
     AgentTaskVO completeTask(Long userId, Long taskId, AgentTaskCompleteDTO dto);
+
+    AgentCoachActionVO performCoachAction(Long userId, AgentCoachActionDTO dto);
 
     AgentTaskVO completeBusinessAction(AgentBusinessActionCompleteDTO dto);
 

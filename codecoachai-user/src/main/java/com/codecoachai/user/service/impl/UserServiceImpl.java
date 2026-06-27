@@ -7,6 +7,7 @@ import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.user.convert.UserConvert;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
@@ -29,6 +30,7 @@ import com.codecoachai.user.mapper.SysUserMapper;
 import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.RoleService;
 import com.codecoachai.user.service.UserService;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -45,11 +47,23 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class UserServiceImpl implements UserService {
 
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String TEMP_PASSWORD_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private static final String TEMP_PASSWORD_LOWER = "abcdefghijkmnopqrstuvwxyz";
+    private static final String TEMP_PASSWORD_DIGIT = "23456789";
+    private static final String TEMP_PASSWORD_SPECIAL = "@#$%&*!?";
+    private static final String TEMP_PASSWORD_ALL = TEMP_PASSWORD_UPPER
+            + TEMP_PASSWORD_LOWER
+            + TEMP_PASSWORD_DIGIT
+            + TEMP_PASSWORD_SPECIAL;
+    private static final int TEMP_PASSWORD_LENGTH = 16;
+
     private final SysUserMapper sysUserMapper;
     private final SysUserRoleMapper sysUserRoleMapper;
     private final RoleService roleService;
     private final PasswordEncoder passwordEncoder;
     private final JdbcTemplate jdbcTemplate;
+    private final AdminPermissionCache adminPermissionCache;
 
     @Override
     public UserProfileVO getCurrentUserProfile() {
@@ -166,13 +180,14 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(id);
         user.setStatus(dto.getStatus());
         sysUserMapper.updateById(user);
+        adminPermissionCache.invalidateUserPermissions(id);
     }
 
     @Override
     public String resetPassword(Long id) {
         requireAdmin();
         SysUser user = getUserOrThrow(id);
-        String newPassword = "Cc@" + System.currentTimeMillis() % 100000;
+        String newPassword = generateTemporaryPassword();
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         sysUserMapper.updateById(user);
         return newPassword;
@@ -476,9 +491,9 @@ public class UserServiceImpl implements UserService {
                 WHERE u.deleted = 0
                   AND u.status = 1
                   AND r.status = 1
-                  AND UPPER(r.role_code) = UPPER(?)
+                  AND (UPPER(r.role_code) = UPPER(?) OR UPPER(r.role_code) = CONCAT('ROLE_', UPPER(?)))
                   AND u.id <> ?
-                """, Long.class, SecurityConstants.ROLE_ADMIN, userId);
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN, userId);
         if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
         }
@@ -497,6 +512,32 @@ public class UserServiceImpl implements UserService {
 
     private int toInt(long value) {
         return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
+    }
+
+    private String generateTemporaryPassword() {
+        char[] password = new char[TEMP_PASSWORD_LENGTH];
+        password[0] = randomChar(TEMP_PASSWORD_UPPER);
+        password[1] = randomChar(TEMP_PASSWORD_LOWER);
+        password[2] = randomChar(TEMP_PASSWORD_DIGIT);
+        password[3] = randomChar(TEMP_PASSWORD_SPECIAL);
+        for (int i = 4; i < password.length; i++) {
+            password[i] = randomChar(TEMP_PASSWORD_ALL);
+        }
+        shuffle(password);
+        return new String(password);
+    }
+
+    private char randomChar(String candidates) {
+        return candidates.charAt(SECURE_RANDOM.nextInt(candidates.length()));
+    }
+
+    private void shuffle(char[] chars) {
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = SECURE_RANDOM.nextInt(i + 1);
+            char current = chars[i];
+            chars[i] = chars[j];
+            chars[j] = current;
+        }
     }
 
     private Long nullableLong(java.sql.ResultSet rs, String column) throws java.sql.SQLException {

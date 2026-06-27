@@ -1,5 +1,6 @@
 package com.codecoachai.question.controller;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -20,6 +21,8 @@ import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
 import com.codecoachai.question.service.QuestionReviewService;
 import java.util.List;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -121,6 +124,30 @@ class AdminAiQuestionSseControllerTest {
         verify(operationConfirmationGuard).release("lock-key");
     }
 
+    @Test
+    void generateDegradesWhenSseExecutorRejectsSubmission() {
+        AiQuestionGenerateRequestDTO dto = confirmedDto("question-sse-generate-rejected");
+        AdminAiQuestionSseController rejectingController = new AdminAiQuestionSseController(
+                questionReviewService,
+                new RejectingExecutor(),
+                adminPermissionGuard,
+                operationConfirmationGuard);
+        when(operationConfirmationGuard.requireConfirmed(
+                eq("question-ai-generate-sse"),
+                eq(true),
+                eq(false),
+                eq("admin ai question generation confirmed"),
+                eq("question-sse-generate-rejected")))
+                .thenReturn("lock-key");
+
+        SseEmitter emitter = assertDoesNotThrow(() -> rejectingController.generate(dto),
+                "SSE queue rejection should be degraded on the emitter instead of escaping to HTTP thread");
+
+        assertNotNull(emitter);
+        verify(questionReviewService, never()).generate(any());
+        verify(operationConfirmationGuard).release("lock-key");
+    }
+
     private static AiQuestionGenerateRequestDTO confirmedDto(String idempotencyKey) {
         AiQuestionGenerateRequestDTO dto = new AiQuestionGenerateRequestDTO();
         dto.setTargetPosition("Java backend engineer");
@@ -130,5 +157,12 @@ class AdminAiQuestionSseControllerTest {
         dto.setReason("admin ai question generation confirmed");
         dto.setIdempotencyKey(idempotencyKey);
         return dto;
+    }
+
+    private static final class RejectingExecutor implements Executor {
+        @Override
+        public void execute(Runnable command) {
+            throw new RejectedExecutionException("question sse queue full");
+        }
     }
 }

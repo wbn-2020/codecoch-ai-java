@@ -1,6 +1,6 @@
 package com.codecoachai.file.controller;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -17,6 +17,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
 
 @ExtendWith(MockitoExtension.class)
 class AdminFileControllerTest {
@@ -38,7 +40,7 @@ class AdminFileControllerTest {
     @Test
     void downloadConfirmedUsesSharedConfirmationGuardBeforeReturningFile() {
         AdminFileDownloadAccessDTO dto = downloadDto();
-        byte[] body = new byte[] {1, 2, 3};
+        Resource body = new ByteArrayResource(new byte[] {1, 2, 3});
         when(operationConfirmationGuard.requireConfirmed(
                 eq("admin-file-download:7"),
                 eq(true),
@@ -47,9 +49,9 @@ class AdminFileControllerTest {
                 eq("file-download-1234"))).thenReturn("file-download-lock");
         when(fileStorageService.adminDownload(7L)).thenReturn(ResponseEntity.ok(body));
 
-        ResponseEntity<byte[]> result = controller.downloadConfirmed(7L, dto);
+        ResponseEntity<Resource> result = controller.downloadConfirmed(7L, dto);
 
-        assertArrayEquals(body, result.getBody());
+        assertSame(body, result.getBody());
         verify(permissionGuard).require("admin:file:download");
         verify(fileStorageService).adminDownload(7L);
     }

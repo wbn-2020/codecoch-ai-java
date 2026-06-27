@@ -119,6 +119,13 @@ class AsyncTaskServiceTest {
         verify(redisTemplate).delete(RedisKeyConstants.mqConsumedKey("msg-failed"));
     }
 
+    @Test
+    void markTerminalFailedDoesNotReleaseRedisConsumedKeyForMqRetry() {
+        service.markTerminalFailed("msg-terminal-failed", "invalid target job");
+
+        verify(redisTemplate, never()).delete(RedisKeyConstants.mqConsumedKey("msg-terminal-failed"));
+    }
+
     private MqMessage<String> message(String messageId) {
         MqMessage<String> message = new MqMessage<>();
         message.setMessageId(messageId);

@@ -29,4 +29,5 @@ public class InterviewReport extends BaseEntity {
     private LocalDateTime generatedAt;
     private String suggestions;
     private String failureReason;
+    private String generationToken;
 }

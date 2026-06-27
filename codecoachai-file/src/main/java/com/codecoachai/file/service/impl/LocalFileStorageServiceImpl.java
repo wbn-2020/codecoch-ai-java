@@ -29,6 +29,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -122,9 +124,9 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     }
 
     @Override
-    public ResponseEntity<byte[]> adminDownload(Long fileId) {
+    public ResponseEntity<Resource> adminDownload(Long fileId) {
         FileInfo fileInfo = getAvailableAdminFile(fileId);
-        return downloadFile(fileInfo);
+        return downloadResource(fileInfo);
     }
 
     private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
@@ -166,10 +168,10 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
         List<Long> parseStatusFileIds = resolveParseStatusFileIds(actualQuery);
         if (parseStatusFileIds != null && parseStatusFileIds.isEmpty()) {
-            return PageResult.empty(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize()));
+            return PageResult.empty(actualQuery.effectivePageNo(), actualQuery.effectivePageSize());
         }
         Page<FileInfo> page = fileInfoMapper.selectPage(
-                Page.of(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize())),
+                Page.of(actualQuery.effectivePageNo(), actualQuery.effectivePageSize()),
                 new LambdaQueryWrapper<FileInfo>()
                         .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
                         .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
@@ -387,6 +389,38 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         }
     }
 
+    private ResponseEntity<Resource> downloadResource(FileInfo fileInfo) {
+        if (!StringUtils.hasText(fileInfo.getStoragePath())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage path is missing.");
+        }
+
+        Path root = normalizeRoot();
+        Path target = root.resolve(fileInfo.getStoragePath()).normalize();
+        ensureInsideRoot(root, target);
+        if (!Files.isRegularFile(target)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File is not available for download.");
+        }
+
+        try {
+            return ResponseEntity.ok()
+                    .contentType(resolveMediaType(fileInfo.getMimeType()))
+                    .contentLength(Files.size(target))
+                    .header(HEADER_ORIGINAL_FILENAME, encodeHeaderValue(fileInfo.getOriginalFilename()))
+                    .header(HEADER_FILE_EXT, fileInfo.getFileExt())
+                    .header(HEADER_FILE_SIZE, String.valueOf(fileInfo.getFileSize()))
+                    .header(HEADER_MIME_TYPE, StringUtils.hasText(fileInfo.getMimeType())
+                            ? fileInfo.getMimeType()
+                            : MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
+                            .build()
+                            .toString())
+                    .body(new FileSystemResource(target));
+        } catch (IOException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed, please retry later.");
+        }
+    }
+
     private List<Long> resolveParseStatusFileIds(AdminFileQueryDTO query) {
         if (query == null || !StringUtils.hasText(query.getParseStatus())) {
             return null;
@@ -422,14 +456,6 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         return PARSE_STATUS_SUCCESS.equals(parseStatus)
                 || PARSE_STATUS_FAILED.equals(parseStatus)
                 || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
-    }
-
-    private long defaultPage(Long pageNo) {
-        return pageNo == null ? 1L : pageNo;
-    }
-
-    private long defaultSize(Long pageSize) {
-        return pageSize == null ? 10L : pageSize;
     }
 
     private void deleteQuietly(Path target) {

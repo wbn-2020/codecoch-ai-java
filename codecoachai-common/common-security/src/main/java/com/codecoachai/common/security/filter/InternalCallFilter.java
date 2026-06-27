@@ -153,13 +153,7 @@ public class InternalCallFilter extends OncePerRequestFilter {
     }
 
     private String normalizeRequestPath(HttpServletRequest request) {
-        String path = InternalSignatureUtils.normalizePath(request.getRequestURI());
-        String contextPath = request.getContextPath();
-        if (StringUtils.hasText(contextPath) && path.startsWith(contextPath)) {
-            String withoutContextPath = path.substring(contextPath.length());
-            return InternalSignatureUtils.normalizePath(withoutContextPath);
-        }
-        return path;
+        return InternalSignatureUtils.normalizeRequestPath(request.getRequestURI(), request.getContextPath());
     }
 
     private boolean isInternalPath(String path) {

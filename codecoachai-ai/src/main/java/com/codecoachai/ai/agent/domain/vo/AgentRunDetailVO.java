@@ -26,6 +26,10 @@ public class AgentRunDetailVO {
     private String modelName;
     private String traceId;
     private Long aiCallLogId;
+    private String resultSource;
+    private String resultSourceLabel;
+    private Boolean fallback;
+    private Boolean mock;
     private Integer tokenInput;
     private Integer tokenOutput;
     private Long durationMs;

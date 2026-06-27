@@ -4,13 +4,19 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
@@ -21,7 +27,9 @@ import com.codecoachai.interview.domain.entity.InterviewStage;
 import com.codecoachai.interview.domain.enums.InterviewModeEnum;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.enums.InterviewStatusEnum;
+import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
+import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.QuestionFeignClient;
@@ -51,6 +59,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -277,11 +286,13 @@ class InterviewServiceImplTest {
     @Test
     void generateReportForSseCompletesAgentInterviewTaskWithGeneratedReportEvidence() {
         InterviewSession session = completedTargetJobSession();
+        AtomicReference<InterviewReport> latest = new AtomicReference<>();
         when(sessionMapper.selectById(1L)).thenReturn(session);
-        when(reportMapper.selectOne(any())).thenReturn(null);
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
         when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
             InterviewReport report = invocation.getArgument(0);
             report.setId(88L);
+            latest.set(report);
             return 1;
         });
         when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
@@ -292,6 +303,101 @@ class InterviewServiceImplTest {
         });
 
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void finishReusesGeneratingReportWithoutDispatchingDuplicateTask() {
+        InterviewSession session = waitingSession();
+        session.setStatus(InterviewStatusEnum.IN_PROGRESS.name());
+        session.setReportStatus(ReportStatusEnum.GENERATING.name());
+        InterviewReport generating = new InterviewReport();
+        generating.setId(77L);
+        generating.setSessionId(1L);
+        generating.setUserId(10L);
+        generating.setStatus(ReportStatusEnum.GENERATING.name());
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(reportMapper.selectOne(any())).thenReturn(generating);
+
+        FinishInterviewVO result = service.finish(1L);
+
+        assertNotNull(result.getReport());
+        assertEquals(77L, result.getReport().getId());
+        verify(interviewMqDispatcher, never()).dispatchReportWithReceipt(anyLong(), anyLong(), anyLong(), any());
+        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void generateReportForSseReturnsExistingGeneratingReportWithoutRegeneration() {
+        InterviewSession session = completedTargetJobSession();
+        session.setReportStatus(ReportStatusEnum.GENERATING.name());
+        InterviewReport existing = generatedReportForSession();
+        existing.setStatus(ReportStatusEnum.GENERATING.name());
+        existing.setGenerationToken("token-generating");
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenReturn(existing);
+
+        InterviewReportGenerateResultVO result = service.generateReportForSse(1L, 88L, false, stage -> {
+        });
+
+        assertEquals(88L, result.getReportId());
+        verify(aiFeignClient, never()).report(any());
+        verify(reportMapper, never()).insert(any(InterviewReport.class));
+    }
+
+    @Test
+    void generateReportForSseForceRegenerateCreatesNewReportVersion() {
+        InterviewSession session = completedTargetJobSession();
+        InterviewReport existing = generatedReportForSession();
+        existing.setGenerationToken("token-old");
+        AtomicReference<InterviewReport> latest = new AtomicReference<>(existing);
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
+        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
+            InterviewReport report = invocation.getArgument(0);
+            report.setId(99L);
+            latest.set(report);
+            return 1;
+        });
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
+
+        InterviewReportGenerateResultVO result = service.generateReportForSse(1L, 88L, true, stage -> {
+        });
+
+        assertEquals(99L, result.getReportId());
+    }
+
+    @Test
+    void finishDispatchesReportGenerationWithStableGenerationToken() {
+        InterviewSession session = waitingSession();
+        session.setStatus(InterviewStatusEnum.IN_PROGRESS.name());
+        session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(reportMapper.selectOne(any())).thenReturn(null);
+        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
+            InterviewReport report = invocation.getArgument(0);
+            report.setId(91L);
+            return 1;
+        });
+        when(interviewMqDispatcher.dispatchReportWithReceipt(eq(1L), eq(10L), eq(91L),
+                argThat(token -> token != null && !token.isBlank())))
+                .thenReturn(mockDispatchReceipt("msg-1", "trace-1", "INTERVIEW_REPORT", "91", "SENT"));
+
+        FinishInterviewVO result = service.finish(1L);
+
+        assertNotNull(result.getReport());
+        assertEquals(91L, result.getReport().getId());
+        assertEquals("msg-1", result.getAsyncMessageId());
+        assertEquals("trace-1", result.getAsyncTraceId());
+        assertEquals("INTERVIEW_REPORT", result.getAsyncBizType());
+        assertEquals("91", result.getAsyncBizId());
+        assertEquals("SENT", result.getAsyncSendStatus());
+        verify(interviewMqDispatcher).dispatchReportWithReceipt(eq(1L), eq(10L), eq(91L),
+                argThat(token -> token != null && !token.isBlank()));
+        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any());
     }
 
     private InterviewService transactionalProxy(InterviewServiceImpl target) {
@@ -389,6 +495,17 @@ class InterviewServiceImplTest {
         vo.setNextAction("FINISH");
         vo.setKnowledgePoints("HashMap");
         return vo;
+    }
+
+    private MqDispatchReceipt mockDispatchReceipt(String messageId, String traceId, String bizType, String bizId,
+                                                  String sendStatus) {
+        return MqDispatchReceipt.builder()
+                .messageId(messageId)
+                .traceId(traceId)
+                .bizType(bizType)
+                .bizId(bizId)
+                .sendStatus(sendStatus)
+                .build();
     }
 
     private Response streamResponse(String body) {

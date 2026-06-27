@@ -156,7 +156,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         assertExpectedTemplateState(template, dto.getExpectedStatus(), dto.getExpectedActiveVersionId());
         if (hasPromptContent(dto)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "提示词正文请通过版本管理修改");
+                    "Prompt template content must be changed through version management.");
         }
         applyMetadata(template, dto);
         promptTemplateMapper.updateById(template);
@@ -170,7 +170,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         assertExpectedTemplateState(template, action.getExpectedStatus(), action.getExpectedActiveVersionId());
         if (isTemplateEnabled(template)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Disable the prompt template before deleting it.");
+                    "Prompt template content must be changed through version management.");
         }
         template.setStatus(CommonConstants.NO);
         template.setEnabled(CommonConstants.NO);
@@ -184,7 +184,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         Integer nextStatus = normalizeTemplateStatus(dto.getStatus());
         if (CommonConstants.YES.equals(nextStatus)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt templates can be enabled only by activating a prompt version.");
+                    "Prompt template content must be changed through version management.");
         }
         template.setStatus(nextStatus);
         template.setEnabled(nextStatus);
@@ -238,7 +238,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
         if (PromptVersionStatus.DISABLED.name().equals(version.getStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "已禁用的提示词版本不能启用");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         PromptTemplate template = getTemplate(version.getTemplateId());
         assertExpectedActiveVersion(template, dto);
@@ -258,7 +259,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         int updated = updateTemplateForActivation(template, version, expectedActiveVersion(dto));
         if (updated != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template changed while publishing. Refresh and confirm again.");
+                    "Prompt template content must be changed through version management.");
         }
         return AiConvert.toVersionVO(version);
     }
@@ -274,7 +275,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         PromptTemplate template = getTemplate(version.getTemplateId());
         assertExpectedActiveVersion(template, dto);
         if (CommonConstants.YES.equals(version.getIsActive())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前生效版本不能直接禁用，请先切换到其他版本");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         version.setStatus(PromptVersionStatus.DISABLED.name());
         version.setChangeLog(dto == null ? version.getChangeLog() : firstText(dto.getChangeLog(), version.getChangeLog()));
@@ -372,7 +374,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public AiCallLogVO getLog(Long id) {
         AiCallLog log = aiCallLogMapper.selectById(id);
         if (log == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用记录不存在");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return AiConvert.toLogVO(log);
     }
@@ -381,7 +384,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public AiCallLogVO getLogRaw(Long id) {
         AiCallLog log = aiCallLogMapper.selectById(id);
         if (log == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "AI 调用记录不存在");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return AiConvert.toLogVO(log, true);
     }
@@ -478,10 +482,12 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private void apply(PromptTemplate template, PromptTemplateSaveDTO dto) {
         if (!StringUtils.hasText(dto.getName()) && !StringUtils.hasText(dto.getTemplateName())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词名称不能为空");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         if (!StringUtils.hasText(dto.getContent()) && !StringUtils.hasText(dto.getTemplateContent())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词内容不能为空");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         template.setScene(dto.getScene());
         template.setName(StringUtils.hasText(dto.getName()) ? dto.getName() : dto.getTemplateName());
@@ -520,10 +526,12 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         try {
             versionStatus = PromptVersionStatus.valueOf(status.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本状态不正确");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         if (PromptVersionStatus.ACTIVE.equals(versionStatus)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本需要通过启用操作发布");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return versionStatus.name();
     }
@@ -533,14 +541,16 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 .eq(PromptTemplateVersion::getTemplateId, templateId)
                 .eq(PromptTemplateVersion::getVersionCode, versionCode));
         if (count != null && count > 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本号已存在");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
     }
 
     private PromptTemplateVersion getVersion(Long id) {
         PromptTemplateVersion version = promptTemplateVersionMapper.selectById(id);
         if (version == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词版本不存在或已不可用");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return version;
     }
@@ -548,7 +558,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private PromptTemplate getTemplate(Long id) {
         PromptTemplate template = promptTemplateMapper.selectById(id);
         if (template == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "提示词模板不存在或已不可用");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return template;
     }
@@ -558,7 +569,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         if (!Objects.equals(template.getStatus(), expectedStatus)
                 || !Objects.equals(template.getActiveVersionId(), expectedActiveVersionId)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template state changed. Refresh and confirm again.");
+                    "Prompt template content must be changed through version management.");
         }
     }
 
@@ -566,7 +577,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         Long expectedActiveVersionId = expectedActiveVersion(dto);
         if (!Objects.equals(template.getActiveVersionId(), expectedActiveVersionId)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt active version changed. Refresh and confirm again.");
+                    "Prompt template content must be changed through version management.");
         }
     }
 
@@ -576,7 +587,8 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private Integer normalizeTemplateStatus(Integer status) {
         if (!CommonConstants.YES.equals(status) && !CommonConstants.NO.equals(status)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Prompt template status must be 0 or 1.");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
         }
         return status;
     }
@@ -627,3 +639,4 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     private record PromptTestResult(String response, Long logId) {
     }
 }
+

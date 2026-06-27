@@ -4,12 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeOptimizeRecord;
@@ -26,6 +28,8 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeMqDispatcher;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -37,6 +41,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.multipart.MultipartFile;
 
 @ExtendWith(MockitoExtension.class)
 class ResumeServiceImplTest {
@@ -130,12 +135,56 @@ class ResumeServiceImplTest {
                 () -> service.getOptimizeRecordEvidence(USER_ID, OPTIMIZE_RECORD_ID));
     }
 
+    @Test
+    void validateUploadFileRejectsOversizedResume() {
+        MultipartFile file = mock(MultipartFile.class);
+        when(file.isEmpty()).thenReturn(false);
+        when(file.getOriginalFilename()).thenReturn("resume.pdf");
+        when(file.getSize()).thenReturn(10L * 1024L * 1024L + 1L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> invokePrivate("validateUploadFile", new Class<?>[]{MultipartFile.class}, file));
+
+        assertTrue(exception.getMessage().contains("10MB"));
+    }
+
+    @Test
+    void applyProjectBackfillsCanonicalProjectBackgroundFromLegacyDescription() {
+        ResumeProjectSaveDTO dto = new ResumeProjectSaveDTO();
+        dto.setProjectName("CodeCoachAI");
+        dto.setDescription("legacy project description");
+        ResumeProject project = new ResumeProject();
+
+        invokePrivate("applyProject",
+                new Class<?>[]{ResumeProject.class, ResumeProjectSaveDTO.class},
+                project, dto);
+
+        assertEquals("legacy project description", project.getProjectBackground());
+        assertEquals("legacy project description", project.getDescription());
+    }
+
     private void verifySelectWrapper(ArgumentCaptor<Wrapper<ResumeOptimizeRecord>> wrapperCaptor) {
         org.mockito.Mockito.verify(optimizeRecordMapper).selectOne(wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertTrue(sqlSegment.contains("user_id"));
         assertTrue(sqlSegment.contains("optimize_status"));
         assertTrue(sqlSegment.contains("deleted"));
+    }
+
+    private void invokePrivate(String methodName, Class<?>[] parameterTypes, Object... args) {
+        try {
+            Method method = ResumeServiceImpl.class.getDeclaredMethod(methodName, parameterTypes);
+            method.setAccessible(true);
+            method.invoke(service, args);
+        } catch (InvocationTargetException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw new RuntimeException(cause);
+        } catch (ReflectiveOperationException ex) {
+            throw new RuntimeException(ex);
+        }
     }
 
     private ResumeOptimizeRecord successRecord() {

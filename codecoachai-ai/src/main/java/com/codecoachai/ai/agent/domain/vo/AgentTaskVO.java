@@ -19,11 +19,13 @@ public class AgentTaskVO {
     private String reason;
     private String priority;
     private Integer estimatedMinutes;
+    private Integer estimatedEffortMinutes;
     private String relatedSkillCode;
     private String relatedSkillName;
     private String relatedBizType;
     private Long relatedBizId;
     private String actionUrl;
+    private String actionType;
     private String sourceType;
     private Long sourceId;
     private String trustStatus;
@@ -44,4 +46,5 @@ public class AgentTaskVO {
     private Integer sortOrder;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private List<ActivationHandoffVO> activationHandoffs = new ArrayList<>();
 }

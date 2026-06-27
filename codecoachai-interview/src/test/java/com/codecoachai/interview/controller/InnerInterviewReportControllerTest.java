@@ -2,10 +2,13 @@ package com.codecoachai.interview.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
@@ -19,11 +22,15 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -57,7 +64,8 @@ class InnerInterviewReportControllerTest {
                 messageMapper,
                 reportMapper,
                 interviewMqDispatcher,
-                agentBusinessActionNotifier);
+                agentBusinessActionNotifier,
+                new ObjectMapper());
     }
 
     @Test
@@ -77,23 +85,99 @@ class InnerInterviewReportControllerTest {
     }
 
     @Test
-    void completeReportCompletesAgentInterviewTaskWithReportEvidence() {
+    void completeReportCompletesAgentInterviewTaskWithReportEvidence() throws Exception {
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
-        when(reportMapper.selectOne(any())).thenReturn(null);
-        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
-            InterviewReport report = invocation.getArgument(0);
-            report.setId(88L);
-            return 1;
-        });
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        when(reportMapper.selectOne(any())).thenReturn(current);
         InnerInterviewReportController.CompleteReportDTO dto =
                 new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
         dto.setReportStatus("SUCCESS");
-        dto.setReportJson("{\"summary\":\"ok\"}");
+        dto.setReportJson(new ObjectMapper().writeValueAsString(reportPayload()));
         dto.setTotalScore(82);
 
         controller.completeReport(1L, dto);
 
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).updateById(reportCaptor.capture());
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals("ok", persisted.getSummary());
+        assertEquals("[\"system design\"]", persisted.getWeakPoints());
+        assertEquals("[\"clear communication\"]", persisted.getStrengths());
+        assertEquals("[\"cache consistency\"]", persisted.getWeaknesses());
+        assertEquals("[\"review by topic\"]", persisted.getReviewSuggestions());
+        assertEquals("[\"keep practicing\"]", persisted.getSuggestions());
+        assertEquals("[{\"question\":\"Q1\"}]", persisted.getQaReview());
+        assertEquals("full report body", persisted.getReportContent());
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportSkipsSessionSideEffectsWhenPayloadTargetsStaleGenerationToken() {
+        InterviewReport latest = generatedReport();
+        latest.setStatus(ReportStatusEnum.GENERATING.name());
+        latest.setGenerationToken("token-latest");
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(reportMapper.selectOne(any())).thenReturn(latest);
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-old");
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("{\"summary\":\"stale\"}");
+        dto.setTotalScore(70);
+
+        controller.completeReport(1L, dto);
+
+        verify(sessionMapper, never()).update(any(), any());
+        verify(reportMapper, never()).updateById(any(InterviewReport.class));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportSkipsSessionSideEffectsWhenPayloadOmitsRequiredGenerationToken() {
+        InterviewReport latest = generatedReport();
+        latest.setStatus(ReportStatusEnum.GENERATING.name());
+        latest.setGenerationToken("token-latest");
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(reportMapper.selectOne(any())).thenReturn(latest);
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("{\"summary\":\"stale\"}");
+        dto.setTotalScore(70);
+
+        controller.completeReport(1L, dto);
+
+        verify(sessionMapper, never()).update(any(), any());
+        verify(reportMapper, never()).updateById(any(InterviewReport.class));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void getSearchDocUsesLatestReportIdAsCurrentVersion() {
+        AtomicReference<LambdaQueryWrapper<InterviewReport>> queryRef = new AtomicReference<>();
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> {
+            queryRef.set(invocation.getArgument(0));
+            return generatedReport();
+        });
+
+        controller.getSearchDoc(1L);
+
+        LambdaQueryWrapper<InterviewReport> query = queryRef.get();
+        assertNotNull(query);
+        String sqlSegment = query.getSqlSegment();
+        assertTrue(sqlSegment.contains("ORDER BY id DESC"),
+                () -> "Current report should be selected by latest id, actual SQL: " + sqlSegment);
+        assertTrue(!sqlSegment.contains("updated_at"),
+                () -> "Current report query should not prefer updated_at over report id, actual SQL: " + sqlSegment);
     }
 
     private static void initTableInfo(Class<?> entityClass) {
@@ -117,5 +201,18 @@ class InnerInterviewReportControllerTest {
         report.setUserId(10L);
         report.setStatus(ReportStatusEnum.GENERATED.name());
         return report;
+    }
+
+    private Map<String, Object> reportPayload() {
+        return Map.of(
+                "totalScore", 82,
+                "summary", "ok",
+                "weakPoints", "[\"system design\"]",
+                "strengths", "[\"clear communication\"]",
+                "weaknesses", "[\"cache consistency\"]",
+                "reviewSuggestions", "[\"review by topic\"]",
+                "suggestions", "[\"keep practicing\"]",
+                "qaReview", "[{\"question\":\"Q1\"}]",
+                "reportContent", "full report body");
     }
 }

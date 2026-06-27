@@ -7,6 +7,7 @@ import lombok.Data;
 public class ExecuteAgentDailyPlanDTO {
 
     private Long userId;
+    private String executionToken;
     private Long targetJobId;
     private LocalDate date;
     private Integer maxTotalMinutes;

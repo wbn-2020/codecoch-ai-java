@@ -84,6 +84,7 @@ public class ResumeServiceImpl implements ResumeService {
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
+    private static final long MAX_UPLOAD_SIZE_BYTES = 10L * 1024L * 1024L;
     private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
             "title", "resumeName", "realName", "email", "phone", "targetPosition",
             "skillStack", "workExperience", "educationExperience", "summary");
@@ -1548,21 +1549,27 @@ public class ResumeServiceImpl implements ResumeService {
         }
         String ext = simpleName.substring(index + 1).toLowerCase(Locale.ROOT);
         if (!ALLOWED_EXTENSIONS.contains(ext)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件仅支持 pdf/doc/docx/md/txt");
+        }
+        if (file.getSize() > MAX_UPLOAD_SIZE_BYTES) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件大小不能超过 10MB");
         }
     }
 
     private void applyProject(ResumeProject project, ResumeProjectSaveDTO dto) {
+        String projectBackground = StringUtils.hasText(dto.getProjectBackground())
+                ? dto.getProjectBackground()
+                : dto.getDescription();
         project.setProjectName(dto.getProjectName());
         project.setProjectPeriod(dto.getProjectPeriod());
-        project.setProjectBackground(dto.getProjectBackground());
+        project.setProjectBackground(projectBackground);
         project.setRole(dto.getRole());
         project.setTechStack(dto.getTechStack());
         project.setResponsibility(dto.getResponsibility());
         project.setCoreFeatures(dto.getCoreFeatures());
         project.setTechnicalDifficulties(dto.getTechnicalDifficulties());
         project.setOptimizationResults(dto.getOptimizationResults());
-        project.setDescription(dto.getDescription());
+        project.setDescription(StringUtils.hasText(dto.getDescription()) ? dto.getDescription() : projectBackground);
         project.setHighlights(dto.getHighlights());
         project.setSort(dto.getSort() == null ? 0 : dto.getSort());
         project.setSortOrder(dto.getSortOrder() == null ? project.getSort() : dto.getSortOrder());

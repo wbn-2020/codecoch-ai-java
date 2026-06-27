@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -62,13 +63,20 @@ public class AdminAiQuestionSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         try {
-            CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto, lockKey),
-                    questionSseStreamExecutor);
-        } catch (RuntimeException ex) {
+            submitGenerate(emitter, active, requestId, loginUser, dto, lockKey);
+        } catch (RejectedExecutionException ex) {
+            log.warn("AI question generation SSE task rejected, requestId={}", requestId, ex);
             operationConfirmationGuard.release(lockKey);
-            throw ex;
+            send(emitter, active, "error", errorEvent(requestId));
+            complete(emitter, active);
         }
         return emitter;
+    }
+
+    private void submitGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                LoginUser loginUser, AiQuestionGenerateRequestDTO dto, String lockKey) {
+        CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto, lockKey),
+                questionSseStreamExecutor);
     }
 
     private void executeGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,

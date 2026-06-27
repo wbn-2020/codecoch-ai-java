@@ -16,5 +16,6 @@ public class AdminAgentRunQueryDTO {
     private String agentType;
     private String triggerType;
     private String status;
+    private String triggerType;
     private String promptType;
 }

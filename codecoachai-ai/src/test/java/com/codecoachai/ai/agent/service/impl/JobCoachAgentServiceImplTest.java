@@ -7,10 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
@@ -19,6 +22,7 @@ import com.codecoachai.ai.agent.domain.context.DailyPlanResult;
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult.PlanTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
@@ -33,6 +37,7 @@ import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.domain.enums.AgentRunStatusEnum;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskStatusEnum;
 import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
+import com.codecoachai.ai.agent.domain.vo.AgentCoachActionVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
 import com.codecoachai.ai.agent.feign.InterviewReportEvidenceFeignClient;
@@ -48,6 +53,7 @@ import com.codecoachai.ai.agent.feign.vo.PracticeRecordEvidenceVO;
 import com.codecoachai.ai.agent.feign.vo.ResumeOptimizeRecordEvidenceVO;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
+import com.codecoachai.ai.agent.service.AgentMetricsService;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
 import com.codecoachai.ai.agent.service.AgentPromptBuilder;
@@ -55,6 +61,7 @@ import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
 import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.PromptRenderResult;
+import com.codecoachai.ai.agent.domain.dto.AgentMetricEventDTO;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -62,16 +69,22 @@ import java.lang.reflect.Method;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.Mockito;
 import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @ExtendWith(MockitoExtension.class)
@@ -98,6 +111,8 @@ class JobCoachAgentServiceImplTest {
     @Mock
     private AiCallLogService aiCallLogService;
     @Mock
+    private AgentMetricsService agentMetricsService;
+    @Mock
     private QuestionPracticeEvidenceFeignClient questionPracticeEvidenceFeignClient;
     @Mock
     private ResumeJobApplicationEvidenceFeignClient resumeJobApplicationEvidenceFeignClient;
@@ -109,6 +124,7 @@ class JobCoachAgentServiceImplTest {
     private AgentMqDispatcher agentMqDispatcher;
     @Mock
     private TransactionTemplate transactionTemplate;
+    private final List<AgentMetricEventDTO> capturedCoachMetrics = new ArrayList<>();
 
     private JobCoachAgentServiceImpl service;
 
@@ -130,6 +146,7 @@ class JobCoachAgentServiceImplTest {
                 agentPromptBuilder,
                 agentOutputParser,
                 agentOutputValidator,
+                agentMetricsService,
                 aiCallLogService,
                 questionPracticeEvidenceFeignClient,
                 resumeJobApplicationEvidenceFeignClient,
@@ -138,6 +155,18 @@ class JobCoachAgentServiceImplTest {
                 new ObjectMapper().findAndRegisterModules(),
                 agentMqDispatcher,
                 transactionTemplate);
+        capturedCoachMetrics.clear();
+        Mockito.lenient().when(agentMetricsService.acceptEvent(eq(USER_ID), any())).thenAnswer(invocation -> {
+            capturedCoachMetrics.add(invocation.getArgument(1));
+            return null;
+        });
+    }
+
+    @AfterEach
+    void clearTransactionSynchronization() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test
@@ -611,12 +640,14 @@ class JobCoachAgentServiceImplTest {
         AgentRun running = run(77L, USER_ID);
         running.setStatus(AgentRunStatusEnum.RUNNING.name());
         running.setStartedAt(LocalDateTime.now().minusMinutes(2));
+        running.setExecutionToken("run-token-1");
         when(agentRunMapper.selectById(77L)).thenReturn(running);
         when(agentRunMapper.update(any(), any())).thenReturn(1);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
 
         AgentRunFailureDTO dto = new AgentRunFailureDTO();
         dto.setUserId(USER_ID);
+        dto.setExecutionToken("run-token-1");
         dto.setErrorCode(AgentErrorCode.ASYNC_TASK_FAILED);
         dto.setErrorMessage("agent daily plan execute failed: invalid target job");
 
@@ -697,6 +728,127 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void generateDailyPlanDefersMqDispatchUntilAfterCommitWhenTransactionSynchronizationActive() {
+        LocalDate planDate = LocalDate.now();
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setDate(planDate);
+        dto.setTargetJobId(501L);
+
+        AgentRun run = run(88L, USER_ID);
+        run.setTargetJobId(501L);
+        run.setPlanDate(planDate);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+
+        when(agentRunMapper.insert(any(AgentRun.class))).thenAnswer(invocation -> {
+            AgentRun inserted = invocation.getArgument(0);
+            inserted.setId(88L);
+            return 1;
+        });
+        when(agentRunMapper.selectById(88L)).thenReturn(run);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        TransactionSynchronizationManager.initSynchronization();
+
+        DailyPlanVO vo = service.generateDailyPlan(USER_ID, dto);
+
+        assertEquals(88L, vo.getRunId());
+        verify(agentMqDispatcher, never()).dispatchDailyPlanWithReceipt(any(), any(), any());
+
+        for (TransactionSynchronization synchronization : TransactionSynchronizationManager.getSynchronizations()) {
+            synchronization.afterCommit();
+        }
+
+        verify(agentMqDispatcher).dispatchDailyPlanWithReceipt(eq(88L), eq(USER_ID), any(DailyPlanGenerateDTO.class));
+        verify(agentContextBuilder, never()).build(any(), any(), any());
+    }
+
+    @Test
+    void latestDailyPlanExposesFrontendAliasesAndPlanHandoffs() {
+        AgentRun run = run(77L, USER_ID);
+        run.setStatus(AgentRunStatusEnum.SUCCESS.name());
+        run.setPlanDate(LocalDate.of(2026, 6, 26));
+        run.setTargetJobId(501L);
+        run.setInputSnapshotJson("""
+                {"requestId":"req-123","context":{"targetJobId":501}}
+                """);
+        run.setOutputJson("""
+                {"summary":"daily plan","focusSkills":[],"tasks":[]}
+                """);
+        AgentTask doneTask = task(99L, USER_ID, AgentTaskStatusEnum.DONE.name());
+        doneTask.setTargetJobId(501L);
+        doneTask.setEstimatedMinutes(45);
+        doneTask.setActionUrl("/practice/99");
+        doneTask.setTaskType("QUESTION_PRACTICE");
+        AgentReview review = new AgentReview();
+        review.setId(200L);
+        review.setSummary("completed");
+        review.setNextActionsJson("[]");
+        review.setReviewJson("""
+                {"taskId":99,"generatedSource":"RULE","activationHandoffs":[{"code":"ACT-001-FIRST-TASK-COMPLETED","stage":"first_task_completed","firstOccurrence":true,"taskId":99}]}
+                """);
+
+        when(agentRunMapper.selectOne(any())).thenReturn(run);
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(doneTask));
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of(review));
+
+        DailyPlanVO vo = service.latestDailyPlan(USER_ID, 501L, LocalDate.of(2026, 6, 26));
+
+        assertEquals(LocalDate.of(2026, 6, 26), vo.getDate());
+        assertEquals(LocalDate.of(2026, 6, 26), vo.getPlanDate());
+        assertEquals("req-123", vo.getRequestId());
+        assertEquals(2, vo.getActivationHandoffs().size());
+        assertEquals("ACT-001-TARGET-DIRECTION-ESTABLISHED", vo.getActivationHandoffs().get(0).getCode());
+        assertEquals("ACT-001-FIRST-PLAN-GENERATED", vo.getActivationHandoffs().get(1).getCode());
+        assertEquals(1, vo.getTasks().size());
+        AgentTaskVO task = vo.getTasks().get(0);
+        assertEquals(Integer.valueOf(45), task.getEstimatedMinutes());
+        assertEquals(Integer.valueOf(45), task.getEstimatedEffortMinutes());
+        assertEquals("/practice/99", task.getActionUrl());
+        assertEquals("PRACTICE", task.getActionType());
+        assertEquals(1, task.getActivationHandoffs().size());
+        assertEquals("ACT-001-FIRST-TASK-COMPLETED", task.getActivationHandoffs().get(0).getCode());
+    }
+
+    @Test
+    void generateDailyPlanNormalizesRequestIdFromIdempotencyKeyForAsyncDispatch() {
+        LocalDate planDate = LocalDate.now();
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setDate(planDate);
+        dto.setTargetJobId(501L);
+        dto.setIdempotencyKey("idem-001");
+
+        AgentRun run = run(88L, USER_ID);
+        run.setTargetJobId(501L);
+        run.setPlanDate(planDate);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+
+        when(agentRunMapper.insert(any(AgentRun.class))).thenAnswer(invocation -> {
+            AgentRun inserted = invocation.getArgument(0);
+            inserted.setId(88L);
+            return 1;
+        });
+        when(agentRunMapper.selectById(88L)).thenReturn(run);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(agentMqDispatcher.dispatchDailyPlanWithReceipt(any(), any(), any()))
+                .thenReturn(MqDispatchReceipt.builder()
+                        .messageId("msg-1")
+                        .traceId("trace-1")
+                        .bizType("agent.daily-plan.generate")
+                        .bizId("88")
+                        .userId(USER_ID)
+                        .build());
+
+        service.generateDailyPlan(USER_ID, dto);
+
+        ArgumentCaptor<DailyPlanGenerateDTO> dtoCaptor = ArgumentCaptor.forClass(DailyPlanGenerateDTO.class);
+        verify(agentMqDispatcher).dispatchDailyPlanWithReceipt(eq(88L), eq(USER_ID), dtoCaptor.capture());
+        assertEquals("idem-001", dtoCaptor.getValue().getRequestId());
+        assertEquals("idem-001", dtoCaptor.getValue().getIdempotencyKey());
+        assertNotNull(dtoCaptor.getValue().getExecutionToken());
+    }
+
+    @Test
     void todayTasksFiltersLogicallyDeletedTasks() {
         LocalDate dueDate = LocalDate.now();
         AgentRun run = run(77L, USER_ID);
@@ -746,8 +898,8 @@ class JobCoachAgentServiceImplTest {
         verify(agentTaskMapper).selectPage(any(), wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertTrue(sqlSegment.contains("due_date"));
-        assertTrue(sqlSegment.contains("2026-06-01"));
-        assertTrue(sqlSegment.contains("2026-06-18"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 1)));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 18)));
     }
 
     @Test
@@ -768,10 +920,10 @@ class JobCoachAgentServiceImplTest {
         verify(agentRunMapper).selectPage(any(), wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertTrue(sqlSegment.contains("trigger_type"));
-        assertTrue(sqlSegment.contains("MANUAL"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue("MANUAL"));
         assertTrue(sqlSegment.contains("plan_date"));
-        assertTrue(sqlSegment.contains("2026-06-01"));
-        assertTrue(sqlSegment.contains("2026-06-18"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 1)));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 18)));
     }
 
     @Test
@@ -791,8 +943,8 @@ class JobCoachAgentServiceImplTest {
         verify(agentTaskMapper).selectPage(any(), wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
         assertTrue(sqlSegment.contains("due_date"));
-        assertTrue(sqlSegment.contains("2026-06-01"));
-        assertTrue(sqlSegment.contains("2026-06-18"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 1)));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(LocalDate.of(2026, 6, 18)));
     }
 
     @Test
@@ -800,6 +952,7 @@ class JobCoachAgentServiceImplTest {
         AgentRun run = run(77L, USER_ID);
         run.setStatus(AgentRunStatusEnum.RUNNING.name());
         run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
         when(agentRunMapper.selectById(77L)).thenReturn(run);
         when(agentRunMapper.update(any(), any())).thenReturn(1);
         when(agentTaskMapper.update(any(), any())).thenReturn(1);
@@ -837,7 +990,9 @@ class JobCoachAgentServiceImplTest {
         when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
 
-        service.executeDailyPlan(USER_ID, 77L, new DailyPlanGenerateDTO());
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+        service.executeDailyPlan(USER_ID, 77L, dto);
 
         ArgumentCaptor<AgentTask> taskCaptor = ArgumentCaptor.forClass(AgentTask.class);
         verify(agentTaskMapper).insert(taskCaptor.capture());
@@ -848,15 +1003,129 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void executeDailyPlanMasksPiiBeforePersistingAgentRunRawDiagnostics() {
+        AgentRun run = run(77L, USER_ID);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+        run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(run);
+        when(agentRunMapper.update(any(), any())).thenReturn(1);
+        when(agentTaskMapper.update(any(), any())).thenReturn(1);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(null);
+        });
+
+        JobCoachAgentContext context = new JobCoachAgentContext();
+        context.setUserId(USER_ID);
+        context.setTargetJobId(501L);
+        context.setPlanDate(LocalDate.now());
+        JobCoachAgentContext.TargetJobSnapshot targetJob = new JobCoachAgentContext.TargetJobSnapshot();
+        targetJob.setId(501L);
+        targetJob.setJobTitle("Java Engineer");
+        targetJob.setCompanyName("Demo Corp");
+        targetJob.setJdSource("{\"realName\":\"Zhang San\",\"phone\":\"13812345678\",\"email\":\"zhangsan@example.com\"}");
+        context.setTargetJob(targetJob);
+        JobCoachAgentContext.ApplicationSnapshot application = new JobCoachAgentContext.ApplicationSnapshot();
+        application.setId(601L);
+        application.setTargetJobId(501L);
+        application.setNote("candidate phone 13812345678 email zhangsan@example.com");
+        context.setApplications(List.of(application));
+        context.setAgentHistorySummary("last raw contact 13812345678 zhangsan@example.com");
+        when(agentContextBuilder.build(any(), any(), any())).thenReturn(context);
+        CandidateTask candidate = candidate("c1", "TARGET_JOB", 501L, "/questions/practice?mode=category");
+        when(candidateTaskBuilder.build(any(), any(Integer.class))).thenReturn(List.of(candidate));
+        when(agentPromptBuilder.buildDailyPlanPrompt(any(), any(), any(Integer.class), any(Integer.class)))
+                .thenReturn(PromptRenderResult.builder().renderedPrompt("prompt").build());
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {"summary":"contact 13812345678 or zhangsan@example.com","tasks":[]}
+                """);
+        when(aiCallLogService.callAndLog(any())).thenReturn(routeResult);
+
+        DailyPlanResult result = new DailyPlanResult();
+        result.setSummary("daily plan for 13812345678 zhangsan@example.com");
+        result.setTasks(List.of());
+        when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+        service.executeDailyPlan(USER_ID, 77L, dto);
+
+        assertFalse(run.getInputSnapshotJson().contains("Zhang San"));
+        assertFalse(run.getInputSnapshotJson().contains("13812345678"));
+        assertFalse(run.getInputSnapshotJson().contains("zhangsan@example.com"));
+        assertTrue(run.getInputSnapshotJson().contains("Z********"));
+        assertTrue(run.getInputSnapshotJson().contains("138****5678"));
+        assertTrue(run.getInputSnapshotJson().contains("***@example.com"));
+        assertFalse(run.getRawOutputText().contains("13812345678"));
+        assertFalse(run.getRawOutputText().contains("zhangsan@example.com"));
+        assertTrue(run.getRawOutputText().contains("138****5678"));
+        assertTrue(run.getRawOutputText().contains("***@example.com"));
+        assertFalse(run.getOutputJson().contains("13812345678"));
+        assertFalse(run.getOutputJson().contains("zhangsan@example.com"));
+        assertTrue(run.getOutputJson().contains("138****5678"));
+        assertTrue(run.getOutputJson().contains("***@example.com"));
+    }
+
+    @Test
+    void executeDailyPlanPersistsAiResultSource() {
+        AgentRun run = run(77L, USER_ID);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+        run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(run);
+        when(agentRunMapper.update(any(), any())).thenReturn(1);
+        when(agentTaskMapper.update(any(), any())).thenReturn(1);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(null);
+        });
+
+        JobCoachAgentContext context = new JobCoachAgentContext();
+        context.setUserId(USER_ID);
+        context.setTargetJobId(501L);
+        context.setPlanDate(LocalDate.now());
+        when(agentContextBuilder.build(any(), any(), any())).thenReturn(context);
+        CandidateTask candidate = candidate("c1", "TARGET_JOB", 501L, "/questions/practice?mode=category");
+        when(candidateTaskBuilder.build(any(), any(Integer.class))).thenReturn(List.of(candidate));
+        when(agentPromptBuilder.buildDailyPlanPrompt(any(), any(), any(Integer.class), any(Integer.class)))
+                .thenReturn(PromptRenderResult.builder().renderedPrompt("prompt").build());
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("{}");
+        routeResult.setResultSource("FALLBACK");
+        when(aiCallLogService.callAndLog(any())).thenReturn(routeResult);
+
+        DailyPlanResult result = new DailyPlanResult();
+        result.setSummary("daily plan");
+        result.setTasks(List.of());
+        when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+        service.executeDailyPlan(USER_ID, 77L, dto);
+
+        assertEquals("FALLBACK", run.getResultSource());
+        ArgumentCaptor<Wrapper<AgentRun>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(agentRunMapper, atLeastOnce()).update(any(), wrapperCaptor.capture());
+        assertTrue(wrapperCaptor.getAllValues().stream()
+                .anyMatch(wrapper -> wrapperParams(wrapper).containsValue("FALLBACK")));
+    }
+
+    @Test
     void executeDailyPlanDoesNotClearOrInsertTasksWhenSuccessTransitionLosesRace() {
         AgentRun run = run(77L, USER_ID);
         run.setStatus(AgentRunStatusEnum.RUNNING.name());
         run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
         AgentRun latest = run(77L, USER_ID);
         latest.setStatus(AgentRunStatusEnum.SUCCESS.name());
         latest.setTargetJobId(501L);
+        latest.setExecutionToken("run-token-1");
         when(agentRunMapper.selectById(77L)).thenReturn(run).thenReturn(run).thenReturn(latest);
-        when(agentRunMapper.update(any(), any())).thenReturn(1).thenReturn(0);
+        when(agentRunMapper.update(any(), any())).thenReturn(1).thenReturn(1).thenReturn(1).thenReturn(0);
         when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(null);
@@ -888,11 +1157,55 @@ class JobCoachAgentServiceImplTest {
         when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
 
-        DailyPlanVO vo = service.executeDailyPlan(USER_ID, 77L, new DailyPlanGenerateDTO());
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+        DailyPlanVO vo = service.executeDailyPlan(USER_ID, 77L, dto);
 
         assertEquals(AgentRunStatusEnum.SUCCESS.name(), vo.getStatus());
         verify(agentTaskMapper, never()).update(any(), any());
         verify(agentTaskMapper, never()).insert(any(AgentTask.class));
+    }
+
+    @Test
+    void executeDailyPlanDoesNotReachAiWhenExecutionTokenClaimLosesRace() {
+        AgentRun run = run(77L, USER_ID);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+        run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(run).thenReturn(run);
+        when(agentRunMapper.update(any(), any())).thenReturn(0);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+
+        DailyPlanVO vo = service.executeDailyPlan(USER_ID, 77L, dto);
+
+        assertEquals(AgentRunStatusEnum.RUNNING.name(), vo.getStatus());
+        verify(agentContextBuilder, never()).build(any(), any(), any());
+        verify(aiCallLogService, never()).callAndLog(any());
+        verify(agentTaskMapper, never()).insert(any(AgentTask.class));
+    }
+
+    @Test
+    void failDailyPlanRunDoesNotOverwriteRunningRunWhenExecutionTokenMismatched() {
+        AgentRun running = run(77L, USER_ID);
+        running.setStatus(AgentRunStatusEnum.RUNNING.name());
+        running.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(running).thenReturn(running);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        AgentRunFailureDTO dto = new AgentRunFailureDTO();
+        dto.setUserId(USER_ID);
+        dto.setExecutionToken("run-token-2");
+        dto.setErrorCode(AgentErrorCode.ASYNC_TASK_FAILED);
+        dto.setErrorMessage("stale executor should not overwrite active run");
+
+        DailyPlanVO vo = service.failDailyPlanRun(USER_ID, 77L, dto);
+
+        assertEquals(AgentRunStatusEnum.RUNNING.name(), vo.getStatus());
+        verify(agentRunMapper, never()).update(any(), any());
+        verify(agentRunMapper, never()).updateById(any(AgentRun.class));
     }
 
     @Test
@@ -932,6 +1245,9 @@ class JobCoachAgentServiceImplTest {
         assertEquals("finished index drill", vo.getReviewNote());
         assertEquals(review.getSummary(), vo.getReviewSummary());
         assertFalse(vo.getReviewNextActions().isEmpty());
+        assertEquals(1, vo.getActivationHandoffs().size());
+        assertEquals("ACT-001-FIRST-TASK-COMPLETED", vo.getActivationHandoffs().get(0).getCode());
+        assertTrue(review.getReviewJson().contains("\"activationHandoffs\""));
     }
 
     @Test
@@ -983,6 +1299,128 @@ class JobCoachAgentServiceImplTest {
         assertEquals("FALLBACK", vo.getReviewSource());
         assertEquals("规则兜底", vo.getReviewSourceLabel());
         assertEquals(review.getSummary(), vo.getReviewSummary());
+    }
+
+    @Test
+    void performCoachActionExplainsRecommendationWithStructuredSafeOutput() {
+        AgentTask task = task(99L, USER_ID, AgentTaskStatusEnum.TODO.name());
+        task.setReason("Build confidence on MySQL indexes before interview follow-up.");
+        task.setRelatedSkillName("MySQL Index");
+        task.setActionUrl("/questions?skill=mysql");
+        when(agentTaskMapper.selectById(99L)).thenReturn(task);
+        RouteResult aiResult = new RouteResult();
+        aiResult.setContent("""
+                {"summary":"This task protects the highest-risk interview gap.","reasons":["It targets MySQL Index.","It is tied to today's plan.","It has a concrete practice entry.","extra reason ignored"],"evidenceRefs":["task.reason","task.relatedSkillName"],"nextAction":"Open the practice set and finish one round."}
+                """);
+        aiResult.setResultSource("LLM");
+        aiResult.setAiCallLogId(888L);
+        aiResult.setElapsedMs(321L);
+        aiResult.setEstimatedCost(0.012D);
+        when(aiCallLogService.callAndLog(any())).thenReturn(aiResult);
+        AgentCoachActionDTO dto = new AgentCoachActionDTO();
+        dto.setTaskId(99L);
+        dto.setActionType("EXPLAIN_RECOMMENDATION");
+        dto.setRequestId("req-r3-explain");
+        dto.setIdempotencyKey("idem-r3-explain");
+
+        AgentCoachActionVO vo = service.performCoachAction(USER_ID, dto);
+
+        assertEquals("EXPLAIN_RECOMMENDATION", vo.getActionType());
+        assertEquals(99L, vo.getTaskId());
+        assertEquals("This task protects the highest-risk interview gap.", vo.getSummary());
+        assertEquals(3, vo.getReasons().size());
+        assertEquals(List.of("task.reason", "task.relatedSkillName"), vo.getEvidenceRefs());
+        assertEquals("Open the practice set and finish one round.", vo.getNextAction());
+        assertEquals("req-r3-explain", vo.getRequestId());
+        assertEquals("idem-r3-explain", vo.getIdempotencyKey());
+        assertEquals("LLM", vo.getResultSource());
+        assertEquals(888L, vo.getAiCallLogId());
+        assertEquals(321L, vo.getLatencyMs());
+        assertEquals(0.012D, vo.getEstimatedCost());
+        ArgumentCaptor<com.codecoachai.ai.router.AiModelRouter.AiCallContext> ctxCaptor =
+                ArgumentCaptor.forClass(com.codecoachai.ai.router.AiModelRouter.AiCallContext.class);
+        verify(aiCallLogService).callAndLog(ctxCaptor.capture());
+        assertFalse(ctxCaptor.getValue().getPrompt().contains("inputSnapshotJson"));
+        assertFalse(ctxCaptor.getValue().getPrompt().contains("rawOutputText"));
+        verify(agentMetricsService, atLeastOnce()).acceptEvent(eq(USER_ID), any());
+        assertFalse(capturedCoachMetrics.isEmpty());
+        AgentMetricEventDTO startedMetric = capturedCoachMetrics.stream()
+                .filter(event -> "ai_coach_action_started".equals(event.getEventCode()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("ai-coach|ai_coach_action_started|EXPLAIN_RECOMMENDATION|req-r3-explain|99",
+                startedMetric.getIdempotencyKey());
+        assertEquals("idem-r3-explain", vo.getIdempotencyKey());
+    }
+
+    @Test
+    void performCoachActionUsesDistinctMetricKeysForDifferentStages() {
+        AgentTask task = task(99L, USER_ID, AgentTaskStatusEnum.TODO.name());
+        task.setReason("Build confidence on MySQL indexes before interview follow-up.");
+        task.setRelatedSkillName("MySQL Index");
+        task.setActionUrl("/questions?skill=mysql");
+        when(agentTaskMapper.selectById(99L)).thenReturn(task);
+        RouteResult aiResult = new RouteResult();
+        aiResult.setContent("{\"summary\":\"ok\",\"reasons\":[\"a\"],\"evidenceRefs\":[\"task.reason\"],\"nextAction\":\"do it\"}");
+        aiResult.setResultSource("LLM");
+        aiResult.setAiCallLogId(888L);
+        when(aiCallLogService.callAndLog(any())).thenReturn(aiResult);
+        AgentCoachActionDTO dto = new AgentCoachActionDTO();
+        dto.setTaskId(99L);
+        dto.setActionType("EXPLAIN_RECOMMENDATION");
+        dto.setRequestId("req-r3-explain-stage");
+        dto.setIdempotencyKey("idem-r3-explain-stage");
+
+        service.performCoachAction(USER_ID, dto);
+
+        List<String> keys = capturedCoachMetrics.stream()
+                .map(AgentMetricEventDTO::getIdempotencyKey)
+                .toList();
+        assertTrue(keys.contains("ai-coach|ai_coach_action_started|EXPLAIN_RECOMMENDATION|req-r3-explain-stage|99"));
+        assertTrue(keys.contains("ai-coach|ai_coach_action_succeeded|EXPLAIN_RECOMMENDATION|req-r3-explain-stage|99"));
+        assertEquals(2, keys.size());
+        assertFalse(keys.get(0).equals(keys.get(1)));
+    }
+
+    @Test
+    void performCoachActionRejectsReviewForUnfinishedTask() {
+        when(agentTaskMapper.selectById(99L)).thenReturn(task(99L, USER_ID, AgentTaskStatusEnum.TODO.name()));
+        AgentCoachActionDTO dto = new AgentCoachActionDTO();
+        dto.setTaskId(99L);
+        dto.setActionType("REVIEW_COMPLETED_TASK");
+        dto.setRequestId("req-r3-review");
+
+        assertThrows(BusinessException.class, () -> service.performCoachAction(USER_ID, dto));
+
+        verify(aiCallLogService, never()).callAndLog(any());
+    }
+
+    @Test
+    void performCoachActionReviewsCompletedTaskFromExistingReview() {
+        AgentTask task = task(99L, USER_ID, AgentTaskStatusEnum.DONE.name());
+        when(agentTaskMapper.selectById(99L)).thenReturn(task);
+        AgentReview review = new AgentReview();
+        review.setId(200L);
+        review.setUserId(USER_ID);
+        review.setSummary("You finished a useful MySQL review.");
+        review.setNextActionsJson("[\"Practice one follow-up question.\",\"Write down one mistake.\"]");
+        review.setAiCallLogId(777L);
+        review.setReviewJson("{\"generatedSource\":\"LLM\",\"promptVersion\":\"agent-task-review-v1\"}");
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of(review));
+        AgentCoachActionDTO dto = new AgentCoachActionDTO();
+        dto.setTaskId(99L);
+        dto.setActionType("REVIEW_COMPLETED_TASK");
+        dto.setRequestId("req-r3-review");
+
+        AgentCoachActionVO vo = service.performCoachAction(USER_ID, dto);
+
+        assertEquals("REVIEW_COMPLETED_TASK", vo.getActionType());
+        assertEquals("You finished a useful MySQL review.", vo.getSummary());
+        assertEquals(List.of("Practice one follow-up question.", "Write down one mistake."), vo.getReasons());
+        assertEquals("Practice one follow-up question.", vo.getNextAction());
+        assertEquals("LLM", vo.getResultSource());
+        assertEquals(777L, vo.getAiCallLogId());
+        verify(aiCallLogService, never()).callAndLog(any());
     }
 
     @Test
@@ -1085,6 +1523,11 @@ class JobCoachAgentServiceImplTest {
         }
     }
 
+    private static Map<String, Object> wrapperParams(Wrapper<?> wrapper) {
+        assertTrue(wrapper instanceof AbstractWrapper<?, ?, ?>);
+        return ((AbstractWrapper<?, ?, ?>) wrapper).getParamNameValuePairs();
+    }
+
     private PracticeRecordEvidenceVO practiceEvidence(Long id, Long userId, String sourceType, Long sourceId) {
         PracticeRecordEvidenceVO evidence = new PracticeRecordEvidenceVO();
         evidence.setId(id);
@@ -1144,6 +1587,7 @@ class JobCoachAgentServiceImplTest {
         run.setAgentType("JOB_COACH");
         run.setPlanDate(LocalDate.now());
         run.setStatus(AgentRunStatusEnum.SUCCESS.name());
+        run.setExecutionToken("run-token-default");
         run.setInputSnapshotJson("{\"resume\":\"private\"}");
         run.setOutputJson("{\"summary\":\"今日计划\",\"tasks\":[]}");
         run.setRawOutputText("private raw output");

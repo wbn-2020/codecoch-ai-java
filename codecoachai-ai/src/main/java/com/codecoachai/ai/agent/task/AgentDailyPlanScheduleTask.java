@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.task;
 
+import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import java.time.LocalDate;
@@ -22,6 +23,15 @@ public class AgentDailyPlanScheduleTask {
     @Value("${codecoachai.agent.daily-plan.enabled:true}")
     private boolean enabled;
 
+    @Value("${codecoachai.agent.daily-plan.lock-wait-seconds:0}")
+    private long lockWaitSeconds;
+
+    @Value("${codecoachai.agent.daily-plan.lock-lease-seconds:900}")
+    private long lockLeaseSeconds;
+
+    @Value("${codecoachai.agent.daily-plan.batch-user-limit:100}")
+    private int batchUserLimit;
+
     @Scheduled(cron = "${codecoachai.agent.daily-plan.cron:0 15 6 * * ?}")
     public void runDailyPlanBatch() {
         if (!enabled) {
@@ -32,9 +42,9 @@ public class AgentDailyPlanScheduleTask {
             LocalDate planDate = LocalDate.now();
             boolean acquired = distributedLockHelper.tryLockAndRun(
                     DAILY_PLAN_BATCH_LOCK_KEY_PREFIX + planDate,
-                    0,
-                    300,
-                    () -> agentV4OpsService.runDailyPlanBatch(null));
+                    lockWaitSeconds,
+                    lockLeaseSeconds,
+                    () -> agentV4OpsService.runDailyPlanBatch(buildScheduledRequest(planDate)));
             if (!acquired) {
                 log.info("V4 agent daily plan batch skipped because another run is active, planDate={}", planDate);
             }
@@ -42,5 +52,13 @@ public class AgentDailyPlanScheduleTask {
             // 定时调度失败只记录错误，避免异常向外抛出导致调度线程中断。
             log.error("V4 agent daily plan batch failed", ex);
         }
+    }
+
+    private AnalyticsJobRunDTO buildScheduledRequest(LocalDate planDate) {
+        AnalyticsJobRunDTO dto = new AnalyticsJobRunDTO();
+        dto.setStatDate(planDate);
+        dto.setUserLimit(batchUserLimit);
+        dto.setReason("scheduled daily plan batch");
+        return dto;
     }
 }

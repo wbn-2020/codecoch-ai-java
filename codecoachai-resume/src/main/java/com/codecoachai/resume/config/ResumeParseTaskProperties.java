@@ -12,4 +12,6 @@ public class ResumeParseTaskProperties {
     private boolean enabled = true;
     private long fixedDelay = 10000L;
     private int batchSize = 5;
+    private long lockWaitSeconds = 0L;
+    private long lockLeaseSeconds = 300L;
 }

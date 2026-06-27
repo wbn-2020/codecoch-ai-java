@@ -1,7 +1,11 @@
 package com.codecoachai.task.service;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.task.domain.entity.Notification;
+import com.codecoachai.task.mapper.NotificationMapper;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,6 +23,7 @@ public class NotificationCommandService {
     private static final Long BROADCAST_USER_ID = 0L;
 
     private final NotificationService notificationService;
+    private final NotificationMapper notificationMapper;
 
     /**
      * 创建一条用户通知。userId 为空时落为系统公告（0=所有人）。
@@ -38,5 +43,26 @@ public class NotificationCommandService {
         notification.setSentAt(LocalDateTime.now());
         notificationService.saveNotification(notification);
         return notification.getId();
+    }
+
+    public void ensureDailyReminder(Long userId, String type, String title, String content, String bizType, String bizId) {
+        if (userId == null || !StringUtils.hasText(type) || !StringUtils.hasText(title)
+                || !StringUtils.hasText(content) || !StringUtils.hasText(bizType) || !StringUtils.hasText(bizId)) {
+            return;
+        }
+        LocalDateTime start = LocalDateTime.now().with(LocalTime.MIN);
+        LocalDateTime end = LocalDateTime.now().with(LocalTime.MAX);
+        List<Notification> existing = notificationMapper.selectList(new LambdaQueryWrapper<Notification>()
+                .eq(Notification::getUserId, userId)
+                .eq(Notification::getType, type.trim())
+                .eq(Notification::getBizType, bizType.trim())
+                .eq(Notification::getBizId, bizId.trim())
+                .ge(Notification::getCreatedAt, start)
+                .le(Notification::getCreatedAt, end)
+                .last("LIMIT 1"));
+        if (!existing.isEmpty()) {
+            return;
+        }
+        notificationService.createNotification(userId, type, bizType, bizId, title, content);
     }
 }

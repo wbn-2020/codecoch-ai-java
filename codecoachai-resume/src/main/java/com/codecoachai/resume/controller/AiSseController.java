@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -65,7 +66,8 @@ public class AiSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> {
+        submitSseTask(emitter, active, requestId, "Job target parse",
+                genericErrorEvent(requestId, "job-target-parse", id, null), () -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 if (!send(emitter, active, "start", genericEvent(requestId, "job-target-parse", id, null,
@@ -100,7 +102,7 @@ public class AiSseController {
             } finally {
                 LoginUserContext.clear();
             }
-        }, resumeSseStreamExecutor);
+        });
         return emitter;
     }
 
@@ -128,7 +130,8 @@ public class AiSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> {
+        submitSseTask(emitter, active, requestId, "Resume job match",
+                genericErrorEvent(requestId, "resume-job-match", id, null), () -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 if (!send(emitter, active, "start", genericEvent(requestId, "resume-job-match", id, null,
@@ -164,7 +167,7 @@ public class AiSseController {
             } finally {
                 LoginUserContext.clear();
             }
-        }, resumeSseStreamExecutor);
+        });
         return emitter;
     }
 
@@ -173,7 +176,9 @@ public class AiSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> {
+        submitSseTask(emitter, active, requestId, "Resume job match create",
+                genericErrorEvent(requestId, "resume-job-match",
+                        dto == null ? null : dto.getTargetJobId(), null), () -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 Long bizId = dto == null ? null : dto.getTargetJobId();
@@ -213,7 +218,7 @@ public class AiSseController {
             } finally {
                 LoginUserContext.clear();
             }
-        }, resumeSseStreamExecutor);
+        });
         return emitter;
     }
 
@@ -232,7 +237,8 @@ public class AiSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        CompletableFuture.runAsync(() -> {
+        submitSseTask(emitter, active, requestId, "Resume optimize",
+                errorEvent(requestId, resumeId, null), () -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 if (!send(emitter, active, "start", event(requestId, "start", "简历优化开始", resumeId, null, null, null))) {
@@ -279,8 +285,19 @@ public class AiSseController {
             } finally {
                 LoginUserContext.clear();
             }
-        }, resumeSseStreamExecutor);
+        });
         return emitter;
+    }
+
+    private void submitSseTask(SseEmitter emitter, AtomicBoolean active, String requestId,
+                               String workflow, Object rejectionErrorEvent, Runnable task) {
+        try {
+            CompletableFuture.runAsync(task, resumeSseStreamExecutor);
+        } catch (RejectedExecutionException ex) {
+            log.warn("{} SSE task rejected, requestId={}", workflow, requestId, ex);
+            send(emitter, active, "error", rejectionErrorEvent);
+            complete(emitter, active);
+        }
     }
 
     private boolean sendStageProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
