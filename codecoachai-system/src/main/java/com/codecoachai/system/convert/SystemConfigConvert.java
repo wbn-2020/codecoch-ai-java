@@ -23,13 +23,14 @@ public final class SystemConfigConvert {
         vo.setConfigValueHash(sha256Prefix(config.getConfigValue()));
         vo.setSensitiveConfig(sensitive);
         vo.setRawAccessPermission("admin:system:config:raw:view");
+        vo.setConfigType(config.getValueType());
         vo.setValueType(config.getValueType());
         vo.setDescription(config.getDescription());
         vo.setStatus(config.getStatus());
         return vo;
     }
 
-    private static boolean isSensitiveKey(String key) {
+    public static boolean isSensitiveKey(String key) {
         if (key == null) {
             return false;
         }

@@ -110,6 +110,55 @@ class InternalCallFilterTest {
         assertEquals(403, response.getStatus());
     }
 
+    @Test
+    void canonicalizedInternalRequestWithContextPathPasses() throws Exception {
+        MockHttpServletRequest request = signedInternalRequest("POST", "/inner/job/run", "codecoachai-task", "n-ctx");
+        request.setContextPath("/api");
+        request.setRequestURI("/api//inner/%2E/task/../job/run/");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(
+                eq("codecoachai:internal:nonce:codecoachai-task:n-ctx"),
+                eq("1"),
+                eq(Duration.ofSeconds(300)))).thenReturn(true);
+
+        filter.doFilter(request, response, chain);
+
+        assertTrue(chain.called());
+        assertEquals(200, response.getStatus());
+    }
+
+    @Test
+    void encodedInnerPrefixDoesNotTriggerInternalAuth() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/%69nner/job/run");
+        request.setContextPath("/api");
+        request.setRequestURI("/api/%69nner/job/run");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertTrue(chain.called());
+        assertEquals(200, response.getStatus());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
+    @Test
+    void encodedTraversalDoesNotTriggerInternalAuthAfterCanonicalization() throws Exception {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/inner/%2e%2e/admin/users");
+        request.setContextPath("/api");
+        request.setRequestURI("/api/inner/%2e%2e/admin/users");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertTrue(chain.called());
+        assertEquals(200, response.getStatus());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
     private MockHttpServletRequest signedInternalRequest(String method, String path, String serviceName, String nonce) {
         String timestamp = String.valueOf(System.currentTimeMillis());
         String payload = InternalSignatureUtils.canonicalPayload(method, path, timestamp, nonce, serviceName);

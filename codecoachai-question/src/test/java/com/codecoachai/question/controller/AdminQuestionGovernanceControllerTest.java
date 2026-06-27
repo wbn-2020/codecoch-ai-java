@@ -1,11 +1,18 @@
 package com.codecoachai.question.controller;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.hamcrest.Matchers.containsString;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -14,11 +21,13 @@ import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.question.domain.dto.AdminQuestionSaveDTO;
 import com.codecoachai.question.domain.dto.AiQuestionGenerateRequestDTO;
 import com.codecoachai.question.domain.dto.QuestionDuplicateMergeDTO;
+import com.codecoachai.question.domain.dto.QuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.SaveQuestionCategoryDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
 import com.codecoachai.question.domain.vo.QuestionCategoryVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionDuplicateReviewDetailVO;
+import com.codecoachai.question.domain.vo.QuestionReviewDetailVO;
 import com.codecoachai.question.service.QuestionDuplicateEvaluationService;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionMetadataService;
@@ -28,6 +37,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 @ExtendWith(MockitoExtension.class)
 class AdminQuestionGovernanceControllerTest {
@@ -148,6 +160,95 @@ class AdminQuestionGovernanceControllerTest {
     }
 
     @Test
+    void getReviewStripsRawAiResultJsonFromDefaultDetailResponse() {
+        AdminQuestionReviewController controller =
+                new AdminQuestionReviewController(questionReviewService, permissionGuard, operationConfirmationGuard);
+        when(questionReviewService.getReview(66L)).thenReturn(reviewDetail("sensitive raw ai result"));
+
+        QuestionReviewDetailVO detail = controller.getReview(66L).getData();
+
+        verify(permissionGuard).require("admin:question:review");
+        verify(questionReviewService).getReview(66L);
+        assertNull(detail.getRawAiResultJson());
+    }
+
+    @Test
+    void getReviewAddsRawAccessMetadataAndStripsRawAiResultJsonByDefault() throws Exception {
+        AdminQuestionReviewController controller =
+                new AdminQuestionReviewController(questionReviewService, permissionGuard, operationConfirmationGuard);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        when(questionReviewService.getReview(66L)).thenReturn(reviewDetail("sensitive raw ai result"));
+
+        mockMvc.perform(get("/admin/question-reviews/66"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.rawAvailable").value(true))
+                .andExpect(jsonPath("$.data.rawAccessPermission").value("admin:ai:log:raw:view"))
+                .andExpect(content().string(containsString("\"rawAiResultJson\":null")));
+
+        verify(permissionGuard).require("admin:question:review");
+        verify(questionReviewService).getReview(66L);
+    }
+
+    @Test
+    void postReviewRawReturnsRawAiResultJsonWhenConfirmed() throws Exception {
+        AdminQuestionReviewController controller =
+                new AdminQuestionReviewController(questionReviewService, permissionGuard, operationConfirmationGuard);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        when(operationConfirmationGuard.requireConfirmed(
+                eq("question-review-raw:66"),
+                eq(true),
+                eq(false),
+                eq("investigate question review raw payload"),
+                eq("question-review-raw-1234")))
+                .thenReturn("lock-key");
+        when(questionReviewService.getReview(66L)).thenReturn(reviewDetail("sensitive raw ai result"));
+
+        mockMvc.perform(post("/admin/question-reviews/66/raw")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "accessReason": "investigate question review raw payload",
+                                  "confirmSensitiveAccess": true,
+                                  "dryRun": false,
+                                  "idempotencyKey": "question-review-raw-1234"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.rawAvailable").value(true))
+                .andExpect(jsonPath("$.data.rawAccessPermission").value("admin:ai:log:raw:view"))
+                .andExpect(jsonPath("$.data.rawAiResultJson").value("sensitive raw ai result"));
+
+        verify(permissionGuard).require("admin:question:review");
+        verify(permissionGuard).require("admin:ai:log:raw:view");
+        verify(questionReviewService).getReview(66L);
+    }
+
+    @Test
+    void approveStripsRawAiResultJsonFromDefaultMutationResponse() {
+        AdminQuestionReviewController controller =
+                new AdminQuestionReviewController(questionReviewService, permissionGuard, operationConfirmationGuard);
+        QuestionReviewApproveDTO dto = new QuestionReviewApproveDTO();
+        dto.setConfirm(true);
+        dto.setDryRun(false);
+        dto.setReason("approve question");
+        dto.setIdempotencyKey("question-review-approve-1234");
+        when(operationConfirmationGuard.requireConfirmed(
+                eq("question-review-approve:77"),
+                eq(true),
+                eq(false),
+                eq("approve question"),
+                eq("question-review-approve-1234")))
+                .thenReturn("lock-key");
+        when(questionReviewService.approve(77L, dto)).thenReturn(reviewDetail("sensitive raw ai result"));
+
+        QuestionReviewDetailVO detail = controller.approve(77L, dto).getData();
+
+        verify(permissionGuard).require("admin:question:review");
+        verify(questionReviewService).approve(77L, dto);
+        assertNull(detail.getRawAiResultJson());
+    }
+
+    @Test
     void duplicateMergeForwardsDryRunToConfirmationGuard() {
         AdminQuestionDuplicateReviewController controller =
                 new AdminQuestionDuplicateReviewController(
@@ -212,6 +313,14 @@ class AdminQuestionGovernanceControllerTest {
         dto.setDryRun(dryRun);
         dto.setIdempotencyKey("question-dedupe-merge-1234");
         return dto;
+    }
+
+    private static QuestionReviewDetailVO reviewDetail(String rawAiResultJson) {
+        QuestionReviewDetailVO detail = new QuestionReviewDetailVO();
+        detail.setId(1L);
+        detail.setQuestionTitle("HashMap internals");
+        detail.setRawAiResultJson(rawAiResultJson);
+        return detail;
     }
 
     private static <T extends AdminQuestionController.AdminOperationConfirmDTO> T confirmDto(

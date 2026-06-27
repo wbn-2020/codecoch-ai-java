@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.system.domain.dto.RoleMenuAssignDTO;
@@ -39,6 +40,8 @@ class SystemGovernanceConfirmationControllerTest {
     @Mock
     private AdminPermissionGuard permissionGuard;
     @Mock
+    private AdminPermissionCache adminPermissionCache;
+    @Mock
     private AdminOperationConfirmationGuard operationConfirmationGuard;
 
     private SystemConfigController systemConfigController;
@@ -54,6 +57,7 @@ class SystemGovernanceConfirmationControllerTest {
                 menuMapper,
                 roleMenuMapper,
                 permissionGuard,
+                adminPermissionCache,
                 operationConfirmationGuard);
     }
 
@@ -96,19 +100,19 @@ class SystemGovernanceConfirmationControllerTest {
     }
 
     @Test
-    void updateConfigReleasesConfirmationLockWhenServiceFails() {
+    void updateConfigByKeyReleasesConfirmationLockWhenServiceFails() {
         SystemConfigSaveDTO dto = configDto(false);
         when(operationConfirmationGuard.requireConfirmed(
-                eq("system-config-update:feature.flag"),
+                eq("system-config-update:key:feature.flag"),
                 eq(true),
                 eq(false),
                 eq("confirm system config change"),
                 eq("system-config-create-1234"))).thenReturn("system-config-lock");
         doThrow(new IllegalStateException("config update failed"))
-                .when(systemConfigService).updateConfig("feature.flag", dto);
+                .when(systemConfigService).updateConfigByKey("feature.flag", dto);
 
         assertThrows(IllegalStateException.class,
-                () -> systemConfigController.updateConfig("feature.flag", dto));
+                () -> systemConfigController.updateConfigByKey("feature.flag", dto));
 
         verify(operationConfirmationGuard).release("system-config-lock");
     }
@@ -129,6 +133,7 @@ class SystemGovernanceConfirmationControllerTest {
                 "role-menu-grant-1234");
         verify(roleMenuMapper).delete(any());
         verify(roleMenuMapper, times(2)).insert(any(SysRoleMenu.class));
+        verify(adminPermissionCache).invalidateUsersByRoleId(3L);
     }
 
     @Test
@@ -147,6 +152,7 @@ class SystemGovernanceConfirmationControllerTest {
         assertThrows(IllegalStateException.class, () -> adminMenuController.assignRoleMenus(3L, dto));
 
         verify(operationConfirmationGuard).release("role-menu-lock");
+        verify(adminPermissionCache, never()).invalidateUsersByRoleId(3L);
     }
 
     @Test

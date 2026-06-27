@@ -9,13 +9,20 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.common.security.context.LoginUser;
+import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.StudyPlan;
 import com.codecoachai.interview.domain.entity.StudyPlanSkillRelation;
+import com.codecoachai.interview.domain.entity.StudyTask;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.vo.StudyPlanAgentEvidenceVO;
+import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
+import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
@@ -28,8 +35,10 @@ import com.codecoachai.interview.mq.StudyPlanMqDispatcher;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -74,6 +83,7 @@ class StudyPlanServiceImplTest {
     @BeforeAll
     static void initMybatisPlusTableInfo() {
         initTableInfo(StudyPlan.class);
+        initTableInfo(StudyTask.class);
         initTableInfo(StudyPlanSkillRelation.class);
         initTableInfo(InterviewReport.class);
         initTableInfo(InterviewSession.class);
@@ -101,6 +111,11 @@ class StudyPlanServiceImplTest {
                 new ObjectMapper(),
                 transactionTemplate,
                 Optional.of(studyPlanMqDispatcher));
+    }
+
+    @AfterEach
+    void tearDown() {
+        LoginUserContext.clear();
     }
 
     @Test
@@ -131,6 +146,59 @@ class StudyPlanServiceImplTest {
         assertThrows(BusinessException.class, () -> service.getPlanEvidence(USER_ID, PLAN_ID));
     }
 
+    @Test
+    void detailFiltersTaskReadsByCurrentUser() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        when(studyPlanMapper.selectOne(any())).thenReturn(activePlan());
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of(activeTask()));
+
+        StudyPlanDetailVO detail = service.detail(PLAN_ID);
+
+        assertEquals(1, detail.getTasks().size());
+        assertEquals(1, detail.getTotalTaskCount());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<StudyTask>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        org.mockito.Mockito.verify(studyTaskMapper, org.mockito.Mockito.times(2)).selectList(wrapperCaptor.capture());
+        wrapperCaptor.getAllValues().forEach(wrapper -> {
+            String sqlSegment = wrapper.getSqlSegment();
+            assertTrue(sqlSegment.contains("plan_id"));
+            assertTrue(sqlSegment.contains("user_id"));
+            assertTrue(sqlSegment.contains("deleted"));
+        });
+    }
+
+    @Test
+    void generateExistingPlanCountsOnlyCurrentUserOwnedTasksAndRelations() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        when(studyPlanMapper.selectOne(any())).thenReturn(activePlan());
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of(activeTask()));
+        when(relationMapper.selectCount(any())).thenReturn(1L);
+
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(3001L);
+
+        StudyPlanGenerateVO result = service.generate(dto);
+
+        assertEquals(PLAN_ID, result.getPlanId());
+        assertEquals(1, result.getTaskCount());
+        assertEquals(1, result.getSkillGapCount());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<StudyTask>> taskWrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        org.mockito.Mockito.verify(studyTaskMapper).selectList(taskWrapperCaptor.capture());
+        String taskSqlSegment = taskWrapperCaptor.getValue().getSqlSegment();
+        assertTrue(taskSqlSegment.contains("plan_id"));
+        assertTrue(taskSqlSegment.contains("user_id"));
+        assertTrue(taskSqlSegment.contains("deleted"));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<StudyPlanSkillRelation>> relationWrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        org.mockito.Mockito.verify(relationMapper).selectCount(relationWrapperCaptor.capture());
+        String relationSqlSegment = relationWrapperCaptor.getValue().getSqlSegment();
+        assertTrue(relationSqlSegment.contains("study_plan_id"));
+        assertTrue(relationSqlSegment.contains("user_id"));
+        assertTrue(relationSqlSegment.contains("deleted"));
+    }
+
     private StudyPlan activePlan() {
         StudyPlan plan = new StudyPlan();
         plan.setId(PLAN_ID);
@@ -146,5 +214,26 @@ class StudyPlanServiceImplTest {
         plan.setCreatedAt(CREATED_AT);
         plan.setUpdatedAt(UPDATED_AT);
         return plan;
+    }
+
+    private StudyTask activeTask() {
+        StudyTask task = new StudyTask();
+        task.setId(9001L);
+        task.setPlanId(PLAN_ID);
+        task.setUserId(USER_ID);
+        task.setStageNo(1);
+        task.setTaskOrder(1);
+        task.setTaskStatus("TODO");
+        task.setTaskTitle("Owner scoped task");
+        return task;
+    }
+
+    private InterviewReport generatedReport() {
+        InterviewReport report = new InterviewReport();
+        report.setId(3001L);
+        report.setUserId(USER_ID);
+        report.setSessionId(4001L);
+        report.setStatus(ReportStatusEnum.GENERATED.name());
+        return report;
     }
 }

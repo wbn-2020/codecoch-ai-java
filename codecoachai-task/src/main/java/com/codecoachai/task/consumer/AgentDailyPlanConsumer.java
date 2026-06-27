@@ -33,7 +33,7 @@ import org.springframework.util.StringUtils;
         consumerGroup = "codecoachai-task-agent-daily-plan",
         consumeMode = ConsumeMode.CONCURRENTLY,
         messageModel = MessageModel.CLUSTERING,
-        maxReconsumeTimes = 6
+        maxReconsumeTimes = 3
 )
 public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentDailyPlanPayload>> {
 
@@ -103,6 +103,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
         } catch (NonRetryableMqException ex) {
             log.error("Agent daily plan task is not retryable messageId={}", envelope.getMessageId(), ex);
             asyncTaskService.markDead(envelope, ex.getMessage());
+            failAgentRun(envelope.getPayload(), ex.getMessage());
             notifyFailed(envelope.getPayload(), ex.getMessage());
         } catch (Exception ex) {
             log.error("Agent daily plan task failed messageId={}", envelope.getMessageId(), ex);
@@ -116,6 +117,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
     private ExecuteAgentDailyPlanDTO toExecuteDto(AgentDailyPlanPayload payload) {
         ExecuteAgentDailyPlanDTO dto = new ExecuteAgentDailyPlanDTO();
         dto.setUserId(payload.getUserId());
+        dto.setExecutionToken(payload.getExecutionToken());
         dto.setTargetJobId(payload.getTargetJobId());
         dto.setDate(payload.getDate());
         dto.setMaxTotalMinutes(payload.getMaxTotalMinutes());
@@ -138,6 +140,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
         }
         AgentRunFailureDTO dto = new AgentRunFailureDTO();
         dto.setUserId(payload.getUserId());
+        dto.setExecutionToken(payload.getExecutionToken());
         dto.setErrorCode(AGENT_ASYNC_TASK_FAILED);
         dto.setErrorMessage(reason);
         try {

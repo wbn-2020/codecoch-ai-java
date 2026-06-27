@@ -1,8 +1,10 @@
 package com.codecoachai.interview.feign.vo;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class GenerateReportVO {
 
     private Long aiCallLogId;

@@ -24,6 +24,8 @@ public final class AiPiiMasker {
 
     private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\\.[A-Za-z]{2,})");
+    private static final Pattern JSON_REAL_NAME =
+            Pattern.compile("(\"realName\"\\s*:\\s*\")([^\"\\\\]{2,64})(\")");
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -94,7 +96,16 @@ public final class AiPiiMasker {
         }
         String masked = maskPhone(text);
         masked = maskEmail(masked);
+        masked = maskJsonRealName(masked);
         return masked;
+    }
+
+    static String maskJsonRealName(String text) {
+        if (!StringUtils.hasText(text)) {
+            return text;
+        }
+        return JSON_REAL_NAME.matcher(text).replaceAll(matchResult ->
+                matchResult.group(1) + maskName(matchResult.group(2)) + matchResult.group(3));
     }
 
     /**

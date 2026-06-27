@@ -28,6 +28,7 @@ import com.codecoachai.ai.agent.mapper.SkillGrowthSnapshotMapper;
 import com.codecoachai.ai.agent.service.AgentGrowthService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -48,6 +49,13 @@ import org.springframework.util.StringUtils;
 public class AgentGrowthServiceImpl implements AgentGrowthService {
 
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {};
+    private static final int GROWTH_WINDOW_DAYS = 30;
+    private static final int MIN_TRUSTED_TASK_COUNT = 3;
+    private static final int MIN_TRUSTED_DONE_TASK_COUNT = 2;
+    private static final String DEFAULT_GROWTH_TIME_WINDOW = "最近30天";
+    private static final String INCLUDED_TASK_SOURCE_LABEL = "当前纳入：任务完成记录";
+    private static final String EXCLUDED_GROWTH_SOURCE_LABEL =
+            "当前未纳入：AI 教练运行记录、复盘记录、成长记忆、反馈信号、提醒信号";
 
     private final AgentTaskMapper agentTaskMapper;
     private final AgentRunMapper agentRunMapper;
@@ -109,41 +117,63 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     @Override
     public GrowthOverviewVO growthOverview(Long userId) {
         LocalDate end = LocalDate.now();
-        LocalDate start = end.minusDays(29);
+        LocalDate start = end.minusDays(GROWTH_WINDOW_DAYS - 1L);
         List<AgentTask> tasks = tasks(userId, start, end);
         long done = countTasks(tasks, AgentTaskStatusEnum.DONE.name());
         BigDecimal completionRate = rate(done, tasks.size());
-        BigDecimal successRate = agentSuccessRate(userId, start, end);
-        GrowthOverviewVO vo = new GrowthOverviewVO();
-        vo.setTaskCompletionRate(completionRate.doubleValue());
-        vo.setAgentSuccessRate(successRate.doubleValue());
-        vo.setReadinessScore(readinessScore(completionRate, successRate, tasks.size()));
-        vo.setTotalReviewCount(agentReviewMapper.selectCount(new LambdaQueryWrapper<AgentReview>().eq(AgentReview::getUserId, userId)));
-        vo.setTotalMemoryCount(agentMemoryMapper.selectCount(new LambdaQueryWrapper<AgentMemory>()
+        List<AgentRun> runs = agentRuns(userId, start, end);
+        BigDecimal successRate = successRate(runs);
+        long totalReviewCount = agentReviewMapper.selectCount(
+                new LambdaQueryWrapper<AgentReview>().eq(AgentReview::getUserId, userId));
+        long totalMemoryCount = agentMemoryMapper.selectCount(new LambdaQueryWrapper<AgentMemory>()
                 .eq(AgentMemory::getUserId, userId)
-                .eq(AgentMemory::getEnabled, 1)));
+                .eq(AgentMemory::getEnabled, 1));
+        GrowthEvidencePolicy policy = buildEvidencePolicy(tasks.size(), done);
+
+        GrowthOverviewVO vo = new GrowthOverviewVO();
+        vo.setTotalReviewCount(totalReviewCount);
+        vo.setTotalMemoryCount(totalMemoryCount);
         vo.setTopSkills(topSkillMetrics(tasks));
+        vo.setConfidenceLevel(policy.getConfidenceLevel());
+        vo.setEvidenceCount(policy.getEvidenceCount());
+        vo.setTimeWindow(DEFAULT_GROWTH_TIME_WINDOW);
+        vo.setDataSourceLabels(policy.getDataSourceLabels());
+        if (policy.isTrusted()) {
+            vo.setTaskCompletionRate(completionRate.doubleValue());
+            vo.setAgentSuccessRate(successRate.doubleValue());
+            vo.setReadinessScore(readinessScore(completionRate, successRate, tasks.size()));
+            vo.setDisplayPolicy(GrowthOverviewVO.DisplayPolicy.trusted(true, !vo.getTopSkills().isEmpty()));
+            vo.setNextEvidenceActions(List.of());
+        } else {
+            vo.setColdStartReason(policy.getColdStartReason());
+            vo.setNextEvidenceActions(policy.getNextEvidenceActions());
+            vo.setDisplayPolicy(GrowthOverviewVO.DisplayPolicy.coldStart());
+        }
         return vo;
     }
 
     @Override
     public List<SkillGrowthSnapshotVO> skillTrend(Long userId, Integer days) {
-        LocalDate start = LocalDate.now().minusDays(normalizeDays(days) - 1L);
+        int actualDays = normalizeDays(days);
+        LocalDate start = LocalDate.now().minusDays(actualDays - 1L);
+        String timeWindow = "最近" + actualDays + "天";
         return skillGrowthSnapshotMapper.selectList(new LambdaQueryWrapper<SkillGrowthSnapshot>()
                         .eq(SkillGrowthSnapshot::getUserId, userId)
                         .ge(SkillGrowthSnapshot::getSnapshotDate, start)
                         .orderByAsc(SkillGrowthSnapshot::getSnapshotDate))
-                .stream().map(this::toSkillVO).toList();
+                .stream().map(snapshot -> toSkillVO(snapshot, timeWindow)).toList();
     }
 
     @Override
     public List<ReadinessScoreRecordVO> readinessTrend(Long userId, Integer days) {
-        LocalDate start = LocalDate.now().minusDays(normalizeDays(days) - 1L);
+        int actualDays = normalizeDays(days);
+        LocalDate start = LocalDate.now().minusDays(actualDays - 1L);
+        String timeWindow = "最近" + actualDays + "天";
         return readinessScoreRecordMapper.selectList(new LambdaQueryWrapper<ReadinessScoreRecord>()
                         .eq(ReadinessScoreRecord::getUserId, userId)
                         .ge(ReadinessScoreRecord::getScoreDate, start)
                         .orderByAsc(ReadinessScoreRecord::getScoreDate))
-                .stream().map(this::toReadinessVO).toList();
+                .stream().map(record -> toReadinessVO(record, timeWindow)).toList();
     }
 
     @Override
@@ -189,9 +219,11 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
 
     private Map<String, Object> reviewPayload(LocalDate date, List<AgentTask> tasks, BigDecimal completionRate,
                                               BigDecimal agentSuccessRate) {
+        long doneTaskCount = countTasks(tasks, AgentTaskStatusEnum.DONE.name());
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("date", date.toString());
         payload.put("taskCount", tasks.size());
+        payload.put("doneCount", doneTaskCount);
         payload.put("completionRate", completionRate);
         payload.put("agentSuccessRate", agentSuccessRate);
         payload.put("topSkills", topSkillMetrics(tasks));
@@ -223,7 +255,11 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             snapshot.setUserId(userId);
             snapshot.setSnapshotDate(date);
             snapshot.setSkillName(skill);
-            snapshot.setSkillCode(skillTasks.stream().map(AgentTask::getRelatedSkillCode).filter(StringUtils::hasText).findFirst().orElse(null));
+            snapshot.setSkillCode(skillTasks.stream()
+                    .map(AgentTask::getRelatedSkillCode)
+                    .filter(StringUtils::hasText)
+                    .findFirst()
+                    .orElse(null));
             snapshot.setTaskCount(skillTasks.size());
             snapshot.setDoneCount((int) done);
             snapshot.setScore(readinessScore(rate(done, skillTasks.size()), BigDecimal.valueOf(100), skillTasks.size()));
@@ -265,12 +301,73 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     }
 
     private BigDecimal agentSuccessRate(Long userId, LocalDate start, LocalDate end) {
-        List<AgentRun> runs = agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
+        return successRate(agentRuns(userId, start, end));
+    }
+
+    private List<AgentRun> agentRuns(Long userId, LocalDate start, LocalDate end) {
+        return agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
                 .eq(AgentRun::getUserId, userId)
                 .ge(AgentRun::getPlanDate, start)
                 .le(AgentRun::getPlanDate, end));
+    }
+
+    private BigDecimal successRate(List<AgentRun> runs) {
         long success = runs.stream().filter(run -> AgentRunStatusEnum.SUCCESS.name().equals(run.getStatus())).count();
         return rate(success, runs.size());
+    }
+
+    private GrowthEvidencePolicy buildEvidencePolicy(long taskCount, long doneCount) {
+        int normalizedTaskCount = safeInt(taskCount);
+        int normalizedDoneCount = safeInt(doneCount);
+        boolean enoughTasks = normalizedTaskCount >= MIN_TRUSTED_TASK_COUNT;
+        boolean enoughDone = normalizedDoneCount >= MIN_TRUSTED_DONE_TASK_COUNT;
+        boolean trusted = enoughTasks && enoughDone;
+        return new GrowthEvidencePolicy(
+                trusted,
+                trusted ? "HIGH" : "LOW",
+                normalizedTaskCount,
+                List.of(INCLUDED_TASK_SOURCE_LABEL, EXCLUDED_GROWTH_SOURCE_LABEL),
+                trusted ? null : unifiedColdStartReason(enoughTasks, enoughDone),
+                trusted ? List.of() : unifiedNextEvidenceActions(enoughTasks, enoughDone));
+    }
+
+    private GrowthEvidencePolicy readinessEvidencePolicy(String evidenceJson) {
+        if (!StringUtils.hasText(evidenceJson)) {
+            return buildEvidencePolicy(0, 0);
+        }
+        try {
+            JsonNode root = objectMapper.readTree(evidenceJson);
+            int taskCount = positiveInt(root.path("taskCount").isNumber() ? root.path("taskCount").asInt() : null);
+            int doneCount = positiveInt(root.path("doneCount").isNumber() ? root.path("doneCount").asInt() : null);
+            return buildEvidencePolicy(taskCount, doneCount);
+        } catch (Exception ignored) {
+            return buildEvidencePolicy(0, 0);
+        }
+    }
+
+    private String unifiedColdStartReason(boolean enoughTasks, boolean enoughDone) {
+        List<String> reasons = new ArrayList<>();
+        if (!enoughTasks) {
+            reasons.add("至少需要 " + MIN_TRUSTED_TASK_COUNT + " 条任务记录");
+        }
+        if (!enoughDone) {
+            reasons.add("至少需要 " + MIN_TRUSTED_DONE_TASK_COUNT + " 条已完成任务");
+        }
+        return "Growth 仅在至少 " + MIN_TRUSTED_TASK_COUNT + " 条任务记录且 "
+                + MIN_TRUSTED_DONE_TASK_COUNT + " 条已完成任务时展示强结论。当前"
+                + String.join("，", reasons) + "。";
+    }
+
+    private List<String> unifiedNextEvidenceActions(boolean enoughTasks, boolean enoughDone) {
+        List<String> actions = new ArrayList<>();
+        if (!enoughTasks) {
+            actions.add("至少补齐到 " + MIN_TRUSTED_TASK_COUNT + " 条任务记录");
+        }
+        if (!enoughDone) {
+            actions.add("至少完成 " + MIN_TRUSTED_DONE_TASK_COUNT + " 条任务记录");
+        }
+        actions.add("完成更多带技能标签的任务后再刷新 Growth 趋势");
+        return actions.stream().distinct().toList();
     }
 
     private long countTasks(List<AgentTask> tasks, String status) {
@@ -359,7 +456,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         return vo;
     }
 
-    private SkillGrowthSnapshotVO toSkillVO(SkillGrowthSnapshot snapshot) {
+    private SkillGrowthSnapshotVO toSkillVO(SkillGrowthSnapshot snapshot, String timeWindow) {
         SkillGrowthSnapshotVO vo = new SkillGrowthSnapshotVO();
         vo.setId(snapshot.getId());
         vo.setSnapshotDate(snapshot.getSnapshotDate());
@@ -368,10 +465,19 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         vo.setScore(snapshot.getScore());
         vo.setTaskCount(snapshot.getTaskCount());
         vo.setDoneCount(snapshot.getDoneCount());
+        GrowthEvidencePolicy policy = buildEvidencePolicy(positiveInt(snapshot.getTaskCount()), positiveInt(snapshot.getDoneCount()));
+        vo.setEvidenceCount(policy.getEvidenceCount());
+        vo.setConfidenceLevel(policy.getConfidenceLevel());
+        vo.setTimeWindow(timeWindow);
+        vo.setDataSourceLabels(policy.getDataSourceLabels());
+        if (!policy.isTrusted()) {
+            vo.setColdStartReason(policy.getColdStartReason());
+            vo.setNextEvidenceActions(policy.getNextEvidenceActions());
+        }
         return vo;
     }
 
-    private ReadinessScoreRecordVO toReadinessVO(ReadinessScoreRecord record) {
+    private ReadinessScoreRecordVO toReadinessVO(ReadinessScoreRecord record, String timeWindow) {
         ReadinessScoreRecordVO vo = new ReadinessScoreRecordVO();
         vo.setId(record.getId());
         vo.setTargetJobId(record.getTargetJobId());
@@ -379,7 +485,24 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         vo.setScore(record.getScore());
         vo.setTaskCompletionRate(record.getTaskCompletionRate());
         vo.setAgentSuccessRate(record.getAgentSuccessRate());
+        GrowthEvidencePolicy policy = readinessEvidencePolicy(record.getEvidenceJson());
+        vo.setEvidenceCount(policy.getEvidenceCount());
+        vo.setConfidenceLevel(policy.getConfidenceLevel());
+        vo.setTimeWindow(timeWindow);
+        vo.setDataSourceLabels(policy.getDataSourceLabels());
+        if (!policy.isTrusted()) {
+            vo.setColdStartReason(policy.getColdStartReason());
+            vo.setNextEvidenceActions(policy.getNextEvidenceActions());
+        }
         return vo;
+    }
+
+    private int positiveInt(Integer value) {
+        return value == null ? 0 : Math.max(0, value);
+    }
+
+    private int safeInt(long value) {
+        return Math.toIntExact(Math.max(0L, Math.min(Integer.MAX_VALUE, value)));
     }
 
     private AgentMemoryVO toMemoryVO(AgentMemory memory) {
@@ -440,5 +563,48 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             }
         }
         return null;
+    }
+
+    private static final class GrowthEvidencePolicy {
+        private final boolean trusted;
+        private final String confidenceLevel;
+        private final int evidenceCount;
+        private final List<String> dataSourceLabels;
+        private final String coldStartReason;
+        private final List<String> nextEvidenceActions;
+
+        private GrowthEvidencePolicy(boolean trusted, String confidenceLevel, int evidenceCount, List<String> dataSourceLabels,
+                                     String coldStartReason, List<String> nextEvidenceActions) {
+            this.trusted = trusted;
+            this.confidenceLevel = confidenceLevel;
+            this.evidenceCount = evidenceCount;
+            this.dataSourceLabels = dataSourceLabels;
+            this.coldStartReason = coldStartReason;
+            this.nextEvidenceActions = nextEvidenceActions;
+        }
+
+        private boolean isTrusted() {
+            return trusted;
+        }
+
+        private String getConfidenceLevel() {
+            return confidenceLevel;
+        }
+
+        private int getEvidenceCount() {
+            return evidenceCount;
+        }
+
+        private List<String> getDataSourceLabels() {
+            return dataSourceLabels;
+        }
+
+        private String getColdStartReason() {
+            return coldStartReason;
+        }
+
+        private List<String> getNextEvidenceActions() {
+            return nextEvidenceActions;
+        }
     }
 }

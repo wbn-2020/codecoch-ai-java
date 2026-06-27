@@ -18,6 +18,9 @@ import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
 import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -32,6 +35,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -89,11 +93,13 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 + storedFilename;
 
         try {
-            byte[] bytes = file.getBytes();
-            String md5 = md5Hex(bytes);
-
-            OssUploadResult uploaded = ossFileService.upload(ossKey, bytes,
-                    StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
+            MessageDigest md5Digest = MessageDigest.getInstance("MD5");
+            OssUploadResult uploaded;
+            try (InputStream inputStream = new DigestInputStream(file.getInputStream(), md5Digest)) {
+                uploaded = ossFileService.upload(ossKey, inputStream, file.getSize(),
+                        StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
+            }
+            String md5 = HexFormat.of().formatHex(md5Digest.digest());
 
             FileInfo fileInfo = new FileInfo();
             fileInfo.setUserId(userId);
@@ -102,7 +108,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             fileInfo.setStoredFilename(storedFilename);
             fileInfo.setFileExt(fileExt);
             fileInfo.setMimeType(file.getContentType());
-            fileInfo.setFileSize((long) bytes.length);
+            fileInfo.setFileSize(file.getSize());
             fileInfo.setStoragePath(uploaded.getOssKey());   // 兼容老字段
             fileInfo.setOssKey(uploaded.getOssKey());
             fileInfo.setBucket(ossProperties.getBucket());
@@ -112,7 +118,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             fileInfo.setStatus(STATUS_AVAILABLE);
             fileInfoMapper.insert(fileInfo);
 
-            log.info("OSS 上传成功 fileId={} ossKey={} size={}", fileInfo.getId(), ossKey, bytes.length);
+            log.info("OSS upload succeeded fileId={} ossKey={} size={}", fileInfo.getId(), ossKey, file.getSize());
             return toVO(fileInfo);
         } catch (IOException e) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
@@ -147,9 +153,15 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     }
 
     @Override
-    public ResponseEntity<byte[]> adminDownload(Long fileId) {
+    public ResponseEntity<Resource> adminDownload(Long fileId) {
         FileInfo fileInfo = getAvailableAdminFile(fileId);
-        return downloadFile(fileInfo);
+        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "OSS key is missing.");
+        }
+        return ResponseEntity.status(302)
+                .location(URI.create(ossFileService.signUrl(key, null)))
+                .build();
     }
 
     private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
@@ -191,10 +203,10 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
         List<Long> parseStatusFileIds = resolveParseStatusFileIds(actualQuery);
         if (parseStatusFileIds != null && parseStatusFileIds.isEmpty()) {
-            return PageResult.empty(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize()));
+            return PageResult.empty(actualQuery.effectivePageNo(), actualQuery.effectivePageSize());
         }
         Page<FileInfo> page = fileInfoMapper.selectPage(
-                Page.of(defaultPage(actualQuery.getPageNo()), defaultSize(actualQuery.getPageSize())),
+                Page.of(actualQuery.effectivePageNo(), actualQuery.effectivePageSize()),
                 new LambdaQueryWrapper<FileInfo>()
                         .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
                         .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
@@ -413,14 +425,6 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         return PARSE_STATUS_SUCCESS.equals(parseStatus)
                 || PARSE_STATUS_FAILED.equals(parseStatus)
                 || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
-    }
-
-    private long defaultPage(Long pageNo) {
-        return pageNo == null ? 1L : pageNo;
-    }
-
-    private long defaultSize(Long pageSize) {
-        return pageSize == null ? 10L : pageSize;
     }
 
     private String md5Hex(byte[] bytes) {

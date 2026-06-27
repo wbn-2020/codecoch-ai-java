@@ -42,6 +42,7 @@ import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionReviewService;
+import com.codecoachai.question.util.QuestionReviewRawPayloadUtils;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -96,9 +97,10 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned no questions");
         }
         List<Long> reviewIds = new ArrayList<>();
-        String rawAiResultJson = StringUtils.hasText(aiResponse.getRawResponse())
-                ? aiResponse.getRawResponse()
-                : toJson(aiResponse);
+        String rawAiResultJson = toJson(QuestionReviewRawPayloadUtils.buildMinimizedMetadata(
+                aiResponse.getAiCallLogId(),
+                batchId,
+                aiResponse.getQuestions().size()));
         for (QuestionDraftItemVO item : aiResponse.getQuestions()) {
             QuestionReview review = toReview(dto, batchId, adminUserId, aiResponse.getAiCallLogId(),
                     rawAiResultJson, item);

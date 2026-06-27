@@ -17,6 +17,7 @@ public class AgentDailyPlanPayload {
 
     private Long runId;
     private Long userId;
+    private String executionToken;
     private Long targetJobId;
     private LocalDate date;
     private Integer maxTotalMinutes;

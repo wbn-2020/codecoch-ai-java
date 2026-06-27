@@ -8,6 +8,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "codecoachai.vector")
 public class VectorStoreProperties {
 
+    private static final int MIN_UPSERT_BATCH_SIZE = 1;
+
+    private static final int MAX_UPSERT_BATCH_SIZE = 1000;
+
     private boolean enabled = true;
 
     private String provider = "qdrant";
@@ -22,6 +26,8 @@ public class VectorStoreProperties {
 
     private int defaultLimit = 10;
 
+    private int upsertBatchSize = 256;
+
     /**
      * 检索分数归一化策略。
      * <p>NONE（默认）：原样透传向量库返回的分数。当 embedding 向量已 L2 归一化时，
@@ -35,5 +41,9 @@ public class VectorStoreProperties {
     public enum ScoreNormalization {
         COSINE_TO_UNIT,
         NONE
+    }
+
+    public void setUpsertBatchSize(int upsertBatchSize) {
+        this.upsertBatchSize = Math.max(MIN_UPSERT_BATCH_SIZE, Math.min(MAX_UPSERT_BATCH_SIZE, upsertBatchSize));
     }
 }

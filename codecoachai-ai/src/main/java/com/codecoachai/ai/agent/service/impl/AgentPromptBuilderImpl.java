@@ -4,12 +4,14 @@ import com.codecoachai.ai.agent.domain.context.CandidateTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.service.AgentPromptBuilder;
 import com.codecoachai.ai.service.PromptRenderResult;
+import com.codecoachai.ai.service.PromptRenderService;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.security.MessageDigest;
-import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
@@ -17,8 +19,10 @@ public class AgentPromptBuilderImpl implements AgentPromptBuilder {
 
     public static final String PROMPT_TYPE = "JOB_COACH_DAILY_PLAN";
     private static final String PROMPT_VERSION = "v4.2-zh-evidence-json";
+    private static final String DEFAULT_MODEL_PARAMS_JSON = "{\"temperature\":0.2,\"responseFormat\":\"json_object\"}";
 
     private final ObjectMapper objectMapper;
+    private final PromptRenderService promptRenderService;
 
     @Override
     public PromptRenderResult buildDailyPlanPrompt(JobCoachAgentContext context, List<CandidateTask> candidates,
@@ -70,19 +74,27 @@ public class AgentPromptBuilderImpl implements AgentPromptBuilder {
                 }
                 """.formatted(taskCount, maxTotalMinutes, contextJson, candidatesJson);
 
-        return PromptRenderResult.builder()
-                .scene(PROMPT_TYPE)
-                .promptVersion(PROMPT_VERSION)
-                .renderedPrompt(promptText)
-                .inputVariablesJson(toJson(java.util.Map.of(
-                        "context", context,
-                        "candidates", candidates,
-                        "taskCount", taskCount,
-                        "maxTotalMinutes", maxTotalMinutes)))
-                .modelParamsJson("{\"temperature\":0.2,\"responseFormat\":\"json_object\"}")
-                .promptHash(hash(promptText))
-                .fallbackUsed(false)
-                .build();
+        PromptRenderResult result = promptRenderService.render(PROMPT_TYPE, promptText,
+                promptVariables(contextJson, candidatesJson, taskCount, maxTotalMinutes));
+        if (Boolean.TRUE.equals(result.getFallbackUsed())) {
+            result.setPromptVersion(PROMPT_VERSION);
+        }
+        if (!StringUtils.hasText(result.getModelParamsJson())) {
+            result.setModelParamsJson(DEFAULT_MODEL_PARAMS_JSON);
+        }
+        return result;
+    }
+
+    private Map<String, String> promptVariables(String contextJson, String candidatesJson,
+                                                int taskCount, int maxTotalMinutes) {
+        Map<String, String> variables = new LinkedHashMap<>();
+        variables.put("contextJson", contextJson);
+        variables.put("candidatesJson", candidatesJson);
+        variables.put("context", contextJson);
+        variables.put("candidates", candidatesJson);
+        variables.put("taskCount", String.valueOf(taskCount));
+        variables.put("maxTotalMinutes", String.valueOf(maxTotalMinutes));
+        return variables;
     }
 
     private String toJson(Object value) {
@@ -90,15 +102,6 @@ public class AgentPromptBuilderImpl implements AgentPromptBuilder {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
             return "{}";
-        }
-    }
-
-    private String hash(String text) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        } catch (Exception ex) {
-            return String.valueOf(text.hashCode());
         }
     }
 }

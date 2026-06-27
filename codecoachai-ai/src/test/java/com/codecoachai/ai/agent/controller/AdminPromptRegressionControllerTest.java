@@ -10,10 +10,13 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.ai.agent.domain.dto.PromptRegressionCaseSaveDTO;
+import com.codecoachai.ai.agent.domain.dto.PromptRegressionRunDTO;
 import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionCaseVO;
+import com.codecoachai.ai.agent.domain.vo.ops.PromptRegressionResultVO;
 import com.codecoachai.ai.agent.security.AdminOperationConfirmationGuard;
 import com.codecoachai.ai.agent.security.V4AdminPermissionGuard;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,6 +59,28 @@ class AdminPromptRegressionControllerTest {
     }
 
     @Test
+    void casesDoesNotLoadWhenListPermissionDenied() {
+        doThrow(new BusinessException(ErrorCode.FORBIDDEN))
+                .when(permissionGuard).require("admin:agent:prompt-regression:list");
+
+        assertThrows(BusinessException.class, () -> controller.cases("JOB_COACH_DAILY_PLAN", 1));
+
+        verify(agentV4OpsService, never()).listPromptCases(any(), any());
+    }
+
+    @Test
+    void createCaseDoesNotConfirmOrSaveWhenWritePermissionDenied() {
+        PromptRegressionCaseSaveDTO dto = confirmedCaseDto("prompt-case-create-1234");
+        doThrow(new BusinessException(ErrorCode.FORBIDDEN))
+                .when(permissionGuard).require("admin:agent:prompt-regression:write");
+
+        assertThrows(BusinessException.class, () -> controller.createCase(dto));
+
+        verify(agentV4OpsService, never()).savePromptCase(any());
+        verify(stringRedisTemplate, never()).opsForValue();
+    }
+
+    @Test
     void createCaseRequiresConfirmedIdempotencyKey() {
         PromptRegressionCaseSaveDTO dto = confirmedCaseDto("prompt-case-create-1234");
         PromptRegressionCaseVO saved = new PromptRegressionCaseVO();
@@ -91,6 +116,55 @@ class AdminPromptRegressionControllerTest {
                 "codecoachai:admin-confirmed-operation:PROMPT_REGRESSION_CASE_UPDATE:9:prompt-case-update-1234");
     }
 
+    @Test
+    void runCaseRejectsMissingConfirmationBeforeRunning() {
+        assertThrows(BusinessException.class, () -> controller.runCase(5L, new PromptRegressionRunDTO()));
+
+        verify(permissionGuard).require("admin:agent:prompt-regression:run");
+        verify(agentV4OpsService, never()).runPromptCase(any(), any());
+    }
+
+    @Test
+    void runCaseDoesNotConfirmOrRunWhenRunPermissionDenied() {
+        PromptRegressionRunDTO dto = confirmedRunDto("prompt-run-1234");
+        doThrow(new BusinessException(ErrorCode.FORBIDDEN))
+                .when(permissionGuard).require("admin:agent:prompt-regression:run");
+
+        assertThrows(BusinessException.class, () -> controller.runCase(5L, dto));
+
+        verify(agentV4OpsService, never()).runPromptCase(any(), any());
+        verify(stringRedisTemplate, never()).opsForValue();
+    }
+
+    @Test
+    void runCaseRequiresConfirmedIdempotencyKey() {
+        PromptRegressionRunDTO dto = confirmedRunDto("prompt-run-1234");
+        dto.setPromptVersionId(8L);
+        PromptRegressionResultVO saved = new PromptRegressionResultVO();
+        saved.setId(2L);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(
+                eq("codecoachai:admin-confirmed-operation:PROMPT_REGRESSION_RUN:5:8:prompt-run-1234"),
+                eq("1"),
+                eq(Duration.ofMinutes(30)))).thenReturn(true);
+        when(agentV4OpsService.runPromptCase(5L, 8L)).thenReturn(saved);
+
+        PromptRegressionResultVO result = controller.runCase(5L, dto).getData();
+
+        assertEquals(2L, result.getId());
+        verify(agentV4OpsService).runPromptCase(5L, 8L);
+    }
+
+    @Test
+    void resultsDoesNotLoadWhenListPermissionDenied() {
+        doThrow(new BusinessException(ErrorCode.FORBIDDEN))
+                .when(permissionGuard).require("admin:agent:prompt-regression:list");
+
+        assertThrows(BusinessException.class, () -> controller.results(5L));
+
+        verify(agentV4OpsService, never()).listPromptResults(any());
+    }
+
     private static PromptRegressionCaseSaveDTO caseDto() {
         PromptRegressionCaseSaveDTO dto = new PromptRegressionCaseSaveDTO();
         dto.setCaseName("Daily plan schema");
@@ -106,6 +180,15 @@ class AdminPromptRegressionControllerTest {
         dto.setConfirm(true);
         dto.setDryRun(false);
         dto.setReason("confirm prompt regression case change");
+        dto.setIdempotencyKey(idempotencyKey);
+        return dto;
+    }
+
+    private static PromptRegressionRunDTO confirmedRunDto(String idempotencyKey) {
+        PromptRegressionRunDTO dto = new PromptRegressionRunDTO();
+        dto.setConfirm(true);
+        dto.setDryRun(false);
+        dto.setReason("confirm prompt regression run");
         dto.setIdempotencyKey(idempotencyKey);
         return dto;
     }

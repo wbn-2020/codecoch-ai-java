@@ -56,8 +56,6 @@ class AiServiceImplFailureHandlingTest {
                         .promptHash("hash")
                         .fallbackUsed(false)
                         .build());
-        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
-                .thenThrow(new AiProviderException(AiFailureType.TIMEOUT, "provider timeout"));
         service = new AiServiceImpl(
                 aiCallLogMapper,
                 promptRenderService,
@@ -68,6 +66,9 @@ class AiServiceImplFailureHandlingTest {
 
     @Test
     void reviewPracticeDoesNotReturnFallbackWhenRealAiFails() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenThrow(new AiProviderException(AiFailureType.TIMEOUT, "provider timeout"));
+
         assertThrows(BusinessException.class, () -> service.reviewPractice(practiceReviewDTO()));
 
         verify(aiCallLogMapper).insert(any(AiCallLog.class));
@@ -75,6 +76,9 @@ class AiServiceImplFailureHandlingTest {
 
     @Test
     void generateLearningPlanDoesNotReturnFallbackWhenRealAiFails() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenThrow(new AiProviderException(AiFailureType.TIMEOUT, "provider timeout"));
+
         assertThrows(BusinessException.class, () -> service.generateLearningPlan(learningPlanDTO()));
 
         verify(aiCallLogMapper).insert(any(AiCallLog.class));
@@ -82,6 +86,9 @@ class AiServiceImplFailureHandlingTest {
 
     @Test
     void generateTargetedStudyPlanDoesNotReturnFallbackWhenRealAiFails() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenThrow(new AiProviderException(AiFailureType.TIMEOUT, "provider timeout"));
+
         assertThrows(BusinessException.class, () -> service.generateTargetedStudyPlan(targetedStudyPlanDTO()));
 
         verify(aiCallLogMapper).insert(any(AiCallLog.class));

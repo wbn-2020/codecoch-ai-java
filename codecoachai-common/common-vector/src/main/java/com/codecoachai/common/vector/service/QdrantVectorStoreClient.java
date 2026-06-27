@@ -132,14 +132,18 @@ public class QdrantVectorStoreClient implements VectorStoreClient {
         if (CollectionUtils.isEmpty(points)) {
             return;
         }
-        List<Map<String, Object>> payloadPoints = points.stream().map(point -> {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", qdrantPointIdValue(point.getId()));
-            item.put("vector", point.getVector());
-            item.put("payload", point.getPayload() == null ? Map.of() : point.getPayload());
-            return item;
-        }).toList();
-        send("PUT", "/collections/" + collectionName + "/points?wait=true", Map.of("points", payloadPoints));
+        int batchSize = properties.getUpsertBatchSize();
+        for (int start = 0; start < points.size(); start += batchSize) {
+            int end = Math.min(start + batchSize, points.size());
+            List<Map<String, Object>> payloadPoints = points.subList(start, end).stream().map(point -> {
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("id", qdrantPointIdValue(point.getId()));
+                item.put("vector", point.getVector());
+                item.put("payload", point.getPayload() == null ? Map.of() : point.getPayload());
+                return item;
+            }).toList();
+            send("PUT", "/collections/" + collectionName + "/points?wait=true", Map.of("points", payloadPoints));
+        }
     }
 
     @Override

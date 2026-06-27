@@ -5,6 +5,7 @@ import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.question.config.QuestionImportProperties;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.service.QuestionDuplicateService;
@@ -12,24 +13,37 @@ import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionImportService;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.io.BufferedReader;
+import java.io.Closeable;
+import java.io.FilterInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.NoSuchElementException;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.poi.xwpf.usermodel.BodyElementType;
+import org.apache.poi.xwpf.usermodel.IBodyElement;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFTable;
+import org.apache.poi.xwpf.usermodel.XWPFTableCell;
+import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -37,22 +51,21 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.util.StringUtils;
 
 /**
- * 题目批量导入服务实现。
+ * Imports question data from Excel, Markdown, DOCX, and PDF files.
  *
- * 支持格式：
- * - Excel(.xlsx)：每行一题，列：标题/内容/参考答案/解析/难度/题型/经验年限/分类/标签
- * - Markdown(.md)：以 ## 或 ### 为题目标题分隔，下方内容为答案
- * - Word(.docx)：同 Markdown 逻辑，按标题样式分隔
- * - PDF(.pdf)：提取文本后按 Markdown 逻辑解析
+ * <p>The service enforces a file-size guard, parses each format into a unified question model,
+ * performs duplicate checks, and writes embeddings after the surrounding transaction commits.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class QuestionImportServiceImpl implements QuestionImportService {
+    private static final int IMPORT_POST_COMMIT_SYNC_BATCH_SIZE = 200;
 
     private final QuestionMapper questionMapper;
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionDuplicateService questionDuplicateService;
+    private final QuestionImportProperties questionImportProperties;
 
     private static final Pattern MD_TITLE_PATTERN = Pattern.compile("^#{1,3}\\s+(.+)$");
 
@@ -60,249 +73,928 @@ public class QuestionImportServiceImpl implements QuestionImportService {
     @Transactional(rollbackFor = Exception.class)
     public ImportResult importQuestions(String fileName, InputStream inputStream, Long importedBy, boolean dryRun) {
         String ext = getExtension(fileName);
-        List<ParsedQuestion> parsed;
-
-        switch (ext) {
-            case "xlsx", "xls" -> parsed = parseExcel(inputStream);
-            case "md", "txt" -> parsed = parseMarkdown(inputStream);
-            case "docx" -> parsed = parseDocx(inputStream);
-            case "pdf" -> parsed = parsePdf(inputStream);
-            default -> throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的文件格式: " + ext);
+        try (InputStream limitedInputStream = boundedInputStream(inputStream)) {
+            return switch (ext) {
+                case "xlsx", "xls" -> importExcel(limitedInputStream, importedBy, dryRun);
+                case "md", "txt" -> saveQuestions(parseMarkdownIterator(limitedInputStream), importedBy, dryRun);
+                case "docx" -> saveQuestions(parseDocx(limitedInputStream), importedBy, dryRun);
+                case "pdf" -> saveQuestions(parsePdf(limitedInputStream), importedBy, dryRun);
+                default -> throw new BusinessException(ErrorCode.PARAM_ERROR, "\u4e0d\u652f\u6301\u7684\u6587\u4ef6\u683c\u5f0f: " + ext);
+            };
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (IOException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "\u9898\u76ee\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002");
         }
-
-        return saveQuestions(parsed, importedBy, dryRun);
     }
 
-    // ==================== Excel 解析 ====================
+    // ==================== Excel parsing ====================
 
-    private List<ParsedQuestion> parseExcel(InputStream inputStream) {
-        List<ParsedQuestion> results = new ArrayList<>();
-        EasyExcel.read(inputStream, QuestionExcelRow.class, new ReadListener<QuestionExcelRow>() {
-            @Override
-            public void invoke(QuestionExcelRow row, AnalysisContext context) {
-                if (!StringUtils.hasText(row.getTitle())) return;
-                ParsedQuestion pq = new ParsedQuestion();
-                pq.setTitle(row.getTitle());
-                pq.setContent(row.getContent());
-                pq.setReferenceAnswer(row.getReferenceAnswer());
-                pq.setAnalysis(row.getAnalysis());
-                pq.setDifficulty(row.getDifficulty());
-                pq.setQuestionType(row.getQuestionType());
-                pq.setExperienceLevel(row.getExperienceLevel());
-                pq.setCategoryName(row.getCategoryName());
-                pq.setTags(row.getTags());
-                results.add(pq);
-            }
+    private ImportResult importExcel(InputStream inputStream, Long importedBy, boolean dryRun) {
+        ImportSaveContext saveContext = new ImportSaveContext(importedBy, dryRun);
+        try {
+            EasyExcel.read(inputStream, QuestionExcelRow.class, new ReadListener<QuestionExcelRow>() {
+                @Override
+                public void invoke(QuestionExcelRow row, AnalysisContext context) {
+                    if (!StringUtils.hasText(row.getTitle())) {
+                        return;
+                    }
+                    saveContext.accept(toParsedQuestion(row));
+                }
 
-            @Override
-            public void doAfterAllAnalysed(AnalysisContext context) {
-            }
-        }).sheet().doRead();
-        return results;
+                @Override
+                public void doAfterAllAnalysed(AnalysisContext context) {
+                }
+            }).sheet().doRead();
+            return saveContext.finish();
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Excel \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+        }
     }
 
-    // ==================== Markdown 解析 ====================
+    // ==================== Markdown parsing ====================
 
     private List<ParsedQuestion> parseMarkdown(InputStream inputStream) {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-            return parseMarkdownLines(reader.lines().toList());
+            return parseMarkdownLines(reader.lines().iterator());
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown 解析失败，请检查文件内容后重试");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+        }
+    }
+
+    private Iterator<ParsedQuestion> parseMarkdownIterator(InputStream inputStream) {
+        try {
+            return new MarkdownQuestionIterator(
+                    new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
         }
     }
 
     private List<ParsedQuestion> parseMarkdownLines(List<String> lines) {
-        List<ParsedQuestion> results = new ArrayList<>();
-        ParsedQuestion current = null;
-        StringBuilder contentBuilder = new StringBuilder();
+        return parseMarkdownLines(lines.iterator());
+    }
 
-        for (String line : lines) {
-            Matcher matcher = MD_TITLE_PATTERN.matcher(line.trim());
-            if (matcher.matches()) {
-                // 保存上一题
-                if (current != null) {
-                    finishMarkdownQuestion(current, contentBuilder.toString());
-                    results.add(current);
-                }
-                current = new ParsedQuestion();
-                current.setTitle(matcher.group(1).trim());
-                contentBuilder = new StringBuilder();
-            } else if (current != null) {
-                contentBuilder.append(line).append("\n");
-            }
+    private List<ParsedQuestion> parseMarkdownLines(Iterator<String> lines) {
+        MarkdownQuestionAccumulator accumulator = new MarkdownQuestionAccumulator();
+        while (lines.hasNext()) {
+            accumulator.acceptLine(lines.next());
         }
-        // 最后一题
-        if (current != null) {
-            finishMarkdownQuestion(current, contentBuilder.toString());
-            results.add(current);
-        }
-        return results;
+        return accumulator.finish();
     }
 
     private void finishMarkdownQuestion(ParsedQuestion pq, String body) {
-        // 尝试从 body 中提取 **答案** / **解析** 段落
-        String answer = extractSection(body, "答案", "参考答案", "answer");
-        String analysis = extractSection(body, "解析", "分析", "analysis");
+        SectionMatch answer = extractSection(body, "\u7b54\u6848", "\u53c2\u8003\u7b54\u6848", "answer");
+        SectionMatch analysis = extractSection(body, "\u89e3\u6790", "\u5206\u6790", "analysis");
 
-        if (StringUtils.hasText(answer)) {
-            pq.setReferenceAnswer(answer.trim());
-            // content 为去掉答案和解析后的部分
-            String content = body.replace(answer, "").replace(analysis != null ? analysis : "", "").trim();
+        if (answer != null && StringUtils.hasText(answer.content())) {
+            pq.setReferenceAnswer(answer.content().trim());
+            String content = removeMatchedSections(body, answer, analysis).trim();
             if (StringUtils.hasText(content)) {
                 pq.setContent(content);
             }
         } else {
-            // 整个 body 作为参考答案
             pq.setReferenceAnswer(body.trim());
         }
-        if (StringUtils.hasText(analysis)) {
-            pq.setAnalysis(analysis.trim());
+        if (analysis != null && StringUtils.hasText(analysis.content())) {
+            pq.setAnalysis(analysis.content().trim());
         }
     }
 
-    private String extractSection(String body, String... labels) {
+    private SectionMatch extractSection(String body, String... labels) {
         for (String label : labels) {
-            // 匹配 **答案**：xxx 或 答案：xxx 或 > 答案：xxx
-            Pattern p = Pattern.compile("(?:>?\\s*\\*{0,2}" + label + "\\*{0,2}[：:]\\s*)(.+?)(?=\\n\\*{0,2}[\\u4e00-\\u9fa5]+\\*{0,2}[：:]|$)",
+            Pattern p = Pattern.compile("(?:^|\\n)\\s*>?\\s*\\*{0,2}" + Pattern.quote(label) + "\\*{0,2}[:\\uFF1A]\\s*(.+?)(?=\\n\\s*>?\\s*\\*{0,2}(?:[\\u4e00-\\u9fa5A-Za-z][\\u4e00-\\u9fa5A-Za-z\\s]*)\\*{0,2}[:\\uFF1A]|\\z)",
                     Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
             Matcher m = p.matcher(body);
             if (m.find()) {
-                return m.group(1);
+                return new SectionMatch(m.group(1), m.start(), m.end());
             }
         }
         return null;
     }
 
-    // ==================== DOCX 解析 ====================
+    private String removeMatchedSections(String body, SectionMatch first, SectionMatch second) {
+        if (first == null && second == null) {
+            return body;
+        }
+        SectionMatch earlier = first;
+        SectionMatch later = second;
+        if (earlier == null || (later != null && later.start() < earlier.start())) {
+            earlier = second;
+            later = first;
+        }
+        StringBuilder content = new StringBuilder(body.length());
+        int cursor = appendUnmatchedSegment(body, content, 0, earlier);
+        appendUnmatchedSegment(body, content, cursor, later);
+        return content.toString();
+    }
 
-    private List<ParsedQuestion> parseDocx(InputStream inputStream) {
-        try (XWPFDocument doc = new XWPFDocument(inputStream)) {
-            List<String> lines = new ArrayList<>();
-            for (XWPFParagraph para : doc.getParagraphs()) {
-                String text = para.getText();
-                String style = para.getStyleID();
-                // 将标题样式转为 Markdown 格式
-                if (style != null && (style.startsWith("Heading") || style.startsWith("heading"))) {
-                    lines.add("## " + text);
-                } else if (text != null && !text.isBlank()) {
-                    lines.add(text);
+    private int appendUnmatchedSegment(String body, StringBuilder content, int cursor, SectionMatch match) {
+        if (match == null) {
+            if (cursor < body.length()) {
+                content.append(body, cursor, body.length());
+            }
+            return body.length();
+        }
+        if (cursor < match.start()) {
+            content.append(body, cursor, match.start());
+        }
+        return Math.max(cursor, match.end());
+    }
+
+    private record SectionMatch(String content, int start, int end) {
+    }
+
+    // ==================== DOCX parsing ====================
+
+    private Iterator<ParsedQuestion> parseDocx(InputStream inputStream) {
+        try {
+            XWPFDocument doc = new XWPFDocument(inputStream);
+            return parseDocxParagraphIterator(docParagraphIterator(doc), doc);
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+        }
+    }
+
+    private Iterator<XWPFParagraph> docParagraphIterator(XWPFDocument doc) {
+        return new BodyParagraphIterator(doc.getBodyElements());
+    }
+
+    private Iterator<ParsedQuestion> parseDocxParagraphIterator(
+            Iterator<XWPFParagraph> paragraphs,
+            AutoCloseable closeable) {
+        return new DocxQuestionIterator(paragraphs, closeable);
+    }
+
+    // ==================== PDF parsing ====================
+
+    private Iterator<ParsedQuestion> parsePdf(InputStream inputStream) {
+        try {
+            RandomAccessReadBuffer buffer = new RandomAccessReadBuffer(inputStream);
+            PDDocument doc = Loader.loadPDF(buffer);
+            return parsePdfTextIterator(new PdfPageLineIterator(doc, buffer));
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (Exception e) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+        }
+    }
+
+    private Iterator<ParsedQuestion> parsePdfTextIterator(Iterator<String> lines) {
+        return new PdfTextQuestionIterator(lines);
+    }
+
+    // ==================== Input size guard ====================
+
+    private InputStream boundedInputStream(InputStream inputStream) {
+        long maxBytes = questionImportProperties.safeMaxFileBytes();
+        return new FilterInputStream(inputStream) {
+            private long total;
+
+            @Override
+            public int read() throws IOException {
+                int value = super.read();
+                if (value != -1) {
+                    trackBytes(1L);
+                }
+                return value;
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) throws IOException {
+                int read = super.read(b, off, len);
+                if (read > 0) {
+                    trackBytes(read);
+                }
+                return read;
+            }
+
+            @Override
+            public long skip(long n) throws IOException {
+                long skipped = super.skip(n);
+                if (skipped > 0L) {
+                    trackBytes(skipped);
+                }
+                return skipped;
+            }
+
+            private void trackBytes(long delta) {
+                total += delta;
+                if (total > maxBytes) {
+                    throw new BusinessException(
+                            ErrorCode.PARAM_ERROR,
+                            "\u9898\u76ee\u5bfc\u5165\u6587\u4ef6\u4e0d\u80fd\u8d85\u8fc7 " + questionImportProperties.maxFileSizeLabel());
                 }
             }
-            return parseMarkdownLines(lines);
-        } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX 解析失败，请检查文件内容后重试");
-        }
+        };
     }
 
-    // ==================== PDF 解析 ====================
+    private final class MarkdownQuestionAccumulator {
+        private final List<ParsedQuestion> results = new ArrayList<>();
+        private ParsedQuestion current;
+        private StringBuilder contentBuilder = new StringBuilder();
 
-    private List<ParsedQuestion> parsePdf(InputStream inputStream) {
-        try {
-            byte[] bytes = inputStream.readAllBytes();
-            try (PDDocument doc = Loader.loadPDF(bytes)) {
-                PDFTextStripper stripper = new PDFTextStripper();
-                String text = stripper.getText(doc);
-                List<String> lines = List.of(text.split("\\r?\\n"));
-                return parseMarkdownLines(lines);
+        private void acceptLine(String line) {
+            Matcher matcher = MD_TITLE_PATTERN.matcher(line.trim());
+            if (matcher.matches()) {
+                finishCurrentQuestion();
+                current = new ParsedQuestion();
+                current.setTitle(matcher.group(1).trim());
+                contentBuilder = new StringBuilder();
+                return;
             }
-        } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF 解析失败，请检查文件内容后重试");
+            if (current != null) {
+                contentBuilder.append(line).append("\n");
+            }
+        }
+
+        private List<ParsedQuestion> finish() {
+            finishCurrentQuestion();
+            return results;
+        }
+
+        private void finishCurrentQuestion() {
+            if (current == null) {
+                return;
+            }
+            finishMarkdownQuestion(current, contentBuilder.toString());
+            results.add(current);
+            current = null;
+            contentBuilder = new StringBuilder();
         }
     }
 
-    // ==================== 保存逻辑 ====================
+    private final class MarkdownQuestionIterator implements Iterator<ParsedQuestion>, AutoCloseable {
+        private final BufferedReader reader;
+        private ParsedQuestion current;
+        private StringBuilder contentBuilder = new StringBuilder();
+        private ParsedQuestion nextQuestion;
+        private boolean exhausted;
+        private boolean closed;
 
-    private ImportResult saveQuestions(List<ParsedQuestion> parsed, Long importedBy, boolean dryRun) {
-        ImportResult result = new ImportResult();
-        result.setTotalCount(parsed.size());
-        result.setErrors(new ArrayList<>());
+        private MarkdownQuestionIterator(BufferedReader reader) {
+            this.reader = reader;
+        }
 
-        int success = 0;
-        int fail = 0;
-        int duplicate = 0;
-        Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
-        Set<String> seenNormalizedTitleHashes = new LinkedHashSet<>();
-        Set<String> seenContentHashes = new LinkedHashSet<>();
-        List<Long> importedQuestionIds = new ArrayList<>();
+        @Override
+        public boolean hasNext() {
+            if (nextQuestion != null) {
+                return true;
+            }
+            if (exhausted) {
+                return false;
+            }
+            loadNextQuestion();
+            return nextQuestion != null;
+        }
 
-        for (int i = 0; i < parsed.size(); i++) {
-            ParsedQuestion pq = parsed.get(i);
+        @Override
+        public ParsedQuestion next() {
+            if (!hasNext()) {
+                throw new java.util.NoSuchElementException();
+            }
+            ParsedQuestion question = nextQuestion;
+            nextQuestion = null;
+            return question;
+        }
+
+        @Override
+        public void close() {
+            closeQuietly();
+        }
+
+        private void loadNextQuestion() {
             try {
-                if (!StringUtils.hasText(pq.getTitle())) {
-                    ImportError err = new ImportError();
-                    err.setRowIndex(i + 1);
-                    err.setTitle("");
-                    err.setReason("标题为空");
-                    result.getErrors().add(err);
-                    fail++;
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    Matcher matcher = MD_TITLE_PATTERN.matcher(line.trim());
+                    if (matcher.matches()) {
+                        String title = matcher.group(1).trim();
+                        if (current == null) {
+                            startQuestion(title);
+                            continue;
+                        }
+                        ParsedQuestion completedQuestion = finishCurrentQuestion();
+                        startQuestion(title);
+                        nextQuestion = completedQuestion;
+                        return;
+                    }
+                    if (current != null) {
+                        contentBuilder.append(line).append("\n");
+                    }
+                }
+
+                exhausted = true;
+                nextQuestion = finishCurrentQuestion();
+                closeQuietly();
+            } catch (BusinessException ex) {
+                exhausted = true;
+                closeQuietly();
+                throw ex;
+            } catch (Exception ex) {
+                exhausted = true;
+                closeQuietly();
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Markdown \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+            }
+        }
+
+        private void startQuestion(String title) {
+            current = new ParsedQuestion();
+            current.setTitle(title);
+            contentBuilder = new StringBuilder();
+        }
+
+        private ParsedQuestion finishCurrentQuestion() {
+            if (current == null) {
+                return null;
+            }
+            ParsedQuestion completedQuestion = current;
+            finishMarkdownQuestion(completedQuestion, contentBuilder.toString());
+            current = null;
+            contentBuilder = new StringBuilder();
+            return completedQuestion;
+        }
+
+        private void closeQuietly() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                reader.close();
+            } catch (IOException ex) {
+                log.warn("Question markdown reader close failed", ex);
+            }
+        }
+    }
+
+    private final class DocxQuestionIterator implements Iterator<ParsedQuestion>, AutoCloseable {
+        private final Iterator<XWPFParagraph> paragraphs;
+        private final AutoCloseable closeable;
+        private ParsedQuestion current;
+        private StringBuilder contentBuilder = new StringBuilder();
+        private ParsedQuestion nextQuestion;
+        private boolean exhausted;
+        private boolean closed;
+
+        private DocxQuestionIterator(Iterator<XWPFParagraph> paragraphs, AutoCloseable closeable) {
+            this.paragraphs = paragraphs;
+            this.closeable = closeable;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (nextQuestion != null) {
+                return true;
+            }
+            if (exhausted) {
+                return false;
+            }
+            loadNextQuestion();
+            return nextQuestion != null;
+        }
+
+        @Override
+        public ParsedQuestion next() {
+            if (!hasNext()) {
+                throw new java.util.NoSuchElementException();
+            }
+            ParsedQuestion question = nextQuestion;
+            nextQuestion = null;
+            return question;
+        }
+
+        @Override
+        public void close() {
+            closeQuietly();
+        }
+
+        private void loadNextQuestion() {
+            try {
+                while (paragraphs.hasNext()) {
+                    XWPFParagraph para = paragraphs.next();
+                    String text = para.getText();
+                    String style = para.getStyleID();
+                    String line = null;
+                    if (style != null && (style.startsWith("Heading") || style.startsWith("heading"))) {
+                        line = "## " + text;
+                    } else if (text != null && !text.isBlank()) {
+                        line = text;
+                    }
+                    if (line == null) {
+                        continue;
+                    }
+
+                    Matcher matcher = MD_TITLE_PATTERN.matcher(line.trim());
+                    if (matcher.matches()) {
+                        String title = matcher.group(1).trim();
+                        if (current == null) {
+                            startQuestion(title);
+                            continue;
+                        }
+                        ParsedQuestion completedQuestion = finishCurrentQuestion();
+                        startQuestion(title);
+                        nextQuestion = completedQuestion;
+                        return;
+                    }
+                    if (current != null) {
+                        contentBuilder.append(line).append("\n");
+                    }
+                }
+
+                exhausted = true;
+                nextQuestion = finishCurrentQuestion();
+                closeQuietly();
+            } catch (BusinessException ex) {
+                exhausted = true;
+                closeQuietly();
+                throw ex;
+            } catch (Exception ex) {
+                exhausted = true;
+                closeQuietly();
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+            }
+        }
+
+        private void startQuestion(String title) {
+            current = new ParsedQuestion();
+            current.setTitle(title);
+            contentBuilder = new StringBuilder();
+        }
+
+        private ParsedQuestion finishCurrentQuestion() {
+            if (current == null) {
+                return null;
+            }
+            ParsedQuestion completedQuestion = current;
+            finishMarkdownQuestion(completedQuestion, contentBuilder.toString());
+            current = null;
+            contentBuilder = new StringBuilder();
+            return completedQuestion;
+        }
+
+        private void closeQuietly() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (closeable == null) {
+                return;
+            }
+            try {
+                closeable.close();
+            } catch (Exception ex) {
+                log.warn("Question DOCX iterator close failed", ex);
+            }
+        }
+    }
+
+    private final class PdfTextQuestionIterator implements Iterator<ParsedQuestion>, AutoCloseable {
+        private final Iterator<String> lines;
+        private final AutoCloseable closeable;
+        private ParsedQuestion current;
+        private StringBuilder contentBuilder = new StringBuilder();
+        private ParsedQuestion nextQuestion;
+        private boolean exhausted;
+        private boolean closed;
+
+        private PdfTextQuestionIterator(Iterator<String> lines) {
+            this(lines, lines instanceof AutoCloseable closeable ? closeable : null);
+        }
+
+        private PdfTextQuestionIterator(Iterator<String> lines, AutoCloseable closeable) {
+            this.lines = lines;
+            this.closeable = closeable;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (nextQuestion != null) {
+                return true;
+            }
+            if (exhausted) {
+                return false;
+            }
+            loadNextQuestion();
+            return nextQuestion != null;
+        }
+
+        @Override
+        public ParsedQuestion next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            ParsedQuestion question = nextQuestion;
+            nextQuestion = null;
+            return question;
+        }
+
+        @Override
+        public void close() {
+            closeQuietly();
+        }
+
+        private void loadNextQuestion() {
+            try {
+                while (lines.hasNext()) {
+                    String line = lines.next();
+                    Matcher matcher = MD_TITLE_PATTERN.matcher(line.trim());
+                    if (matcher.matches()) {
+                        String title = matcher.group(1).trim();
+                        if (current == null) {
+                            startQuestion(title);
+                            continue;
+                        }
+                        ParsedQuestion completedQuestion = finishCurrentQuestion();
+                        startQuestion(title);
+                        nextQuestion = completedQuestion;
+                        return;
+                    }
+                    if (current != null) {
+                        contentBuilder.append(line).append("\n");
+                    }
+                }
+
+                exhausted = true;
+                nextQuestion = finishCurrentQuestion();
+                closeQuietly();
+            } catch (BusinessException ex) {
+                exhausted = true;
+                closeQuietly();
+                throw ex;
+            } catch (Exception ex) {
+                exhausted = true;
+                closeQuietly();
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+            }
+        }
+
+        private void startQuestion(String title) {
+            current = new ParsedQuestion();
+            current.setTitle(title);
+            contentBuilder = new StringBuilder();
+        }
+
+        private ParsedQuestion finishCurrentQuestion() {
+            if (current == null) {
+                return null;
+            }
+            ParsedQuestion completedQuestion = current;
+            finishMarkdownQuestion(completedQuestion, contentBuilder.toString());
+            current = null;
+            contentBuilder = new StringBuilder();
+            return completedQuestion;
+        }
+
+        private void closeQuietly() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (closeable == null) {
+                return;
+            }
+            try {
+                closeable.close();
+            } catch (Exception ex) {
+                log.warn("Question PDF iterator close failed", ex);
+            }
+        }
+    }
+
+    private static final class BodyParagraphIterator implements Iterator<XWPFParagraph> {
+        private final Deque<Iterator<IBodyElement>> bodyIterators = new ArrayDeque<>();
+        private XWPFParagraph nextParagraph;
+
+        private BodyParagraphIterator(List<IBodyElement> bodyElements) {
+            if (bodyElements != null && !bodyElements.isEmpty()) {
+                bodyIterators.push(bodyElements.iterator());
+            }
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (nextParagraph != null) {
+                return true;
+            }
+            nextParagraph = loadNextParagraph();
+            return nextParagraph != null;
+        }
+
+        @Override
+        public XWPFParagraph next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            XWPFParagraph paragraph = nextParagraph;
+            nextParagraph = null;
+            return paragraph;
+        }
+
+        private XWPFParagraph loadNextParagraph() {
+            while (!bodyIterators.isEmpty()) {
+                Iterator<IBodyElement> iterator = bodyIterators.peek();
+                if (!iterator.hasNext()) {
+                    bodyIterators.pop();
                     continue;
                 }
+                IBodyElement element = iterator.next();
+                if (element == null) {
+                    continue;
+                }
+                if (element.getElementType() == BodyElementType.PARAGRAPH && element instanceof XWPFParagraph paragraph) {
+                    return paragraph;
+                }
+                if (element.getElementType() == BodyElementType.TABLE && element instanceof XWPFTable table) {
+                    Iterator<IBodyElement> tableIterator = new TableBodyElementIterator(table);
+                    if (tableIterator.hasNext()) {
+                        bodyIterators.push(tableIterator);
+                    }
+                }
+            }
+            return null;
+        }
+    }
 
-                String normalized = QuestionTextNormalizeUtils.normalizeTitle(pq.getTitle());
+    private static final class TableBodyElementIterator implements Iterator<IBodyElement> {
+        private final List<XWPFTableRow> rows;
+        private int rowIndex;
+        private int cellIndex;
+        private Iterator<IBodyElement> currentBodyIterator;
+        private IBodyElement nextElement;
+
+        private TableBodyElementIterator(XWPFTable table) {
+            this.rows = table == null ? List.of() : table.getRows();
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (nextElement != null) {
+                return true;
+            }
+            nextElement = loadNextElement();
+            return nextElement != null;
+        }
+
+        @Override
+        public IBodyElement next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            IBodyElement element = nextElement;
+            nextElement = null;
+            return element;
+        }
+
+        private IBodyElement loadNextElement() {
+            while (true) {
+                if (currentBodyIterator != null && currentBodyIterator.hasNext()) {
+                    return currentBodyIterator.next();
+                }
+                currentBodyIterator = null;
+                XWPFTableCell cell = nextCell();
+                if (cell == null) {
+                    return null;
+                }
+                List<IBodyElement> bodyElements = cell.getBodyElements();
+                if (bodyElements == null || bodyElements.isEmpty()) {
+                    continue;
+                }
+                currentBodyIterator = bodyElements.iterator();
+            }
+        }
+
+        private XWPFTableCell nextCell() {
+            while (rowIndex < rows.size()) {
+                XWPFTableRow row = rows.get(rowIndex);
+                List<XWPFTableCell> cells = row == null ? null : row.getTableCells();
+                if (cells == null || cellIndex >= cells.size()) {
+                    rowIndex++;
+                    cellIndex = 0;
+                    continue;
+                }
+                XWPFTableCell cell = cells.get(cellIndex);
+                cellIndex++;
+                if (cell != null) {
+                    return cell;
+                }
+            }
+            return null;
+        }
+    }
+
+    private static final class PdfPageLineIterator implements Iterator<String>, AutoCloseable {
+        private final PDDocument document;
+        private final Closeable buffer;
+        private final PDFTextStripper stripper = new PDFTextStripper();
+        private Iterator<String> pageLines = List.<String>of().iterator();
+        private int nextPage = 1;
+        private boolean closed;
+
+        private PdfPageLineIterator(PDDocument document, Closeable buffer) {
+            this.document = document;
+            this.buffer = buffer;
+        }
+
+        @Override
+        public boolean hasNext() {
+            if (closed) {
+                return false;
+            }
+            try {
+                while (!pageLines.hasNext()) {
+                    if (document == null || nextPage > document.getNumberOfPages()) {
+                        close();
+                        return false;
+                    }
+                    stripper.setStartPage(nextPage);
+                    stripper.setEndPage(nextPage);
+                    nextPage++;
+                    pageLines = stripper.getText(document).lines().iterator();
+                }
+                return true;
+            } catch (BusinessException ex) {
+                closeQuietly();
+                throw ex;
+            } catch (Exception ex) {
+                closeQuietly();
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "PDF \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+            }
+        }
+
+        @Override
+        public String next() {
+            if (!hasNext()) {
+                throw new NoSuchElementException();
+            }
+            return pageLines.next();
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            Exception failure = null;
+            try {
+                document.close();
+            } catch (Exception ex) {
+                failure = ex;
+            }
+            try {
+                buffer.close();
+            } catch (Exception ex) {
+                if (failure == null) {
+                    failure = ex;
+                } else {
+                    failure.addSuppressed(ex);
+                }
+            }
+            if (failure != null) {
+                throw new IllegalStateException("Question PDF iterator close failed", failure);
+            }
+        }
+
+        private void closeQuietly() {
+            try {
+                close();
+            } catch (Exception ignore) {
+            }
+        }
+    }
+
+    private ImportResult saveQuestions(List<ParsedQuestion> parsed, Long importedBy, boolean dryRun) {
+        return saveQuestions(parsed.iterator(), importedBy, dryRun);
+    }
+
+    private ImportResult saveQuestions(Iterator<ParsedQuestion> parsed, Long importedBy, boolean dryRun) {
+        ImportSaveContext saveContext = new ImportSaveContext(importedBy, dryRun);
+        try {
+            while (parsed.hasNext()) {
+                saveContext.accept(parsed.next());
+            }
+            return saveContext.finish();
+        } finally {
+            closeParsedIterator(parsed);
+        }
+    }
+
+    private void closeParsedIterator(Iterator<ParsedQuestion> parsed) {
+        if (!(parsed instanceof AutoCloseable closeable)) {
+            return;
+        }
+        try {
+            closeable.close();
+        } catch (Exception ex) {
+            log.warn("Question import iterator close failed", ex);
+        }
+    }
+
+    private ParsedQuestion toParsedQuestion(QuestionExcelRow row) {
+        ParsedQuestion parsedQuestion = new ParsedQuestion();
+        parsedQuestion.setTitle(row.getTitle());
+        parsedQuestion.setContent(row.getContent());
+        parsedQuestion.setReferenceAnswer(row.getReferenceAnswer());
+        parsedQuestion.setAnalysis(row.getAnalysis());
+        parsedQuestion.setDifficulty(row.getDifficulty());
+        parsedQuestion.setQuestionType(row.getQuestionType());
+        parsedQuestion.setExperienceLevel(row.getExperienceLevel());
+        parsedQuestion.setCategoryName(row.getCategoryName());
+        parsedQuestion.setTags(row.getTags());
+        return parsedQuestion;
+    }
+
+    private final class ImportSaveContext {
+        private final ImportResult result = new ImportResult();
+        private final Map<String, Integer> duplicateReasonCounts = new LinkedHashMap<>();
+        private final Set<String> seenNormalizedTitleHashes = new LinkedHashSet<>();
+        private final Set<String> seenContentHashes = new LinkedHashSet<>();
+        private final List<List<Long>> importedQuestionIdBatches = new ArrayList<>();
+        private final List<Long> pendingImportedQuestionIds = new ArrayList<>(IMPORT_POST_COMMIT_SYNC_BATCH_SIZE);
+        private final Long importedBy;
+        private final boolean dryRun;
+        private int totalCount;
+        private int successCount;
+        private int failCount;
+        private int duplicateCount;
+
+        private ImportSaveContext(Long importedBy, boolean dryRun) {
+            this.importedBy = importedBy;
+            this.dryRun = dryRun;
+            result.setErrors(new ArrayList<>());
+        }
+
+        private void accept(ParsedQuestion parsedQuestion) {
+            totalCount++;
+            int rowIndex = totalCount;
+            try {
+                if (!StringUtils.hasText(parsedQuestion.getTitle())) {
+                    failCount++;
+                    addError(rowIndex, "", "\u8bf7\u586b\u5199\u9898\u76ee\u6807\u9898");
+                    return;
+                }
+                String sizeLimitViolation = questionSizeLimitViolation(parsedQuestion);
+                if (StringUtils.hasText(sizeLimitViolation)) {
+                    failCount++;
+                    addError(rowIndex, parsedQuestion.getTitle(), sizeLimitViolation);
+                    return;
+                }
+
+                String normalized = QuestionTextNormalizeUtils.normalizeTitle(parsedQuestion.getTitle());
                 String normalizedTitleHash = QuestionTextNormalizeUtils.sha256Hex(normalized);
                 String normalizedContent = QuestionTextNormalizeUtils.normalizeContent(
-                        pq.getTitle(), pq.getContent(), pq.getReferenceAnswer(), pq.getAnalysis());
+                        parsedQuestion.getTitle(),
+                        parsedQuestion.getContent(),
+                        parsedQuestion.getReferenceAnswer(),
+                        parsedQuestion.getAnalysis());
                 String contentHash = QuestionTextNormalizeUtils.sha256Hex(normalizedContent);
 
                 if (StringUtils.hasText(normalizedTitleHash) && seenNormalizedTitleHashes.contains(normalizedTitleHash)) {
-                    duplicate++;
+                    duplicateCount++;
                     incrementDuplicateReason(duplicateReasonCounts, "FILE_TITLE_DUPLICATE");
-                    ImportError err = new ImportError();
-                    err.setRowIndex(i + 1);
-                    err.setTitle(pq.getTitle());
-                    err.setReason("FILE_TITLE_DUPLICATE");
-                    result.getErrors().add(err);
-                    continue;
+                    addError(rowIndex, parsedQuestion.getTitle(), "FILE_TITLE_DUPLICATE");
+                    return;
                 }
                 if (StringUtils.hasText(contentHash) && seenContentHashes.contains(contentHash)) {
-                    duplicate++;
+                    duplicateCount++;
                     incrementDuplicateReason(duplicateReasonCounts, "FILE_CONTENT_DUPLICATE");
-                    ImportError err = new ImportError();
-                    err.setRowIndex(i + 1);
-                    err.setTitle(pq.getTitle());
-                    err.setReason("FILE_CONTENT_DUPLICATE");
-                    result.getErrors().add(err);
-                    continue;
+                    addError(rowIndex, parsedQuestion.getTitle(), "FILE_CONTENT_DUPLICATE");
+                    return;
                 }
 
                 Long titleExistsCount = questionMapper.selectCount(
                         new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
                                 .eq(StringUtils.hasText(normalizedTitleHash), Question::getNormalizedTitleHash, normalizedTitleHash));
                 if (titleExistsCount > 0) {
-                    duplicate++;
+                    duplicateCount++;
                     incrementDuplicateReason(duplicateReasonCounts, "BANK_TITLE_DUPLICATE");
-                    ImportError err = new ImportError();
-                    err.setRowIndex(i + 1);
-                    err.setTitle(pq.getTitle());
-                    err.setReason("BANK_TITLE_DUPLICATE");
-                    result.getErrors().add(err);
-                    continue;
+                    addError(rowIndex, parsedQuestion.getTitle(), "BANK_TITLE_DUPLICATE");
+                    return;
                 }
                 Long contentExistsCount = questionMapper.selectCount(
                         new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Question>()
                                 .eq(StringUtils.hasText(contentHash), Question::getContentHash, contentHash));
                 if (contentExistsCount > 0) {
-                    duplicate++;
+                    duplicateCount++;
                     incrementDuplicateReason(duplicateReasonCounts, "BANK_CONTENT_DUPLICATE");
-                    ImportError err = new ImportError();
-                    err.setRowIndex(i + 1);
-                    err.setTitle(pq.getTitle());
-                    err.setReason("BANK_CONTENT_DUPLICATE");
-                    result.getErrors().add(err);
-                    continue;
+                    addError(rowIndex, parsedQuestion.getTitle(), "BANK_CONTENT_DUPLICATE");
+                    return;
                 }
 
                 Question question = new Question();
-                question.setTitle(pq.getTitle());
+                question.setTitle(parsedQuestion.getTitle());
                 question.setNormalizedTitle(normalized);
                 question.setNormalizedTitleHash(normalizedTitleHash);
                 question.setContentHash(contentHash);
-                question.setContent(pq.getContent());
-                question.setReferenceAnswer(pq.getReferenceAnswer());
-                question.setAnalysis(pq.getAnalysis());
-                question.setDifficulty(StringUtils.hasText(pq.getDifficulty()) ? pq.getDifficulty() : "MEDIUM");
-                question.setQuestionType(StringUtils.hasText(pq.getQuestionType()) ? pq.getQuestionType() : "SHORT_ANSWER");
-                question.setExperienceLevel(pq.getExperienceLevel());
+                question.setContent(parsedQuestion.getContent());
+                question.setReferenceAnswer(parsedQuestion.getReferenceAnswer());
+                question.setAnalysis(parsedQuestion.getAnalysis());
+                question.setDifficulty(StringUtils.hasText(parsedQuestion.getDifficulty()) ? parsedQuestion.getDifficulty() : "MEDIUM");
+                question.setQuestionType(StringUtils.hasText(parsedQuestion.getQuestionType()) ? parsedQuestion.getQuestionType() : "SHORT_ANSWER");
+                question.setExperienceLevel(parsedQuestion.getExperienceLevel());
                 question.setIsHighFrequency(0);
                 question.setIsRecommended(0);
                 question.setStatus(1);
@@ -310,7 +1002,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 question.setSourceType("IMPORT");
                 if (!dryRun) {
                     questionMapper.insert(question);
-                    importedQuestionIds.add(question.getId());
+                    queueImportedQuestionId(question.getId());
                 }
                 if (StringUtils.hasText(normalizedTitleHash)) {
                     seenNormalizedTitleHashes.add(normalizedTitleHash);
@@ -318,47 +1010,111 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 if (StringUtils.hasText(contentHash)) {
                     seenContentHashes.add(contentHash);
                 }
-                success++;
+                successCount++;
             } catch (Exception ex) {
-                fail++;
-                log.warn("Question import row failed, rowIndex={}, title={}", i + 1, pq.getTitle(), ex);
-                ImportError err = new ImportError();
-                err.setRowIndex(i + 1);
-                err.setTitle(pq.getTitle());
-                err.setReason("行数据导入失败，请检查字段格式、分类和题目内容");
-                result.getErrors().add(err);
+                failCount++;
+                String title = parsedQuestion != null ? parsedQuestion.getTitle() : null;
+                log.warn("Question import row failed, rowIndex={}, title={}", rowIndex, title, ex);
+                addError(rowIndex, title, "\u884c\u6570\u636e\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5b57\u6bb5\u683c\u5f0f\u3001\u5206\u7c7b\u548c\u9898\u76ee\u5185\u5bb9");
             }
         }
 
-        result.setSuccessCount(success);
-        result.setFailCount(fail);
-        result.setDuplicateCount(duplicate);
-        result.setDuplicateReasonCounts(duplicateReasonCounts);
-        if (!dryRun) {
-            syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIds, importedBy);
+        private ImportResult finish() {
+            result.setTotalCount(totalCount);
+            result.setSuccessCount(successCount);
+            result.setFailCount(failCount);
+            result.setDuplicateCount(duplicateCount);
+            result.setDuplicateReasonCounts(duplicateReasonCounts);
+            if (!dryRun) {
+                flushPendingImportedQuestionIds();
+                syncQuestionEmbeddingAndDuplicateCheckAfterCommit(importedQuestionIdBatches, importedBy);
+            }
+            log.info(
+                    "\u9898\u76ee\u5bfc\u5165\u5b8c\u6210 total={} success={} fail={} duplicate={}",
+                    totalCount,
+                    successCount,
+                    failCount,
+                    duplicateCount);
+            return result;
         }
-        log.info("题目导入完成 total={} success={} fail={} duplicate={}", parsed.size(), success, fail, duplicate);
-        return result;
+
+        private void addError(int rowIndex, String title, String reason) {
+            ImportError err = new ImportError();
+            err.setRowIndex(rowIndex);
+            err.setTitle(title);
+            err.setReason(reason);
+            result.getErrors().add(err);
+        }
+
+        private void queueImportedQuestionId(Long questionId) {
+            if (questionId == null) {
+                return;
+            }
+            pendingImportedQuestionIds.add(questionId);
+            if (pendingImportedQuestionIds.size() >= IMPORT_POST_COMMIT_SYNC_BATCH_SIZE) {
+                flushPendingImportedQuestionIds();
+            }
+        }
+
+        private void flushPendingImportedQuestionIds() {
+            if (pendingImportedQuestionIds.isEmpty()) {
+                return;
+            }
+            importedQuestionIdBatches.add(new ArrayList<>(pendingImportedQuestionIds));
+            pendingImportedQuestionIds.clear();
+        }
     }
 
-    private void syncQuestionEmbeddingAndDuplicateCheckAfterCommit(List<Long> questionIds, Long importedBy) {
-        if (questionIds == null || questionIds.isEmpty()) {
-            return;
+    private String questionSizeLimitViolation(ParsedQuestion parsedQuestion) {
+        if (parsedQuestion == null) {
+            return null;
         }
-        List<Long> ids = questionIds.stream()
-                .filter(java.util.Objects::nonNull)
-                .distinct()
-                .toList();
-        if (ids.isEmpty()) {
+        if (charLength(parsedQuestion.getTitle()) > questionImportProperties.safeMaxTitleChars()) {
+            return "\u9898\u76ee\u6807\u9898\u8fc7\u957f\uff0c\u8bf7\u7f29\u77ed\u540e\u91cd\u8bd5";
+        }
+        if (charLength(parsedQuestion.getContent()) > questionImportProperties.safeMaxFieldChars()
+                || charLength(parsedQuestion.getReferenceAnswer()) > questionImportProperties.safeMaxFieldChars()
+                || charLength(parsedQuestion.getAnalysis()) > questionImportProperties.safeMaxFieldChars()) {
+            return "\u9898\u76ee\u5b57\u6bb5\u8fc7\u957f\uff0c\u8bf7\u62c6\u5206\u6216\u7f29\u77ed\u540e\u91cd\u8bd5";
+        }
+        if (totalQuestionChars(parsedQuestion) > questionImportProperties.safeMaxEntryChars()) {
+            return "\u5355\u9898\u5185\u5bb9\u8fc7\u957f\uff0c\u8bf7\u62c6\u5206\u6216\u7f29\u77ed\u540e\u91cd\u8bd5";
+        }
+        return null;
+    }
+
+    private long totalQuestionChars(ParsedQuestion parsedQuestion) {
+        return charLength(parsedQuestion.getTitle())
+                + charLength(parsedQuestion.getContent())
+                + charLength(parsedQuestion.getReferenceAnswer())
+                + charLength(parsedQuestion.getAnalysis())
+                + charLength(parsedQuestion.getDifficulty())
+                + charLength(parsedQuestion.getQuestionType())
+                + charLength(parsedQuestion.getExperienceLevel())
+                + charLength(parsedQuestion.getCategoryName())
+                + charLength(parsedQuestion.getTags());
+    }
+
+    private long charLength(String value) {
+        return value == null ? 0L : value.length();
+    }
+
+    private void syncQuestionEmbeddingAndDuplicateCheckAfterCommit(List<List<Long>> questionIdBatches, Long importedBy) {
+        if (questionIdBatches == null || questionIdBatches.isEmpty()) {
             return;
         }
         Runnable action = () -> {
-            questionEmbeddingIndexService.indexQuestions(ids);
-            for (Long questionId : ids) {
-                try {
-                    questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy);
-                } catch (Exception ex) {
-                    log.warn("Question duplicate check failed after import questionId={}", questionId, ex);
+            for (List<Long> batch : questionIdBatches) {
+                if (batch == null || batch.isEmpty()) {
+                    continue;
+                }
+                questionEmbeddingIndexService.indexQuestions(batch);
+                for (Long questionId : batch) {
+                    try {
+                        questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy);
+                    } catch (Exception ex) {
+                        log.warn("Question duplicate check failed after import questionId={}", questionId, ex);
+                    }
                 }
             }
         };
@@ -385,28 +1141,28 @@ public class QuestionImportServiceImpl implements QuestionImportService {
         return fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
     }
 
-    // ==================== Excel 行模型 ====================
+    // ==================== Excel row mapping ====================
 
     @lombok.Data
     @com.alibaba.excel.annotation.ExcelIgnoreUnannotated
     public static class QuestionExcelRow {
-        @com.alibaba.excel.annotation.ExcelProperty(value = "标题", index = 0)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Title", index = 0)
         private String title;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "内容", index = 1)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Content", index = 1)
         private String content;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "参考答案", index = 2)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Reference Answer", index = 2)
         private String referenceAnswer;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "解析", index = 3)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Analysis", index = 3)
         private String analysis;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "难度", index = 4)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Difficulty", index = 4)
         private String difficulty;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "题型", index = 5)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Question Type", index = 5)
         private String questionType;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "经验年限", index = 6)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Experience Level", index = 6)
         private String experienceLevel;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "分类", index = 7)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Category", index = 7)
         private String categoryName;
-        @com.alibaba.excel.annotation.ExcelProperty(value = "标签", index = 8)
+        @com.alibaba.excel.annotation.ExcelProperty(value = "Tags", index = 8)
         private String tags;
     }
 }

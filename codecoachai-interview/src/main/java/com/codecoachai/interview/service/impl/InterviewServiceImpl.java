@@ -2,6 +2,7 @@ package com.codecoachai.interview.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -69,6 +70,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -451,9 +453,14 @@ public class InterviewServiceImpl implements InterviewService {
         if (!hasScorableAnswers(session.getId())) {
             return prepareInsufficientReport(session);
         }
-        FinishInterviewVO vo = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId(), session.getUserId(), vo);
-        return vo;
+        InterviewReport existing = currentReport(session.getId());
+        if (shouldReuseExistingReport(existing)) {
+            return buildExistingReportResponse(session, existing);
+        }
+        PreparedReportGeneration prepared = prepareReportGeneration(session);
+        submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
+                prepared.report(), prepared.response());
+        return prepared.response();
     }
 
     @Override
@@ -464,25 +471,13 @@ public class InterviewServiceImpl implements InterviewService {
             return prepareInsufficientReport(session);
         }
         InterviewReport existing = currentReport(session.getId());
-        if (existing != null && ReportStatusEnum.GENERATED.name().equals(existing.getStatus())) {
-            FinishInterviewVO vo = new FinishInterviewVO();
-            vo.setId(session.getId());
-            vo.setStatus(session.getStatus());
-            vo.setReportStatus(session.getReportStatus());
-            vo.setReport(toReportVO(existing, session));
-            return vo;
+        if (shouldReuseExistingReport(existing)) {
+            return buildExistingReportResponse(session, existing);
         }
-        if (existing != null && ReportStatusEnum.GENERATING.name().equals(existing.getStatus())) {
-            FinishInterviewVO vo = new FinishInterviewVO();
-            vo.setId(session.getId());
-            vo.setStatus(session.getStatus());
-            vo.setReportStatus(session.getReportStatus());
-            vo.setReport(toReportVO(existing, session));
-            return vo;
-        }
-        FinishInterviewVO vo = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId(), session.getUserId(), vo);
-        return vo;
+        PreparedReportGeneration prepared = prepareReportGeneration(session);
+        submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
+                prepared.report(), prepared.response());
+        return prepared.response();
     }
 
     @Override
@@ -579,6 +574,10 @@ public class InterviewServiceImpl implements InterviewService {
             completeAgentInterviewTask(session, existing);
             return buildReportGenerateResult(session, null, existing);
         }
+        if (!force && existing != null && ReportStatusEnum.GENERATING.name().equals(existing.getStatus())) {
+            progress(progressConsumer, "LOAD_INTERVIEW");
+            return buildReportGenerateResult(session, null, existing);
+        }
 
         progress(progressConsumer, "LOAD_INTERVIEW");
         session.setReportStatus(ReportStatusEnum.GENERATING.name());
@@ -587,13 +586,15 @@ public class InterviewServiceImpl implements InterviewService {
         session.setFailureReason(null);
         sessionMapper.updateById(session);
 
-        InterviewReport report = existing == null ? new InterviewReport() : existing;
+        InterviewReport report = force ? new InterviewReport() : (existing == null ? new InterviewReport() : existing);
         if (report.getId() == null) {
             report.setSessionId(session.getId());
             report.setUserId(session.getUserId());
         }
+        String generationToken = nextGenerationToken();
         report.setStatus(ReportStatusEnum.GENERATING.name());
         report.setFailureReason(null);
+        report.setGenerationToken(generationToken);
         saveReport(report);
 
         Long aiCallLogId = null;
@@ -611,38 +612,58 @@ public class InterviewServiceImpl implements InterviewService {
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
             aiCallLogId = aiReport == null ? null : aiReport.getAiCallLogId();
 
+            if (!isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
+                log.info("Skip stale SSE report success write-back, sessionId={}, reportId={}",
+                        session.getId(), report.getId());
+                InterviewReport latest = currentReport(session.getId());
+                return buildReportGenerateResult(session, aiCallLogId, latest == null ? report : latest);
+            }
+
             progress(progressConsumer, "SAVE_REPORT");
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport, messages);
             saveReport(report);
 
-            session.setStatus(InterviewStatusEnum.COMPLETED.name());
-            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
-                session.setReportStatus(ReportStatusEnum.GENERATED.name());
-                session.setTotalScore(report.getTotalScore());
-                session.setFailureReason(isFallbackReport(report) ? report.getFailureReason() : null);
-            } else {
-                session.setReportStatus(ReportStatusEnum.FAILED.name());
-                session.setTotalScore(null);
-                session.setFailureReason(report.getFailureReason());
+            if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
+                session.setStatus(InterviewStatusEnum.COMPLETED.name());
+                if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                    session.setReportStatus(ReportStatusEnum.GENERATED.name());
+                    session.setTotalScore(report.getTotalScore());
+                    session.setFailureReason(isFallbackReport(report) ? report.getFailureReason() : null);
+                } else {
+                    session.setReportStatus(ReportStatusEnum.FAILED.name());
+                    session.setTotalScore(null);
+                    session.setFailureReason(report.getFailureReason());
+                }
+                session.setEndTime(LocalDateTime.now());
+                sessionMapper.updateById(session);
             }
-            session.setEndTime(LocalDateTime.now());
-            sessionMapper.updateById(session);
-            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+            if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)
+                    && ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
                 syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
                 completeAgentInterviewTask(session, report);
             }
             return buildReportGenerateResult(session, aiCallLogId, report);
         } catch (RuntimeException ex) {
             log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
+            if (!isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
+                log.info("Skip stale SSE report failure write-back, sessionId={}, reportId={}",
+                        session.getId(), report.getId());
+                InterviewReport latest = currentReport(session.getId());
+                return buildReportGenerateResult(session, aiCallLogId, latest == null ? report : latest);
+            }
             report.setStatus(ReportStatusEnum.FAILED.name());
+            report.setTotalScore(null);
             report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
             saveReport(report);
 
-            session.setStatus(InterviewStatusEnum.FAILED.name());
-            session.setReportStatus(ReportStatusEnum.FAILED.name());
-            session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
-            sessionMapper.updateById(session);
+            if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
+                session.setStatus(InterviewStatusEnum.FAILED.name());
+                session.setReportStatus(ReportStatusEnum.FAILED.name());
+                session.setTotalScore(null);
+                session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
+                sessionMapper.updateById(session);
+            }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "面试报告生成失败，请稍后重试");
         }
     }
@@ -904,10 +925,11 @@ public class InterviewServiceImpl implements InterviewService {
         return currentResult;
     }
 
-    private FinishInterviewVO prepareReportGeneration(InterviewSession session) {
+    private PreparedReportGeneration prepareReportGeneration(InterviewSession session) {
         session.setReportStatus(ReportStatusEnum.GENERATING.name());
         session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
         session.setEndTime(LocalDateTime.now());
+        session.setFailureReason(null);
         sessionMapper.updateById(session);
 
         InterviewReport report = currentReport(session.getId());
@@ -916,8 +938,10 @@ public class InterviewServiceImpl implements InterviewService {
             report.setSessionId(session.getId());
             report.setUserId(session.getUserId());
         }
+        report.setUserId(session.getUserId());
         report.setStatus(ReportStatusEnum.GENERATING.name());
         report.setFailureReason(null);
+        report.setGenerationToken(nextGenerationToken());
         saveReport(report);
 
         FinishInterviewVO vo = new FinishInterviewVO();
@@ -925,7 +949,7 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setReport(toReportVO(report, session));
-        return vo;
+        return new PreparedReportGeneration(report, vo);
     }
 
     private FinishInterviewVO prepareInsufficientReport(InterviewSession session) {
@@ -945,15 +969,34 @@ public class InterviewServiceImpl implements InterviewService {
         return vo;
     }
 
-    private void submitReportGenerationAfterCommit(Long sessionId, Long userId, FinishInterviewVO vo) {
+    private boolean shouldReuseExistingReport(InterviewReport existing) {
+        return existing != null
+                && (ReportStatusEnum.GENERATED.name().equals(existing.getStatus())
+                || ReportStatusEnum.GENERATING.name().equals(existing.getStatus()));
+    }
+
+    private FinishInterviewVO buildExistingReportResponse(InterviewSession session, InterviewReport existing) {
+        FinishInterviewVO vo = new FinishInterviewVO();
+        vo.setId(session.getId());
+        vo.setStatus(session.getStatus());
+        vo.setReportStatus(session.getReportStatus());
+        vo.setReport(toReportVO(existing, session));
+        return vo;
+    }
+
+    private void submitReportGenerationAfterCommit(Long sessionId, Long userId, InterviewReport report, FinishInterviewVO vo) {
+        Long reportId = report == null ? null : report.getId();
+        String generationToken = report == null ? null : report.getGenerationToken();
         Runnable action = () -> {
-            MqDispatchReceipt receipt = interviewMqDispatcher.dispatchReportWithReceipt(sessionId, userId);
+            MqDispatchReceipt receipt = interviewMqDispatcher.dispatchReportWithReceipt(
+                    sessionId, userId, reportId, generationToken);
             if (receipt != null) {
                 attachReportDispatchReceipt(vo, receipt);
                 return;
             }
-            log.warn("面试报告 MQ 投递不可用，回退本地异步生成 sessionId={}", sessionId);
-            reportAsyncService.generateReportAsync(sessionId);
+            log.warn("面试报告 MQ 投递不可用，回退本地异步生成 sessionId={} reportId={}",
+                    sessionId, reportId);
+            reportAsyncService.generateReportAsync(sessionId, reportId, generationToken);
         };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             action.run();
@@ -1428,7 +1471,23 @@ public class InterviewServiceImpl implements InterviewService {
     private InterviewReport currentReport(Long sessionId) {
         return reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
                 .eq(InterviewReport::getSessionId, sessionId)
+                .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                .orderByDesc(InterviewReport::getId)
                 .last("limit 1"));
+    }
+
+    private boolean isCurrentReportAttempt(Long sessionId, Long reportId, String generationToken) {
+        if (sessionId == null || reportId == null || !StringUtils.hasText(generationToken)) {
+            return false;
+        }
+        InterviewReport latest = currentReport(sessionId);
+        return latest != null
+                && reportId.equals(latest.getId())
+                && generationToken.equals(latest.getGenerationToken());
+    }
+
+    private String nextGenerationToken() {
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
@@ -2052,6 +2111,9 @@ public class InterviewServiceImpl implements InterviewService {
     private record AnswerPersistence(InterviewMessage evaluationMessage, InterviewMessage followUpMessage,
                                      Long followUpAiCallLogId, NextActionEnum nextAction,
                                      CurrentQuestionVO nextQuestion, InterviewStage questionGenerationStage) {
+    }
+
+    private record PreparedReportGeneration(InterviewReport report, FinishInterviewVO response) {
     }
 
     private int normalizeQuestionCount(Integer value) {

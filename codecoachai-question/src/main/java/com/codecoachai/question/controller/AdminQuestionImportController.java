@@ -1,8 +1,11 @@
 package com.codecoachai.question.controller;
 
 import com.alibaba.excel.EasyExcel;
+import com.alibaba.excel.ExcelWriter;
 import com.alibaba.excel.annotation.ExcelProperty;
+import com.alibaba.excel.write.metadata.WriteSheet;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -10,10 +13,12 @@ import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
+import com.codecoachai.question.config.QuestionImportProperties;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.service.QuestionImportService;
 import com.codecoachai.question.service.QuestionImportService.ImportResult;
+import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -36,11 +41,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
 /**
- * 题目批量导入导出 Controller（管理端）。
- * 导入支持：Excel(.xlsx) / Markdown(.md) / Word(.docx) / PDF(.pdf)
- * 导出支持：Excel(.xlsx) / JSON
+ * Admin question import/export controller.
+ * Import supports Excel(.xlsx), Markdown(.md), Word(.docx), and PDF(.pdf).
+ * Export supports Excel(.xlsx) and JSON.
  */
-@Tag(name = "题目导入导出-后台")
+@Tag(name = "Question Import/Export Admin")
 @Slf4j
 @RestController
 @RequestMapping("/admin/questions")
@@ -50,15 +55,17 @@ public class AdminQuestionImportController {
     private static final String PERM_QUESTION_LIST = "admin:question:list";
     private static final String PERM_QUESTION_IMPORT = "admin:question:import";
     private static final String PERM_QUESTION_EXPORT = "admin:question:export";
+    private static final int EXPORT_BATCH_SIZE = 500;
 
     private final QuestionImportService questionImportService;
     private final QuestionMapper questionMapper;
     private final ObjectMapper objectMapper;
     private final AdminPermissionGuard adminPermissionGuard;
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
+    private final QuestionImportProperties questionImportProperties;
 
-    @Operation(summary = "批量导入题目（支持 xlsx/md/docx/pdf）")
-    @OperationLog(module = "question", action = "IMPORT_QUESTIONS", description = "批量导入题目", logArgs = false, logResponse = false)
+    @Operation(summary = "Import questions in batch")
+    @OperationLog(module = "question", action = "IMPORT_QUESTIONS", description = "Import questions in batch", logArgs = false, logResponse = false)
     @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<ImportResult> importQuestions(@RequestPart("file") MultipartFile file,
                                                 @RequestParam(required = false) Boolean confirm,
@@ -67,7 +74,11 @@ public class AdminQuestionImportController {
                                                 @RequestParam(required = false) String idempotencyKey) {
         adminPermissionGuard.require(PERM_QUESTION_IMPORT);
         if (file.isEmpty()) {
-            return Result.fail(400, "文件不能为空");
+            return Result.fail(400, "File cannot be empty");
+        }
+        if (file.getSize() > questionImportProperties.safeMaxFileBytes()) {
+            return Result.fail(400, "Question import file cannot exceed "
+                    + questionImportProperties.maxFileSizeLabel() + ".");
         }
         String lockKey = requireConfirmedOperation("question-import:" + file.getOriginalFilename(),
                 confirm, dryRun, reason, idempotencyKey);
@@ -81,11 +92,11 @@ public class AdminQuestionImportController {
         } catch (Exception e) {
             operationConfirmationGuard.release(lockKey);
             log.warn("Question import failed, filename={}", file.getOriginalFilename(), e);
-            return Result.fail(500, "导入失败，请检查文件格式和模板后重试");
+            return Result.fail(500, "Question import failed. Please check file format and template.");
         }
     }
 
-    @Operation(summary = "批量导出题目（Excel）")
+    @Operation(summary = "Export questions in batch as Excel")
     @OperationLog(module = "question", action = "EXPORT_QUESTIONS_EXCEL", description = "Export question bank excel", logArgs = false, logResponse = false)
     @GetMapping({"/export/excel", "/export"})
     public void exportExcel(HttpServletResponse response,
@@ -104,21 +115,21 @@ public class AdminQuestionImportController {
         adminPermissionGuard.require(PERM_QUESTION_EXPORT);
         String lockKey = requireConfirmedExport("excel", categoryId, difficulty, questionType, confirm, dryRun, reason, idempotencyKey);
         try {
-            List<Question> questions = queryForExport(categoryId, difficulty, questionType);
-
-            List<QuestionExportRow> rows = questions.stream().map(this::toExportRow).toList();
-
             response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
             response.setHeader("Content-Disposition", "attachment;filename="
-                    + URLEncoder.encode("题目导出.xlsx", StandardCharsets.UTF_8));
-            EasyExcel.write(response.getOutputStream(), QuestionExportRow.class).sheet("题目").doWrite(rows);
+                    + URLEncoder.encode("question-export.xlsx", StandardCharsets.UTF_8));
+            try (ExcelWriter writer = EasyExcel.write(response.getOutputStream(), QuestionExportRow.class).build()) {
+                WriteSheet sheet = EasyExcel.writerSheet("questions").build();
+                exportQuestionBatches(categoryId, difficulty, questionType, batch ->
+                        writer.write(batch.stream().map(this::toExportRow).toList(), sheet));
+            }
         } catch (Exception ex) {
             operationConfirmationGuard.release(lockKey);
             throw ex;
         }
     }
 
-    @Operation(summary = "批量导出题目（JSON）")
+    @Operation(summary = "Export questions in batch as JSON")
     @OperationLog(module = "question", action = "EXPORT_QUESTIONS_JSON", description = "Export question bank json", logArgs = false, logResponse = false)
     @GetMapping({"/export/json", "/download/json"})
     public void exportJson(HttpServletResponse response,
@@ -132,14 +143,18 @@ public class AdminQuestionImportController {
         adminPermissionGuard.require(PERM_QUESTION_EXPORT);
         String lockKey = requireConfirmedExport("json", categoryId, difficulty, questionType, confirm, dryRun, reason, idempotencyKey);
         try {
-            List<QuestionExportRow> questions = queryForExport(categoryId, difficulty, questionType).stream()
-                    .map(this::toExportRow)
-                    .toList();
-
             response.setContentType("application/json;charset=UTF-8");
             response.setHeader("Content-Disposition", "attachment;filename="
-                    + URLEncoder.encode("题目导出.json", StandardCharsets.UTF_8));
-            objectMapper.writeValue(response.getOutputStream(), questions);
+                    + URLEncoder.encode("question-export.json", StandardCharsets.UTF_8));
+            try (JsonGenerator generator = objectMapper.getFactory().createGenerator(response.getOutputStream())) {
+                generator.writeStartArray();
+                exportQuestionBatches(categoryId, difficulty, questionType, batch -> {
+                    for (Question question : batch) {
+                        objectMapper.writeValue(generator, toExportRow(question));
+                    }
+                });
+                generator.writeEndArray();
+            }
         } catch (Exception ex) {
             operationConfirmationGuard.release(lockKey);
             throw ex;
@@ -204,34 +219,58 @@ public class AdminQuestionImportController {
         return row;
     }
 
-    private List<Question> queryForExport(Long categoryId, String difficulty, String questionType) {
-        return questionMapper.selectList(
-                new LambdaQueryWrapper<Question>()
-                        .eq(categoryId != null, Question::getCategoryId, categoryId)
-                        .eq(StringUtils.hasText(difficulty), Question::getDifficulty, difficulty)
-                        .eq(StringUtils.hasText(questionType), Question::getQuestionType, questionType)
-                        .eq(Question::getStatus, 1)
-                        .orderByAsc(Question::getId)
-                        .last("limit 5000"));
+    private void exportQuestionBatches(Long categoryId, String difficulty, String questionType,
+                                       QuestionBatchConsumer consumer) throws Exception {
+        Long lastId = null;
+        while (true) {
+            List<Question> batch = queryExportBatch(categoryId, difficulty, questionType, lastId, EXPORT_BATCH_SIZE);
+            if (batch.isEmpty()) {
+                return;
+            }
+            consumer.accept(batch);
+            lastId = batch.get(batch.size() - 1).getId();
+            if (batch.size() < EXPORT_BATCH_SIZE) {
+                return;
+            }
+        }
+    }
+
+    private List<Question> queryExportBatch(Long categoryId, String difficulty, String questionType,
+                                            Long lastId, int batchSize) {
+        return questionMapper.selectPage(
+                        Page.of(1, batchSize, false),
+                        new LambdaQueryWrapper<Question>()
+                                .eq(categoryId != null, Question::getCategoryId, categoryId)
+                                .eq(StringUtils.hasText(difficulty), Question::getDifficulty, difficulty)
+                                .eq(StringUtils.hasText(questionType), Question::getQuestionType, questionType)
+                                .eq(Question::getStatus, 1)
+                                .gt(lastId != null, Question::getId, lastId)
+                                .orderByAsc(Question::getId))
+                .getRecords();
+    }
+
+    @FunctionalInterface
+    private interface QuestionBatchConsumer {
+        void accept(List<Question> questions) throws Exception;
     }
 
     @Data
     public static class QuestionExportRow {
         @ExcelProperty("ID")
         private Long id;
-        @ExcelProperty("标题")
+        @ExcelProperty("Title")
         private String title;
-        @ExcelProperty("内容")
+        @ExcelProperty("Content")
         private String content;
-        @ExcelProperty("参考答案")
+        @ExcelProperty("Reference Answer")
         private String referenceAnswer;
-        @ExcelProperty("解析")
+        @ExcelProperty("Analysis")
         private String analysis;
-        @ExcelProperty("难度")
+        @ExcelProperty("Difficulty")
         private String difficulty;
-        @ExcelProperty("题型")
+        @ExcelProperty("Question Type")
         private String questionType;
-        @ExcelProperty("经验年限")
+        @ExcelProperty("Experience Level")
         private String experienceLevel;
     }
 }

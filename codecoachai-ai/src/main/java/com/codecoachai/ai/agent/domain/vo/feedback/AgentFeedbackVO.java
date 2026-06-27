@@ -6,7 +6,6 @@ import lombok.Data;
 @Data
 public class AgentFeedbackVO {
     private Long id;
-    private Long userId;
     private Long agentTaskId;
     private Long agentRunId;
     private String feedbackType;

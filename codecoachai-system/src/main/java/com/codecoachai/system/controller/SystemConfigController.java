@@ -1,11 +1,11 @@
 package com.codecoachai.system.controller;
 
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.common.core.enums.ErrorCode;
-import com.codecoachai.common.core.exception.BusinessException;
-import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
+import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.web.log.OperationLog;
+import com.codecoachai.system.domain.dto.SystemConfigQueryDTO;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.dto.SystemConfigStatusDTO;
 import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
@@ -13,12 +13,9 @@ import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.service.SystemConfigService;
 import jakarta.validation.Valid;
-import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
-import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,14 +37,14 @@ public class SystemConfigController {
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/admin/configs")
-    @OperationLog(module = "system", action = "QUERY_CONFIG", description = "查询系统配置", logArgs = false)
-    public Result<List<SystemConfigVO>> listConfigs() {
+    @OperationLog(module = "system", action = "QUERY_CONFIG", description = "鏌ヨ绯荤粺閰嶇疆", logArgs = false)
+    public Result<PageResult<SystemConfigVO>> listConfigs(@Valid SystemConfigQueryDTO query) {
         permissionGuard.require(PERM_CONFIG_LIST);
-        return Result.success(systemConfigService.listConfigs());
+        return Result.success(systemConfigService.pageConfigs(query));
     }
 
     @PostMapping("/admin/configs")
-    @OperationLog(module = "system", action = "CREATE_CONFIG", description = "新增系统配置", logArgs = false)
+    @OperationLog(module = "system", action = "CREATE_CONFIG", description = "鏂板绯荤粺閰嶇疆", logArgs = false)
     public Result<SystemConfigVO> createConfig(@Valid @RequestBody SystemConfigSaveDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
         return runConfirmedOperation("system-config-create:" + (dto == null ? "new" : dto.getConfigKey()),
@@ -59,26 +56,38 @@ public class SystemConfigController {
     }
 
     @GetMapping("/admin/configs/{key}")
-    @OperationLog(module = "system", action = "GET_CONFIG", description = "查看系统配置详情", logArgs = false)
+    @OperationLog(module = "system", action = "GET_CONFIG", description = "鏌ョ湅绯荤粺閰嶇疆璇︽儏", logArgs = false)
     public Result<SystemConfigVO> getConfig(@PathVariable String key) {
         permissionGuard.require(PERM_CONFIG_LIST);
         return Result.success(systemConfigService.getConfig(key));
     }
 
-    @PutMapping("/admin/configs/{key}")
-    @OperationLog(module = "system", action = "UPDATE_CONFIG", description = "编辑系统配置", logArgs = false)
-    public Result<SystemConfigVO> updateConfig(@PathVariable String key, @RequestBody SystemConfigSaveDTO dto) {
+    @PutMapping("/admin/configs/{id}")
+    @OperationLog(module = "system", action = "UPDATE_CONFIG", description = "缂栬緫绯荤粺閰嶇疆", logArgs = false)
+    public Result<SystemConfigVO> updateConfigById(@PathVariable Long id, @RequestBody SystemConfigSaveDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
-        return runConfirmedOperation("system-config-update:" + key,
+        return runConfirmedOperation("system-config-update:id:" + id,
                 dto == null ? null : dto.getConfirm(),
                 dto == null ? null : dto.getDryRun(),
                 dto == null ? null : dto.getReason(),
                 dto == null ? null : dto.getIdempotencyKey(),
-                () -> systemConfigService.updateConfig(key, dto));
+                () -> systemConfigService.updateConfigById(id, dto));
+    }
+
+    @PutMapping({"/admin/configs/keys/{configKey}", "/admin/configs/key/{configKey}"})
+    @OperationLog(module = "system", action = "UPDATE_CONFIG_BY_KEY", description = "Update system config by key", logArgs = false)
+    public Result<SystemConfigVO> updateConfigByKey(@PathVariable String configKey, @RequestBody SystemConfigSaveDTO dto) {
+        permissionGuard.require(PERM_CONFIG_WRITE);
+        return runConfirmedOperation("system-config-update:key:" + configKey,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> systemConfigService.updateConfigByKey(configKey, dto));
     }
 
     @PutMapping("/admin/configs/{key}/status")
-    @OperationLog(module = "system", action = "UPDATE_CONFIG_STATUS", description = "切换系统配置状态")
+    @OperationLog(module = "system", action = "UPDATE_CONFIG_STATUS", description = "鍒囨崲绯荤粺閰嶇疆鐘舵€?", logArgs = false)
     public Result<SystemConfigVO> updateConfigStatus(@PathVariable String key,
                                                      @Valid @RequestBody SystemConfigStatusDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
@@ -91,7 +100,7 @@ public class SystemConfigController {
     }
 
     @DeleteMapping("/admin/configs/{id}")
-    @OperationLog(module = "system", action = "DELETE_CONFIG", description = "删除系统配置")
+    @OperationLog(module = "system", action = "DELETE_CONFIG", description = "鍒犻櫎绯荤粺閰嶇疆")
     public Result<Void> deleteConfig(@PathVariable String id,
                                      @RequestBody(required = false) AdminOperationConfirmDTO dto) {
         permissionGuard.require(PERM_CONFIG_WRITE);
@@ -125,6 +134,7 @@ public class SystemConfigController {
             throw ex;
         }
     }
+
     @Data
     public static class AdminOperationConfirmDTO {
         private Boolean confirm;
@@ -134,14 +144,14 @@ public class SystemConfigController {
     }
 
     @GetMapping("/admin/system/overview")
-    @OperationLog(module = "system", action = "QUERY_SYSTEM_OVERVIEW", description = "查询系统概览", logArgs = false)
+    @OperationLog(module = "system", action = "QUERY_SYSTEM_OVERVIEW", description = "鏌ヨ绯荤粺姒傝", logArgs = false)
     public Result<AdminSystemOverviewVO> overview() {
         permissionGuard.require(PERM_SYSTEM_OVERVIEW);
         return Result.success(systemConfigService.overview());
     }
 
     @GetMapping("/admin/dashboard/overview")
-    @OperationLog(module = "system", action = "QUERY_DASHBOARD", description = "查询管理首页概览", logArgs = false)
+    @OperationLog(module = "system", action = "QUERY_DASHBOARD", description = "鏌ヨ绠＄悊棣栭〉姒傝", logArgs = false)
     public Result<AdminDashboardOverviewVO> dashboardOverview() {
         permissionGuard.require(PERM_SYSTEM_OVERVIEW);
         return Result.success(systemConfigService.dashboardOverview());

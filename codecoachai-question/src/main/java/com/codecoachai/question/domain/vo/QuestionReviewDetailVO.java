@@ -18,6 +18,8 @@ public class QuestionReviewDetailVO {
     private String difficulty;
     private Integer experienceYears;
     private String rawAiResultJson;
+    private Boolean rawAvailable;
+    private String rawAccessPermission;
     private String questionTitle;
     private String questionContent;
     private String referenceAnswer;

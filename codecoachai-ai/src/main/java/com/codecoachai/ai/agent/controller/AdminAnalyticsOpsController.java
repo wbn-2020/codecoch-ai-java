@@ -11,6 +11,8 @@ import com.codecoachai.ai.agent.service.AgentAnalyticsService;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.web.log.OperationLog;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,8 +76,10 @@ public class AdminAnalyticsOpsController {
             int fromIndex = (int) Math.min((actualPageNo - 1) * actualPageSize, all.size());
             int toIndex = (int) Math.min(fromIndex + actualPageSize, all.size());
             return Result.success(PageResult.of(all.subList(fromIndex, toIndex), all.size(), actualPageNo, actualPageSize));
+        } catch (BusinessException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
-            return Result.success(PageResult.empty(actualPageNo, actualPageSize));
+            throw analyticsLoadFailed("Analytics metrics load failed. Please retry later.");
         }
     }
 
@@ -115,8 +119,10 @@ public class AdminAnalyticsOpsController {
         permissionGuard.require("admin:analytics:agent");
         try {
             return Result.success(agentV4OpsService.pageJobs(jobCode, status, pageNo, pageSize));
+        } catch (BusinessException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
-            return Result.success(PageResult.empty(pageNo(pageNo), pageSize(pageSize)));
+            throw analyticsLoadFailed("Analytics jobs load failed. Please retry later.");
         }
     }
 
@@ -169,6 +175,10 @@ public class AdminAnalyticsOpsController {
         } catch (RuntimeException ex) {
             return new AgentFeedbackStatsVO();
         }
+    }
+
+    private BusinessException analyticsLoadFailed(String message) {
+        return new BusinessException(ErrorCode.SYSTEM_ERROR, message);
     }
 
     private String requireConfirmedMetricSave(String action, Long id, AdminAnalyticsMetricSaveDTO dto) {

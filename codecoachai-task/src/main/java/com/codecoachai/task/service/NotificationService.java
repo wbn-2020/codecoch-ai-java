@@ -56,6 +56,21 @@ public class NotificationService {
         send(userId, type, bizType, bizId, title, content);
     }
 
+    public Notification createNotification(Long userId, String type, String bizType, String bizId,
+                                           String title, String content) {
+        Notification notification = new Notification();
+        notification.setUserId(userId);
+        notification.setType(StringUtils.hasText(type) ? type.trim() : "SYSTEM");
+        notification.setTitle(title);
+        notification.setContent(content);
+        notification.setBizType(bizType);
+        notification.setBizId(bizId);
+        notification.setReadStatus(0);
+        notification.setSendStatus("SUCCESS");
+        notification.setSentAt(LocalDateTime.now());
+        return saveNotification(notification);
+    }
+
     private void send(Long userId, String type, String bizType, String bizId, String title, String content) {
         String normalizedType = StringUtils.hasText(type) ? type.trim() : "SYSTEM";
         LocalDateTime now = LocalDateTime.now();

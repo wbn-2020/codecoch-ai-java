@@ -15,6 +15,10 @@ public class AgentRunUserDetailVO {
     private LocalDate planDate;
     private String triggerType;
     private String status;
+    private String resultSource;
+    private String resultSourceLabel;
+    private Boolean fallback;
+    private Boolean mock;
     private String summary;
     private List<SkillTagVO> focusSkills = new ArrayList<>();
     private Long durationMs;

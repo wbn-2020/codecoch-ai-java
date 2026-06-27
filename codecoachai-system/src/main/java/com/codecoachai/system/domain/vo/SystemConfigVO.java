@@ -12,6 +12,7 @@ public class SystemConfigVO {
     private String configValueHash;
     private Boolean sensitiveConfig;
     private String rawAccessPermission;
+    private String configType;
     private String valueType;
     private String description;
     private Integer status;

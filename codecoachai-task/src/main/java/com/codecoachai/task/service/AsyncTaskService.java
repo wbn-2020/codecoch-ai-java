@@ -140,11 +140,15 @@ public class AsyncTaskService {
     }
 
     public void markDead(MqMessage<?> envelope, String reason) {
+        LocalDateTime now = LocalDateTime.now();
         // 超过重试阈值后保留死信记录，后台可按 bizType 解析 payload 后人工恢复。
         asyncTaskMapper.update(null,
                 new LambdaUpdateWrapper<AsyncTask>()
                         .eq(AsyncTask::getMessageId, envelope.getMessageId())
-                        .set(AsyncTask::getStatus, "DEAD"));
+                        .set(AsyncTask::getStatus, "DEAD")
+                        .set(AsyncTask::getFailureReason, truncate(safeFailureReason(reason), 2000))
+                        .set(AsyncTask::getCompletedAt, now)
+                        .set(AsyncTask::getUpdatedAt, now));
 
         MessageDeadLetter dlq = new MessageDeadLetter();
         dlq.setMessageId(envelope.getMessageId());

@@ -13,6 +13,8 @@ import com.codecoachai.task.feign.dto.GenerateReportDTO;
 import com.codecoachai.task.feign.vo.GenerateReportVO;
 import com.codecoachai.task.feign.vo.InterviewReportContextVO;
 import com.codecoachai.task.service.AsyncTaskService;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.ConsumeMode;
@@ -24,12 +26,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-/**
- * 面试报告生成消费者。
- * Topic: codecoachai-interview  Tag: report
- *
- * 流程：拉取面试上下文 → 调 ai-service.generateInterviewReport → 回写 interview_report
- */
 @Slf4j
 @Component
 @ConditionalOnProperty(prefix = "rocketmq", name = "name-server")
@@ -45,11 +41,17 @@ import org.springframework.util.StringUtils;
 public class InterviewReportConsumer implements RocketMQListener<MqMessage<InterviewReportPayload>> {
 
     private static final int MAX_RETRY = 3;
+    private static final String INTERVIEW_REPORT_BIZ_TYPE = "INTERVIEW_REPORT";
+    private static final String REPORT_READY_TITLE = "\u9762\u8bd5\u62a5\u544a\u5df2\u751f\u6210";
+    private static final String REPORT_READY_CONTENT =
+            "\u60a8\u7684\u6a21\u62df\u9762\u8bd5\u62a5\u544a\u5df2\u751f\u6210\u5b8c\u6210\uff0c\u8bf7\u67e5\u770b";
+    private static final String REPORT_FAILED_TITLE = "\u9762\u8bd5\u62a5\u544a\u751f\u6210\u5931\u8d25";
 
     private final AsyncTaskService asyncTaskService;
     private final AiFeignClient aiFeignClient;
     private final InterviewFeignClient interviewFeignClient;
     private final com.codecoachai.task.service.NotificationService notificationService;
+    private final ObjectMapper objectMapper;
 
     @Override
     public void onMessage(MqMessage<InterviewReportPayload> envelope) {
@@ -59,22 +61,24 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
 
         try {
             boolean firstTime = asyncTaskService.acquire(envelope, MAX_RETRY);
-            if (!firstTime) return;
+            if (!firstTime) {
+                return;
+            }
 
             InterviewReportPayload payload = envelope.getPayload();
             if (payload == null || payload.getSessionId() == null) {
                 throw new NonRetryableMqException("interview report payload invalid");
             }
 
-            log.info("开始消费面试报告任务 sessionId={} userId={}", payload.getSessionId(), payload.getUserId());
+            log.info("Start interview report task sessionId={} reportId={} userId={}",
+                    payload.getSessionId(), payload.getReportId(), payload.getUserId());
 
-            // 1. 拉取上下文
             Result<InterviewReportContextVO> ctxResp = interviewFeignClient.getReportContext(payload.getSessionId());
             if (ctxResp == null) {
-                throw new RuntimeException("拉取面试上下文失败: null");
+                throw new RuntimeException("Load interview report context failed: null");
             }
             if (ctxResp.getCode() != 0 || ctxResp.getData() == null) {
-                String reason = "拉取面试上下文失败: " + ctxResp.getMessage();
+                String reason = "Load interview report context failed: " + ctxResp.getMessage();
                 if (isBusinessFailure(ctxResp.getCode())) {
                     throw new TerminalTaskFailureException(reason);
                 }
@@ -82,7 +86,6 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             }
             InterviewReportContextVO ctx = ctxResp.getData();
 
-            // 2. 调用 AI
             GenerateReportDTO aiDto = new GenerateReportDTO();
             aiDto.setInterviewId(ctx.getSessionId());
             aiDto.setUserId(ctx.getUserId());
@@ -99,49 +102,51 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             Result<GenerateReportVO> aiResp = aiFeignClient.generateInterviewReport(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {
                 if (aiResp != null && isBusinessFailure(aiResp.getCode())) {
-                    throw new TerminalTaskFailureException("AI 面试报告业务失败: " + aiResp.getMessage());
+                    throw new TerminalTaskFailureException("AI interview report failed: " + aiResp.getMessage());
                 }
-                throw new RuntimeException("AI 报告返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
+                throw new RuntimeException("AI interview report response invalid: "
+                        + (aiResp == null ? "null" : aiResp.getMessage()));
             }
 
-            // 3. 回写
+            String serializedReport = serializeReportPayload(aiResp.getData());
+
             CompleteInterviewReportDTO complete = new CompleteInterviewReportDTO();
-            complete.setReportJson(aiResp.getData().getReportJson());
+            complete.setReportId(payload.getReportId());
+            complete.setGenerationToken(payload.getGenerationToken());
+            complete.setReportJson(serializedReport);
             complete.setTotalScore(aiResp.getData().getTotalScore());
             complete.setReportStatus("SUCCESS");
             Result<Void> completeResp = interviewFeignClient.completeReport(payload.getSessionId(), complete);
             if (completeResp == null || completeResp.getCode() != 0) {
                 if (completeResp != null && isBusinessFailure(completeResp.getCode())) {
-                    throw new TerminalTaskFailureException("回写面试报告失败: " + completeResp.getMessage());
+                    throw new TerminalTaskFailureException("Persist interview report failed: "
+                            + completeResp.getMessage());
                 }
-                throw new RuntimeException("回写面试报告异常: "
+                throw new RuntimeException("Persist interview report response invalid: "
                         + (completeResp == null ? "null" : completeResp.getMessage()));
             }
 
-            asyncTaskService.markSuccess(envelope.getMessageId(), aiResp.getData().getReportJson());
-            log.info("面试报告生成完成 sessionId={}", payload.getSessionId());
-            // 通知用户
-            notificationService.notifyTaskDone(payload.getUserId(), "INTERVIEW_REPORT",
-                    String.valueOf(payload.getSessionId()), "面试报告已生成", "您的模拟面试报告已生成完毕，请查看");
+            asyncTaskService.markSuccess(envelope.getMessageId(), serializedReport);
+            log.info("Interview report completed sessionId={} reportId={}",
+                    payload.getSessionId(), payload.getReportId());
+            notificationService.notifyTaskDone(
+                    payload.getUserId(),
+                    INTERVIEW_REPORT_BIZ_TYPE,
+                    String.valueOf(payload.getSessionId()),
+                    REPORT_READY_TITLE,
+                    REPORT_READY_CONTENT);
         } catch (TerminalTaskFailureException terminalEx) {
-            log.warn("面试报告任务业务终态失败 messageId={}", envelope.getMessageId(), terminalEx);
+            log.warn("Interview report terminal failure messageId={}", envelope.getMessageId(), terminalEx);
             asyncTaskService.markTerminalFailed(envelope.getMessageId(), terminalEx.getMessage());
             tryMarkInterviewFailed(envelope, terminalEx.getMessage());
-            if (envelope.getPayload() != null) {
-                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "INTERVIEW_REPORT",
-                        String.valueOf(envelope.getPayload().getSessionId()), "面试报告生成失败", terminalEx.getMessage());
-            }
+            notifyTaskFailed(envelope, terminalEx.getMessage());
         } catch (NonRetryableMqException nrEx) {
-            log.error("面试报告任务不可重试 messageId={}", envelope.getMessageId(), nrEx);
+            log.error("Interview report non-retryable messageId={}", envelope.getMessageId(), nrEx);
             asyncTaskService.markDead(envelope, nrEx.getMessage());
             tryMarkInterviewFailed(envelope, nrEx.getMessage());
-            // 通知用户失败
-            if (envelope.getPayload() != null) {
-                notificationService.notifyTaskFailed(envelope.getPayload().getUserId(), "INTERVIEW_REPORT",
-                        String.valueOf(envelope.getPayload().getSessionId()), "面试报告生成失败", nrEx.getMessage());
-            }
+            notifyTaskFailed(envelope, nrEx.getMessage());
         } catch (Exception ex) {
-            log.error("面试报告任务失败 messageId={}", envelope.getMessageId(), ex);
+            log.error("Interview report failed messageId={}", envelope.getMessageId(), ex);
             asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
             throw new RuntimeException(ex);
         } finally {
@@ -151,15 +156,32 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
 
     private void tryMarkInterviewFailed(MqMessage<InterviewReportPayload> envelope, String reason) {
         try {
-            InterviewReportPayload p = envelope.getPayload();
-            if (p == null || p.getSessionId() == null) return;
-            CompleteInterviewReportDTO c = new CompleteInterviewReportDTO();
-            c.setReportStatus("FAILED");
-            c.setErrorMessage(reason);
-            interviewFeignClient.completeReport(p.getSessionId(), c);
+            InterviewReportPayload payload = envelope.getPayload();
+            if (payload == null || payload.getSessionId() == null) {
+                return;
+            }
+            CompleteInterviewReportDTO complete = new CompleteInterviewReportDTO();
+            complete.setReportId(payload.getReportId());
+            complete.setGenerationToken(payload.getGenerationToken());
+            complete.setReportStatus("FAILED");
+            complete.setErrorMessage(reason);
+            interviewFeignClient.completeReport(payload.getSessionId(), complete);
         } catch (Exception ignored) {
-            log.warn("回写 interview FAILED 状态失败 msgId={}", envelope.getMessageId(), ignored);
+            log.warn("Persist interview FAILED status failed msgId={}", envelope.getMessageId(), ignored);
         }
+    }
+
+    private void notifyTaskFailed(MqMessage<InterviewReportPayload> envelope, String reason) {
+        InterviewReportPayload payload = envelope.getPayload();
+        if (payload == null) {
+            return;
+        }
+        notificationService.notifyTaskFailed(
+                payload.getUserId(),
+                INTERVIEW_REPORT_BIZ_TYPE,
+                String.valueOf(payload.getSessionId()),
+                REPORT_FAILED_TITLE,
+                reason);
     }
 
     private boolean isBusinessFailure(Integer code) {
@@ -167,6 +189,21 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String serializeReportPayload(GenerateReportVO report) {
+        if (report == null) {
+            return null;
+        }
+        if (StringUtils.hasText(report.getReportJson())) {
+            return report.getReportJson();
+        }
+        try {
+            return objectMapper.writeValueAsString(report);
+        } catch (JsonProcessingException ex) {
+            log.warn("Serialize interview report payload failed, fallback to reportContent only", ex);
+            return report.getReportContent();
+        }
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

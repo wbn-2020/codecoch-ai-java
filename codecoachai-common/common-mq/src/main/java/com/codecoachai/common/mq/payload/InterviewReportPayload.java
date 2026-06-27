@@ -16,6 +16,8 @@ import lombok.NoArgsConstructor;
 public class InterviewReportPayload {
 
     private Long sessionId;
+    private Long reportId;
     private Long userId;
+    private String generationToken;
     private String mode;
 }

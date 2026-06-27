@@ -1,11 +1,13 @@
 package com.codecoachai.ai.agent.convert;
 
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult.FocusSkill;
+import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.SkillTagVO;
+import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.util.StringUtils;
@@ -29,11 +31,13 @@ public final class AgentConvert {
         vo.setReason(task.getReason());
         vo.setPriority(task.getPriority());
         vo.setEstimatedMinutes(task.getEstimatedMinutes());
+        vo.setEstimatedEffortMinutes(task.getEstimatedMinutes());
         vo.setRelatedSkillCode(task.getRelatedSkillCode());
         vo.setRelatedSkillName(task.getRelatedSkillName());
         vo.setRelatedBizType(task.getRelatedBizType());
         vo.setRelatedBizId(task.getRelatedBizId());
         vo.setActionUrl(task.getActionUrl());
+        vo.setActionType(taskActionType(task));
         applyTaskTrustEvidence(vo, task);
         vo.setStatus(task.getStatus());
         vo.setSkipReason(task.getSkipReason());
@@ -125,6 +129,25 @@ public final class AgentConvert {
         return "";
     }
 
+    private static String taskActionType(AgentTask task) {
+        String type = firstText(task.getTaskType(), task.getRelatedBizType(), "");
+        if (!StringUtils.hasText(type)) {
+            return "OPEN";
+        }
+        try {
+            AgentTaskTypeEnum taskType = AgentTaskTypeEnum.valueOf(type.trim().toUpperCase());
+            return switch (taskType) {
+                case QUESTION_PRACTICE, WRONG_QUESTION_REVIEW, KNOWLEDGE_REVIEW, SKILL_REVIEW -> "PRACTICE";
+                case INTERVIEW, REPORT_REVIEW -> "INTERVIEW";
+                case RESUME_OPTIMIZE -> "RESUME";
+                case APPLICATION_FOLLOW_UP -> "FOLLOW_UP";
+                case STUDY_TASK -> "LEARN";
+            };
+        } catch (IllegalArgumentException ex) {
+            return StringUtils.hasText(task.getActionUrl()) ? "OPEN" : type.trim().toUpperCase();
+        }
+    }
+
     public static AgentRunDetailVO toRunDetailVO(AgentRun run) {
         AgentRunDetailVO vo = new AgentRunDetailVO();
         vo.setId(run.getId());
@@ -144,6 +167,10 @@ public final class AgentConvert {
         vo.setModelName(run.getModelName());
         vo.setTraceId(run.getTraceId());
         vo.setAiCallLogId(run.getAiCallLogId());
+        vo.setResultSource(run.getResultSource());
+        vo.setResultSourceLabel(aiResultSourceLabel(run.getResultSource()));
+        vo.setFallback(isFallbackAiResultSource(run.getResultSource()));
+        vo.setMock(isMockAiResultSource(run.getResultSource()));
         vo.setTokenInput(run.getTokenInput());
         vo.setTokenOutput(run.getTokenOutput());
         vo.setDurationMs(run.getDurationMs());
@@ -160,5 +187,29 @@ public final class AgentConvert {
         vo.setCode(skill.getCode());
         vo.setName(skill.getName());
         return vo;
+    }
+
+    public static String aiResultSourceLabel(String source) {
+        AiResultSourceEnum resultSource = aiResultSourceEnum(source);
+        return resultSource == null ? null : resultSource.getLabel();
+    }
+
+    public static boolean isFallbackAiResultSource(String source) {
+        return AiResultSourceEnum.FALLBACK.name().equals(source);
+    }
+
+    public static boolean isMockAiResultSource(String source) {
+        return AiResultSourceEnum.MOCK.name().equals(source);
+    }
+
+    private static AiResultSourceEnum aiResultSourceEnum(String source) {
+        if (!StringUtils.hasText(source)) {
+            return null;
+        }
+        try {
+            return AiResultSourceEnum.valueOf(source.trim());
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
     }
 }

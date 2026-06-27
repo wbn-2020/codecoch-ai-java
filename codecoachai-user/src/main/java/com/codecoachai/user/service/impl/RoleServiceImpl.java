@@ -2,18 +2,26 @@ package com.codecoachai.user.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.user.convert.UserConvert;
 import com.codecoachai.user.domain.entity.SysRole;
+import com.codecoachai.user.domain.entity.SysUser;
 import com.codecoachai.user.domain.entity.SysUserRole;
 import com.codecoachai.user.domain.vo.AdminRoleVO;
 import com.codecoachai.user.mapper.SysRoleMapper;
+import com.codecoachai.user.mapper.SysUserMapper;
 import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.RoleService;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -25,6 +33,9 @@ public class RoleServiceImpl implements RoleService {
 
     private final SysRoleMapper sysRoleMapper;
     private final SysUserRoleMapper sysUserRoleMapper;
+    private final SysUserMapper sysUserMapper;
+    private final JdbcTemplate jdbcTemplate;
+    private final AdminPermissionCache adminPermissionCache;
 
     @Override
     public List<String> listRoleCodesByUserId(Long userId) {
@@ -124,8 +135,7 @@ public class RoleServiceImpl implements RoleService {
         Long userRelationCount = sysUserRoleMapper.selectCount(new LambdaQueryWrapper<SysUserRole>()
                 .eq(SysUserRole::getRoleId, id));
         if (userRelationCount > 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "该角色仍有关联用户，请先调整用户角色后再删除");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "该角色仍有关联用户，请先调整用户角色后再删除");
         }
         sysRoleMapper.deleteById(id);
     }
@@ -152,23 +162,96 @@ public class RoleServiceImpl implements RoleService {
         }
         role.setStatus(status);
         sysRoleMapper.updateById(role);
+        adminPermissionCache.invalidateUsersByRoleId(id);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void assignRolesToUser(Long userId, List<Long> roleIds) {
-        // 角色分配采用“先删后插”的全量替换模型，必须放在同一事务中避免中间态丢失角色。
-        // 先删除旧关联
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户 id 不能为空");
+        }
+        SysUser user = sysUserMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        List<Long> normalizedRoleIds = normalizeRoleIds(roleIds);
+        List<SysRole> assignableRoles = loadEnabledRolesOrThrow(normalizedRoleIds);
+        ensureNotRemovingLastAdmin(userId, assignableRoles);
         sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
                 .eq(SysUserRole::getUserId, userId));
-        // 再插入新关联
-        if (!CollectionUtils.isEmpty(roleIds)) {
-            for (Long roleId : roleIds) {
-                SysUserRole ur = new SysUserRole();
-                ur.setUserId(userId);
-                ur.setRoleId(roleId);
-                sysUserRoleMapper.insert(ur);
+        for (Long roleId : normalizedRoleIds) {
+            SysUserRole ur = new SysUserRole();
+            ur.setUserId(userId);
+            ur.setRoleId(roleId);
+            sysUserRoleMapper.insert(ur);
+        }
+        adminPermissionCache.invalidateUserPermissions(userId);
+    }
+
+    private List<Long> normalizeRoleIds(List<Long> roleIds) {
+        if (roleIds == null) {
+            return List.of();
+        }
+        Set<Long> uniqueRoleIds = new LinkedHashSet<>();
+        for (Long roleId : roleIds) {
+            if (roleId != null) {
+                uniqueRoleIds.add(roleId);
             }
         }
+        return new ArrayList<>(uniqueRoleIds);
+    }
+
+    private List<SysRole> loadEnabledRolesOrThrow(List<Long> roleIds) {
+        if (CollectionUtils.isEmpty(roleIds)) {
+            return List.of();
+        }
+        List<SysRole> roles = sysRoleMapper.selectList(new LambdaQueryWrapper<SysRole>()
+                .in(SysRole::getId, roleIds)
+                .orderByAsc(SysRole::getId));
+        if (roles.size() != roleIds.size()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "存在无效角色");
+        }
+        boolean hasDisabled = roles.stream().anyMatch(role -> !CommonConstants.YES.equals(role.getStatus()));
+        if (hasDisabled) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "不能分配已禁用角色");
+        }
+        return roles;
+    }
+
+    private void ensureNotRemovingLastAdmin(Long userId, List<SysRole> newRoles) {
+        boolean currentlyAdmin = listRoleCodesByUserId(userId).stream().anyMatch(this::isAdminRoleCode);
+        if (!currentlyAdmin || newRoles.stream().anyMatch(role -> isAdminRoleCode(role.getRoleCode()))) {
+            return;
+        }
+        Long activeOtherAdmins = jdbcTemplate.queryForObject("""
+                SELECT COUNT(1)
+                FROM sys_user u
+                JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+                JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
+                WHERE u.deleted = 0
+                  AND u.status = 1
+                  AND r.status = 1
+                  AND (UPPER(r.role_code) = UPPER(?) OR UPPER(r.role_code) = CONCAT('ROLE_', UPPER(?)))
+                  AND u.id <> ?
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN, userId);
+        if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能移除最后一个可用管理员账号的管理员角色");
+        }
+    }
+
+    private boolean isAdminRoleCode(String roleCode) {
+        return SecurityConstants.ROLE_ADMIN.equalsIgnoreCase(normalizeRoleCode(roleCode));
+    }
+
+    private String normalizeRoleCode(String roleCode) {
+        if (!StringUtils.hasText(roleCode)) {
+            return "";
+        }
+        String normalized = roleCode.trim();
+        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
+            normalized = normalized.substring(5);
+        }
+        return normalized;
     }
 }

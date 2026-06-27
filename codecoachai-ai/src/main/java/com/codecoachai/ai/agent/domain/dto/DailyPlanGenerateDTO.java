@@ -9,6 +9,9 @@ import lombok.Data;
 public class DailyPlanGenerateDTO {
 
     private Long userId;
+    private String requestId;
+    private String idempotencyKey;
+    private String executionToken;
     private Long targetJobId;
     private LocalDate date;
     @Min(15)

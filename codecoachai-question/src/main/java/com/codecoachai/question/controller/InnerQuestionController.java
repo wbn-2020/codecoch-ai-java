@@ -12,6 +12,7 @@ import com.codecoachai.question.domain.vo.InnerQuestionVO;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.service.QuestionService;
+import com.codecoachai.question.util.QuestionReviewRawPayloadUtils;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
@@ -67,7 +68,10 @@ public class InnerQuestionController {
     public Result<SaveQuestionDraftsVO> saveDrafts(@RequestBody SaveQuestionDraftsDTO dto) {
         validateSaveDrafts(dto);
         List<Long> reviewIds = new ArrayList<>();
-        String rawJson = StringUtils.hasText(dto.getRawAiResultJson()) ? dto.getRawAiResultJson() : toJson(dto);
+        String rawJson = toJson(QuestionReviewRawPayloadUtils.buildMinimizedMetadata(
+                dto.getAiCallLogId(),
+                dto.getBatchId(),
+                dto.getQuestions().size()));
         for (QuestionDraftItem item : dto.getQuestions()) {
             if (!StringUtils.hasText(item.getTitle()) || !StringUtils.hasText(item.getContent())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "题目草稿标题和内容不能为空");

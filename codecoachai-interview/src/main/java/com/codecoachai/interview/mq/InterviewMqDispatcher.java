@@ -10,8 +10,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
- * 面试相关 MQ 派发器。
- * interview-service 面试结束后调用此类投递"报告生成"任务。
+ * 闈㈣瘯鐩稿叧 MQ 娲惧彂鍣ㄣ€?
+ * interview-service 闈㈣瘯缁撴潫鍚庤皟鐢ㄦ绫绘姇閫?鎶ュ憡鐢熸垚"浠诲姟銆?
  */
 @Slf4j
 @Component
@@ -26,40 +26,55 @@ public class InterviewMqDispatcher {
         this.mqProducer = mqProducerProvider.getIfAvailable();
     }
 
-    /**
-     * 投递"面试报告生成"任务。
-     */
     public boolean dispatchReport(Long sessionId, Long userId) {
-        return dispatchReportWithReceipt(sessionId, userId) != null;
+        return dispatchReportWithReceipt(sessionId, userId, null) != null;
     }
 
-    /**
-     * 投递"面试报告生成"任务，并返回可用于前台/后台诊断的 MQ 回执。
-     */
+    public boolean dispatchReport(Long sessionId, Long userId, Long reportId) {
+        return dispatchReportWithReceipt(sessionId, userId, reportId) != null;
+    }
+
+    public boolean dispatchReport(Long sessionId, Long userId, Long reportId, String generationToken) {
+        return dispatchReportWithReceipt(sessionId, userId, reportId, generationToken) != null;
+    }
+
     public MqDispatchReceipt dispatchReportWithReceipt(Long sessionId, Long userId) {
+        return dispatchReportWithReceipt(sessionId, userId, null);
+    }
+
+    public MqDispatchReceipt dispatchReportWithReceipt(Long sessionId, Long userId, Long reportId) {
+        return dispatchReportWithReceipt(sessionId, userId, reportId, null);
+    }
+
+    public MqDispatchReceipt dispatchReportWithReceipt(Long sessionId, Long userId,
+                                                       Long reportId, String generationToken) {
         if (sessionId == null) {
             return null;
         }
         if (mqProducer == null) {
-            log.warn("MQ producer unavailable, skip interview report dispatch sessionId={}", sessionId);
+            log.warn("MQ producer unavailable, skip interview report dispatch sessionId={} reportId={}",
+                    sessionId, reportId);
             return null;
         }
         try {
             InterviewReportPayload payload = InterviewReportPayload.builder()
                     .sessionId(sessionId)
+                    .reportId(reportId)
                     .userId(userId)
+                    .generationToken(generationToken)
                     .build();
             MqDispatchReceipt receipt = mqProducer.sendSyncWithReceipt(
                     MqTopics.dest(MqTopics.INTERVIEW, MqTopics.INTERVIEW_TAG_REPORT),
                     "interview.report",
-                    String.valueOf(sessionId),
+                    String.valueOf(reportId == null ? sessionId : reportId),
                     userId,
                     payload
             );
-            log.info("派发面试报告任务 sessionId={} messageId={}", sessionId, receipt.getMessageId());
+            log.info("娲惧彂闈㈣瘯鎶ュ憡浠诲姟 sessionId={} reportId={} messageId={}",
+                    sessionId, reportId, receipt.getMessageId());
             return receipt;
         } catch (Exception ex) {
-            log.error("派发面试报告任务失败 sessionId={}", sessionId, ex);
+            log.error("娲惧彂闈㈣瘯鎶ュ憡浠诲姟澶辫触 sessionId={} reportId={}", sessionId, reportId, ex);
             return null;
         }
     }
@@ -85,10 +100,10 @@ public class InterviewMqDispatcher {
                     userId,
                     payload
             );
-            log.info("派发面试搜索同步 sessionId={} op={}", sessionId, SEARCH_OP_UPSERT);
+            log.info("娲惧彂闈㈣瘯鎼滅储鍚屾 sessionId={} op={}", sessionId, SEARCH_OP_UPSERT);
             return true;
         } catch (Exception ex) {
-            log.error("派发面试搜索同步失败 sessionId={}", sessionId, ex);
+            log.error("娲惧彂闈㈣瘯鎼滅储鍚屾澶辫触 sessionId={}", sessionId, ex);
             return false;
         }
     }

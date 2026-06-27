@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
@@ -48,6 +49,7 @@ public class AdminMenuController {
     private final SysMenuMapper menuMapper;
     private final SysRoleMenuMapper roleMenuMapper;
     private final AdminPermissionGuard permissionGuard;
+    private final AdminPermissionCache adminPermissionCache;
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @GetMapping("/admin/menus")
@@ -182,6 +184,7 @@ public class AdminMenuController {
             relation.setMenuId(menuId);
             roleMenuMapper.insert(relation);
         }
+        adminPermissionCache.invalidateUsersByRoleId(roleId);
     }
 
     private Set<Long> resolveGrantMenuIds(RoleMenuAssignDTO dto) {

@@ -75,7 +75,9 @@ import com.codecoachai.common.vector.domain.VectorSearchResult;
 import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.io.ByteArrayInputStream;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -99,6 +101,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.io.RandomAccessReadBuffer;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.hwpf.HWPFDocument;
@@ -119,6 +122,17 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_DEFAULT_LIMIT = 20;
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT = 80;
+    private static final Set<String> SUPPORTED_AGENT_FEEDBACK_TYPES = Set.of(
+            "HELPFUL",
+            "NOT_HELPFUL",
+            "INACCURATE",
+            "NOT_MY_EXPERIENCE",
+            "HALLUCINATION",
+            "TOO_HARD",
+            "TOO_EASY",
+            "IRRELEVANT"
+    );
+    private static final Set<String> POSITIVE_AGENT_FEEDBACK_TYPES = Set.of("HELPFUL");
     private static final String VECTOR_DELETE_COLLECTION_KNOWLEDGE = "personal_knowledge_chunk";
     private static final Pattern CITATION_PATTERN = Pattern.compile("\\[(\\d+)]");
     private static final String KNOWLEDGE_NORMALIZATION_VERSION = TextFingerprintUtils.NORMALIZATION_VERSION;
@@ -174,7 +188,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         feedback.setUserId(userId);
         feedback.setAgentTaskId(dto.getAgentTaskId());
         feedback.setAgentRunId(dto.getAgentRunId());
-        feedback.setFeedbackType(dto.getFeedbackType().trim().toUpperCase());
+        feedback.setFeedbackType(normalizeAgentFeedbackType(dto.getFeedbackType()));
         feedback.setComment(dto.getComment());
         agentFeedbackMapper.insert(feedback);
         return toFeedbackVO(feedback);
@@ -185,12 +199,13 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                                                     Long pageNo, Long pageSize) {
         long actualPageNo = pageNo(pageNo);
         long actualPageSize = pageSize(pageSize);
+        String normalizedFeedbackType = normalizeOptionalAgentFeedbackType(feedbackType);
         Page<AgentFeedback> page = agentFeedbackMapper.selectPage(Page.of(actualPageNo, actualPageSize),
                 new LambdaQueryWrapper<AgentFeedback>()
                         .eq(userId != null, AgentFeedback::getUserId, userId)
                         .eq(taskId != null, AgentFeedback::getAgentTaskId, taskId)
                         .eq(runId != null, AgentFeedback::getAgentRunId, runId)
-                        .eq(StringUtils.hasText(feedbackType), AgentFeedback::getFeedbackType, feedbackType)
+                        .eq(StringUtils.hasText(normalizedFeedbackType), AgentFeedback::getFeedbackType, normalizedFeedbackType)
                         .orderByDesc(AgentFeedback::getCreatedAt));
         return PageResult.of(page.getRecords().stream().map(this::toFeedbackVO).toList(),
                 page.getTotal(), actualPageNo, actualPageSize);
@@ -202,15 +217,21 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         List<AgentFeedback> feedback = agentFeedbackMapper.selectList(new LambdaQueryWrapper<AgentFeedback>()
                 .ge(AgentFeedback::getCreatedAt, start));
         Map<String, Long> byType = feedback.stream()
-                .map(item -> firstText(item.getFeedbackType(), "UNKNOWN"))
+                .map(item -> normalizeOptionalAgentFeedbackType(item.getFeedbackType()))
+                .map(item -> firstText(item, "UNKNOWN"))
                 .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new, Collectors.counting()));
+        long adoptedCount = byType.entrySet().stream()
+                .filter(entry -> POSITIVE_AGENT_FEEDBACK_TYPES.contains(entry.getKey()))
+                .mapToLong(Map.Entry::getValue)
+                .sum();
+        long ignoredCount = Math.max(0L, feedback.size() - adoptedCount);
         AgentFeedbackStatsVO vo = new AgentFeedbackStatsVO();
         vo.setTotalFeedbackCount((long) feedback.size());
-        vo.setAdoptedCount(byType.getOrDefault("ADOPTED", 0L));
-        vo.setIgnoredCount(byType.getOrDefault("IGNORED", 0L));
-        vo.setLikedCount(byType.getOrDefault("LIKE", 0L) + byType.getOrDefault("LIKED", 0L));
-        vo.setDislikedCount(byType.getOrDefault("DISLIKE", 0L) + byType.getOrDefault("DISLIKED", 0L));
-        vo.setAdoptionRate(rate(vo.getAdoptedCount(), vo.getAdoptedCount() + vo.getIgnoredCount()));
+        vo.setAdoptedCount(adoptedCount);
+        vo.setIgnoredCount(ignoredCount);
+        vo.setLikedCount(byType.getOrDefault("HELPFUL", 0L));
+        vo.setDislikedCount(ignoredCount);
+        vo.setAdoptionRate(rate(adoptedCount, adoptedCount + ignoredCount));
         vo.setTypeDistribution(byType.entrySet().stream().map(entry -> {
             FeedbackTypeCount count = new FeedbackTypeCount();
             count.setFeedbackType(entry.getKey());
@@ -299,8 +320,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         if (!knowledgeProperties.getUploadExtensions().contains(extension)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "仅支持 txt、md、markdown、pdf、docx、doc 文件");
         }
-        try {
-            String content = extractKnowledgeFileText(extension, file.getBytes());
+        try (InputStream inputStream = file.getInputStream()) {
+            String content = extractKnowledgeFileText(extension, inputStream);
             if (!StringUtils.hasText(content)) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容为空，请更换文件后重试");
             }
@@ -317,17 +338,43 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status) {
+    public PageResult<KnowledgeDocumentVO> pageKnowledgeDocuments(Long userId, String title, String documentType,
+                                                                  String status, Long pageNo, Long pageSize) {
+        long actualPageNo = pageNo(pageNo);
+        long actualPageSize = pageSize(pageSize);
         LambdaQueryWrapper<PersonalKnowledgeDocument> query = new LambdaQueryWrapper<PersonalKnowledgeDocument>()
                 .eq(PersonalKnowledgeDocument::getUserId, userId)
                 .like(StringUtils.hasText(title), PersonalKnowledgeDocument::getTitle, normalizeKeyword(title))
                 .eq(StringUtils.hasText(documentType), PersonalKnowledgeDocument::getDocumentType, normalizeKeyword(documentType))
                 .eq(StringUtils.hasText(status), PersonalKnowledgeDocument::getStatus, normalizeKeyword(status))
+                .select(PersonalKnowledgeDocument::getId,
+                        PersonalKnowledgeDocument::getUserId,
+                        PersonalKnowledgeDocument::getTitle,
+                        PersonalKnowledgeDocument::getDocumentType,
+                        PersonalKnowledgeDocument::getContentHash,
+                        PersonalKnowledgeDocument::getNormalizationVersion,
+                        PersonalKnowledgeDocument::getStatus,
+                        PersonalKnowledgeDocument::getCreatedAt,
+                        PersonalKnowledgeDocument::getUpdatedAt)
                 .orderByDesc(PersonalKnowledgeDocument::getUpdatedAt);
-        return personalKnowledgeDocumentMapper.selectList(query)
-                .stream()
-                .map(document -> toKnowledgeDocumentVO(document, chunkCount(document.getId()), false))
+        Page<PersonalKnowledgeDocument> page = personalKnowledgeDocumentMapper.selectPage(Page.of(actualPageNo, actualPageSize), query);
+        List<Long> documentIds = page.getRecords().stream()
+                .map(PersonalKnowledgeDocument::getId)
+                .filter(Objects::nonNull)
                 .toList();
+        Map<Long, KnowledgeDocumentAggregate> aggregateMap = knowledgeDocumentAggregates(documentIds);
+        List<KnowledgeDocumentVO> records = page.getRecords()
+                .stream()
+                .map(document -> toKnowledgeDocumentVO(document,
+                        aggregateMap.getOrDefault(document.getId(), KnowledgeDocumentAggregate.empty()),
+                        false))
+                .toList();
+        return PageResult.of(records, page.getTotal(), actualPageNo, actualPageSize);
+    }
+
+    @Override
+    public List<KnowledgeDocumentVO> listKnowledgeDocuments(Long userId, String title, String documentType, String status) {
+        return pageKnowledgeDocuments(userId, title, documentType, status, 1L, 100L).getRecords();
     }
 
     @Override
@@ -360,92 +407,178 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     @Override
     public KnowledgeStatsVO getKnowledgeStats(Long userId) {
-        List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
-                new LambdaQueryWrapper<PersonalKnowledgeDocument>()
-                        .eq(PersonalKnowledgeDocument::getUserId, userId)
-                        .select(PersonalKnowledgeDocument::getId,
-                                PersonalKnowledgeDocument::getTitle,
-                                PersonalKnowledgeDocument::getDocumentType));
-        List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
-                new LambdaQueryWrapper<PersonalKnowledgeChunk>()
-                        .eq(PersonalKnowledgeChunk::getUserId, userId)
-                        .select(PersonalKnowledgeChunk::getId,
-                                PersonalKnowledgeChunk::getDocumentId,
-                                PersonalKnowledgeChunk::getChunkHash,
-                                PersonalKnowledgeChunk::getIndexStatus,
-                                PersonalKnowledgeChunk::getEmbeddingModel));
-        List<PersonalKnowledgeChunk> duplicateCandidates = exactDuplicateCleanupCandidates(chunks);
-        Map<Long, PersonalKnowledgeDocument> documentMap = documents.stream()
-                .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity()));
-        Map<Long, Long> chunkCountByDocument = chunks.stream()
-                .filter(chunk -> chunk.getDocumentId() != null)
-                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getDocumentId, Collectors.counting()));
-        Map<Long, Long> duplicateCountByDocument = duplicateCandidates.stream()
-                .filter(chunk -> chunk.getDocumentId() != null)
-                .collect(Collectors.groupingBy(PersonalKnowledgeChunk::getDocumentId, Collectors.counting()));
-        Map<String, Integer> duplicateTypeCounts = duplicateCandidates.stream()
-                .map(chunk -> documentMap.get(chunk.getDocumentId()))
-                .filter(Objects::nonNull)
-                .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
-                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
-                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue)));
-        long duplicateCount = duplicateCandidates.size();
-        List<DuplicateDocumentHotspot> duplicateDocumentHotspots = duplicateCountByDocument.entrySet().stream()
-                .sorted((left, right) -> Long.compare(right.getValue(), left.getValue()))
-                .limit(5)
-                .map(entry -> {
-                    PersonalKnowledgeDocument document = documentMap.get(entry.getKey());
-                    if (document == null) {
-                        return null;
-                    }
-                    long documentChunkCount = chunkCountByDocument.getOrDefault(entry.getKey(), 0L);
-                    DuplicateDocumentHotspot hotspot = new DuplicateDocumentHotspot();
-                    hotspot.setDocumentId(document.getId());
-                    hotspot.setTitle(document.getTitle());
-                    hotspot.setDocumentType(firstText(document.getDocumentType(), "UNKNOWN"));
-                    hotspot.setDuplicateChunkCount(Math.toIntExact(entry.getValue()));
-                    hotspot.setChunkCount(Math.toIntExact(documentChunkCount));
-                    hotspot.setDuplicateRatio(rate(entry.getValue(), documentChunkCount));
-                    return hotspot;
-                })
-                .filter(Objects::nonNull)
-                .toList();
-        long hashDuplicateCount = chunks.stream()
-                .map(PersonalKnowledgeChunk::getChunkHash)
-                .filter(StringUtils::hasText)
-                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
-                .values()
-                .stream()
-                .filter(count -> count > 1)
-                .mapToLong(count -> count - 1)
-                .sum();
+        long documentCount = queryLong("""
+                SELECT COUNT(1)
+                FROM personal_knowledge_document
+                WHERE deleted = 0 AND user_id = ?
+                """, userId);
+        long chunkCount = queryLong("""
+                SELECT COUNT(1)
+                FROM personal_knowledge_chunk
+                WHERE deleted = 0 AND user_id = ?
+                """, userId);
+        long duplicateChunkCount = queryLong("""
+                SELECT COALESCE(SUM(duplicate_count), 0)
+                FROM (
+                    SELECT COUNT(1) - 1 AS duplicate_count
+                    FROM personal_knowledge_chunk
+                    WHERE deleted = 0
+                      AND user_id = ?
+                      AND chunk_hash IS NOT NULL
+                      AND chunk_hash <> ''
+                    GROUP BY chunk_hash
+                    HAVING COUNT(1) > 1
+                ) duplicate_groups
+                """, userId);
         KnowledgeStatsVO vo = new KnowledgeStatsVO();
         boolean embeddingEnabled = embeddingEnabled();
         boolean semanticEnabled = vectorStoreClient.isEnabled() && embeddingEnabled;
-        vo.setDocumentCount(documents.size());
-        vo.setChunkCount(chunks.size());
-        vo.setDuplicateChunkCount(Math.toIntExact(Math.max(duplicateCount, hashDuplicateCount)));
+        vo.setDocumentCount(toIntCount(documentCount));
+        vo.setChunkCount(toIntCount(chunkCount));
+        vo.setDuplicateChunkCount(toIntCount(duplicateChunkCount));
         vo.setVectorEnabled(vectorStoreClient.isEnabled());
         vo.setEmbeddingEnabled(embeddingEnabled);
         vo.setSemanticEnabled(semanticEnabled);
         vo.setEmbeddingDisabledReason(semanticEnabled ? null : embeddingDisabledReason());
         vo.setRetrievalMode(semanticEnabled ? "HYBRID" : "KEYWORD_FALLBACK");
         vo.setChunkStrategy(knowledgeProperties.getChunkStrategy());
-        vo.setDocumentTypeCounts(documents.stream()
-                .map(document -> firstText(document.getDocumentType(), "UNKNOWN"))
-                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
-                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue))));
-        vo.setIndexStatusCounts(chunks.stream()
-                .map(chunk -> firstText(chunk.getIndexStatus(), "PENDING"))
-                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
-                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue))));
-        vo.setEmbeddingModelCounts(chunks.stream()
-                .map(chunk -> firstText(chunk.getEmbeddingModel(), "UNKNOWN"))
-                .collect(Collectors.groupingBy(Function.identity(), LinkedHashMap::new,
-                        Collectors.collectingAndThen(Collectors.counting(), Long::intValue))));
-        vo.setDuplicateTypeCounts(duplicateTypeCounts);
-        vo.setDuplicateDocumentHotspots(duplicateDocumentHotspots);
+        vo.setDocumentTypeCounts(queryMetricCounts("""
+                SELECT COALESCE(NULLIF(TRIM(document_type), ''), 'UNKNOWN') AS name, COUNT(1) AS count
+                FROM personal_knowledge_document
+                WHERE deleted = 0 AND user_id = ?
+                GROUP BY COALESCE(NULLIF(TRIM(document_type), ''), 'UNKNOWN')
+                ORDER BY count DESC, name ASC
+                """, userId));
+        vo.setIndexStatusCounts(queryMetricCounts("""
+                SELECT COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING') AS name, COUNT(1) AS count
+                FROM personal_knowledge_chunk
+                WHERE deleted = 0 AND user_id = ?
+                GROUP BY COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING')
+                ORDER BY count DESC, name ASC
+                """, userId));
+        vo.setEmbeddingModelCounts(queryMetricCounts("""
+                SELECT COALESCE(NULLIF(TRIM(embedding_model), ''), 'UNKNOWN') AS name, COUNT(1) AS count
+                FROM personal_knowledge_chunk
+                WHERE deleted = 0 AND user_id = ?
+                GROUP BY COALESCE(NULLIF(TRIM(embedding_model), ''), 'UNKNOWN')
+                ORDER BY count DESC, name ASC
+                """, userId));
+        vo.setDuplicateTypeCounts(queryMetricCounts("""
+                WITH user_chunks AS (
+                    SELECT id, document_id, chunk_hash
+                    FROM personal_knowledge_chunk
+                    WHERE deleted = 0 AND user_id = ?
+                ),
+                duplicate_groups AS (
+                    SELECT chunk_hash, MIN(id) AS keep_id
+                    FROM user_chunks
+                    WHERE chunk_hash IS NOT NULL AND chunk_hash <> ''
+                    GROUP BY chunk_hash
+                    HAVING COUNT(1) > 1
+                )
+                SELECT COALESCE(NULLIF(TRIM(d.document_type), ''), 'UNKNOWN') AS name, COUNT(1) AS count
+                FROM user_chunks c
+                JOIN duplicate_groups dup ON dup.chunk_hash = c.chunk_hash AND c.id <> dup.keep_id
+                LEFT JOIN personal_knowledge_document d ON d.deleted = 0 AND d.id = c.document_id
+                GROUP BY COALESCE(NULLIF(TRIM(d.document_type), ''), 'UNKNOWN')
+                ORDER BY count DESC, name ASC
+                """, userId));
+        vo.setDuplicateDocumentHotspots(queryDuplicateDocumentHotspots(userId));
         return vo;
+    }
+
+    private Map<Long, KnowledgeDocumentAggregate> knowledgeDocumentAggregates(List<Long> documentIds) {
+        if (documentIds == null || documentIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = documentIds.stream().map(id -> "?").collect(Collectors.joining(","));
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT document_id,
+                       COUNT(1) AS chunk_count,
+                       SUM(CASE WHEN COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING') = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+                       SUM(CASE WHEN COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING') = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
+                       SUM(CASE WHEN COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING') = 'INDEXED' THEN 1 ELSE 0 END) AS indexed_count,
+                       SUM(CASE WHEN COALESCE(NULLIF(TRIM(index_status), ''), 'PENDING') = 'DISABLED' THEN 1 ELSE 0 END) AS disabled_count
+                FROM personal_knowledge_chunk
+                WHERE deleted = 0 AND document_id IN (%s)
+                GROUP BY document_id
+                """.formatted(placeholders), documentIds.toArray());
+        Map<Long, KnowledgeDocumentAggregate> aggregates = new LinkedHashMap<>();
+        for (Map<String, Object> row : rows) {
+            Long documentId = nullableLong(rowValue(row, "document_id"));
+            if (documentId == null) {
+                continue;
+            }
+            aggregates.put(documentId, new KnowledgeDocumentAggregate(
+                    longValue(rowValue(row, "chunk_count")),
+                    longValue(rowValue(row, "failed_count")),
+                    longValue(rowValue(row, "pending_count")),
+                    longValue(rowValue(row, "indexed_count")),
+                    longValue(rowValue(row, "disabled_count"))));
+        }
+        return aggregates;
+    }
+
+    private long queryLong(String sql, Long userId) {
+        Long value = jdbcTemplate.queryForObject(sql, Long.class, userId);
+        return value == null ? 0L : value;
+    }
+
+    private Map<String, Integer> queryMetricCounts(String sql, Long userId) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (Map<String, Object> row : jdbcTemplate.queryForList(sql, userId)) {
+            String name = firstText(String.valueOf(rowValue(row, "name")), "UNKNOWN");
+            counts.put(name, toIntCount(longValue(rowValue(row, "count"))));
+        }
+        return counts;
+    }
+
+    private List<DuplicateDocumentHotspot> queryDuplicateDocumentHotspots(Long userId) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                WITH user_chunks AS (
+                    SELECT id, document_id, chunk_hash
+                    FROM personal_knowledge_chunk
+                    WHERE deleted = 0 AND user_id = ?
+                ),
+                duplicate_groups AS (
+                    SELECT chunk_hash, MIN(id) AS keep_id
+                    FROM user_chunks
+                    WHERE chunk_hash IS NOT NULL AND chunk_hash <> ''
+                    GROUP BY chunk_hash
+                    HAVING COUNT(1) > 1
+                ),
+                document_chunk_counts AS (
+                    SELECT document_id, COUNT(1) AS chunk_count
+                    FROM user_chunks
+                    GROUP BY document_id
+                )
+                SELECT d.id AS document_id,
+                       d.title AS title,
+                       COALESCE(NULLIF(TRIM(d.document_type), ''), 'UNKNOWN') AS document_type,
+                       COUNT(1) AS duplicate_chunk_count,
+                       COALESCE(MAX(total_chunks.chunk_count), 0) AS chunk_count
+                FROM user_chunks c
+                JOIN duplicate_groups dup ON dup.chunk_hash = c.chunk_hash AND c.id <> dup.keep_id
+                JOIN personal_knowledge_document d ON d.deleted = 0 AND d.id = c.document_id
+                LEFT JOIN document_chunk_counts total_chunks ON total_chunks.document_id = c.document_id
+                GROUP BY d.id, d.title, COALESCE(NULLIF(TRIM(d.document_type), ''), 'UNKNOWN')
+                ORDER BY duplicate_chunk_count DESC, d.id ASC
+                LIMIT 5
+                """, userId);
+        return rows.stream()
+                .map(row -> {
+                    long duplicateChunkCount = longValue(rowValue(row, "duplicate_chunk_count"));
+                    long chunkCount = longValue(rowValue(row, "chunk_count"));
+                    DuplicateDocumentHotspot hotspot = new DuplicateDocumentHotspot();
+                    hotspot.setDocumentId(nullableLong(rowValue(row, "document_id")));
+                    hotspot.setTitle(stringValue(rowValue(row, "title")));
+                    hotspot.setDocumentType(firstText(stringValue(rowValue(row, "document_type")), "UNKNOWN"));
+                    hotspot.setDuplicateChunkCount(toIntCount(duplicateChunkCount));
+                    hotspot.setChunkCount(toIntCount(chunkCount));
+                    hotspot.setDuplicateRatio(rate(duplicateChunkCount, chunkCount));
+                    return hotspot;
+                })
+                .toList();
     }
 
     @Override
@@ -1653,6 +1786,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     .distinct()
                     .toList();
         }
+        int userLimit = normalizeDailyPlanUserLimit(request.getUserLimit());
         return jdbcTemplate.queryForList("""
                 SELECT DISTINCT u.id
                 FROM sys_user u
@@ -1662,7 +1796,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                   AND u.status = 1
                   AND r.role_code = 'USER'
                 ORDER BY u.id
-                """, Long.class);
+                LIMIT ?
+                """, Long.class, userLimit);
+    }
+
+    private int normalizeDailyPlanUserLimit(Integer userLimit) {
+        if (userLimit == null || userLimit < 1) {
+            return 100;
+        }
+        return Math.min(userLimit, 1000);
     }
 
     @Override
@@ -1748,6 +1890,18 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 throw new IllegalArgumentException("Agent 运行记录不存在或无权访问");
             }
         }
+    }
+
+    private String normalizeAgentFeedbackType(String feedbackType) {
+        String normalized = normalizeOptionalAgentFeedbackType(feedbackType);
+        if (!StringUtils.hasText(normalized) || !SUPPORTED_AGENT_FEEDBACK_TYPES.contains(normalized)) {
+            throw new IllegalArgumentException("涓嶆敮鎸佺殑鍙嶉绫诲瀷");
+        }
+        return normalized;
+    }
+
+    private String normalizeOptionalAgentFeedbackType(String feedbackType) {
+        return StringUtils.hasText(feedbackType) ? feedbackType.trim().toUpperCase(Locale.ROOT) : null;
     }
 
     @Override
@@ -2176,12 +2330,12 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         };
     }
 
-    private String extractKnowledgeFileText(String extension, byte[] bytes) throws Exception {
+    private String extractKnowledgeFileText(String extension, InputStream inputStream) throws Exception {
         String text = switch (extension) {
-            case "pdf" -> extractPdfText(bytes);
-            case "docx" -> extractDocxText(bytes);
-            case "doc" -> extractDocText(bytes);
-            default -> new String(bytes, StandardCharsets.UTF_8);
+            case "pdf" -> extractPdfText(inputStream);
+            case "docx" -> extractDocxText(inputStream);
+            case "doc" -> extractDocText(inputStream);
+            default -> extractPlainText(inputStream);
         };
         String normalized = normalizeKnowledgeContent(text);
         if (normalized.length() > knowledgeProperties.safeUploadMaxTextChars()) {
@@ -2192,14 +2346,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return normalized;
     }
 
-    private String extractPdfText(byte[] bytes) throws Exception {
-        try (PDDocument document = Loader.loadPDF(bytes)) {
+    private String extractPdfText(InputStream inputStream) throws Exception {
+        try (RandomAccessReadBuffer buffer = new RandomAccessReadBuffer(inputStream);
+             PDDocument document = Loader.loadPDF(buffer)) {
             return new PDFTextStripper().getText(document);
         }
     }
 
-    private String extractDocxText(byte[] bytes) throws Exception {
-        try (XWPFDocument document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+    private String extractDocxText(InputStream inputStream) throws Exception {
+        try (XWPFDocument document = new XWPFDocument(inputStream)) {
             return document.getParagraphs().stream()
                     .map(paragraph -> firstText(paragraph.getText(), ""))
                     .filter(StringUtils::hasText)
@@ -2207,10 +2362,16 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         }
     }
 
-    private String extractDocText(byte[] bytes) throws Exception {
-        try (HWPFDocument document = new HWPFDocument(new ByteArrayInputStream(bytes));
+    private String extractDocText(InputStream inputStream) throws Exception {
+        try (HWPFDocument document = new HWPFDocument(inputStream);
              WordExtractor extractor = new WordExtractor(document)) {
             return extractor.getText();
+        }
+    }
+
+    private String extractPlainText(InputStream inputStream) throws Exception {
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            return reader.lines().collect(Collectors.joining("\n"));
         }
     }
 
@@ -3216,7 +3377,6 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private AgentFeedbackVO toFeedbackVO(AgentFeedback feedback) {
         AgentFeedbackVO vo = new AgentFeedbackVO();
         vo.setId(feedback.getId());
-        vo.setUserId(feedback.getUserId());
         vo.setAgentTaskId(feedback.getAgentTaskId());
         vo.setAgentRunId(feedback.getAgentRunId());
         vo.setFeedbackType(feedback.getFeedbackType());
@@ -3242,6 +3402,27 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         vo.setStatus(aggregateDocumentIndexStatus(document.getId(), chunkCount, document.getStatus()));
         vo.setNormalizationVersion(firstText(document.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
         vo.setChunkCount(chunkCount);
+        vo.setDuplicateDocument(false);
+        vo.setDuplicateChunkCount(0);
+        vo.setNearDuplicateChunkCount(0);
+        vo.setNearDuplicateThreshold(knowledgeProperties.safeNearDuplicateThreshold());
+        vo.setContent(includeContent ? document.getContent() : null);
+        vo.setCreatedAt(document.getCreatedAt());
+        vo.setUpdatedAt(document.getUpdatedAt());
+        return vo;
+    }
+
+    private KnowledgeDocumentVO toKnowledgeDocumentVO(PersonalKnowledgeDocument document,
+                                                      KnowledgeDocumentAggregate aggregate,
+                                                      boolean includeContent) {
+        KnowledgeDocumentVO vo = new KnowledgeDocumentVO();
+        long chunkCount = aggregate == null ? 0L : aggregate.chunkCount();
+        vo.setId(document.getId());
+        vo.setTitle(document.getTitle());
+        vo.setDocumentType(document.getDocumentType());
+        vo.setStatus(resolveDocumentIndexStatus(aggregate, document.getStatus()));
+        vo.setNormalizationVersion(firstText(document.getNormalizationVersion(), KNOWLEDGE_NORMALIZATION_VERSION));
+        vo.setChunkCount(toIntCount(chunkCount));
         vo.setDuplicateDocument(false);
         vo.setDuplicateChunkCount(0);
         vo.setNearDuplicateChunkCount(0);
@@ -3406,6 +3587,75 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         return value == null || value < 1 ? 10 : Math.min(value, 100);
     }
 
+    private String resolveDocumentIndexStatus(KnowledgeDocumentAggregate aggregate, String fallbackStatus) {
+        if (aggregate == null || aggregate.chunkCount() <= 0) {
+            return "EMPTY";
+        }
+        if (aggregate.failedCount() > 0) {
+            return "FAILED";
+        }
+        if (aggregate.pendingCount() > 0) {
+            return "PENDING";
+        }
+        if (aggregate.indexedCount() == aggregate.chunkCount()) {
+            return "INDEXED";
+        }
+        if (aggregate.disabledCount() == aggregate.chunkCount()) {
+            return "INDEXED";
+        }
+        return firstText(fallbackStatus, "PENDING");
+    }
+
+    private Object rowValue(Map<String, Object> row, String key) {
+        if (row == null || key == null) {
+            return null;
+        }
+        if (row.containsKey(key)) {
+            return row.get(key);
+        }
+        String upperKey = key.toUpperCase(Locale.ROOT);
+        if (row.containsKey(upperKey)) {
+            return row.get(upperKey);
+        }
+        String lowerKey = key.toLowerCase(Locale.ROOT);
+        if (row.containsKey(lowerKey)) {
+            return row.get(lowerKey);
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(key)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private Long nullableLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private long longValue(Object value) {
+        Long parsed = nullableLong(value);
+        return parsed == null ? 0L : parsed;
+    }
+
+    private int toIntCount(long value) {
+        return Math.toIntExact(Math.min(Math.max(value, 0L), Integer.MAX_VALUE));
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
     private int normalizeDays(Integer days) {
         if (days == null || days < 1) {
             return 30;
@@ -3426,6 +3676,14 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private record SemanticBlockDraft(String content, String sourceRef, boolean codeBlock) {
     }
+
+    private record KnowledgeDocumentAggregate(long chunkCount, long failedCount, long pendingCount,
+                                              long indexedCount, long disabledCount) {
+        private static KnowledgeDocumentAggregate empty() {
+            return new KnowledgeDocumentAggregate(0, 0, 0, 0, 0);
+        }
+    }
+
     private String firstText(String... values) {
         if (values == null) {
             return null;

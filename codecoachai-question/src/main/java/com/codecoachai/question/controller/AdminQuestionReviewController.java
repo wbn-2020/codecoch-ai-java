@@ -12,6 +12,7 @@ import com.codecoachai.question.domain.dto.BatchQuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.BatchQuestionReviewRejectDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewApproveDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewQueryDTO;
+import com.codecoachai.question.domain.dto.QuestionReviewRawAccessDTO;
 import com.codecoachai.question.domain.dto.QuestionReviewRejectDTO;
 import com.codecoachai.question.domain.vo.AiQuestionGenerateResultVO;
 import com.codecoachai.question.domain.vo.BatchQuestionReviewResultVO;
@@ -39,6 +40,7 @@ public class AdminQuestionReviewController {
 
     private static final String PERM_QUESTION_GENERATE = "admin:question:generate";
     private static final String PERM_QUESTION_REVIEW = "admin:question:review";
+    private static final String PERM_QUESTION_REVIEW_RAW_VIEW = "admin:ai:log:raw:view";
 
     private final QuestionReviewService questionReviewService;
     private final AdminPermissionGuard adminPermissionGuard;
@@ -75,7 +77,32 @@ public class AdminQuestionReviewController {
     @Operation(summary = "Get AI question review detail", description = "Admin endpoint for one question_review draft.")
     public Result<QuestionReviewDetailVO> getReview(@PathVariable Long id) {
         adminPermissionGuard.require(PERM_QUESTION_REVIEW);
-        return Result.success(questionReviewService.getReview(id));
+        return Result.success(applyRawAccess(questionReviewService.getReview(id), false));
+    }
+
+    @OperationLog(module = "question", action = "VIEW_QUESTION_REVIEW_RAW", description = "View AI question review raw payload", logArgs = true, logResponse = false)
+    @PostMapping("/admin/question-reviews/{id}/raw")
+    @Operation(summary = "Get AI question review raw payload", description = "Admin endpoint. Raw AI payload access requires explicit reason, confirmation, and idempotency key.")
+    public Result<QuestionReviewDetailVO> getReviewRaw(@PathVariable Long id,
+                                                       @Valid @RequestBody QuestionReviewRawAccessDTO dto) {
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW_RAW_VIEW);
+        String lockKey = requireRawAccess("question-review-raw:" + id, dto);
+        try {
+            return Result.success(applyRawAccess(questionReviewService.getReview(id), true));
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
+    }
+
+    @GetMapping("/admin/question-reviews/{id}/raw")
+    @Operation(summary = "Raw AI payload view is POST-only", description = "Compatibility endpoint to explain why POST + reason/confirm is required.")
+    public Result<QuestionReviewDetailVO> getReviewRawCompat(@PathVariable Long id) {
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW);
+        adminPermissionGuard.require(PERM_QUESTION_REVIEW_RAW_VIEW);
+        throw new BusinessException(ErrorCode.PARAM_ERROR,
+                "AI 题目审核原始结果查看需要使用 POST 请求，并填写访问原因、确认信息和幂等键。");
     }
 
     @OperationLog(module = "question", action = "APPROVE_QUESTION_REVIEW", description = "Approve AI question draft", logArgs = false, logResponse = false)
@@ -89,7 +116,7 @@ public class AdminQuestionReviewController {
                 dto == null ? null : dto.getDryRun(),
                 dto == null ? null : dto.getReason(),
                 dto == null ? null : dto.getIdempotencyKey(),
-                () -> Result.success(questionReviewService.approve(id, dto)));
+                () -> Result.success(applyRawAccess(questionReviewService.approve(id, dto), false)));
     }
 
     @OperationLog(module = "question", action = "BATCH_APPROVE_QUESTION_REVIEW", description = "Batch approve AI question drafts", logArgs = false, logResponse = false)
@@ -111,7 +138,7 @@ public class AdminQuestionReviewController {
         adminPermissionGuard.require(PERM_QUESTION_REVIEW);
         return runConfirmedOperation("question-review-reject:" + id,
                 dto.getConfirm(), dto.getDryRun(), dto.getRejectReason(), dto.getIdempotencyKey(),
-                () -> Result.success(questionReviewService.reject(id, dto)));
+                () -> Result.success(applyRawAccess(questionReviewService.reject(id, dto), false)));
     }
 
     @OperationLog(module = "question", action = "CANCEL_QUESTION_REVIEW", description = "Cancel AI question draft", logArgs = false, logResponse = false)
@@ -125,7 +152,7 @@ public class AdminQuestionReviewController {
                 dto == null ? null : dto.getDryRun(),
                 dto == null ? null : dto.getRejectReason(),
                 dto == null ? null : dto.getIdempotencyKey(),
-                () -> Result.success(questionReviewService.cancel(id, dto)));
+                () -> Result.success(applyRawAccess(questionReviewService.cancel(id, dto), false)));
     }
 
     @OperationLog(module = "question", action = "BATCH_REJECT_QUESTION_REVIEW", description = "Batch reject AI question drafts", logArgs = false, logResponse = false)
@@ -150,6 +177,28 @@ public class AdminQuestionReviewController {
             throw ex;
         }
     }
+
+    private QuestionReviewDetailVO applyRawAccess(QuestionReviewDetailVO detail, boolean includeRaw) {
+        if (detail == null) {
+            return null;
+        }
+        detail.setRawAccessPermission(PERM_QUESTION_REVIEW_RAW_VIEW);
+        detail.setRawAvailable(StringUtils.hasText(detail.getRawAiResultJson()));
+        if (!includeRaw) {
+            detail.setRawAiResultJson(null);
+        }
+        return detail;
+    }
+
+    private String requireRawAccess(String operation, QuestionReviewRawAccessDTO dto) {
+        return operationConfirmationGuard.requireConfirmed(
+                operation,
+                dto.isConfirmSensitiveAccess(),
+                dto.getDryRun(),
+                dto.getAccessReason(),
+                dto.getIdempotencyKey());
+    }
+
     @Data
     public static class AdminOperationConfirmDTO {
         private Boolean confirm;

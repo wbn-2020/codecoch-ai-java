@@ -176,7 +176,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     public StudyPlanDetailVO detail(Long id) {
         StudyPlan plan = getOwnedPlan(id, requireCurrentUserId());
         StudyPlanDetailVO vo = toDetailVO(plan);
-        vo.setTasks(taskEntities(plan.getId()).stream().map(this::toTaskVO).toList());
+        vo.setTasks(taskEntities(plan.getId(), plan.getUserId()).stream().map(this::toTaskVO).toList());
         return vo;
     }
 
@@ -228,7 +228,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     @Override
     public List<StudyTaskVO> tasks(Long planId) {
         StudyPlan plan = getOwnedPlan(planId, requireCurrentUserId());
-        return taskEntities(plan.getId()).stream().map(this::toTaskVO).toList();
+        return taskEntities(plan.getId(), plan.getUserId()).stream().map(this::toTaskVO).toList();
     }
 
     @Override
@@ -1012,7 +1012,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setDurationDays(plan.getDurationDays());
         vo.setDailyMinutes(plan.getDailyMinutes());
         vo.setStartDate(plan.getStartDate());
-        fillProgress(vo, plan.getId());
+        fillProgress(vo, plan);
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
         return vo;
@@ -1039,7 +1039,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setStartDate(plan.getStartDate());
         vo.setAiCallLogId(plan.getAiCallLogId());
         vo.setFailureReason(plan.getFailureReason());
-        fillProgress(vo, plan.getId());
+        fillProgress(vo, plan);
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
         return vo;
@@ -1116,8 +1116,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return vo;
     }
 
-    private void fillProgress(StudyPlanListVO vo, Long planId) {
-        List<StudyTask> tasks = taskEntities(planId);
+    private void fillProgress(StudyPlanListVO vo, StudyPlan plan) {
+        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
         int total = tasks.size();
         int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
@@ -1125,8 +1125,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setProgressPercent(total == 0 ? 0 : done * 100 / total);
     }
 
-    private void fillProgress(StudyPlanDetailVO vo, Long planId) {
-        List<StudyTask> tasks = taskEntities(planId);
+    private void fillProgress(StudyPlanDetailVO vo, StudyPlan plan) {
+        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
         int total = tasks.size();
         int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
@@ -1169,8 +1169,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setPlanId(plan.getId());
         vo.setPlanStatus(plan.getPlanStatus());
         vo.setPlanTitle(plan.getPlanTitle());
-        vo.setTaskCount(taskEntities(plan.getId()).size());
-        vo.setSkillGapCount(countRelations(plan.getId()));
+        vo.setTaskCount(taskEntities(plan.getId(), plan.getUserId()).size());
+        vo.setSkillGapCount(countRelations(plan.getId(), plan.getUserId()));
         vo.setAiCallLogId(plan.getAiCallLogId());
         vo.setFailureReason(plan.getFailureReason());
         return vo;
@@ -1226,12 +1226,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .collect(Collectors.toMap(InnerSkillGapItemVO::getId, Function.identity(), (a, b) -> a));
     }
 
-    private int countRelations(Long planId) {
+    private int countRelations(Long planId, Long userId) {
         if (planId == null) {
             return 0;
         }
         return Math.toIntExact(relationMapper.selectCount(new LambdaQueryWrapper<StudyPlanSkillRelation>()
                 .eq(StudyPlanSkillRelation::getStudyPlanId, planId)
+                .eq(StudyPlanSkillRelation::getUserId, userId)
                 .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)));
     }
 

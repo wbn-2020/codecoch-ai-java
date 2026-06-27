@@ -1,10 +1,13 @@
 package com.codecoachai.system.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.system.convert.SystemConfigConvert;
+import com.codecoachai.system.domain.dto.SystemConfigQueryDTO;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.dto.SystemConfigStatusDTO;
 import com.codecoachai.system.domain.entity.SystemConfig;
@@ -35,6 +38,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
@@ -52,12 +56,33 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private String healthServices;
 
     @Override
-    public List<SystemConfigVO> listConfigs() {
-        return systemConfigMapper.selectList(new LambdaQueryWrapper<SystemConfig>()
-                        .orderByDesc(SystemConfig::getUpdatedAt))
-                .stream()
+    public PageResult<SystemConfigVO> pageConfigs(SystemConfigQueryDTO query) {
+        long pageNo = query == null || query.getPageNo() == null || query.getPageNo() < 1 ? 1L : query.getPageNo();
+        long pageSize = query == null || query.getPageSize() == null
+                ? 10L
+                : Math.min(Math.max(query.getPageSize(), 1L), 100L);
+        LambdaQueryWrapper<SystemConfig> wrapper = new LambdaQueryWrapper<SystemConfig>()
+                .orderByDesc(SystemConfig::getUpdatedAt);
+        if (query != null) {
+            if (StringUtils.hasText(query.getKeyword())) {
+                String keyword = query.getKeyword().trim();
+                wrapper.and(condition -> condition
+                        .like(SystemConfig::getConfigKey, keyword)
+                        .or()
+                        .like(SystemConfig::getDescription, keyword));
+            }
+            if (StringUtils.hasText(query.getConfigType())) {
+                wrapper.eq(SystemConfig::getValueType, query.getConfigType().trim());
+            }
+            if (query.getStatus() != null) {
+                wrapper.eq(SystemConfig::getStatus, query.getStatus());
+            }
+        }
+        Page<SystemConfig> page = systemConfigMapper.selectPage(Page.of(pageNo, pageSize), wrapper);
+        List<SystemConfigVO> records = page.getRecords().stream()
                 .map(SystemConfigConvert::toVO)
                 .toList();
+        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
     }
 
     @Override
@@ -75,8 +100,21 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     @Override
+    public SystemConfigVO updateConfigById(Long id, SystemConfigSaveDTO dto) {
+        return updateConfig(getRequiredConfigEntityById(id), dto);
+    }
+
+    @Override
+    public SystemConfigVO updateConfigByKey(String configKey, SystemConfigSaveDTO dto) {
+        return updateConfig(getRequiredConfigEntityByKey(configKey), dto);
+    }
+
+    @Override
     public SystemConfigVO updateConfig(String keyOrId, SystemConfigSaveDTO dto) {
-        SystemConfig config = getConfigEntity(keyOrId);
+        return SystemConfigService.super.updateConfig(keyOrId, dto);
+    }
+
+    private SystemConfigVO updateConfig(SystemConfig config, SystemConfigSaveDTO dto) {
         String configKey = org.springframework.util.StringUtils.hasText(dto.getConfigKey())
                 ? dto.getConfigKey().trim()
                 : config.getConfigKey();
@@ -129,7 +167,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private void apply(SystemConfig config, SystemConfigSaveDTO dto, String configKey) {
         config.setConfigKey(configKey);
-        if (dto.getConfigValue() != null) {
+        if (dto.getConfigValue() != null && shouldUpdateConfigValue(config, configKey, dto.getConfigValue())) {
             config.setConfigValue(dto.getConfigValue());
         }
         if (dto.getValueType() != null) {
@@ -147,14 +185,44 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         }
     }
 
+    private boolean shouldUpdateConfigValue(SystemConfig config, String configKey, String configValue) {
+        return config.getId() == null
+                || !SystemConfigConvert.isSensitiveKey(configKey)
+                || !configValue.isBlank();
+    }
+
     private SystemConfig getConfigEntity(String keyOrId) {
         SystemConfig config = isNumeric(keyOrId)
-                ? systemConfigMapper.selectById(Long.valueOf(keyOrId))
-                : systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
-                        .eq(SystemConfig::getConfigKey, keyOrId)
-                        .last("limit 1"));
+                ? getConfigEntityById(Long.valueOf(keyOrId))
+                : getConfigEntityByKey(keyOrId);
         if (config == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "系统配置不存在或已不可用");
+        }
+        return config;
+    }
+
+    private SystemConfig getConfigEntityById(Long id) {
+        return systemConfigMapper.selectById(id);
+    }
+
+    private SystemConfig getConfigEntityByKey(String configKey) {
+        return systemConfigMapper.selectOne(new LambdaQueryWrapper<SystemConfig>()
+                .eq(SystemConfig::getConfigKey, configKey)
+                .last("limit 1"));
+    }
+
+    private SystemConfig getRequiredConfigEntityById(Long id) {
+        SystemConfig config = getConfigEntityById(id);
+        if (config == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "绯荤粺閰嶇疆涓嶅瓨鍦ㄦ垨宸蹭笉鍙敤");
+        }
+        return config;
+    }
+
+    private SystemConfig getRequiredConfigEntityByKey(String configKey) {
+        SystemConfig config = getConfigEntityByKey(configKey);
+        if (config == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "绯荤粺閰嶇疆涓嶅瓨鍦ㄦ垨宸蹭笉鍙敤");
         }
         return config;
     }

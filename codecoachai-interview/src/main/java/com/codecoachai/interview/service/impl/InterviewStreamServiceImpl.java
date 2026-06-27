@@ -17,7 +17,9 @@ import com.codecoachai.interview.util.SseEmitterUtils;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import lombok.extern.slf4j.Slf4j;
@@ -51,11 +53,12 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = submitStreamTask(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "question stream started") || !active.get()) {
                 return;
             }
             CurrentQuestionVO question = interviewService.currentQuestion(sessionId);
+            ensureStreamingActive(active);
             String fullContent = question == null ? null : question.getQuestionContent();
             sendQuestionProgress(emitter, active, requestId, sessionId, question);
             sendChunks(emitter, active, requestId, sessionId, fullContent);
@@ -63,8 +66,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                     question == null ? null : question.getMessageId(), questionMetadata(question));
             sendQuestionResult(emitter, active, requestId, sessionId, question);
             sendQuestionDone(emitter, active, requestId, sessionId, question, fullContent);
-        }));
-        bindCancellation(emitter, task);
+        });
+        bindCancellation(emitter, active, task);
         return emitter;
     }
 
@@ -74,7 +77,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = submitStreamTask(emitter, active, requestId, loginUser, () -> {
             try {
                 if (!sendAnswerReviewStart(emitter, active, requestId, sessionId) || !active.get()) {
                     return;
@@ -89,12 +92,14 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 }
                 sendAnswerReviewResult(emitter, active, requestId, sessionId, answer);
                 sendAnswerReviewDone(emitter, active, requestId, sessionId, answer);
+            } catch (CancellationException ex) {
+                throw ex;
             } catch (RuntimeException ex) {
                 log.warn("Interview answer review SSE failed, requestId={}, interviewId={}", requestId, sessionId, ex);
                 sendAnswerReviewError(emitter, active, requestId, sessionId);
             }
-        }));
-        bindCancellation(emitter, task);
+        });
+        bindCancellation(emitter, active, task);
         return emitter;
     }
 
@@ -104,19 +109,20 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = submitStreamTask(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, sessionId, "report stream started") || !active.get()) {
                 return;
             }
             InterviewReportVO report = interviewService.report(sessionId);
+            ensureStreamingActive(active);
             String fullContent = firstText(report == null ? null : report.getReportContent(),
                     report == null ? null : report.getSummary(),
                     "Interview report generated");
             sendChunks(emitter, active, requestId, sessionId, fullContent);
             sendMetadata(emitter, active, requestId, sessionId, null, reportMetadata(report));
             sendDone(emitter, active, requestId, sessionId, null, fullContent);
-        }));
-        bindCancellation(emitter, task);
+        });
+        bindCancellation(emitter, active, task);
         return emitter;
     }
 
@@ -126,7 +132,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = submitStreamTask(emitter, active, requestId, loginUser, () -> {
             try {
                 if (!sendInterviewReportStart(emitter, active, requestId, interviewId) || !active.get()) {
                     return;
@@ -138,12 +144,14 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
                 }
                 sendInterviewReportResult(emitter, active, requestId, result);
                 sendInterviewReportDone(emitter, active, requestId, result);
+            } catch (CancellationException ex) {
+                throw ex;
             } catch (RuntimeException ex) {
                 log.warn("Interview report SSE failed, requestId={}, interviewId={}", requestId, interviewId, ex);
                 sendInterviewReportError(emitter, active, requestId, interviewId, reportId);
             }
-        }));
-        bindCancellation(emitter, task);
+        });
+        bindCancellation(emitter, active, task);
         return emitter;
     }
 
@@ -153,19 +161,31 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = SseEmitterUtils.createEmitter(requestId, active);
         LoginUser loginUser = LoginUserContext.getLoginUser();
-        Future<?> task = sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, () -> {
+        Future<?> task = submitStreamTask(emitter, active, requestId, loginUser, () -> {
             if (!sendStart(emitter, active, requestId, null, "study plan stream started") || !active.get()) {
                 return;
             }
             StudyPlanGenerateVO plan = studyPlanService.generate(dto);
+            ensureStreamingActive(active);
             String fullContent = "Study plan generated: "
                     + firstText(plan == null ? null : plan.getPlanTitle(), "Untitled plan");
             sendChunks(emitter, active, requestId, null, fullContent);
             sendMetadata(emitter, active, requestId, null, null, studyPlanMetadata(plan));
             sendDone(emitter, active, requestId, null, null, fullContent);
-        }));
-        bindCancellation(emitter, task);
+        });
+        bindCancellation(emitter, active, task);
         return emitter;
+    }
+
+    private Future<?> submitStreamTask(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                       LoginUser loginUser, Runnable runnable) {
+        try {
+            return sseStreamExecutor.submit(() -> executeStream(emitter, active, requestId, loginUser, runnable));
+        } catch (RejectedExecutionException ex) {
+            log.warn("SSE stream task rejected, requestId={}", requestId, ex);
+            sendError(emitter, active, requestId, "SSE_QUEUE_FULL");
+            return null;
+        }
     }
 
     private void executeStream(SseEmitter emitter, AtomicBoolean active, String requestId,
@@ -173,6 +193,8 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         try {
             LoginUserContext.setLoginUser(loginUser);
             runnable.run();
+        } catch (CancellationException ex) {
+            log.info("SSE stream task cancelled, requestId={}", requestId);
         } catch (RuntimeException ex) {
             log.warn("SSE stream task failed, requestId={}", requestId, ex);
             sendError(emitter, active, requestId, "SSE_STREAM_ERROR");
@@ -181,10 +203,13 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         }
     }
 
-    private void bindCancellation(SseEmitter emitter, Future<?> task) {
-        emitter.onCompletion(() -> task.cancel(true));
-        emitter.onTimeout(() -> task.cancel(true));
-        emitter.onError(ex -> task.cancel(true));
+    private void bindCancellation(SseEmitter emitter, AtomicBoolean active, Future<?> task) {
+        if (task == null) {
+            return;
+        }
+        emitter.onCompletion(() -> cancelStream(active, task));
+        emitter.onTimeout(() -> cancelStream(active, task));
+        emitter.onError(ex -> cancelStream(active, task));
     }
 
     private boolean sendStart(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String message) {
@@ -199,6 +224,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
     private void sendChunks(SseEmitter emitter, AtomicBoolean active, String requestId, Long sessionId, String fullContent) {
         int index = 1;
         for (String chunk : SseEmitterUtils.splitContent(fullContent)) {
+            ensureStreamingActive(active);
             SseEventVO chunkEvent = SseEventVO.builder()
                     .type("chunk")
                     .requestId(requestId)
@@ -221,7 +247,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
             if (!SseEmitterUtils.send(emitter, active, "delta", deltaEvent)) {
                 return;
             }
-            sleepBetweenChunks();
+            sleepBetweenChunks(active);
         }
     }
 
@@ -329,6 +355,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private void sendInterviewReportProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
                                              Long interviewId, String stage) {
+        ensureStreamingActive(active);
         String message = interviewReportStageMessage(stage);
         SseEventVO standardEvent = SseEventVO.builder()
                 .type("delta")
@@ -438,6 +465,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
 
     private void sendAnswerReviewProgress(SseEmitter emitter, AtomicBoolean active, String requestId,
                                           Long interviewId, String stage) {
+        ensureStreamingActive(active);
         String message = answerReviewStageMessage(stage);
         SseEventVO standardEvent = SseEventVO.builder()
                 .type("delta")
@@ -476,6 +504,7 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         if (!StringUtils.hasText(token)) {
             return;
         }
+        ensureStreamingActive(active);
         SseEmitterUtils.send(emitter, active, "token", SseEventVO.builder()
                 .type("token")
                 .requestId(requestId)
@@ -740,10 +769,26 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         builder.append(content.trim());
     }
 
-    private void sleepBetweenChunks() {
+    boolean isStreamingActive(AtomicBoolean active) {
+        return active != null && active.get() && !Thread.currentThread().isInterrupted();
+    }
+
+    void ensureStreamingActive(AtomicBoolean active) {
+        if (!isStreamingActive(active)) {
+            throw new CancellationException("SSE stream cancelled");
+        }
+    }
+
+    private void cancelStream(AtomicBoolean active, Future<?> task) {
+        active.set(false);
+        task.cancel(true);
+    }
+
+    private void sleepBetweenChunks(AtomicBoolean active) {
         try {
             Thread.sleep(CHUNK_DELAY_MILLIS);
         } catch (InterruptedException ex) {
+            active.set(false);
             Thread.currentThread().interrupt();
         }
     }

@@ -70,12 +70,7 @@ public final class HeaderUserContextReader {
     }
 
     private static String normalizeRequestPath(HttpServletRequest request) {
-        String path = InternalSignatureUtils.normalizePath(request.getRequestURI());
-        String contextPath = request.getContextPath();
-        if (StringUtils.hasText(contextPath) && path.startsWith(contextPath)) {
-            return InternalSignatureUtils.normalizePath(path.substring(contextPath.length()));
-        }
-        return path;
+        return InternalSignatureUtils.normalizeRequestPath(request.getRequestURI(), request.getContextPath());
     }
 
     private static Long parseLong(String value) {

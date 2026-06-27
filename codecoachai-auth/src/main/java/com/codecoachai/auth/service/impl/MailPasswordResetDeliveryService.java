@@ -9,6 +9,9 @@ import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+
 @Component
 @RequiredArgsConstructor
 @ConditionalOnProperty(prefix = "codecoachai.auth.password-reset", name = "delivery-provider", havingValue = "mail")
@@ -30,7 +33,8 @@ public class MailPasswordResetDeliveryService implements PasswordResetDeliverySe
     }
 
     private String buildBody(String token, long expiresInSeconds) {
-        String resetUrl = properties.getResetUrlTemplate().replace("{token}", token);
+        String encodedToken = URLEncoder.encode(token, StandardCharsets.UTF_8);
+        String resetUrl = properties.getResetUrlTemplate().replace("{token}", encodedToken);
         long minutes = Math.max(1, expiresInSeconds / 60);
         return """
                 You requested a CodeCoachAI password reset.

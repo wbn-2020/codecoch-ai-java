@@ -150,11 +150,7 @@ public class AiServiceImpl implements AiService {
             } else {
                 RouteResult routeResult = callAndLog(promptResult, dto.getAdminUserId(), dto.getBatchId());
                 rawResponse = routeResult.getContent();
-                try {
-                    vo = parseQuestionDrafts(rawResponse, dto);
-                } catch (AiProviderException ex) {
-                    vo = mockQuestionDrafts(dto);
-                }
+                vo = parseQuestionDrafts(rawResponse, dto);
                 logId = routeResult.getAiCallLogId();
             }
             vo.setBatchId(dto.getBatchId());
