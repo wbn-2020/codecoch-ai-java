@@ -65,7 +65,7 @@ class RoleServiceImplTest {
 
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
         verify(sysUserRoleMapper, never()).delete(any());
-        verify(sysUserRoleMapper, never()).insert(any());
+        verify(sysUserRoleMapper, never()).insert(any(SysUserRole.class));
     }
 
     @Test
@@ -73,8 +73,8 @@ class RoleServiceImplTest {
         when(sysUserMapper.selectById(9L)).thenReturn(enabledUser(9L));
         when(sysUserRoleMapper.selectList(any())).thenReturn(List.of(userRole(9L, 7L)));
         when(sysRoleMapper.selectList(any()))
-                .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")))
-                .thenReturn(List.of(enabledRole(1L, "USER")));
+                .thenReturn(List.of(enabledRole(1L, "USER")))
+                .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")));
         when(jdbcTemplate.queryForObject(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN"), eq(9L)))
                 .thenReturn(0L);
 
@@ -83,7 +83,7 @@ class RoleServiceImplTest {
 
         assertEquals(ErrorCode.VALIDATION_ERROR.getCode(), exception.getCode());
         verify(sysUserRoleMapper, never()).delete(any());
-        verify(sysUserRoleMapper, never()).insert(any());
+        verify(sysUserRoleMapper, never()).insert(any(SysUserRole.class));
     }
 
     @Test
@@ -91,8 +91,8 @@ class RoleServiceImplTest {
         when(sysUserMapper.selectById(9L)).thenReturn(enabledUser(9L));
         when(sysUserRoleMapper.selectList(any())).thenReturn(List.of(userRole(9L, 7L)));
         when(sysRoleMapper.selectList(any()))
-                .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")))
-                .thenReturn(List.of(enabledRole(1L, "USER")));
+                .thenReturn(List.of(enabledRole(1L, "USER")))
+                .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")));
         when(jdbcTemplate.queryForObject(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN"), eq(9L)))
                 .thenReturn(1L);
 
