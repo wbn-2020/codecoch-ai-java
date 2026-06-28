@@ -11,7 +11,7 @@ public class PasswordResetProperties {
 
     private boolean allowMock = true;
 
-    private String resetUrlTemplate = "http://localhost:5173/reset-password#token={token}";
+    private String resetUrlTemplate = "https://codecoachai.example/reset-password?token={token}";
 
     private String from = "";
 

@@ -706,17 +706,33 @@ public class InterviewReportAsyncService {
     }
 
     private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
-        Runnable action = () -> interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId);
+        String op = "UPSERT";
+        Runnable action = () -> {
+            if (!interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId)) {
+                log.warn("Interview async after-commit sync returned false syncType=interview_search_sync sessionId={} op={}",
+                        sessionId, op);
+            }
+        };
+        Runnable safeAction = () -> runAfterCommitSafely("interview_search_sync", sessionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long sessionId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Interview async after-commit sync failed syncType={} sessionId={} op={} reason={}",
+                    syncType, sessionId, op, ex.getMessage(), ex);
+        }
     }
 
     private String toJson(Object value) {

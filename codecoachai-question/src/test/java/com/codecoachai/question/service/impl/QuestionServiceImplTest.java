@@ -3,17 +3,25 @@ package com.codecoachai.question.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.question.domain.dto.AdminQuestionSaveDTO;
 import com.codecoachai.question.domain.dto.QuestionQueryDTO;
 import com.codecoachai.question.domain.dto.SubmitQuestionAnswerDTO;
 import com.codecoachai.question.domain.entity.PracticeRecord;
@@ -36,6 +44,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -71,6 +81,7 @@ class QuestionServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        initTableInfo(Question.class);
         questionService = new QuestionServiceImpl(
                 questionMapper,
                 categoryMapper,
@@ -185,6 +196,56 @@ class QuestionServiceImplTest {
         assertTrue(Boolean.TRUE.equals(result.getAgentTaskCompleted()));
     }
 
+    @Test
+    void updateQuestionRequiresCurrentUserBeforeMutatingQuestion() {
+        LoginUserContext.clear();
+        AdminQuestionSaveDTO dto = questionSaveDto();
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> questionService.updateQuestion(41L, dto));
+
+        assertEquals(ErrorCode.UNAUTHORIZED.getCode(), ex.getCode());
+        verify(questionMapper, never()).updateById(any(Question.class));
+        verify(tagRelationMapper, never()).delete(any());
+        verify(questionDuplicateService, never()).checkDuplicateForQuestion(any(), any());
+        verify(questionMqDispatcher, never()).dispatchQuestionSearchUpsert(any(), any());
+    }
+
+    @Test
+    void deleteQuestionRemovesTagRelationsBeforeDeletingQuestion() {
+        questionService.deleteQuestion(51L);
+
+        var inOrder = inOrder(tagRelationMapper, questionMapper);
+        inOrder.verify(tagRelationMapper).delete(any());
+        inOrder.verify(questionMapper).deleteById(51L);
+    }
+
+    @Test
+    void deleteTagOnlyCountsActiveRelationsToExistingQuestions() {
+        QuestionMetadataServiceImpl metadataService = new QuestionMetadataServiceImpl(
+                categoryMapper,
+                tagMapper,
+                groupMapper,
+                questionMapper);
+        when(questionMapper.selectCount(any())).thenReturn(0L);
+
+        metadataService.deleteTag(13L);
+
+        ArgumentCaptor<LambdaQueryWrapper<Question>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(questionMapper).selectCount(wrapperCaptor.capture());
+        String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
+        assertTrue(sqlSegment.contains("question_tag_relation"), sqlSegment);
+        assertTrue(sqlSegment.contains("deleted = 0"), sqlSegment);
+        assertTrue(sqlSegment.contains("tag_id = 13"), sqlSegment);
+        verify(tagMapper).deleteById(13L);
+    }
+
+    private static void initTableInfo(Class<?> entityType) {
+        if (TableInfoHelper.getTableInfo(entityType) == null) {
+            MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
+            TableInfoHelper.initTableInfo(assistant, entityType);
+        }
+    }
+
     private static UserQuestionRecord record(Long questionId) {
         UserQuestionRecord record = new UserQuestionRecord();
         record.setQuestionId(questionId);
@@ -198,5 +259,15 @@ class QuestionServiceImplTest {
         question.setContent("Content " + id);
         question.setStatus(status);
         return question;
+    }
+
+    private static AdminQuestionSaveDTO questionSaveDto() {
+        AdminQuestionSaveDTO dto = new AdminQuestionSaveDTO();
+        dto.setTitle("Updated question");
+        dto.setContent("Updated content");
+        dto.setReferenceAnswer("Updated answer");
+        dto.setAnalysis("Updated analysis");
+        dto.setStatus(CommonConstants.YES);
+        return dto;
     }
 }

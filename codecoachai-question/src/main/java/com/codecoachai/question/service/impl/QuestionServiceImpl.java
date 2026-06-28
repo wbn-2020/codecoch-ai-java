@@ -222,21 +222,23 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public QuestionDetailVO updateQuestion(Long id, AdminQuestionSaveDTO dto) {
+        Long userId = requireCurrentUserId();
         Question question = getQuestionOrThrow(id);
         applyQuestion(question, dto);
         questionMapper.updateById(question);
         replaceTags(question.getId(), dto.getTagIds());
-        syncQuestionDuplicateCheckAfterCommit(question.getId(), LoginUserContext.getUserId());
+        syncQuestionDuplicateCheckAfterCommit(question.getId(), userId);
         syncQuestionEmbeddingAfterCommit(question.getId(), CommonConstants.YES.equals(question.getStatus()));
-        syncQuestionSearchAfterCommit(question.getId(), LoginUserContext.getUserId(),
-                CommonConstants.YES.equals(question.getStatus()));
+        syncQuestionSearchAfterCommit(question.getId(), userId, CommonConstants.YES.equals(question.getStatus()));
         return toDetailVO(getQuestionOrThrow(id));
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteQuestion(Long id) {
-        Long userId = LoginUserContext.getUserId();
+        Long userId = requireCurrentUserId();
+        tagRelationMapper.delete(new LambdaQueryWrapper<QuestionTagRelation>()
+                .eq(QuestionTagRelation::getQuestionId, id));
         questionMapper.deleteById(id);
         questionDuplicateService.invalidatePendingReviewsForQuestion(id, userId, "Question deleted, duplicate review auto ignored");
         syncQuestionEmbeddingAfterCommit(id, false);
@@ -641,6 +643,7 @@ public class QuestionServiceImpl implements QuestionService {
     }
 
     private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
+        String op = upsert ? "UPSERT" : "DELETE";
         Runnable action = () -> {
             if (upsert) {
                 questionEmbeddingIndexService.indexQuestion(questionId);
@@ -648,56 +651,76 @@ public class QuestionServiceImpl implements QuestionService {
                 questionEmbeddingIndexService.deleteQuestion(questionId);
             }
         };
+        Runnable safeAction = () -> runAfterCommitSafely("question_embedding_sync", questionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
     }
 
     private void syncQuestionDuplicateCheckAfterCommit(Long questionId, Long userId) {
-        Runnable action = () -> {
-            try {
-                questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
-            } catch (Exception ex) {
-                log.warn("Question duplicate check failed after commit questionId={}", questionId, ex);
-            }
-        };
+        Runnable action = () -> questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
+        Runnable safeAction = () -> runAfterCommitSafely("question_duplicate_check", questionId, "CHECK", action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
     }
 
     private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {
+        String op = upsert ? "UPSERT" : "DELETE";
         Runnable action = () -> {
             if (upsert) {
-                questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId);
+                if (!questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId)) {
+                    log.warn("Question after-commit sync returned false syncType=question_search_sync questionId={} op={} reason={}",
+                            questionId, op, "dispatcher returned false");
+                }
             } else {
-                questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId);
+                if (!questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId)) {
+                    log.warn("Question after-commit sync returned false syncType=question_search_sync questionId={} op={} reason={}",
+                            questionId, op, "dispatcher returned false");
+                }
             }
         };
+        Runnable safeAction = () -> runAfterCommitSafely("question_search_sync", questionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long questionId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Question after-commit sync failed syncType={} questionId={} op={} reason={}",
+                    syncType, questionId, op, buildAfterCommitFailureReason(ex), ex);
+        }
+    }
+
+    private String buildAfterCommitFailureReason(Exception ex) {
+        if (ex == null) {
+            return "unknown";
+        }
+        return StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName();
     }
 
     private Long requireCurrentUserId() {
