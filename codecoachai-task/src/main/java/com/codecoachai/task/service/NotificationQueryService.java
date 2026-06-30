@@ -6,10 +6,11 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.task.controller.NotificationController.NotificationVO;
+import com.codecoachai.task.domain.vo.ReminderCandidateVO;
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.domain.entity.NotificationRead;
 import com.codecoachai.task.feign.AiFeignClient;
-import com.codecoachai.task.feign.AiFeignClient.AgentReminderCandidateVO;
+import com.codecoachai.task.feign.ResumeFeignClient;
 import com.codecoachai.task.mapper.NotificationMapper;
 import com.codecoachai.task.mapper.NotificationReadMapper;
 import java.time.LocalDate;
@@ -37,15 +38,16 @@ public class NotificationQueryService {
     private final NotificationReadMapper notificationReadMapper;
     private final NotificationCommandService notificationCommandService;
     private final AiFeignClient aiFeignClient;
+    private final ResumeFeignClient resumeFeignClient;
 
     public PageResult<NotificationVO> pageMyNotifications(Long userId, Long pageNo, Long pageSize, Integer readStatus,
                                                           String type) {
-        List<AgentReminderCandidateVO> reminderCandidates = reminderCandidates(userId);
-        ensureAgentReminders(userId, reminderCandidates);
+        List<ReminderCandidateVO> reminderCandidates = reminderCandidates(userId);
+        ensureDailyReminders(userId, reminderCandidates);
         Page<Notification> page = notificationMapper.selectUserNotificationPage(Page.of(pageNo, pageSize), userId,
                 readStatus, type);
         Set<Long> readBroadcastIds = readBroadcastIds(userId, page.getRecords());
-        Map<String, AgentReminderCandidateVO> reminderContractMap = buildReminderContractMap(reminderCandidates);
+        Map<String, ReminderCandidateVO> reminderContractMap = buildReminderContractMap(reminderCandidates);
         List<NotificationVO> records = page.getRecords().stream()
                 .map(notification -> toVO(notification,
                         readBroadcastIds.contains(notification.getId()),
@@ -55,7 +57,7 @@ public class NotificationQueryService {
     }
 
     public Long countUnread(Long userId) {
-        ensureAgentReminders(userId, reminderCandidates(userId));
+        ensureDailyReminders(userId, reminderCandidates(userId));
         return safeLong(notificationMapper.countUnreadForUser(userId));
     }
 
@@ -108,7 +110,7 @@ public class NotificationQueryService {
         notificationMapper.upsertBroadcastRead(userId, notificationId);
     }
 
-    private NotificationVO toVO(Notification notification, boolean broadcastRead, AgentReminderCandidateVO reminderCandidate) {
+    private NotificationVO toVO(Notification notification, boolean broadcastRead, ReminderCandidateVO reminderCandidate) {
         NotificationVO vo = NotificationVO.from(notification);
         if (reminderCandidate != null) {
             vo.setActionUrl(reminderCandidate.getActionUrl());
@@ -131,11 +133,11 @@ public class NotificationQueryService {
         return value == null ? 0L : value;
     }
 
-    private void ensureAgentReminders(Long userId, List<AgentReminderCandidateVO> candidates) {
+    private void ensureDailyReminders(Long userId, List<ReminderCandidateVO> candidates) {
         if (userId == null) {
             return;
         }
-        for (AgentReminderCandidateVO candidate : candidates) {
+        for (ReminderCandidateVO candidate : candidates) {
             if (candidate == null || !StringUtils.hasText(candidate.getType())
                     || !StringUtils.hasText(candidate.getBizType())
                     || !StringUtils.hasText(candidate.getBizId())) {
@@ -150,10 +152,18 @@ public class NotificationQueryService {
         }
     }
 
-    private List<AgentReminderCandidateVO> reminderCandidates(Long userId) {
+    private List<ReminderCandidateVO> reminderCandidates(Long userId) {
+        LocalDate today = LocalDate.now();
+        List<ReminderCandidateVO> candidates = new java.util.ArrayList<>();
+        candidates.addAll(agentReminderCandidates(userId, today.minusDays(1)));
+        candidates.addAll(applicationReminderCandidates(userId, today));
+        return candidates;
+    }
+
+    private List<ReminderCandidateVO> agentReminderCandidates(Long userId, LocalDate agentPlanDate) {
         try {
-            Result<List<AgentReminderCandidateVO>> result =
-                    aiFeignClient.listReminderCandidates(userId, LocalDate.now().minusDays(1));
+            Result<List<ReminderCandidateVO>> result =
+                    aiFeignClient.listReminderCandidates(userId, agentPlanDate);
             if (result == null || !result.isSuccess() || result.getData() == null) {
                 return Collections.emptyList();
             }
@@ -164,18 +174,33 @@ public class NotificationQueryService {
         }
     }
 
-    private Map<String, AgentReminderCandidateVO> buildReminderContractMap(List<AgentReminderCandidateVO> candidates) {
+    private List<ReminderCandidateVO> applicationReminderCandidates(Long userId, LocalDate reminderDate) {
+        try {
+            Result<List<ReminderCandidateVO>> result =
+                    resumeFeignClient.listApplicationReminderCandidates(userId, reminderDate);
+            if (result == null || !result.isSuccess() || result.getData() == null) {
+                return Collections.emptyList();
+            }
+            return result.getData();
+        } catch (Exception ex) {
+            log.warn("Load application reminder candidates failed, userId={}", userId, ex);
+            return Collections.emptyList();
+        }
+    }
+
+    private Map<String, ReminderCandidateVO> buildReminderContractMap(List<ReminderCandidateVO> candidates) {
         if (candidates == null || candidates.isEmpty()) {
             return Map.of();
         }
-        Map<String, AgentReminderCandidateVO> contractMap = new LinkedHashMap<>();
-        for (AgentReminderCandidateVO candidate : candidates) {
+        Map<String, ReminderCandidateVO> contractMap = new LinkedHashMap<>();
+        for (ReminderCandidateVO candidate : candidates) {
             if (candidate == null || !StringUtils.hasText(candidate.getType())
                     || !StringUtils.hasText(candidate.getBizType())
                     || !StringUtils.hasText(candidate.getBizId())) {
                 continue;
             }
-            contractMap.put(reminderKey(candidate.getType(), candidate.getBizType(), candidate.getBizId()), candidate);
+            contractMap.putIfAbsent(reminderKey(candidate.getType(), candidate.getBizType(), candidate.getBizId()),
+                    candidate);
         }
         return contractMap;
     }

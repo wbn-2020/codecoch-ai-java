@@ -1,6 +1,7 @@
 package com.codecoachai.task.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.mapper.NotificationMapper;
 import java.time.LocalDateTime;
@@ -64,5 +65,33 @@ public class NotificationCommandService {
             return;
         }
         notificationService.createNotification(userId, type, bizType, bizId, title, content);
+    }
+
+    public int resolveByBiz(Long userId, String type, String bizType, String bizId, String reason) {
+        if (userId == null || userId <= BROADCAST_USER_ID || !StringUtils.hasText(type)
+                || !StringUtils.hasText(bizType) || !StringUtils.hasText(bizId)) {
+            return 0;
+        }
+        return notificationMapper.update(null, new LambdaUpdateWrapper<Notification>()
+                .eq(Notification::getUserId, userId)
+                .eq(Notification::getType, type.trim())
+                .eq(Notification::getBizType, bizType.trim())
+                .eq(Notification::getBizId, bizId.trim())
+                .eq(Notification::getDeleted, 0)
+                .and(wrapper -> wrapper
+                        .isNull(Notification::getResolvedStatus)
+                        .or()
+                        .eq(Notification::getResolvedStatus, 0))
+                .set(Notification::getResolvedStatus, 1)
+                .set(Notification::getResolvedAt, LocalDateTime.now())
+                .set(Notification::getResolvedReason, truncate(reason, 64)));
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        String text = value.trim();
+        return text.length() <= maxLength ? text : text.substring(0, maxLength);
     }
 }

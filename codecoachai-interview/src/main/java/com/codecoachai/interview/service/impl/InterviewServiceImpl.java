@@ -45,6 +45,7 @@ import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
@@ -122,6 +123,7 @@ public class InterviewServiceImpl implements InterviewService {
         CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
         validateSuccessfulMatchReportContext(userId, request);
+        validateApplicationBinding(userId, request);
         String mode = normalizeMode(StringUtils.hasText(request.getInterviewMode()) ? request.getInterviewMode() : request.getMode());
         InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
         resolveDefaultResumeIfNeeded(mode, request);
@@ -130,6 +132,7 @@ public class InterviewServiceImpl implements InterviewService {
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
+        session.setApplicationId(request.getApplicationId());
         session.setResumeId(request.getResumeId());
         session.setTargetJobId(request.getTargetJobId());
         session.setSkillProfileId(request.getSkillProfileId());
@@ -160,6 +163,7 @@ public class InterviewServiceImpl implements InterviewService {
         }
         CreateInterviewVO vo = new CreateInterviewVO();
         vo.setId(session.getId());
+        vo.setApplicationId(session.getApplicationId());
         vo.setTargetJobId(session.getTargetJobId());
         vo.setSkillProfileId(session.getSkillProfileId());
         vo.setMatchReportId(session.getMatchReportId());
@@ -220,6 +224,7 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         CurrentInterviewVO vo = new CurrentInterviewVO();
         vo.setId(session.getId());
+        vo.setApplicationId(session.getApplicationId());
         vo.setTargetJobId(session.getTargetJobId());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
@@ -497,6 +502,7 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = getOwnedSession(id);
         InterviewDetailVO vo = new InterviewDetailVO();
         vo.setId(session.getId());
+        vo.setApplicationId(session.getApplicationId());
         vo.setTargetJobId(session.getTargetJobId());
         vo.setSkillProfileId(session.getSkillProfileId());
         vo.setMatchReportId(session.getMatchReportId());
@@ -712,6 +718,7 @@ public class InterviewServiceImpl implements InterviewService {
             return vo;
         }
         vo.setTargetJobId(session.getTargetJobId());
+        vo.setApplicationId(session.getApplicationId());
         vo.setSkillProfileId(session.getSkillProfileId());
         vo.setMatchReportId(session.getMatchReportId());
         vo.setTargetJobTitle(session.getTargetPosition());
@@ -1870,6 +1877,36 @@ public class InterviewServiceImpl implements InterviewService {
         }
         if (request.getTargetJobId() == null) {
             request.setTargetJobId(report.getTargetJobId());
+        }
+    }
+
+    private void validateApplicationBinding(Long userId, CreateInterviewDTO request) {
+        if (request == null || request.getApplicationId() == null) {
+            return;
+        }
+        InnerJobApplicationSummaryVO application;
+        try {
+            application = FeignResultUtils.unwrap(
+                    resumeFeignClient.getApplicationSummary(userId, request.getApplicationId()));
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "投递记录暂时无法校验，不能绑定面试");
+        }
+        if (application == null || application.getId() == null || !userId.equals(application.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "投递记录不存在，不能绑定面试");
+        }
+        if (request.getTargetJobId() != null && application.getTargetJobId() != null
+                && !request.getTargetJobId().equals(application.getTargetJobId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试岗位与投递记录不一致");
+        }
+        if (request.getMatchReportId() != null && application.getMatchReportId() != null
+                && !request.getMatchReportId().equals(application.getMatchReportId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试匹配报告与投递记录不一致");
+        }
+        if (request.getTargetJobId() == null) {
+            request.setTargetJobId(application.getTargetJobId());
+        }
+        if (request.getMatchReportId() == null) {
+            request.setMatchReportId(application.getMatchReportId());
         }
     }
 

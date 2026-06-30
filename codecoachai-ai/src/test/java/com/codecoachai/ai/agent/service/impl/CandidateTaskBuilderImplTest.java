@@ -61,6 +61,20 @@ class CandidateTaskBuilderImplTest {
         assertEquals(2, applicationTasks);
     }
 
+    @Test
+    void applicationFollowUpReasonUsesLatestEventAndResumeVersionEvidence() {
+        ApplicationSnapshot app = application(11L, "INTERVIEWING", true, false,
+                LocalDateTime.of(2026, 6, 14, 9, 0));
+        app.setLatestEventSummary("HR 已确认进入技术面");
+        app.setResumeVersionName("后端投递版");
+
+        List<CandidateTask> tasks = builder.build(context(List.of(app)), 2);
+
+        CandidateTask followUp = tasks.get(0);
+        assertTrue(followUp.getReason().contains("最近记录：HR 已确认进入技术面"));
+        assertTrue(followUp.getReason().contains("关联简历版本：后端投递版"));
+    }
+
     private JobCoachAgentContext context(List<ApplicationSnapshot> applications) {
         JobCoachAgentContext context = new JobCoachAgentContext();
         context.setTargetJobId(100L);
@@ -84,6 +98,8 @@ class CandidateTaskBuilderImplTest {
         application.setId(id);
         application.setTargetJobId(100L);
         application.setResumeVersionId(200L + id);
+        application.setResumeId(500L + id);
+        application.setResumeVersionNo(3);
         application.setMatchReportId(300L + id);
         application.setCompanyName("Company " + id);
         application.setJobTitle("Java Engineer");

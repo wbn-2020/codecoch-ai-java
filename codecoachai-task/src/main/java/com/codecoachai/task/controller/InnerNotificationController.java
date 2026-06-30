@@ -27,6 +27,12 @@ public class InnerNotificationController {
         return Result.success(id);
     }
 
+    @PostMapping("/resolve-by-biz")
+    public Result<Integer> resolveByBiz(@RequestBody InnerNotificationResolveDTO dto) {
+        return Result.success(notificationCommandService.resolveByBiz(dto.getUserId(), dto.getType(),
+                dto.getBizType(), dto.getBizId(), dto.getReason()));
+    }
+
     @Data
     public static class InnerNotificationCreateDTO {
         /** 接收用户 ID，null 或 0 表示系统公告。 */
@@ -37,5 +43,14 @@ public class InnerNotificationController {
         private String content;
         private String bizType;
         private String bizId;
+    }
+
+    @Data
+    public static class InnerNotificationResolveDTO {
+        private Long userId;
+        private String type;
+        private String bizType;
+        private String bizId;
+        private String reason;
     }
 }

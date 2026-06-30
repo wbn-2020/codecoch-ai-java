@@ -7,6 +7,7 @@ import lombok.Data;
 public class InterviewDetailVO {
 
     private Long id;
+    private Long applicationId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;

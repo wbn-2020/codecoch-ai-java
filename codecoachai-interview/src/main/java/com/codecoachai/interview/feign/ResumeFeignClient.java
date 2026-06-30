@@ -4,6 +4,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
 import com.codecoachai.interview.feign.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
@@ -21,6 +22,10 @@ public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/default")
     Result<InnerResumeDetailVO> getDefaultResume();
+
+    @GetMapping("/inner/applications/users/{userId}/applications/{applicationId}/summary")
+    Result<InnerJobApplicationSummaryVO> getApplicationSummary(@PathVariable("userId") Long userId,
+                                                               @PathVariable("applicationId") Long applicationId);
 
     @GetMapping("/inner/job-targets/users/{userId}/current")
     Result<InnerTargetJobVO> getCurrentTargetJob(@PathVariable("userId") Long userId);

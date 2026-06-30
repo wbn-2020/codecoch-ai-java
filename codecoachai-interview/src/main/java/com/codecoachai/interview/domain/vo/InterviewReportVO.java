@@ -11,6 +11,7 @@ public class InterviewReportVO {
     private Long id;
     private Long sessionId;
     private Long userId;
+    private Long applicationId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;

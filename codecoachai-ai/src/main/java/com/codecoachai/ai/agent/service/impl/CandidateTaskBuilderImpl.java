@@ -125,19 +125,42 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     }
 
     private String applicationFollowUpReason(ApplicationSnapshot application) {
+        String evidence = applicationEvidence(application);
+        String baseReason;
         if (Boolean.TRUE.equals(application.getFollowUpOverdue())) {
-            return "这条投递的跟进时间已经逾期，今天优先补一次沟通记录。";
+            baseReason = "这条投递的跟进时间已经逾期，今天优先补一次沟通记录。";
+        } else if (Boolean.TRUE.equals(application.getFollowUpDueToday())) {
+            baseReason = "这条投递今天需要跟进，及时确认进展可以减少遗漏。";
+        } else if ("INTERVIEWING".equals(normalizeStatus(application.getStatus()))) {
+            baseReason = "当前处于面试流程，适合同步准备进展和下一步安排。";
+        } else if (application.getNextFollowUpAt() != null) {
+            baseReason = "这条投递已有下次跟进时间，提前整理沟通要点。";
+        } else {
+            baseReason = "这条投递仍在流程中，保持轻量跟进有助于推动反馈。";
         }
-        if (Boolean.TRUE.equals(application.getFollowUpDueToday())) {
-            return "这条投递今天需要跟进，及时确认进展可以减少遗漏。";
+        return StringUtils.hasText(evidence) ? baseReason + " " + evidence : baseReason;
+    }
+
+    private String applicationEvidence(ApplicationSnapshot application) {
+        List<String> parts = new ArrayList<>();
+        if (StringUtils.hasText(application.getLatestEventSummary())) {
+            parts.add("最近记录：" + trimToLength(application.getLatestEventSummary(), 48));
+        } else if (StringUtils.hasText(application.getLatestEventType())) {
+            parts.add("最近事件：" + application.getLatestEventType());
         }
-        if ("INTERVIEWING".equals(normalizeStatus(application.getStatus()))) {
-            return "当前处于面试流程，适合同步准备进展和下一步安排。";
+        String versionName = firstText(application.getResumeVersionName(),
+                application.getResumeVersionNo() == null ? null : "v" + application.getResumeVersionNo());
+        if (StringUtils.hasText(versionName)) {
+            parts.add("关联简历版本：" + trimToLength(versionName, 32));
         }
-        if (application.getNextFollowUpAt() != null) {
-            return "这条投递已有下次跟进时间，提前整理沟通要点。";
+        return String.join("；", parts);
+    }
+
+    private String trimToLength(String value, int maxLength) {
+        if (!StringUtils.hasText(value) || value.length() <= maxLength) {
+            return value;
         }
-        return "这条投递仍在流程中，保持轻量跟进有助于推动反馈。";
+        return value.substring(0, maxLength);
     }
 
     private String applicationFollowUpPriority(ApplicationSnapshot application) {

@@ -36,6 +36,10 @@ public class JobCoachAgentContext {
         private Long id;
         private Long targetJobId;
         private Long resumeVersionId;
+        private Long resumeId;
+        private Integer resumeVersionNo;
+        private String resumeVersionName;
+        private Integer resumeVersionCurrentFlag;
         private Long matchReportId;
         private String companyName;
         private String jobTitle;
@@ -47,6 +51,10 @@ public class JobCoachAgentContext {
         private Boolean followUpDueToday;
         private Long daysUntilFollowUp;
         private String note;
+        private Long latestEventId;
+        private String latestEventType;
+        private LocalDateTime latestEventTime;
+        private String latestEventSummary;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
     }

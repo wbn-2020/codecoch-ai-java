@@ -55,6 +55,7 @@ public final class InterviewConvert {
     public static InterviewListVO toListVO(InterviewSession session) {
         InterviewListVO vo = new InterviewListVO();
         vo.setId(session.getId());
+        vo.setApplicationId(session.getApplicationId());
         vo.setTargetJobId(session.getTargetJobId());
         vo.setSkillProfileId(session.getSkillProfileId());
         vo.setMatchReportId(session.getMatchReportId());

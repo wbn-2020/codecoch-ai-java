@@ -72,6 +72,10 @@ class AgentContextBuilderImplTest {
         assertEquals(11L, snapshot.getId());
         assertEquals(TARGET_JOB_ID, snapshot.getTargetJobId());
         assertEquals(211L, snapshot.getResumeVersionId());
+        assertEquals(511L, snapshot.getResumeId());
+        assertEquals(3, snapshot.getResumeVersionNo());
+        assertEquals("后端投递版", snapshot.getResumeVersionName());
+        assertEquals(1, snapshot.getResumeVersionCurrentFlag());
         assertEquals(311L, snapshot.getMatchReportId());
         assertEquals("CodeCoachAI", snapshot.getCompanyName());
         assertEquals("Java Engineer", snapshot.getJobTitle());
@@ -80,6 +84,9 @@ class AgentContextBuilderImplTest {
         assertEquals(Boolean.FALSE, snapshot.getFollowUpOverdue());
         assertEquals(Boolean.TRUE, snapshot.getFollowUpDueToday());
         assertEquals(Long.valueOf(0L), snapshot.getDaysUntilFollowUp());
+        assertEquals(711L, snapshot.getLatestEventId());
+        assertEquals("INTERVIEW", snapshot.getLatestEventType());
+        assertEquals("约定技术面", snapshot.getLatestEventSummary());
         verify(resumeFeignClient).listAgentApplications(USER_ID, TARGET_JOB_ID);
     }
 
@@ -119,6 +126,10 @@ class AgentContextBuilderImplTest {
         application.setId(id);
         application.setTargetJobId(TARGET_JOB_ID);
         application.setResumeVersionId(200L + id);
+        application.setResumeId(500L + id);
+        application.setResumeVersionNo(3);
+        application.setResumeVersionName("后端投递版");
+        application.setResumeVersionCurrentFlag(1);
         application.setMatchReportId(300L + id);
         application.setCompanyName("CodeCoachAI");
         application.setJobTitle("Java Engineer");
@@ -130,6 +141,10 @@ class AgentContextBuilderImplTest {
         application.setFollowUpDueToday(true);
         application.setDaysUntilFollowUp(0L);
         application.setNote("follow up");
+        application.setLatestEventId(700L + id);
+        application.setLatestEventType("INTERVIEW");
+        application.setLatestEventTime(LocalDateTime.of(2026, 6, 15, 11, 0));
+        application.setLatestEventSummary("约定技术面");
         application.setCreatedAt(LocalDateTime.of(2026, 6, 10, 9, 0));
         application.setUpdatedAt(LocalDateTime.of(2026, 6, 15, 9, 0));
         return application;

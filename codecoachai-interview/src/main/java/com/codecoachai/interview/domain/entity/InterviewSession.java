@@ -12,6 +12,7 @@ import lombok.EqualsAndHashCode;
 public class InterviewSession extends BaseEntity {
 
     private Long userId;
+    private Long applicationId;
     private Long resumeId;
     private Long targetJobId;
     private Long skillProfileId;

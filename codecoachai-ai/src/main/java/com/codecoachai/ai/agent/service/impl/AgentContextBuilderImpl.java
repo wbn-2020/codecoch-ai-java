@@ -91,6 +91,10 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         snapshot.setId(application.getId());
         snapshot.setTargetJobId(application.getTargetJobId());
         snapshot.setResumeVersionId(application.getResumeVersionId());
+        snapshot.setResumeId(application.getResumeId());
+        snapshot.setResumeVersionNo(application.getResumeVersionNo());
+        snapshot.setResumeVersionName(application.getResumeVersionName());
+        snapshot.setResumeVersionCurrentFlag(application.getResumeVersionCurrentFlag());
         snapshot.setMatchReportId(application.getMatchReportId());
         snapshot.setCompanyName(application.getCompanyName());
         snapshot.setJobTitle(application.getJobTitle());
@@ -102,6 +106,10 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         snapshot.setFollowUpDueToday(application.getFollowUpDueToday());
         snapshot.setDaysUntilFollowUp(application.getDaysUntilFollowUp());
         snapshot.setNote(application.getNote());
+        snapshot.setLatestEventId(application.getLatestEventId());
+        snapshot.setLatestEventType(application.getLatestEventType());
+        snapshot.setLatestEventTime(application.getLatestEventTime());
+        snapshot.setLatestEventSummary(application.getLatestEventSummary());
         snapshot.setCreatedAt(application.getCreatedAt());
         snapshot.setUpdatedAt(application.getUpdatedAt());
         return snapshot;

@@ -141,6 +141,10 @@ public class NotificationService {
             addColumnIfExists(columns, args, "biz_id", notification.getBizId());
             addColumnIfExists(columns, args, "read_status", notification.getReadStatus() == null ? 0 : notification.getReadStatus());
             addColumnIfExists(columns, args, "read_at", notification.getReadAt());
+            addColumnIfExists(columns, args, "resolved_status",
+                    notification.getResolvedStatus() == null ? 0 : notification.getResolvedStatus());
+            addColumnIfExists(columns, args, "resolved_at", notification.getResolvedAt());
+            addColumnIfExists(columns, args, "resolved_reason", notification.getResolvedReason());
             addColumnIfExists(columns, args, "send_status", notification.getSendStatus());
             addColumnIfExists(columns, args, "send_error", notification.getSendError());
             addColumnIfExists(columns, args, "sent_at", notification.getSentAt());

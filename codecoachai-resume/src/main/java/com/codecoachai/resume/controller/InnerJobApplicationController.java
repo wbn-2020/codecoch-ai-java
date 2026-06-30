@@ -6,10 +6,13 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.domain.entity.JobApplicationEvent;
+import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
+import com.codecoachai.resume.domain.vo.JobApplicationSummaryVO;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +36,20 @@ public class InnerJobApplicationController {
             @RequestParam(required = false) Long targetJobId) {
         return Result.success(v4ResumeCareerService.listAgentApplicationContextForUser(
                 userId, targetJobId, LocalDateTime.now()));
+    }
+
+    @GetMapping("/users/{userId}/reminder-candidates")
+    public Result<List<ApplicationReminderCandidateVO>> listApplicationReminderCandidates(
+            @PathVariable Long userId,
+            @RequestParam(required = false) LocalDate date) {
+        return Result.success(v4ResumeCareerService.listApplicationReminderCandidates(
+                userId, date, LocalDateTime.now()));
+    }
+
+    @GetMapping("/users/{userId}/applications/{applicationId}/summary")
+    public Result<JobApplicationSummaryVO> getApplicationSummary(@PathVariable Long userId,
+                                                                @PathVariable Long applicationId) {
+        return Result.success(v4ResumeCareerService.getApplicationSummaryForUser(userId, applicationId));
     }
 
     @GetMapping("/users/{userId}/events/{eventId}/agent-evidence")

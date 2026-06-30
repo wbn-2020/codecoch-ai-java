@@ -82,6 +82,9 @@ public class NotificationController {
         private Integer readStatus;
         private Integer isRead;
         private LocalDateTime readAt;
+        private Integer resolvedStatus;
+        private LocalDateTime resolvedAt;
+        private String resolvedReason;
         private String sendStatus;
         private String sendError;
         private LocalDateTime sentAt;
@@ -106,6 +109,9 @@ public class NotificationController {
             vo.setReadStatus(notification.getReadStatus());
             vo.setIsRead(notification.getReadStatus());
             vo.setReadAt(notification.getReadAt());
+            vo.setResolvedStatus(notification.getResolvedStatus());
+            vo.setResolvedAt(notification.getResolvedAt());
+            vo.setResolvedReason(notification.getResolvedReason());
             vo.setSendStatus(notification.getSendStatus());
             vo.setSendError(notification.getSendError());
             vo.setSentAt(notification.getSentAt());

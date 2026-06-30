@@ -3,6 +3,7 @@ package com.codecoachai.interview.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -16,9 +17,11 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
@@ -40,9 +43,11 @@ import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
+import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -67,6 +72,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -149,6 +155,41 @@ class InterviewServiceImplTest {
     @AfterEach
     void tearDown() {
         LoginUserContext.clear();
+    }
+
+    @Test
+    void createPersistsApplicationIdAfterOwnershipValidation() {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setApplicationId(501L);
+        dto.setInterviewMode(InterviewModeEnum.COMPREHENSIVE.name());
+        dto.setMaxQuestionCount(3);
+        InnerJobApplicationSummaryVO application = applicationSummary(501L, 10L);
+        when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenReturn(Result.success(application));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(targetJob()));
+        when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
+            InterviewSession session = invocation.getArgument(0);
+            session.setId(1L);
+            return 1;
+        });
+
+        var result = service.create(dto);
+
+        assertEquals(501L, result.getApplicationId());
+        assertEquals(300L, result.getTargetJobId());
+        ArgumentCaptor<InterviewSession> sessionCaptor = ArgumentCaptor.forClass(InterviewSession.class);
+        verify(sessionMapper).insert(sessionCaptor.capture());
+        assertEquals(501L, sessionCaptor.getValue().getApplicationId());
+    }
+
+    @Test
+    void createRejectsApplicationIdWhenOwnershipCannotBeValidated() {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setApplicationId(501L);
+        when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenThrow(new RuntimeException("resume unavailable"));
+
+        assertThrows(BusinessException.class, () -> service.create(dto));
+
+        verify(sessionMapper, never()).insert(any(InterviewSession.class));
     }
 
     @Test
@@ -268,6 +309,7 @@ class InterviewServiceImplTest {
 
         InterviewReportVO result = service.report(1L);
 
+        assertEquals(501L, result.getApplicationId());
         assertEquals(300L, result.getTargetJobId());
         assertEquals(700L, result.getSkillProfileId());
         assertEquals(800L, result.getMatchReportId());
@@ -421,6 +463,7 @@ class InterviewServiceImplTest {
         InterviewSession session = new InterviewSession();
         session.setId(1L);
         session.setUserId(10L);
+        session.setApplicationId(501L);
         session.setMode(InterviewModeEnum.COMPREHENSIVE.name());
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setAnsweredQuestionCount(0);
@@ -430,6 +473,23 @@ class InterviewServiceImplTest {
         session.setExperienceLevel("MID");
         session.setCreatedAt(LocalDateTime.now());
         return session;
+    }
+
+    private InnerJobApplicationSummaryVO applicationSummary(Long id, Long userId) {
+        InnerJobApplicationSummaryVO summary = new InnerJobApplicationSummaryVO();
+        summary.setId(id);
+        summary.setUserId(userId);
+        summary.setTargetJobId(300L);
+        summary.setMatchReportId(800L);
+        return summary;
+    }
+
+    private InnerTargetJobVO targetJob() {
+        InnerTargetJobVO targetJob = new InnerTargetJobVO();
+        targetJob.setId(300L);
+        targetJob.setUserId(10L);
+        targetJob.setJobTitle("Java Backend Engineer");
+        return targetJob;
     }
 
     private InterviewSession waitingSession() {

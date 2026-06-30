@@ -3,15 +3,19 @@ package com.codecoachai.task.feign;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.task.feign.dto.CompleteResumeParseDTO;
 import com.codecoachai.task.feign.dto.JobDescriptionParseDTO;
+import com.codecoachai.task.domain.vo.ReminderCandidateVO;
 import com.codecoachai.task.feign.vo.JobDescriptionAnalysisVO;
 import com.codecoachai.task.feign.vo.ResumeAnalysisRawVO;
 import com.codecoachai.task.feign.vo.ResumeJobMatchSubmitVO;
 import com.codecoachai.task.feign.vo.ResumeOptimizeSubmitVO;
+import java.time.LocalDate;
+import java.util.List;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 
 /**
  * 调用 resume-service 的 inner 接口。
@@ -47,4 +51,8 @@ public interface ResumeFeignClient {
     Result<JobDescriptionAnalysisVO> executeJobDescriptionParse(@PathVariable("userId") Long userId,
                                                                 @PathVariable("id") Long targetJobId,
                                                                 @RequestBody JobDescriptionParseDTO dto);
+
+    @GetMapping("/inner/applications/users/{userId}/reminder-candidates")
+    Result<List<ReminderCandidateVO>> listApplicationReminderCandidates(@PathVariable("userId") Long userId,
+                                                                        @RequestParam("date") LocalDate date);
 }
