@@ -5,7 +5,9 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.entity.JobApplicationEvent;
+import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
@@ -18,8 +20,10 @@ import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -50,6 +54,21 @@ public class InnerJobApplicationController {
     public Result<JobApplicationSummaryVO> getApplicationSummary(@PathVariable Long userId,
                                                                 @PathVariable Long applicationId) {
         return Result.success(v4ResumeCareerService.getApplicationSummaryForUser(userId, applicationId));
+    }
+
+    @PostMapping("/users/{userId}/applications/{applicationId}/events")
+    public Result<Void> createApplicationEvent(@PathVariable Long userId,
+                                               @PathVariable Long applicationId,
+                                               @RequestBody JobApplicationEventSaveDTO dto) {
+        v4ResumeCareerService.createApplicationEventForUser(userId, applicationId, dto);
+        return Result.success();
+    }
+
+    @GetMapping("/users/{userId}/career-insight-summary")
+    public Result<ApplicationCareerInsightSummaryVO> getCareerInsightSummary(@PathVariable Long userId,
+                                                                            @RequestParam(required = false) Integer days) {
+        return Result.success(v4ResumeCareerService.getApplicationCareerInsightSummaryForUser(
+                userId, days, LocalDateTime.now()));
     }
 
     @GetMapping("/users/{userId}/events/{eventId}/agent-evidence")

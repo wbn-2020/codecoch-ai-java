@@ -18,12 +18,18 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeSuggestionAdoption;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
+import com.codecoachai.resume.domain.vo.ApplicationInsightItemVO;
+import com.codecoachai.resume.domain.vo.ApplicationQualityVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
+import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationSummaryVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
+import com.codecoachai.resume.domain.vo.ResumeVersionEffectItemVO;
+import com.codecoachai.resume.domain.vo.ResumeVersionEffectVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
@@ -41,6 +47,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -302,6 +309,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto) {
         JobApplication app = ownedApplication(applicationId);
+        return createApplicationEvent(app, dto);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobApplicationEventVO createApplicationEventForUser(Long userId, Long applicationId,
+                                                               JobApplicationEventSaveDTO dto) {
+        JobApplication app = applicationForUser(userId, applicationId);
+        return createApplicationEvent(app, dto);
+    }
+
+    private JobApplicationEventVO createApplicationEvent(JobApplication app, JobApplicationEventSaveDTO dto) {
         JobApplicationEvent existing = findExistingInterviewCompletedEvent(app, dto);
         if (existing != null) {
             return toApplicationEventVO(existing);
@@ -332,6 +351,58 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         return toApplicationSummaryVO(app);
+    }
+
+    @Override
+    public ApplicationCareerInsightSummaryVO getApplicationCareerInsightSummaryForUser(Long userId, Integer days,
+                                                                                      LocalDateTime now) {
+        LocalDateTime generatedAt = now == null ? LocalDateTime.now() : now;
+        int rangeDays = normalizeInsightRangeDays(days);
+        ApplicationCareerInsightSummaryVO summary = new ApplicationCareerInsightSummaryVO();
+        summary.setRangeDays(rangeDays);
+        summary.setGeneratedAt(generatedAt);
+        if (userId == null) {
+            return summary;
+        }
+
+        LocalDateTime startAt = generatedAt.toLocalDate().minusDays(rangeDays - 1L).atStartOfDay();
+        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                .eq(JobApplication::getUserId, userId)
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .orderByDesc(JobApplication::getAppliedAt)
+                .orderByDesc(JobApplication::getCreatedAt)
+                .orderByDesc(JobApplication::getUpdatedAt));
+        List<JobApplication> scopedApplications = (applications == null ? List.<JobApplication>of() : applications).stream()
+                .filter(app -> isApplicationInInsightRange(app, startAt, generatedAt))
+                .toList();
+        if (scopedApplications.isEmpty()) {
+            summary.setQuality(buildApplicationQuality(summary, Map.of(), generatedAt));
+            summary.setResumeVersionEffect(buildResumeVersionEffect(scopedApplications, Map.of(), Map.of()));
+            return summary;
+        }
+
+        Map<Long, List<JobApplicationEvent>> eventsByApplicationId = applicationEventsByApplicationId(scopedApplications);
+        Map<Long, ResumeVersion> baseVersionMap = resumeVersionMap(scopedApplications);
+        Map<Long, ResumeVersion> versionMap = includeCurrentResumeVersions(baseVersionMap);
+        List<ApplicationCareerFacts> facts = scopedApplications.stream()
+                .map(app -> buildCareerFacts(app,
+                        app.getId() == null ? List.of() : eventsByApplicationId.getOrDefault(app.getId(), List.of()),
+                        app.getResumeVersionId() == null ? null : versionMap.get(app.getResumeVersionId()),
+                        generatedAt))
+                .toList();
+
+        summary.setApplicationCount((long) facts.size());
+        summary.setFollowedUpApplicationCount(facts.stream().filter(ApplicationCareerFacts::hasFollowUp).count());
+        summary.setInterviewApplicationCount(facts.stream().filter(ApplicationCareerFacts::hasInterview).count());
+        summary.setOfferApplicationCount(facts.stream().filter(ApplicationCareerFacts::hasOffer).count());
+        summary.setRejectedOrClosedApplicationCount(facts.stream().filter(ApplicationCareerFacts::terminal).count());
+        summary.setApplications(facts.stream().map(ApplicationCareerFacts::item).toList());
+        Map<Long, ApplicationCareerFacts> factsByApplicationId = facts.stream()
+                .filter(fact -> fact.application() != null && fact.application().getId() != null)
+                .collect(Collectors.toMap(fact -> fact.application().getId(), fact -> fact, (left, right) -> left));
+        summary.setQuality(buildApplicationQuality(summary, factsByApplicationId, generatedAt));
+        summary.setResumeVersionEffect(buildResumeVersionEffect(scopedApplications, factsByApplicationId, versionMap));
+        return summary;
     }
 
     private void completeAgentFollowUpAfterCommit(Long userId, Long applicationId, Long eventId) {
@@ -402,6 +473,364 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         return vo;
     }
 
+    private ApplicationQualityVO buildApplicationQuality(ApplicationCareerInsightSummaryVO summary,
+                                                        Map<Long, ApplicationCareerFacts> factsByApplicationId,
+                                                        LocalDateTime now) {
+        ApplicationQualityVO quality = new ApplicationQualityVO();
+        List<ApplicationCareerFacts> facts = factsByApplicationId == null
+                ? List.of()
+                : List.copyOf(factsByApplicationId.values());
+        long total = summary == null || summary.getApplicationCount() == null ? facts.size() : summary.getApplicationCount();
+        quality.setTotalApplications(total);
+        quality.setWithResumeVersionCount(facts.stream()
+                .filter(fact -> fact.application() != null && fact.application().getResumeVersionId() != null)
+                .count());
+        quality.setWithFollowUpCount(facts.stream().filter(ApplicationCareerFacts::hasFollowUp).count());
+        quality.setOverdueFollowUpCount(facts.stream().filter(ApplicationCareerFacts::overdueFollowUp).count());
+        quality.setStaleApplicationCount(facts.stream().filter(ApplicationCareerFacts::stale).count());
+        quality.setNoEventApplicationCount(facts.stream().filter(ApplicationCareerFacts::noEvent).count());
+        quality.setResumeVersionCoverageRate(rate(quality.getWithResumeVersionCount(), total));
+        quality.setFollowUpCoverageRate(rate(quality.getWithFollowUpCount(), total));
+        if (total > 0 && total < 3) {
+            quality.getWarnings().add(careerWarning("LOW_SAMPLE", "样本不足",
+                    "投递样本较少，当前结果适合观察趋势，暂不做强结论。",
+                    "INFO", total + " applications", "继续记录投递", "/applications"));
+        }
+        if (quality.getOverdueFollowUpCount() > 0) {
+            quality.getWarnings().add(careerWarning("OVERDUE_FOLLOW_UP", "存在逾期跟进",
+                    "有投递已经超过计划跟进时间，建议优先补跟进。",
+                    "HIGH", quality.getOverdueFollowUpCount() + " overdue", "查看逾期跟进",
+                    "/applications?followUp=overdue"));
+        }
+        if (quality.getStaleApplicationCount() > 0) {
+            quality.getWarnings().add(careerWarning("STALE_APPLICATION", "存在长期无进展投递",
+                    "部分未结束投递超过 7 天没有新事件或更新时间。",
+                    "MEDIUM", quality.getStaleApplicationCount() + " stale", "查看投递工作台", "/applications"));
+        }
+        if (quality.getNoEventApplicationCount() > 0) {
+            quality.getWarnings().add(careerWarning("NO_EVENT", "存在无事件投递",
+                    "部分投递还没有记录跟进、面试或结果事件。",
+                    "LOW", quality.getNoEventApplicationCount() + " no events", "补充投递事件", "/applications"));
+        }
+        if (total > 0 && quality.getWithResumeVersionCount() < total) {
+            quality.getWarnings().add(careerWarning("MISSING_RESUME_VERSION", "存在未绑定版本投递",
+                    "绑定简历版本后才能复盘版本使用效果。",
+                    "LOW", (total - quality.getWithResumeVersionCount()) + " without version",
+                    "整理简历版本", "/applications"));
+        }
+        return quality;
+    }
+
+    private ResumeVersionEffectVO buildResumeVersionEffect(List<JobApplication> applications,
+                                                          Map<Long, ApplicationCareerFacts> factsByApplicationId,
+                                                          Map<Long, ResumeVersion> versionMap) {
+        ResumeVersionEffectVO effect = new ResumeVersionEffectVO();
+        List<JobApplication> scopedApplications = applications == null ? List.of() : applications;
+        effect.setVersionUsedCount(scopedApplications.stream()
+                .filter(app -> app != null && app.getResumeVersionId() != null)
+                .count());
+        effect.setApplicationsWithoutVersionCount(scopedApplications.stream()
+                .filter(app -> app != null && app.getResumeVersionId() == null)
+                .count());
+        Map<Long, List<JobApplication>> applicationsByVersion = scopedApplications.stream()
+                .filter(app -> app != null && app.getResumeVersionId() != null)
+                .collect(Collectors.groupingBy(JobApplication::getResumeVersionId, LinkedHashMap::new, Collectors.toList()));
+        long maxApplicationCount = applicationsByVersion.values().stream()
+                .mapToLong(List::size)
+                .max()
+                .orElse(0L);
+        Map<Long, ResumeVersion> safeVersionMap = versionMap == null ? Map.of() : versionMap;
+        List<ResumeVersionEffectItemVO> items = new ArrayList<>(applicationsByVersion.entrySet().stream()
+                .map(entry -> buildResumeVersionEffectItem(entry.getKey(), entry.getValue(),
+                        factsByApplicationId == null ? Map.of() : factsByApplicationId,
+                        safeVersionMap,
+                        maxApplicationCount))
+                .toList());
+        safeVersionMap.values().stream()
+                .filter(version -> version != null && version.getId() != null)
+                .filter(version -> Objects.equals(version.getCurrentFlag(), 1))
+                .filter(version -> !applicationsByVersion.containsKey(version.getId()))
+                .map(version -> buildResumeVersionEffectItem(version.getId(), List.of(),
+                        factsByApplicationId == null ? Map.of() : factsByApplicationId,
+                        safeVersionMap,
+                        maxApplicationCount))
+                .forEach(items::add);
+        items = items.stream()
+                .sorted(Comparator
+                        .comparing(ResumeVersionEffectItemVO::getApplicationCount, Comparator.reverseOrder())
+                        .thenComparing(ResumeVersionEffectItemVO::getCurrentFlag,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(ResumeVersionEffectItemVO::getResumeVersionId,
+                                Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+        effect.setVersions(items);
+        effect.setCurrentVersionApplicationCount(items.stream()
+                .filter(item -> Objects.equals(item.getCurrentFlag(), 1))
+                .mapToLong(item -> item.getApplicationCount() == null ? 0L : item.getApplicationCount())
+                .sum());
+        return effect;
+    }
+
+    private ResumeVersionEffectItemVO buildResumeVersionEffectItem(Long resumeVersionId,
+                                                                  List<JobApplication> applications,
+                                                                  Map<Long, ApplicationCareerFacts> factsByApplicationId,
+                                                                  Map<Long, ResumeVersion> versionMap,
+                                                                  long maxApplicationCount) {
+        ResumeVersion version = versionMap.get(resumeVersionId);
+        List<JobApplication> versionApplications = applications == null ? List.of() : applications;
+        long applicationCount = versionApplications.size();
+        long interviewCount = versionApplications.stream()
+                .map(JobApplication::getId)
+                .map(factsByApplicationId::get)
+                .filter(Objects::nonNull)
+                .filter(ApplicationCareerFacts::hasInterview)
+                .count();
+        long offerCount = versionApplications.stream()
+                .map(JobApplication::getId)
+                .map(factsByApplicationId::get)
+                .filter(Objects::nonNull)
+                .filter(ApplicationCareerFacts::hasOffer)
+                .count();
+        ResumeVersionEffectItemVO item = new ResumeVersionEffectItemVO();
+        item.setResumeVersionId(resumeVersionId);
+        item.setApplicationCount(applicationCount);
+        item.setInterviewCount(interviewCount);
+        item.setOfferCount(offerCount);
+        if (version != null) {
+            item.setResumeId(version.getResumeId());
+            item.setVersionNo(version.getVersionNo());
+            item.setVersionName(version.getVersionName());
+            item.setCurrentFlag(version.getCurrentFlag());
+        }
+        item.setSampleLevel(applicationCount < 3 ? "LOW" : "ENOUGH");
+        item.setInsightLabel(resumeVersionInsightLabel(applicationCount, interviewCount, offerCount, maxApplicationCount));
+        return item;
+    }
+
+    private String resumeVersionInsightLabel(long applicationCount, long interviewCount, long offerCount,
+                                             long maxApplicationCount) {
+        if (applicationCount < 3) {
+            return "样本不足";
+        }
+        if (applicationCount == maxApplicationCount) {
+            return "使用最多";
+        }
+        if (offerCount > 0) {
+            return "获得 Offer";
+        }
+        if (interviewCount > 0) {
+            return "已进入面试";
+        }
+        return "继续观察";
+    }
+
+    private Map<Long, List<JobApplicationEvent>> applicationEventsByApplicationId(List<JobApplication> applications) {
+        Set<Long> applicationIds = applications == null
+                ? Set.of()
+                : applications.stream()
+                .map(JobApplication::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (applicationIds.isEmpty()) {
+            return Map.of();
+        }
+        List<JobApplicationEvent> events = jobApplicationEventMapper.selectList(new LambdaQueryWrapper<JobApplicationEvent>()
+                .in(JobApplicationEvent::getApplicationId, applicationIds)
+                .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
+                .orderByDesc(JobApplicationEvent::getEventTime)
+                .orderByDesc(JobApplicationEvent::getCreatedAt)
+                .orderByDesc(JobApplicationEvent::getId));
+        if (events == null || events.isEmpty()) {
+            return Map.of();
+        }
+        return events.stream()
+                .filter(event -> event != null && event.getApplicationId() != null)
+                .collect(Collectors.groupingBy(JobApplicationEvent::getApplicationId, LinkedHashMap::new, Collectors.toList()));
+    }
+
+    private ApplicationCareerFacts buildCareerFacts(JobApplication app, List<JobApplicationEvent> events,
+                                                   ResumeVersion version, LocalDateTime now) {
+        List<JobApplicationEvent> applicationEvents = events == null ? List.of() : events;
+        JobApplicationEvent latestEvent = latestEvent(applicationEvents);
+        boolean hasFollowUpEvent = applicationEvents.stream().anyMatch(this::isFollowUpEvent);
+        boolean hasFollowUp = (app != null && app.getNextFollowUpAt() != null) || hasFollowUpEvent;
+        boolean hasInterview = isInterviewStatus(app == null ? null : app.getStatus())
+                || applicationEvents.stream().anyMatch(this::isInterviewEvent);
+        boolean hasOffer = isOfferStatus(app == null ? null : app.getStatus())
+                || applicationEvents.stream().anyMatch(this::isOfferEvent);
+        boolean terminal = isTerminalStatus(app == null ? null : app.getStatus())
+                || applicationEvents.stream().anyMatch(this::isTerminalEvent);
+        boolean overdueFollowUp = app != null && app.getNextFollowUpAt() != null
+                && app.getNextFollowUpAt().isBefore(now)
+                && !terminal;
+        boolean noEvent = applicationEvents.isEmpty();
+        boolean stale = isStaleApplication(app, latestEvent, terminal, now);
+        ApplicationInsightItemVO item = toApplicationInsightItem(app, version, latestEvent,
+                hasFollowUp, hasInterview, hasOffer, terminal);
+        return new ApplicationCareerFacts(app, item, hasFollowUpEvent, hasFollowUp, hasInterview, hasOffer,
+                terminal, overdueFollowUp, stale, noEvent);
+    }
+
+    private ApplicationInsightItemVO toApplicationInsightItem(JobApplication app, ResumeVersion version,
+                                                             JobApplicationEvent latestEvent, boolean hasFollowUp,
+                                                             boolean hasInterview, boolean hasOffer,
+                                                             boolean terminal) {
+        ApplicationInsightItemVO item = new ApplicationInsightItemVO();
+        if (app == null) {
+            return item;
+        }
+        item.setApplicationId(app.getId());
+        item.setResumeVersionId(app.getResumeVersionId());
+        item.setCompanyName(app.getCompanyName());
+        item.setJobTitle(app.getJobTitle());
+        item.setStatus(normalizeApplicationStatus(app.getStatus()));
+        item.setAppliedAt(app.getAppliedAt());
+        item.setNextFollowUpAt(app.getNextFollowUpAt());
+        item.setHasFollowUp(hasFollowUp);
+        item.setHasInterview(hasInterview);
+        item.setHasOffer(hasOffer);
+        item.setTerminal(terminal);
+        if (version != null) {
+            item.setResumeId(version.getResumeId());
+            item.setResumeVersionNo(version.getVersionNo());
+            item.setResumeVersionName(version.getVersionName());
+            item.setResumeVersionCurrentFlag(version.getCurrentFlag());
+        }
+        if (latestEvent != null) {
+            item.setLatestEventId(latestEvent.getId());
+            item.setLatestEventType(latestEvent.getEventType());
+            item.setLatestEventTime(latestEvent.getEventTime());
+            item.setLatestEventSummary(latestEvent.getSummary());
+        }
+        return item;
+    }
+
+    private JobApplicationEvent latestEvent(List<JobApplicationEvent> events) {
+        return (events == null ? List.<JobApplicationEvent>of() : events).stream()
+                .filter(Objects::nonNull)
+                .max(Comparator
+                        .comparing(JobApplicationEvent::getEventTime,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(JobApplicationEvent::getCreatedAt,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(JobApplicationEvent::getId,
+                                Comparator.nullsLast(Comparator.naturalOrder())))
+                .orElse(null);
+    }
+
+    private boolean isApplicationInInsightRange(JobApplication app, LocalDateTime startAt, LocalDateTime endAt) {
+        if (app == null) {
+            return false;
+        }
+        LocalDateTime businessTime = app.getAppliedAt() != null ? app.getAppliedAt() : app.getCreatedAt();
+        if (businessTime == null) {
+            businessTime = app.getUpdatedAt();
+        }
+        if (businessTime == null || startAt == null || endAt == null) {
+            return true;
+        }
+        return !businessTime.isBefore(startAt) && !businessTime.isAfter(endAt);
+    }
+
+    private boolean isStaleApplication(JobApplication app, JobApplicationEvent latestEvent,
+                                       boolean terminal, LocalDateTime now) {
+        if (app == null || terminal || !AGENT_APPLICATION_ACTIVE_STATUSES.contains(normalizeApplicationStatus(app.getStatus()))) {
+            return false;
+        }
+        LocalDateTime staleBefore = now.minusDays(7);
+        LocalDateTime referenceTime = latestEvent == null ? null : latestEvent.getEventTime();
+        if (referenceTime == null && latestEvent != null) {
+            referenceTime = latestEvent.getCreatedAt();
+        }
+        if (referenceTime == null) {
+            referenceTime = app.getUpdatedAt();
+        }
+        if (referenceTime == null) {
+            referenceTime = app.getAppliedAt();
+        }
+        if (referenceTime == null) {
+            referenceTime = app.getCreatedAt();
+        }
+        return referenceTime != null && referenceTime.isBefore(staleBefore);
+    }
+
+    private boolean isFollowUpEvent(JobApplicationEvent event) {
+        String normalized = normalizeApplicationStatus(event == null ? null : event.getEventType());
+        return "FOLLOW_UP".equals(normalized) || normalized != null && normalized.startsWith("FOLLOW_UP_");
+    }
+
+    private boolean isInterviewEvent(JobApplicationEvent event) {
+        return isInterviewStatus(statusFromEventType(event == null ? null : event.getEventType()));
+    }
+
+    private boolean isOfferEvent(JobApplicationEvent event) {
+        return isOfferStatus(statusFromEventType(event == null ? null : event.getEventType()));
+    }
+
+    private boolean isTerminalEvent(JobApplicationEvent event) {
+        return isTerminalStatus(statusFromEventType(event == null ? null : event.getEventType()));
+    }
+
+    private boolean isInterviewStatus(String status) {
+        return "INTERVIEWING".equals(normalizeApplicationStatus(status));
+    }
+
+    private boolean isOfferStatus(String status) {
+        return "OFFER".equals(normalizeApplicationStatus(status));
+    }
+
+    private boolean isTerminalStatus(String status) {
+        String normalized = normalizeApplicationStatus(status);
+        return "REJECTED".equals(normalized) || "CLOSED".equals(normalized);
+    }
+
+    private int normalizeInsightRangeDays(Integer days) {
+        if (days == null) {
+            return 30;
+        }
+        if (days <= 7) {
+            return 7;
+        }
+        if (days <= 30) {
+            return 30;
+        }
+        return 90;
+    }
+
+    private Double rate(Long numerator, long denominator) {
+        if (denominator <= 0) {
+            return 0D;
+        }
+        long safeNumerator = numerator == null ? 0L : numerator;
+        return (double) safeNumerator / denominator;
+    }
+
+    private CareerInsightItemVO careerWarning(String type, String title, String description, String severity,
+                                              String evidence, String actionLabel, String actionPath) {
+        CareerInsightItemVO item = new CareerInsightItemVO();
+        item.setType(type);
+        item.setTitle(title);
+        item.setDescription(description);
+        item.setSeverity(severity);
+        item.setEvidence(evidence);
+        item.setActionLabel(actionLabel);
+        item.setActionPath(actionPath);
+        return item;
+    }
+
+    private record ApplicationCareerFacts(
+            JobApplication application,
+            ApplicationInsightItemVO item,
+            boolean hasFollowUpEvent,
+            boolean hasFollowUp,
+            boolean hasInterview,
+            boolean hasOffer,
+            boolean terminal,
+            boolean overdueFollowUp,
+            boolean stale,
+            boolean noEvent) {
+    }
+
     private Resume ownedResume(Long resumeId) {
         Resume resume = resumeMapper.selectById(resumeId);
         Long userId = currentUserId();
@@ -421,8 +850,11 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     }
 
     private JobApplication ownedApplication(Long applicationId) {
+        return applicationForUser(currentUserId(), applicationId);
+    }
+
+    private JobApplication applicationForUser(Long userId, Long applicationId) {
         JobApplication app = jobApplicationMapper.selectById(applicationId);
-        Long userId = currentUserId();
         if (app == null || !Objects.equals(userId, app.getUserId())
                 || Objects.equals(app.getDeleted(), CommonConstants.YES)) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问");
@@ -889,6 +1321,32 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         return versions.stream()
                 .filter(version -> version != null && version.getId() != null)
                 .collect(Collectors.toMap(ResumeVersion::getId, version -> version, (left, right) -> left));
+    }
+
+    private Map<Long, ResumeVersion> includeCurrentResumeVersions(Map<Long, ResumeVersion> versionMap) {
+        if (versionMap == null || versionMap.isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> resumeIds = versionMap.values().stream()
+                .filter(Objects::nonNull)
+                .map(ResumeVersion::getResumeId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (resumeIds.isEmpty()) {
+            return versionMap;
+        }
+        List<ResumeVersion> currentVersions = resumeVersionMapper.selectList(new LambdaQueryWrapper<ResumeVersion>()
+                .in(ResumeVersion::getResumeId, resumeIds)
+                .eq(ResumeVersion::getCurrentFlag, 1)
+                .eq(ResumeVersion::getDeleted, CommonConstants.NO));
+        if (currentVersions == null || currentVersions.isEmpty()) {
+            return versionMap;
+        }
+        Map<Long, ResumeVersion> result = new HashMap<>(versionMap);
+        currentVersions.stream()
+                .filter(version -> version != null && version.getId() != null)
+                .forEach(version -> result.putIfAbsent(version.getId(), version));
+        return result;
     }
 
     private Map<Long, JobApplicationEvent> latestApplicationEventMap(List<JobApplication> applications) {

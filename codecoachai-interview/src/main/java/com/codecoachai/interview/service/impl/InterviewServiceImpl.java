@@ -41,6 +41,7 @@ import com.codecoachai.interview.feign.dto.GenerateFollowUpDTO;
 import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
 import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
+import com.codecoachai.interview.feign.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
@@ -592,7 +593,7 @@ public class InterviewServiceImpl implements InterviewService {
         session.setFailureReason(null);
         sessionMapper.updateById(session);
 
-        InterviewReport report = force ? new InterviewReport() : (existing == null ? new InterviewReport() : existing);
+        InterviewReport report = existing == null ? new InterviewReport() : existing;
         if (report.getId() == null) {
             report.setSessionId(session.getId());
             report.setUserId(session.getUserId());
@@ -648,6 +649,7 @@ public class InterviewServiceImpl implements InterviewService {
                     && ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
                 syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
                 completeAgentInterviewTask(session, report);
+                syncApplicationInterviewEvent(session, report);
             }
             return buildReportGenerateResult(session, aiCallLogId, report);
         } catch (RuntimeException ex) {
@@ -1836,6 +1838,39 @@ public class InterviewServiceImpl implements InterviewService {
         }
         agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),
                 report.getId());
+    }
+
+    private void syncApplicationInterviewEvent(InterviewSession session, InterviewReport report) {
+        if (session == null || report == null || session.getApplicationId() == null
+                || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+            return;
+        }
+        JobApplicationEventSaveDTO dto = new JobApplicationEventSaveDTO();
+        dto.setEventType("INTERVIEW_COMPLETED");
+        dto.setEventTime(report.getGeneratedAt() == null ? LocalDateTime.now() : report.getGeneratedAt());
+        dto.setSummary(StringUtils.hasText(report.getSummary()) ? report.getSummary() : "Interview report generated");
+
+        Map<String, Object> review = new LinkedHashMap<>();
+        review.put("source", "interview-report");
+        review.put("interviewId", session.getId());
+        review.put("reportId", report.getId());
+        review.put("reportStatus", report.getStatus());
+        review.put("totalScore", report.getTotalScore());
+        if (session.getTargetJobId() != null) {
+            review.put("targetJobId", session.getTargetJobId());
+        }
+        if (session.getMatchReportId() != null) {
+            review.put("matchReportId", session.getMatchReportId());
+        }
+        dto.setReview(review);
+
+        try {
+            FeignResultUtils.unwrap(resumeFeignClient.createApplicationEvent(
+                    session.getUserId(), session.getApplicationId(), dto));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to sync interview report to application event, sessionId={}, applicationId={}, reportId={}",
+                    session.getId(), session.getApplicationId(), report.getId(), ex);
+        }
     }
 
     private void validateResumeOwnership(Long userId, String mode, CreateInterviewDTO dto) {

@@ -388,17 +388,15 @@ class InterviewServiceImplTest {
     }
 
     @Test
-    void generateReportForSseForceRegenerateCreatesNewReportVersion() {
+    void generateReportForSseForceRegenerateReusesExistingReportRow() {
         InterviewSession session = completedTargetJobSession();
         InterviewReport existing = generatedReportForSession();
         existing.setGenerationToken("token-old");
         AtomicReference<InterviewReport> latest = new AtomicReference<>(existing);
         when(sessionMapper.selectById(1L)).thenReturn(session);
         when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
-        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
-            InterviewReport report = invocation.getArgument(0);
-            report.setId(99L);
-            latest.set(report);
+        when(reportMapper.updateById(any(InterviewReport.class))).thenAnswer(invocation -> {
+            latest.set(invocation.getArgument(0));
             return 1;
         });
         when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
@@ -408,7 +406,38 @@ class InterviewServiceImplTest {
         InterviewReportGenerateResultVO result = service.generateReportForSse(1L, 88L, true, stage -> {
         });
 
-        assertEquals(99L, result.getReportId());
+        assertEquals(88L, result.getReportId());
+        verify(reportMapper, never()).insert(any(InterviewReport.class));
+        verify(reportMapper, org.mockito.Mockito.atLeastOnce()).updateById(org.mockito.ArgumentMatchers.<InterviewReport>argThat(report -> report.getId().equals(88L)
+                && ReportStatusEnum.GENERATED.name().equals(report.getStatus())));
+    }
+
+    @Test
+    void generateReportForSseSyncsGeneratedReportToApplicationEventWhenSessionIsBound() {
+        InterviewSession session = completedTargetJobSession();
+        session.setApplicationId(501L);
+        AtomicReference<InterviewReport> latest = new AtomicReference<>();
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
+        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
+            InterviewReport report = invocation.getArgument(0);
+            report.setId(88L);
+            latest.set(report);
+            return 1;
+        });
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
+        when(resumeFeignClient.createApplicationEvent(eq(10L), eq(501L), any())).thenReturn(Result.success());
+
+        service.generateReportForSse(1L, null, false, stage -> {
+        });
+
+        verify(resumeFeignClient).createApplicationEvent(eq(10L), eq(501L), argThat(event ->
+                "INTERVIEW_COMPLETED".equals(event.getEventType())
+                        && event.getReview() != null
+                        && Long.valueOf(1L).equals(event.getReview().get("interviewId"))
+                        && Long.valueOf(88L).equals(event.getReview().get("reportId"))));
     }
 
     @Test
@@ -592,6 +621,7 @@ class InterviewServiceImplTest {
 
     private InterviewSession completedTargetJobSession() {
         InterviewSession session = session();
+        session.setApplicationId(null);
         session.setTargetJobId(300L);
         session.setTargetPosition("Java Backend Engineer");
         session.setStatus(InterviewStatusEnum.COMPLETED.name());

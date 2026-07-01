@@ -5,6 +5,7 @@ import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCreateDTO;
+import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
@@ -33,7 +34,9 @@ public interface V4ResumeCareerService {
     JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto);
     List<JobApplicationEventVO> listApplicationEvents(Long applicationId);
     JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto);
+    JobApplicationEventVO createApplicationEventForUser(Long userId, Long applicationId, JobApplicationEventSaveDTO dto);
     List<JobApplicationAgentContextVO> listAgentApplicationContextForUser(Long userId, Long targetJobId, LocalDateTime now);
     List<ApplicationReminderCandidateVO> listApplicationReminderCandidates(Long userId, LocalDate date, LocalDateTime now);
     JobApplicationSummaryVO getApplicationSummaryForUser(Long userId, Long applicationId);
+    ApplicationCareerInsightSummaryVO getApplicationCareerInsightSummaryForUser(Long userId, Integer days, LocalDateTime now);
 }
