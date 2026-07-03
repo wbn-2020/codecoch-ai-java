@@ -17,12 +17,16 @@ import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.vo.InterviewReportAgentEvidenceVO;
+import com.codecoachai.interview.domain.vo.InterviewWeaknessSummaryVO;
+import com.codecoachai.interview.domain.vo.WeaknessInsightItemVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -180,6 +184,91 @@ class InnerInterviewReportControllerTest {
                 () -> "Current report query should not prefer updated_at over report id, actual SQL: " + sqlSegment);
     }
 
+    @Test
+    void weaknessSummaryReturnsEmptyTopWeaknessesWhenUserHasNoReports() {
+        when(sessionMapper.selectCount(any())).thenReturn(2L);
+        when(reportMapper.selectCount(any())).thenReturn(0L);
+        when(reportMapper.selectList(any())).thenReturn(List.of());
+
+        Result<InterviewWeaknessSummaryVO> result = controller.weaknessSummary(10L, null);
+
+        InterviewWeaknessSummaryVO summary = result.getData();
+        assertNotNull(summary);
+        assertEquals(30, summary.getRangeDays());
+        assertEquals(2L, summary.getInterviewCount());
+        assertEquals(0L, summary.getReportCount());
+        assertTrue(summary.getTopWeaknesses().isEmpty());
+    }
+
+    @Test
+    void weaknessSummaryUsesGeneratedAtWindowForReports() {
+        when(sessionMapper.selectCount(any())).thenReturn(1L);
+        when(reportMapper.selectCount(any())).thenReturn(1L);
+        when(reportMapper.selectList(any())).thenReturn(List.of(generatedReport()));
+
+        controller.weaknessSummary(10L, 30);
+
+        ArgumentCaptor<LambdaQueryWrapper<InterviewReport>> queryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(reportMapper).selectCount(queryCaptor.capture());
+        String sqlSegment = queryCaptor.getValue().getSqlSegment().replaceAll("\\s+", " ").toLowerCase();
+        assertTrue(sqlSegment.contains("generated_at"), sqlSegment);
+        assertTrue(sqlSegment.contains("created_at"), sqlSegment);
+        assertTrue(sqlSegment.indexOf("generated_at") < sqlSegment.indexOf("created_at"), sqlSegment);
+    }
+
+    @Test
+    void weaknessSummaryExtractsWeaknessesFromStructuredReportFields() {
+        when(sessionMapper.selectCount(any())).thenReturn(3L);
+        when(reportMapper.selectCount(any())).thenReturn(2L);
+        InterviewReport report = generatedReport();
+        report.setWeakPoints("[\"Redis 缓存一致性\", \"JVM 调优\"]");
+        report.setMainProblems("[\"SQL 索引设计\"]");
+        when(reportMapper.selectList(any())).thenReturn(List.of(report));
+
+        Result<InterviewWeaknessSummaryVO> result = controller.weaknessSummary(10L, 30);
+
+        List<WeaknessInsightItemVO> weaknesses = result.getData().getTopWeaknesses();
+        assertEquals(3, weaknesses.size());
+        assertEquals("Redis 缓存一致性", weaknesses.get(0).getName());
+        assertEquals(1L, weaknesses.get(0).getCount());
+        assertEquals("/weakness-analysis", weaknesses.get(0).getActionPath());
+    }
+
+    @Test
+    void weaknessSummaryDeduplicatesSameWeaknessWithinOneReportBeforeCounting() {
+        when(sessionMapper.selectCount(any())).thenReturn(2L);
+        when(reportMapper.selectCount(any())).thenReturn(2L);
+        InterviewReport first = generatedReport();
+        first.setWeakPoints("[\"Redis\", \" Redis \", \"SQL\"]");
+        InterviewReport second = generatedReport();
+        second.setId(89L);
+        second.setWeaknesses("[\"Redis\"]");
+        when(reportMapper.selectList(any())).thenReturn(List.of(first, second));
+
+        Result<InterviewWeaknessSummaryVO> result = controller.weaknessSummary(10L, 30);
+
+        List<WeaknessInsightItemVO> weaknesses = result.getData().getTopWeaknesses();
+        assertEquals("Redis", weaknesses.get(0).getName());
+        assertEquals(2L, weaknesses.get(0).getCount());
+        assertEquals("SQL", weaknesses.get(1).getName());
+        assertEquals(1L, weaknesses.get(1).getCount());
+    }
+
+    @Test
+    void weaknessSummaryLimitsTopWeaknessesToFiveItems() {
+        when(sessionMapper.selectCount(any())).thenReturn(1L);
+        when(reportMapper.selectCount(any())).thenReturn(1L);
+        InterviewReport report = generatedReport();
+        report.setWeakPoints("[\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"]");
+        when(reportMapper.selectList(any())).thenReturn(List.of(report));
+
+        Result<InterviewWeaknessSummaryVO> result = controller.weaknessSummary(10L, 90);
+
+        assertEquals(90, result.getData().getRangeDays());
+        assertEquals(5, result.getData().getTopWeaknesses().size());
+    }
+
     private static void initTableInfo(Class<?> entityClass) {
         if (TableInfoHelper.getTableInfo(entityClass) == null) {
             TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), entityClass);
@@ -200,6 +289,7 @@ class InnerInterviewReportControllerTest {
         report.setSessionId(1L);
         report.setUserId(10L);
         report.setStatus(ReportStatusEnum.GENERATED.name());
+        report.setGeneratedAt(LocalDateTime.now().minusDays(1));
         return report;
     }
 

@@ -1,5 +1,6 @@
 package com.codecoachai.interview.domain.dto;
 
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -9,6 +10,7 @@ public class CreateInterviewDTO {
     private String interviewMode;
 
     private Long resumeId;
+    private Long applicationId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
@@ -24,4 +26,10 @@ public class CreateInterviewDTO {
     private String recommendationSource;
     private String recommendationReason;
     private Boolean basedOnResume;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private List<String> targetSkillCodes;
+    private String targetLevel;
+    private List<Long> projectEvidenceIds;
+    private String followUpIntensity;
 }

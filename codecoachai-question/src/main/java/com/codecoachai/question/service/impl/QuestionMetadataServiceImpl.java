@@ -15,7 +15,6 @@ import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionGroup;
 import com.codecoachai.question.domain.entity.QuestionTag;
-import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.vo.QuestionCategoryVO;
 import com.codecoachai.question.domain.vo.QuestionGroupVO;
 import com.codecoachai.question.domain.vo.QuestionTagVO;
@@ -23,7 +22,6 @@ import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
-import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.service.QuestionMetadataService;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -38,7 +36,6 @@ public class QuestionMetadataServiceImpl implements QuestionMetadataService {
     private final QuestionTagMapper tagMapper;
     private final QuestionGroupMapper groupMapper;
     private final QuestionMapper questionMapper;
-    private final QuestionTagRelationMapper tagRelationMapper;
 
     @Override
     public List<QuestionCategoryVO> listCategories() {
@@ -135,7 +132,8 @@ public class QuestionMetadataServiceImpl implements QuestionMetadataService {
 
     @Override
     public void deleteTag(Long id) {
-        Long count = tagRelationMapper.selectCount(new LambdaQueryWrapper<QuestionTagRelation>().eq(QuestionTagRelation::getTagId, id));
+        Long count = questionMapper.selectCount(new LambdaQueryWrapper<Question>()
+                .inSql(Question::getId, "SELECT question_id FROM question_tag_relation WHERE deleted = 0 AND tag_id = " + id));
         if (count != null && count > 0) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question tag has related questions");
         }

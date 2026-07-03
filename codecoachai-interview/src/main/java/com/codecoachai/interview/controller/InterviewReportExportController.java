@@ -1,12 +1,14 @@
 package com.codecoachai.interview.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -140,6 +142,10 @@ public class InterviewReportExportController {
         InterviewReport report = reportMapper.selectOne(
                 new LambdaQueryWrapper<InterviewReport>()
                         .eq(InterviewReport::getSessionId, sessionId)
+                        .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                        .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATED.name())
+                        .orderByDesc(InterviewReport::getGeneratedAt)
+                        .orderByDesc(InterviewReport::getId)
                         .last("limit 1"));
         if (report == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "报告尚未生成");

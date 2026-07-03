@@ -35,6 +35,13 @@ public class Notification extends BaseEntity {
 
     private LocalDateTime readAt;
 
+    /** 0=未处理 1=业务已处理 */
+    private Integer resolvedStatus;
+
+    private LocalDateTime resolvedAt;
+
+    private String resolvedReason;
+
     /** SUCCESS / FAILED / UNKNOWN */
     private String sendStatus;
 

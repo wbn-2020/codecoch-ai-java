@@ -25,6 +25,6 @@ codecoachai:
     password-reset:
       delivery-provider: ${PASSWORD_RESET_DELIVERY_PROVIDER:mock}
       allow-mock: ${PASSWORD_RESET_ALLOW_MOCK:true}
-      reset-url-template: ${PASSWORD_RESET_URL_TEMPLATE:http://localhost:5173/reset-password?token={token}}
+      reset-url-template: ${PASSWORD_RESET_URL_TEMPLATE:http://localhost:5173/reset-password#token={token}}
       from: ${PASSWORD_RESET_MAIL_FROM:}
       subject: CodeCoachAI password reset

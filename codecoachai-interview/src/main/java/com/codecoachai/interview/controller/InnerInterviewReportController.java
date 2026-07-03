@@ -13,17 +13,27 @@ import com.codecoachai.interview.domain.enums.InterviewStatusEnum;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.domain.vo.InterviewReportAgentEvidenceVO;
+import com.codecoachai.interview.domain.vo.InterviewWeaknessSummaryVO;
+import com.codecoachai.interview.domain.vo.WeaknessInsightItemVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +41,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -42,6 +53,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class InnerInterviewReportController {
 
     private static final DateTimeFormatter ES_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final int DEFAULT_SUMMARY_DAYS = 30;
+    private static final int MAX_SUMMARY_DAYS = 90;
+    private static final int TOP_WEAKNESS_LIMIT = 5;
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewMessageMapper messageMapper;
@@ -177,6 +191,170 @@ public class InnerInterviewReportController {
         return Result.success(vo);
     }
 
+    @GetMapping("/users/{userId}/weakness-summary")
+    public Result<InterviewWeaknessSummaryVO> weaknessSummary(@PathVariable Long userId,
+                                                              @RequestParam(required = false) Integer days) {
+        int rangeDays = normalizeSummaryDays(days);
+        LocalDateTime startTime = LocalDate.now().minusDays(rangeDays - 1L).atStartOfDay();
+
+        Long interviewCount = sessionMapper.selectCount(new LambdaQueryWrapper<InterviewSession>()
+                .eq(InterviewSession::getUserId, userId)
+                .eq(InterviewSession::getDeleted, CommonConstants.NO)
+                .ge(InterviewSession::getCreatedAt, startTime));
+        Long reportCount = reportMapper.selectCount(summaryReportQuery(userId, startTime));
+        List<InterviewReport> reports = reportMapper.selectList(summaryReportQuery(userId, startTime)
+                .orderByDesc(InterviewReport::getGeneratedAt)
+                .orderByDesc(InterviewReport::getId));
+
+        InterviewWeaknessSummaryVO vo = new InterviewWeaknessSummaryVO();
+        vo.setRangeDays(rangeDays);
+        vo.setInterviewCount(safeCount(interviewCount));
+        vo.setReportCount(safeCount(reportCount));
+        vo.setTopWeaknesses(buildTopWeaknesses(reports));
+        return Result.success(vo);
+    }
+
+    private LambdaQueryWrapper<InterviewReport> summaryReportQuery(Long userId, LocalDateTime startTime) {
+        return new LambdaQueryWrapper<InterviewReport>()
+                .eq(InterviewReport::getUserId, userId)
+                .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATED.name())
+                .and(wrapper -> wrapper
+                        .ge(InterviewReport::getGeneratedAt, startTime)
+                        .or(fallback -> fallback
+                                .isNull(InterviewReport::getGeneratedAt)
+                                .ge(InterviewReport::getCreatedAt, startTime)));
+    }
+
+    private List<WeaknessInsightItemVO> buildTopWeaknesses(List<InterviewReport> reports) {
+        if (reports == null || reports.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Map<String, WeaknessCounter> counters = new LinkedHashMap<>();
+        for (InterviewReport report : reports) {
+            Set<String> reportWeaknesses = new LinkedHashSet<>(extractWeaknesses(report));
+            for (String weakness : reportWeaknesses) {
+                String key = normalizeWeaknessKey(weakness);
+                if (!StringUtils.hasText(key)) {
+                    continue;
+                }
+                counters.computeIfAbsent(key, ignored -> new WeaknessCounter(weakness.trim()))
+                        .increment(report);
+            }
+        }
+        return counters.values().stream()
+                .sorted(Comparator.comparingLong(WeaknessCounter::count).reversed())
+                .limit(TOP_WEAKNESS_LIMIT)
+                .map(WeaknessCounter::toVO)
+                .toList();
+    }
+
+    private List<String> extractWeaknesses(InterviewReport report) {
+        if (report == null) {
+            return Collections.emptyList();
+        }
+        List<String> values = new ArrayList<>();
+        appendWeaknessValues(values, report.getWeakPoints());
+        appendWeaknessValues(values, report.getMainProblems());
+        appendWeaknessValues(values, report.getWeaknesses());
+        appendReportContentWeaknessValues(values, report.getReportContent());
+        return values.stream()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
+    private void appendReportContentWeaknessValues(List<String> values, String reportContent) {
+        if (!StringUtils.hasText(reportContent)) {
+            return;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(reportContent);
+            appendJsonNodeValues(values, root.get("weakKnowledgePoints"));
+            appendJsonNodeValues(values, root.get("weakPoints"));
+            appendJsonNodeValues(values, root.get("mainProblems"));
+            appendJsonNodeValues(values, root.get("weaknesses"));
+        } catch (Exception ex) {
+            log.debug("Ignore non-json interview report content when extracting weakness summary");
+        }
+    }
+
+    private void appendWeaknessValues(List<String> values, String rawValue) {
+        if (!StringUtils.hasText(rawValue)) {
+            return;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(rawValue);
+            appendJsonNodeValues(values, node);
+            return;
+        } catch (Exception ignored) {
+            // Fall through to conservative delimiter splitting.
+        }
+        appendPlainTextValues(values, rawValue);
+    }
+
+    private void appendJsonNodeValues(List<String> values, JsonNode node) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        if (node.isArray()) {
+            node.forEach(item -> appendJsonNodeValues(values, item));
+            return;
+        }
+        if (node.isObject()) {
+            appendJsonNodeValues(values, node.get("name"));
+            appendJsonNodeValues(values, node.get("skillName"));
+            appendJsonNodeValues(values, node.get("knowledgePoint"));
+            appendJsonNodeValues(values, node.get("title"));
+            return;
+        }
+        if (node.isTextual()) {
+            appendPlainTextValues(values, node.asText());
+        }
+    }
+
+    private void appendPlainTextValues(List<String> values, String text) {
+        if (!StringUtils.hasText(text)) {
+            return;
+        }
+        for (String value : text.split("[,，;；、\\n\\r]+")) {
+            String normalized = cleanWeaknessName(value);
+            if (StringUtils.hasText(normalized)) {
+                values.add(normalized);
+            }
+        }
+    }
+
+    private String cleanWeaknessName(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        return value.trim()
+                .replaceFirst("^[\\-\\*\\d\\.、\\)）\\s]+", "")
+                .trim();
+    }
+
+    private String normalizeWeaknessKey(String value) {
+        return StringUtils.hasText(value) ? value.trim().toLowerCase() : null;
+    }
+
+    private int normalizeSummaryDays(Integer days) {
+        if (days == null) {
+            return DEFAULT_SUMMARY_DAYS;
+        }
+        if (days <= 7) {
+            return 7;
+        }
+        if (days <= DEFAULT_SUMMARY_DAYS) {
+            return DEFAULT_SUMMARY_DAYS;
+        }
+        return MAX_SUMMARY_DAYS;
+    }
+
+    private Long safeCount(Long value) {
+        return value == null ? 0L : value;
+    }
+
     private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
         if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
             return;
@@ -286,6 +464,10 @@ public class InnerInterviewReportController {
         report.setReviewSuggestions(firstText(payload.getReviewSuggestions(), payload.getSuggestions()));
         report.setRecommendedQuestions(payload.getRecommendedQuestions());
         report.setQaReview(payload.getQaReview());
+        report.setRubricScores(payload.getRubricScores());
+        report.setFollowUpTree(payload.getFollowUpTree());
+        report.setAdviceEvidence(payload.getAdviceEvidence());
+        report.setAbilityProfileUpdates(payload.getAbilityProfileUpdates());
         report.setSuggestions(payload.getSuggestions());
         report.setReportContent(firstText(payload.getReportContent(), payload.getSummary(), dto.getReportJson()));
     }
@@ -301,6 +483,10 @@ public class InnerInterviewReportController {
         report.setReviewSuggestions(null);
         report.setRecommendedQuestions(null);
         report.setQaReview(null);
+        report.setRubricScores(null);
+        report.setFollowUpTree(null);
+        report.setAdviceEvidence(null);
+        report.setAbilityProfileUpdates(null);
         report.setSuggestions(null);
         report.setReportContent(null);
     }
@@ -340,5 +526,42 @@ public class InnerInterviewReportController {
 
     private String formatDateTime(LocalDateTime value) {
         return value == null ? null : ES_DATE_FORMAT.format(value);
+    }
+
+    private static final class WeaknessCounter {
+
+        private final String name;
+        private long count;
+        private String evidence;
+
+        private WeaknessCounter(String name) {
+            this.name = name;
+        }
+
+        private void increment(InterviewReport report) {
+            count++;
+            if (!StringUtils.hasText(evidence) && report != null && report.getId() != null) {
+                evidence = "interviewReport#" + report.getId();
+            }
+        }
+
+        private long count() {
+            return count;
+        }
+
+        private String name() {
+            return name;
+        }
+
+        private WeaknessInsightItemVO toVO() {
+            WeaknessInsightItemVO vo = new WeaknessInsightItemVO();
+            vo.setName(name);
+            vo.setCategory("INTERVIEW");
+            vo.setCount(count);
+            vo.setEvidence(evidence);
+            vo.setRecommendedActionType("WEAKNESS_ANALYSIS");
+            vo.setActionPath("/weakness-analysis");
+            return vo;
+        }
     }
 }

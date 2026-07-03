@@ -13,4 +13,5 @@ public class InterviewWeakPointFeedbackDTO {
     private Long interviewId;
     private Long reportId;
     private List<String> weakPoints;
+    private String abilityProfileUpdatesJson;
 }

@@ -18,5 +18,9 @@ public class GenerateReportVO {
     private String reviewSuggestions;
     private String recommendedQuestions;
     private String qaReview;
+    private String rubricScores;
+    private String followUpTree;
+    private String adviceEvidence;
+    private String abilityProfileUpdates;
     private String reportContent;
 }

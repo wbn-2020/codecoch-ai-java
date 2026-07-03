@@ -22,6 +22,7 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -179,6 +180,13 @@ public class InterviewReportAsyncService {
                 .map(message -> firstText(message.getQuestionContent(), message.getUserAnswer(), message.getAiComment(), message.getContent()))
                 .filter(StringUtils::hasText)
                 .toList());
+        dto.setTrainingScene(session.getTrainingScene());
+        dto.setTargetSkillDomain(session.getTargetSkillDomain());
+        dto.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
+        dto.setTargetLevel(session.getTargetLevel());
+        dto.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
+        dto.setFollowUpIntensity(session.getFollowUpIntensity());
+        dto.setTrainingContextSummary(session.getTrainingContextSummary());
         return dto;
     }
 
@@ -267,6 +275,10 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(firstText(aiReport.getReviewSuggestions(), aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
+        report.setRubricScores(firstText(aiReport.getRubricScores(), buildFallbackRubricScores(messages, answerCount)));
+        report.setFollowUpTree(firstText(aiReport.getFollowUpTree(), buildFallbackFollowUpTree(messages)));
+        report.setAdviceEvidence(firstText(aiReport.getAdviceEvidence(), buildFallbackAdviceEvidence(report, messages, answerCount)));
+        report.setAbilityProfileUpdates(firstText(aiReport.getAbilityProfileUpdates(), buildFallbackAbilityProfileUpdates(messages, answerCount)));
         report.setReportContent(firstText(aiReport.getReportContent(), report.getSummary()));
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(firstText(aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
@@ -294,6 +306,14 @@ public class InterviewReportAsyncService {
                 REPORT_AI_INCOMPLETE_SUGGESTIONS));
         report.setRecommendedQuestions(firstText(aiReport == null ? null : aiReport.getRecommendedQuestions(), "[]"));
         report.setQaReview(buildFallbackQaReview(messages));
+        report.setRubricScores(firstText(aiReport == null ? null : aiReport.getRubricScores(),
+                buildFallbackRubricScores(messages, answerCount)));
+        report.setFollowUpTree(firstText(aiReport == null ? null : aiReport.getFollowUpTree(),
+                buildFallbackFollowUpTree(messages)));
+        report.setAdviceEvidence(firstText(aiReport == null ? null : aiReport.getAdviceEvidence(),
+                buildFallbackAdviceEvidence(report, messages, answerCount)));
+        report.setAbilityProfileUpdates(firstText(aiReport == null ? null : aiReport.getAbilityProfileUpdates(),
+                buildFallbackAbilityProfileUpdates(messages, answerCount)));
         report.setReportContent(firstText(aiReport == null ? null : aiReport.getReportContent(), report.getSummary()));
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(firstText(aiReport == null ? null : aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
@@ -340,6 +360,238 @@ public class InterviewReportAsyncService {
             log.warn("Failed to build async fallback qaReview");
             return "[]";
         }
+    }
+
+    private String buildFallbackRubricScores(List<InterviewMessage> messages, int answerCount) {
+        int baseScore = normalizeFivePointScore(averageAnswerScore(messages));
+        boolean sampleInsufficient = answerCount < 2;
+        String warning = sampleInsufficient ? "Sample is insufficient; this is a weak signal from saved interview answers." : null;
+        List<Map<String, Object>> scores = new ArrayList<>();
+        scores.add(rubricItem("EXPRESSION_STRUCTURE", baseScore, firstAnswerEvidence(messages),
+                "Use STAR or context-action-result structure for each project answer.", sampleInsufficient, warning));
+        scores.add(rubricItem("TECHNICAL_DEPTH", Math.max(1, baseScore - 1), firstKnowledgeEvidence(messages),
+                "Add implementation details, trade-offs, and boundary conditions.", sampleInsufficient, warning));
+        scores.add(rubricItem("BUSINESS_UNDERSTANDING", baseScore, firstAnswerEvidence(messages),
+                "Connect technical choices to user impact and measurable results.", sampleInsufficient, warning));
+        scores.add(rubricItem("RISK_AWARENESS", Math.max(1, baseScore - 1), firstFollowUpEvidence(messages),
+                "Name failure modes, rollback strategy, monitoring, and data consistency risks.", sampleInsufficient, warning));
+        scores.add(rubricItem("IMPLEMENTABILITY", baseScore, firstAnswerEvidence(messages),
+                "Turn conclusions into steps, metrics, and verification methods.", sampleInsufficient, warning));
+        return jsonArray(scores);
+    }
+
+    private Map<String, Object> rubricItem(String dimension, int score, String evidenceSummary,
+                                           String improvementSuggestion, boolean sampleInsufficient, String warning) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("dimension", dimension);
+        item.put("score", score);
+        item.put("comment", "Estimated from saved interview answers and AI comments.");
+        item.put("evidenceSummary", truncate(firstText(evidenceSummary, "No stable evidence yet."), 160));
+        item.put("improvementSuggestion", improvementSuggestion);
+        item.put("sampleInsufficient", sampleInsufficient);
+        item.put("sampleWarning", warning);
+        return item;
+    }
+
+    private String buildFallbackFollowUpTree(List<InterviewMessage> messages) {
+        List<Map<String, Object>> tree = new ArrayList<>();
+        for (InterviewMessage followUp : messages == null ? List.<InterviewMessage>of() : messages) {
+            if (!"AI".equalsIgnoreCase(followUp.getRole()) || !"FOLLOW_UP".equalsIgnoreCase(followUp.getMessageType())) {
+                continue;
+            }
+            InterviewMessage question = messageById(messages, followUp.getParentMessageId());
+            InterviewMessage answer = firstUserAnswer(messages, followUp.getParentMessageId());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("questionMessageId", followUp.getParentMessageId());
+            item.put("answerMessageId", answer == null ? null : answer.getId());
+            item.put("followUpMessageId", followUp.getId());
+            item.put("questionSummary", truncate(firstText(question == null ? null : question.getQuestionContent(),
+                    question == null ? null : question.getContent()), 160));
+            item.put("answerSummary", truncate(firstText(answer == null ? null : answer.getUserAnswer(),
+                    answer == null ? null : answer.getContent()), 160));
+            item.put("followUpQuestion", truncate(followUp.getContent(), 160));
+            item.put("followUpIntent", "CLARIFY_RISK");
+            item.put("followUpReason", truncate(firstText(followUp.getFollowUpReason(), "Need to verify depth or risk boundary."), 160));
+            item.put("exposedRisk", inferExposedRisk(followUp));
+            item.put("evidenceSource", "INTERVIEW_MESSAGE");
+            tree.add(item);
+        }
+        return jsonArray(tree);
+    }
+
+    private String buildFallbackAdviceEvidence(InterviewReport report, List<InterviewMessage> messages, int answerCount) {
+        boolean sampleInsufficient = answerCount < 2;
+        List<Map<String, Object>> advice = new ArrayList<>();
+        advice.add(adviceItem("Replay weak interview answers", "PRACTICE_SKILL", "MEDIUM",
+                "Use the report weak points and follow-up trace to run one targeted practice round.",
+                "/interviews/create?source=interviewReport&reportId=" + (report == null ? "" : report.getId()),
+                report == null ? null : report.getId(), firstAnswerEvidence(messages), sampleInsufficient));
+        if (hasFollowUps(messages)) {
+            advice.add(adviceItem("Close follow-up risk gaps", "FOLLOW_UP_REVIEW", "MEDIUM",
+                    "Review every follow-up reason and prepare a stronger second answer.",
+                    "/agent/today?source=interviewReport&reportId=" + (report == null ? "" : report.getId()),
+                    report == null ? null : report.getId(), firstFollowUpEvidence(messages), sampleInsufficient));
+        }
+        return jsonArray(advice);
+    }
+
+    private Map<String, Object> adviceItem(String title, String type, String confidence, String content,
+                                           String actionUrl, Long reportId, String evidence, boolean sampleInsufficient) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("title", title);
+        item.put("adviceType", type);
+        item.put("confidence", sampleInsufficient ? "LOW" : confidence);
+        item.put("content", content);
+        item.put("actionUrl", actionUrl);
+        item.put("sampleInsufficient", sampleInsufficient);
+        item.put("sampleWarning", sampleInsufficient
+                ? "Sample is insufficient; advice is a candidate next step, not a strong conclusion."
+                : null);
+        item.put("feedbackStatus", "NONE");
+        List<Map<String, Object>> sources = new ArrayList<>();
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("sourceType", "INTERVIEW_REPORT");
+        source.put("sourceId", reportId);
+        source.put("sourceSummary", truncate(firstText(evidence, "Generated from interview report summary."), 160));
+        sources.add(source);
+        item.put("evidenceSources", sources);
+        return item;
+    }
+
+    private String buildFallbackAbilityProfileUpdates(List<InterviewMessage> messages, int answerCount) {
+        boolean sampleInsufficient = answerCount < 2;
+        List<Map<String, Object>> updates = new ArrayList<>();
+        for (String skillCode : extractKnowledgePoints(messages).stream().limit(5).toList()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("skillCode", skillCode);
+            item.put("candidateStatus", normalizeFivePointScore(averageAnswerScore(messages)) >= 3 ? "BASIC" : "WEAK");
+            item.put("confidence", sampleInsufficient ? "LOW" : "MEDIUM");
+            item.put("evidenceCount", answerCount);
+            item.put("sampleInsufficient", sampleInsufficient);
+            item.put("sampleWarning", sampleInsufficient
+                    ? "Need more interview samples before automatically updating the ability profile."
+                    : null);
+            updates.add(item);
+        }
+        return jsonArray(updates);
+    }
+
+    private int normalizeFivePointScore(Integer score) {
+        if (score == null || score <= 0) {
+            return 2;
+        }
+        if (score > 5) {
+            return Math.max(1, Math.min(5, Math.round(score / 20.0f)));
+        }
+        return Math.max(1, Math.min(5, score));
+    }
+
+    private String firstAnswerEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(this::isUserAnswer)
+                .map(message -> firstText(message.getAiComment(), message.getComment(), message.getUserAnswer(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String firstKnowledgeEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .map(InterviewMessage::getKnowledgePoints)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(firstAnswerEvidence(messages));
+    }
+
+    private String firstFollowUpEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(message -> "AI".equalsIgnoreCase(message.getRole()))
+                .filter(message -> "FOLLOW_UP".equalsIgnoreCase(message.getMessageType()))
+                .map(message -> firstText(message.getFollowUpReason(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(firstAnswerEvidence(messages));
+    }
+
+    private InterviewMessage messageById(List<InterviewMessage> messages, Long messageId) {
+        if (messages == null || messageId == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(message -> messageId.equals(message.getId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private InterviewMessage firstUserAnswer(List<InterviewMessage> messages, Long parentMessageId) {
+        if (messages == null || parentMessageId == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(this::isUserAnswer)
+                .filter(message -> parentMessageId.equals(message.getParentMessageId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String inferExposedRisk(InterviewMessage followUp) {
+        String text = firstText(followUp == null ? null : followUp.getFollowUpReason(),
+                followUp == null ? null : followUp.getContent());
+        if (!StringUtils.hasText(text)) {
+            return "Risk needs further verification.";
+        }
+        String lower = text.toLowerCase();
+        if (lower.contains("risk") || lower.contains("fail") || lower.contains("rollback")) {
+            return "Risk awareness may be insufficient.";
+        }
+        if (lower.contains("why") || lower.contains("how") || lower.contains("detail")) {
+            return "Technical depth may need more evidence.";
+        }
+        return "Answer may need clearer evidence or boundary conditions.";
+    }
+
+    private boolean hasFollowUps(List<InterviewMessage> messages) {
+        return messages != null && messages.stream()
+                .anyMatch(message -> "AI".equalsIgnoreCase(message.getRole())
+                        && "FOLLOW_UP".equalsIgnoreCase(message.getMessageType()));
+    }
+
+    private List<String> extractKnowledgePoints(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return List.of();
+        }
+        return messages.stream()
+                .map(InterviewMessage::getKnowledgePoints)
+                .filter(StringUtils::hasText)
+                .flatMap(value -> List.of(value.split("[,，;；/\\s]+")).stream())
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private String jsonArray(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value == null ? List.of() : value);
+        } catch (Exception ex) {
+            return "[]";
+        }
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (!StringUtils.hasText(value) || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 
     private Integer averageAnswerScore(List<InterviewMessage> messages) {
@@ -473,6 +725,7 @@ public class InterviewReportAsyncService {
             dto.setInterviewId(session.getId());
             dto.setReportId(report.getId());
             dto.setWeakPoints(weakPoints);
+            dto.setAbilityProfileUpdatesJson(report.getAbilityProfileUpdates());
             resumeFeignClient.feedbackInterviewWeakPoints(dto);
         } catch (RuntimeException ignored) {
             // Report generation must not fail only because downstream profile feedback is temporarily unavailable.
@@ -706,17 +959,33 @@ public class InterviewReportAsyncService {
     }
 
     private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
-        Runnable action = () -> interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId);
+        String op = "UPSERT";
+        Runnable action = () -> {
+            if (!interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, userId)) {
+                log.warn("Interview async after-commit sync returned false syncType=interview_search_sync sessionId={} op={}",
+                        sessionId, op);
+            }
+        };
+        Runnable safeAction = () -> runAfterCommitSafely("interview_search_sync", sessionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long sessionId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Interview async after-commit sync failed syncType={} sessionId={} op={} reason={}",
+                    syncType, sessionId, op, ex.getMessage(), ex);
+        }
     }
 
     private String toJson(Object value) {
@@ -724,6 +993,32 @@ public class InterviewReportAsyncService {
             return objectMapper.writeValueAsString(value);
         } catch (Exception ex) {
             return String.valueOf(value);
+        }
+    }
+
+    private List<String> readStringList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        try {
+            List<String> list = objectMapper.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? List.of() : list;
+        } catch (Exception ex) {
+            return List.of();
+        }
+    }
+
+    private List<Long> readLongList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        try {
+            List<Long> list = objectMapper.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? List.of() : list;
+        } catch (Exception ex) {
+            return List.of();
         }
     }
 

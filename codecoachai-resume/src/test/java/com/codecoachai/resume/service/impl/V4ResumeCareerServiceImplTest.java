@@ -26,9 +26,14 @@ import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
+import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
+import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
+import com.codecoachai.resume.domain.vo.ResumeVersionEffectItemVO;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -37,8 +42,10 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -70,6 +77,8 @@ class V4ResumeCareerServiceImplTest {
     private JobApplicationEventMapper jobApplicationEventMapper;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock
+    private NotificationBusinessResolver notificationBusinessResolver;
 
     private V4ResumeCareerServiceImpl service;
 
@@ -104,6 +113,7 @@ class V4ResumeCareerServiceImplTest {
                 resumeSuggestionAdoptionMapper,
                 jobApplicationEventMapper,
                 agentBusinessActionNotifier,
+                notificationBusinessResolver,
                 new ObjectMapper());
     }
 
@@ -156,6 +166,18 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void createApplicationNormalizesStatus() {
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setStatus("applied");
+
+        service.createApplication(dto);
+
+        ArgumentCaptor<JobApplication> appCaptor = ArgumentCaptor.forClass(JobApplication.class);
+        verify(jobApplicationMapper).insert(appCaptor.capture());
+        assertEquals("APPLIED", appCaptor.getValue().getStatus());
+    }
+
+    @Test
     void createApplicationFromMatchReportStoresReportTargetAndVersion() {
         JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
         dto.setMatchReportId(99L);
@@ -191,6 +213,36 @@ class V4ResumeCareerServiceImplTest {
         assertEquals(188L, result.getId());
         assertEquals(99L, result.getMatchReportId());
         verify(jobApplicationMapper, never()).insert(any(JobApplication.class));
+    }
+
+    @Test
+    void listApplicationsReturnsResumeVersionAndLatestEventSummary() {
+        JobApplication app = application(188L, USER_ID);
+        app.setResumeVersionId(77L);
+        ResumeVersion version = resumeVersion(77L, USER_ID, 1L);
+        version.setVersionNo(3);
+        version.setVersionName("后端投递版");
+        version.setCurrentFlag(1);
+        JobApplicationEvent older = event(701L, 188L, "FOLLOW_UP", LocalDateTime.of(2026, 6, 15, 10, 0));
+        older.setSummary("已发邮件");
+        JobApplicationEvent latest = event(702L, 188L, "INTERVIEW", LocalDateTime.of(2026, 6, 16, 10, 0));
+        latest.setSummary("约定技术面");
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(app));
+        when(resumeVersionMapper.selectList(any())).thenReturn(List.of(version));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(latest, older));
+
+        List<JobApplicationVO> result = service.listApplications(null);
+
+        assertEquals(1, result.size());
+        JobApplicationVO vo = result.get(0);
+        assertEquals(1L, vo.getResumeId());
+        assertEquals(3, vo.getResumeVersionNo());
+        assertEquals("后端投递版", vo.getResumeVersionName());
+        assertEquals(1, vo.getResumeVersionCurrentFlag());
+        assertEquals(702L, vo.getLatestEventId());
+        assertEquals("INTERVIEW", vo.getLatestEventType());
+        assertEquals(LocalDateTime.of(2026, 6, 16, 10, 0), vo.getLatestEventTime());
+        assertEquals("约定技术面", vo.getLatestEventSummary());
     }
 
     @Test
@@ -247,6 +299,41 @@ class V4ResumeCareerServiceImplTest {
         service.createApplicationEvent(88L, dto);
 
         verify(agentBusinessActionNotifier).completeApplicationFollowUp(USER_ID, 88L, 701L);
+    }
+
+    @Test
+    void createApplicationEventReturnsExistingInterviewCompletedForSameReportId() {
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application(88L, USER_ID));
+        JobApplicationEvent existing = event(900L, 88L, "INTERVIEW_COMPLETED",
+                LocalDateTime.of(2026, 6, 20, 10, 0));
+        existing.setReviewJson("{\"reportId\":55,\"interviewId\":44}");
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(existing));
+        JobApplicationEventSaveDTO dto = new JobApplicationEventSaveDTO();
+        dto.setEventType("INTERVIEW_COMPLETED");
+        dto.setReview(Map.of("reportId", 55L));
+
+        JobApplicationEventVO result = service.createApplicationEvent(88L, dto);
+
+        assertEquals(900L, result.getId());
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+        verify(jobApplicationMapper, never()).updateById(any(JobApplication.class));
+    }
+
+    @Test
+    void createApplicationEventDetectsInterviewCompletedEvidenceFromTopLevelReviewJson() {
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application(88L, USER_ID));
+        JobApplicationEvent existing = event(901L, 88L, "INTERVIEW_COMPLETED",
+                LocalDateTime.of(2026, 6, 20, 10, 0));
+        existing.setReviewJson("{\"interviewId\":44}");
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(existing));
+        JobApplicationEventSaveDTO dto = new JobApplicationEventSaveDTO();
+        dto.setEventType("INTERVIEW_COMPLETED");
+        dto.setReviewJson("{\"interviewId\":44}");
+
+        JobApplicationEventVO result = service.createApplicationEvent(88L, dto);
+
+        assertEquals(901L, result.getId());
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
     }
 
     @Test
@@ -342,6 +429,35 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void listAgentApplicationContextForUserReturnsResumeVersionAndLatestEventSummary() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        JobApplication app = application(188L, USER_ID);
+        app.setResumeVersionId(77L);
+        JobApplicationEvent latest = event(702L, 188L, "INTERVIEW", LocalDateTime.of(2026, 6, 16, 10, 0));
+        latest.setSummary("约定技术面");
+        ResumeVersion version = resumeVersion(77L, USER_ID, 1L);
+        version.setVersionName("后端投递版");
+        version.setVersionNo(3);
+        version.setCurrentFlag(1);
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(app));
+        when(resumeVersionMapper.selectList(any())).thenReturn(List.of(version));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(latest));
+
+        List<JobApplicationAgentContextVO> result =
+                service.listAgentApplicationContextForUser(USER_ID, null, now);
+
+        assertEquals(1, result.size());
+        JobApplicationAgentContextVO vo = result.get(0);
+        assertEquals(1L, vo.getResumeId());
+        assertEquals(3, vo.getResumeVersionNo());
+        assertEquals("后端投递版", vo.getResumeVersionName());
+        assertEquals(1, vo.getResumeVersionCurrentFlag());
+        assertEquals(702L, vo.getLatestEventId());
+        assertEquals("INTERVIEW", vo.getLatestEventType());
+        assertEquals("约定技术面", vo.getLatestEventSummary());
+    }
+
+    @Test
     void listAgentApplicationContextForUserComputesOverdueFollowUp() {
         LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
         JobApplication app = application(189L, USER_ID);
@@ -429,6 +545,267 @@ class V4ResumeCareerServiceImplTest {
         assertTrue(sql.contains("deleted"), sql);
         assertTrue(queryCaptor.getValue().getParamNameValuePairs().containsValue(USER_ID));
         assertTrue(queryCaptor.getValue().getParamNameValuePairs().containsValue(0));
+    }
+
+    @Test
+    void getApplicationCareerInsightSummaryAggregatesStatusEventsAndQualityWarnings() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 30, 12, 0);
+        JobApplication appliedWithFollowUpEvent = application(401L, USER_ID);
+        appliedWithFollowUpEvent.setStatus("APPLIED");
+        appliedWithFollowUpEvent.setResumeVersionId(77L);
+        appliedWithFollowUpEvent.setAppliedAt(now.minusDays(5));
+        appliedWithFollowUpEvent.setUpdatedAt(now.minusDays(5));
+        JobApplication interviewByStatus = application(402L, USER_ID);
+        interviewByStatus.setStatus("INTERVIEWING");
+        interviewByStatus.setResumeVersionId(78L);
+        interviewByStatus.setAppliedAt(now.minusDays(4));
+        interviewByStatus.setNextFollowUpAt(now.minusHours(2));
+        interviewByStatus.setUpdatedAt(now.minusDays(9));
+        JobApplication offerByEvent = application(403L, USER_ID);
+        offerByEvent.setStatus("APPLIED");
+        offerByEvent.setResumeVersionId(77L);
+        offerByEvent.setAppliedAt(now.minusDays(3));
+        offerByEvent.setUpdatedAt(now.minusDays(2));
+        JobApplication rejectedByEventWithoutVersion = application(404L, USER_ID);
+        rejectedByEventWithoutVersion.setStatus("APPLIED");
+        rejectedByEventWithoutVersion.setAppliedAt(now.minusDays(2));
+        rejectedByEventWithoutVersion.setUpdatedAt(now.minusDays(1));
+        JobApplication noEventStaleWithoutVersion = application(405L, USER_ID);
+        noEventStaleWithoutVersion.setStatus("APPLIED");
+        noEventStaleWithoutVersion.setAppliedAt(now.minusDays(20));
+        noEventStaleWithoutVersion.setUpdatedAt(now.minusDays(10));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+                appliedWithFollowUpEvent, interviewByStatus, offerByEvent,
+                rejectedByEventWithoutVersion, noEventStaleWithoutVersion));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
+                event(801L, 401L, "FOLLOW_UP", now.minusDays(4)),
+                event(802L, 403L, "OFFER", now.minusDays(2)),
+                event(803L, 404L, "REJECTED", now.minusDays(1))));
+        ResumeVersion currentVersion = resumeVersion(77L, USER_ID, 1L);
+        currentVersion.setVersionNo(2);
+        currentVersion.setVersionName("current backend");
+        currentVersion.setCurrentFlag(1);
+        ResumeVersion olderVersion = resumeVersion(78L, USER_ID, 1L);
+        olderVersion.setVersionNo(1);
+        olderVersion.setVersionName("old backend");
+        olderVersion.setCurrentFlag(0);
+        when(resumeVersionMapper.selectList(any())).thenReturn(List.of(currentVersion, olderVersion));
+
+        ApplicationCareerInsightSummaryVO summary =
+                service.getApplicationCareerInsightSummaryForUser(USER_ID, 30, now);
+
+        assertEquals(30, summary.getRangeDays());
+        assertEquals(now, summary.getGeneratedAt());
+        assertEquals(5L, summary.getApplicationCount());
+        assertEquals(2L, summary.getFollowedUpApplicationCount());
+        assertEquals(1L, summary.getInterviewApplicationCount());
+        assertEquals(1L, summary.getOfferApplicationCount());
+        assertEquals(1L, summary.getRejectedOrClosedApplicationCount());
+        assertEquals(2L, summary.getQuality().getWithFollowUpCount());
+        assertEquals(3L, summary.getQuality().getWithResumeVersionCount());
+        assertEquals(2L, summary.getQuality().getWithFollowUpCount());
+        assertEquals(1L, summary.getQuality().getOverdueFollowUpCount());
+        assertEquals(2L, summary.getQuality().getStaleApplicationCount());
+        assertEquals(2L, summary.getQuality().getNoEventApplicationCount());
+        assertEquals(0.6D, summary.getQuality().getResumeVersionCoverageRate());
+        assertEquals(0.4D, summary.getQuality().getFollowUpCoverageRate());
+        assertTrue(summary.getQuality().getWarnings().stream()
+                .map(CareerInsightItemVO::getType)
+                .anyMatch("OVERDUE_FOLLOW_UP"::equals));
+        assertTrue(summary.getQuality().getWarnings().stream()
+                .map(CareerInsightItemVO::getType)
+                .anyMatch("STALE_APPLICATION"::equals));
+    }
+
+    @Test
+    void getApplicationCareerInsightSummaryUsesNaturalDayBucketsForRange() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 30, 12, 0);
+        JobApplication boundaryDayApplication = application(431L, USER_ID);
+        boundaryDayApplication.setAppliedAt(LocalDateTime.of(2026, 6, 1, 9, 0));
+        boundaryDayApplication.setUpdatedAt(LocalDateTime.of(2026, 6, 1, 9, 0));
+        JobApplication previousDayApplication = application(432L, USER_ID);
+        previousDayApplication.setAppliedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
+        previousDayApplication.setUpdatedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(boundaryDayApplication, previousDayApplication));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
+
+        ApplicationCareerInsightSummaryVO summary =
+                service.getApplicationCareerInsightSummaryForUser(USER_ID, 8, now);
+
+        assertEquals(30, summary.getRangeDays());
+        assertEquals(1L, summary.getApplicationCount());
+        assertEquals(431L, summary.getApplications().get(0).getApplicationId());
+    }
+
+    @Test
+    void getApplicationCareerInsightSummaryWarnsWhenSampleIsTooSmall() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 30, 12, 0);
+        JobApplication onlyApplication = application(411L, USER_ID);
+        onlyApplication.setResumeVersionId(77L);
+        onlyApplication.setAppliedAt(now.minusDays(1));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(onlyApplication));
+        ResumeVersion version = resumeVersion(77L, USER_ID, 1L);
+        when(resumeVersionMapper.selectList(any())).thenReturn(List.of(version));
+
+        ApplicationCareerInsightSummaryVO summary =
+                service.getApplicationCareerInsightSummaryForUser(USER_ID, 30, now);
+
+        assertEquals(1L, summary.getApplicationCount());
+        assertTrue(summary.getQuality().getWarnings().stream()
+                .map(CareerInsightItemVO::getType)
+                .anyMatch("LOW_SAMPLE"::equals));
+        assertEquals("LOW", summary.getResumeVersionEffect().getVersions().get(0).getSampleLevel());
+        assertEquals("样本不足", summary.getResumeVersionEffect().getVersions().get(0).getInsightLabel());
+    }
+
+    @Test
+    void getApplicationCareerInsightSummaryAggregatesResumeVersionEffects() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 30, 12, 0);
+        JobApplication firstCurrent = application(421L, USER_ID);
+        firstCurrent.setResumeVersionId(77L);
+        firstCurrent.setStatus("INTERVIEWING");
+        JobApplication secondCurrent = application(422L, USER_ID);
+        secondCurrent.setResumeVersionId(77L);
+        JobApplication thirdCurrent = application(423L, USER_ID);
+        thirdCurrent.setResumeVersionId(77L);
+        JobApplication oldWithOffer = application(424L, USER_ID);
+        oldWithOffer.setResumeVersionId(78L);
+        JobApplication withoutVersion = application(425L, USER_ID);
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+                firstCurrent, secondCurrent, thirdCurrent, oldWithOffer, withoutVersion));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
+                event(811L, 421L, "INTERVIEW_COMPLETED", now.minusDays(5)),
+                event(812L, 424L, "OFFER", now.minusDays(4))));
+        ResumeVersion currentVersion = resumeVersion(77L, USER_ID, 1L);
+        currentVersion.setVersionNo(3);
+        currentVersion.setVersionName("current backend");
+        currentVersion.setCurrentFlag(1);
+        ResumeVersion olderVersion = resumeVersion(78L, USER_ID, 1L);
+        olderVersion.setVersionNo(2);
+        olderVersion.setVersionName("old backend");
+        olderVersion.setCurrentFlag(0);
+        when(resumeVersionMapper.selectList(any())).thenReturn(List.of(currentVersion, olderVersion));
+
+        ApplicationCareerInsightSummaryVO summary =
+                service.getApplicationCareerInsightSummaryForUser(USER_ID, 30, now);
+
+        assertEquals(4L, summary.getResumeVersionEffect().getVersionUsedCount());
+        assertEquals(3L, summary.getResumeVersionEffect().getCurrentVersionApplicationCount());
+        assertEquals(1L, summary.getResumeVersionEffect().getApplicationsWithoutVersionCount());
+        ResumeVersionEffectItemVO current = summary.getResumeVersionEffect().getVersions().get(0);
+        assertEquals(77L, current.getResumeVersionId());
+        assertEquals(3L, current.getApplicationCount());
+        assertEquals(1L, current.getInterviewCount());
+        assertEquals(0L, current.getOfferCount());
+        assertEquals("ENOUGH", current.getSampleLevel());
+        assertEquals("使用最多", current.getInsightLabel());
+        ResumeVersionEffectItemVO older = summary.getResumeVersionEffect().getVersions().get(1);
+        assertEquals(78L, older.getResumeVersionId());
+        assertEquals(1L, older.getApplicationCount());
+        assertEquals(1L, older.getOfferCount());
+    }
+
+    @Test
+    void getApplicationCareerInsightSummaryIncludesUnusedCurrentResumeVersion() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 30, 12, 0);
+        JobApplication olderVersionApplication = application(426L, USER_ID);
+        olderVersionApplication.setResumeVersionId(78L);
+        olderVersionApplication.setAppliedAt(now.minusDays(2));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(olderVersionApplication));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
+        ResumeVersion currentVersion = resumeVersion(77L, USER_ID, 1L);
+        currentVersion.setVersionNo(3);
+        currentVersion.setVersionName("current backend");
+        currentVersion.setCurrentFlag(1);
+        ResumeVersion olderVersion = resumeVersion(78L, USER_ID, 1L);
+        olderVersion.setVersionNo(2);
+        olderVersion.setVersionName("old backend");
+        olderVersion.setCurrentFlag(0);
+        when(resumeVersionMapper.selectList(any()))
+                .thenReturn(List.of(olderVersion))
+                .thenReturn(List.of(currentVersion));
+
+        ApplicationCareerInsightSummaryVO summary =
+                service.getApplicationCareerInsightSummaryForUser(USER_ID, 30, now);
+
+        ResumeVersionEffectItemVO current = summary.getResumeVersionEffect().getVersions().stream()
+                .filter(item -> item.getResumeVersionId().equals(77L))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(0L, current.getApplicationCount());
+        assertEquals(1, current.getCurrentFlag());
+        assertEquals(0L, summary.getResumeVersionEffect().getCurrentVersionApplicationCount());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void listApplicationReminderCandidatesReturnsActiveOverdueAndDueTodayOnly() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        JobApplication overdueEarly = application(301L, USER_ID);
+        overdueEarly.setStatus("APPLIED");
+        overdueEarly.setCompanyName("Alpha");
+        overdueEarly.setJobTitle("Backend");
+        overdueEarly.setNextFollowUpAt(now.minusHours(5));
+        JobApplication overdueLate = application(302L, USER_ID);
+        overdueLate.setStatus("OFFER");
+        overdueLate.setCompanyName("Beta");
+        overdueLate.setJobTitle("Platform");
+        overdueLate.setNextFollowUpAt(now.minusHours(1));
+        JobApplication dueToday = application(303L, USER_ID);
+        dueToday.setStatus("interviewing");
+        dueToday.setCompanyName("Gamma");
+        dueToday.setJobTitle("Java");
+        dueToday.setNextFollowUpAt(now.plusHours(2));
+        JobApplication rejected = application(304L, USER_ID);
+        rejected.setStatus("rejected");
+        rejected.setNextFollowUpAt(now.minusDays(1));
+        JobApplication closed = application(305L, USER_ID);
+        closed.setStatus("closed");
+        closed.setNextFollowUpAt(now.minusDays(1));
+        JobApplication future = application(306L, USER_ID);
+        future.setStatus("APPLIED");
+        future.setNextFollowUpAt(now.plusDays(1));
+        JobApplication extraDueToday = application(307L, USER_ID);
+        extraDueToday.setStatus("SAVED");
+        extraDueToday.setNextFollowUpAt(now.plusHours(3));
+        JobApplication extraDueToday2 = application(308L, USER_ID);
+        extraDueToday2.setStatus("PREPARING");
+        extraDueToday2.setNextFollowUpAt(now.plusHours(4));
+        JobApplication extraDueToday3 = application(309L, USER_ID);
+        extraDueToday3.setStatus("APPLIED");
+        extraDueToday3.setNextFollowUpAt(now.plusHours(5));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+                dueToday, rejected, overdueLate, future, closed, extraDueToday3,
+                extraDueToday2, overdueEarly, extraDueToday));
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(5, result.size());
+        assertEquals("301", result.get(0).getBizId());
+        assertEquals("302", result.get(1).getBizId());
+        assertEquals("303", result.get(2).getBizId());
+        assertEquals("APPLICATION_FOLLOW_UP_REMINDER", result.get(0).getType());
+        assertEquals("JOB_APPLICATION", result.get(0).getBizType());
+        assertEquals("/applications?followUp=overdue", result.get(0).getActionUrl());
+        assertEquals("/applications?followUp=due-today", result.get(2).getActionUrl());
+        assertEquals("/applications", result.get(0).getFallbackPath());
+        assertEquals("查看投递工作台", result.get(0).getFallbackLabel());
+        assertEquals(reminderDate, result.get(0).getPlanDate());
+        assertTrue(result.get(0).getContent().contains("Alpha"));
+
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(jobApplicationMapper).selectList(queryCaptor.capture());
+        String sql = (queryCaptor.getValue().getSqlSegment() + " " + queryCaptor.getValue().getTargetSql())
+                .replaceAll("\\s+", " ")
+                .toLowerCase();
+        assertTrue(sql.contains("user_id"), sql);
+        assertTrue(sql.contains("deleted"), sql);
+        assertFalse(sql.contains("status in"), sql);
+        assertTrue(sql.contains("next_follow_up_at is not null"), sql);
+        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("REJECTED"));
+        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("CLOSED"));
     }
 
     private void assertAgentContextQuery(LambdaQueryWrapper<JobApplication> query, boolean expectTargetJobFilter) {
@@ -541,5 +918,15 @@ class V4ResumeCareerServiceImplTest {
         app.setJobTitle("Java 后端工程师");
         app.setStatus("APPLIED");
         return app;
+    }
+
+    private JobApplicationEvent event(Long id, Long applicationId, String eventType, LocalDateTime eventTime) {
+        JobApplicationEvent event = new JobApplicationEvent();
+        event.setId(id);
+        event.setUserId(USER_ID);
+        event.setApplicationId(applicationId);
+        event.setEventType(eventType);
+        event.setEventTime(eventTime);
+        return event;
     }
 }

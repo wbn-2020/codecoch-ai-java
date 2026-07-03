@@ -1108,13 +1108,15 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 if (batch == null || batch.isEmpty()) {
                     continue;
                 }
-                questionEmbeddingIndexService.indexQuestions(batch);
+                try {
+                    questionEmbeddingIndexService.indexQuestions(batch);
+                } catch (Exception ex) {
+                    log.error("Question import after-commit sync failed syncType=question_embedding_sync questionIds={} op=UPSERT reason={}",
+                            batch, buildAfterCommitFailureReason(ex), ex);
+                }
                 for (Long questionId : batch) {
-                    try {
-                        questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy);
-                    } catch (Exception ex) {
-                        log.warn("Question duplicate check failed after import questionId={}", questionId, ex);
-                    }
+                    runAfterCommitSafely("question_duplicate_check", questionId, "CHECK",
+                            () -> questionDuplicateService.checkDuplicateForQuestion(questionId, importedBy));
                 }
             }
         };
@@ -1128,6 +1130,22 @@ public class QuestionImportServiceImpl implements QuestionImportService {
                 action.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long questionId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Question import after-commit sync failed syncType={} questionId={} op={} reason={}",
+                    syncType, questionId, op, buildAfterCommitFailureReason(ex), ex);
+        }
+    }
+
+    private String buildAfterCommitFailureReason(Exception ex) {
+        if (ex == null) {
+            return "unknown";
+        }
+        return StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName();
     }
 
     private void incrementDuplicateReason(Map<String, Integer> counts, String reasonCode) {

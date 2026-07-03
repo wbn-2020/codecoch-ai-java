@@ -6,6 +6,7 @@ import lombok.Data;
 public class CurrentInterviewVO {
 
     private Long id;
+    private Long applicationId;
     private Long targetJobId;
     private String status;
     private String reportStatus;

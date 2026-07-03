@@ -1,0 +1,83 @@
+CREATE TABLE IF NOT EXISTS job_search_experiment (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    user_id BIGINT NOT NULL COMMENT 'Owner user id',
+    title VARCHAR(128) NOT NULL COMMENT 'Experiment title',
+    goal VARCHAR(512) NULL COMMENT 'Experiment goal',
+    target_direction VARCHAR(255) NULL COMMENT 'Target direction',
+    start_date DATE NULL COMMENT 'Start date',
+    end_date DATE NULL COMMENT 'End date',
+    status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/RUNNING/REVIEWED/ARCHIVED',
+    sample_count INT NOT NULL DEFAULT 0 COMMENT 'Cached sample count',
+    confidence_level VARCHAR(32) NOT NULL DEFAULT 'LOW' COMMENT 'LOW/MEDIUM/HIGH',
+    sample_warning VARCHAR(512) NULL COMMENT 'Sample warning',
+    summary VARCHAR(1024) NULL COMMENT 'Safe summary',
+    next_strategy VARCHAR(1024) NULL COMMENT 'Next strategy summary',
+    demo_flag TINYINT NOT NULL DEFAULT 0 COMMENT '1 means demo data',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    PRIMARY KEY (id),
+    KEY idx_jse_user_deleted (user_id, deleted, updated_at),
+    KEY idx_jse_user_status (user_id, status, deleted),
+    KEY idx_jse_demo_deleted (demo_flag, deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Job search experiment';
+
+CREATE TABLE IF NOT EXISTS job_search_experiment_relation (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    user_id BIGINT NOT NULL COMMENT 'Owner user id',
+    experiment_id BIGINT NOT NULL COMMENT 'Experiment id',
+    relation_type VARCHAR(64) NOT NULL COMMENT 'Relation type',
+    relation_id BIGINT NOT NULL COMMENT 'Relation business id',
+    relation_summary VARCHAR(512) NULL COMMENT 'Safe relation summary',
+    metadata_json TEXT NULL COMMENT 'Metadata json without sensitive full text',
+    demo_flag TINYINT NOT NULL DEFAULT 0 COMMENT '1 means demo data',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_jser_relation (experiment_id, relation_type, relation_id, deleted),
+    KEY idx_jser_user_experiment (user_id, experiment_id, deleted),
+    KEY idx_jser_relation (relation_type, relation_id, deleted),
+    KEY idx_jser_demo_deleted (demo_flag, deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Job search experiment relation';
+
+CREATE TABLE IF NOT EXISTS job_search_experiment_review (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    user_id BIGINT NOT NULL COMMENT 'Owner user id',
+    experiment_id BIGINT NOT NULL COMMENT 'Experiment id',
+    fact_summary VARCHAR(1024) NULL COMMENT 'Fact summary',
+    insight_summary VARCHAR(1024) NULL COMMENT 'Supported insight summary',
+    unsupported_conclusion VARCHAR(1024) NULL COMMENT 'Conclusion that cannot be made',
+    sample_warning VARCHAR(512) NULL COMMENT 'Sample warning',
+    next_action VARCHAR(1024) NULL COMMENT 'Next action',
+    strategy_json TEXT NULL COMMENT 'Structured strategy json',
+    ai_trace_id VARCHAR(128) NULL COMMENT 'AI trace id',
+    confidence_level VARCHAR(32) NOT NULL DEFAULT 'LOW' COMMENT 'LOW/MEDIUM/HIGH',
+    demo_flag TINYINT NOT NULL DEFAULT 0 COMMENT '1 means demo data',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    PRIMARY KEY (id),
+    KEY idx_jserw_user_experiment (user_id, experiment_id, deleted),
+    KEY idx_jserw_demo_deleted (demo_flag, deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Job search experiment review';
+
+CREATE TABLE IF NOT EXISTS portfolio_demo_dataset (
+    id BIGINT NOT NULL AUTO_INCREMENT COMMENT 'Primary key',
+    user_id BIGINT NOT NULL COMMENT 'Operator user id',
+    demo_user_id BIGINT NULL COMMENT 'Demo user id',
+    dataset_key VARCHAR(64) NOT NULL COMMENT 'Dataset key',
+    dataset_name VARCHAR(128) NOT NULL COMMENT 'Dataset name',
+    status VARCHAR(32) NOT NULL DEFAULT 'EMPTY' COMMENT 'EMPTY/LOADED/RESET',
+    version VARCHAR(32) NOT NULL DEFAULT 'v1' COMMENT 'Dataset version',
+    loaded_at DATETIME NULL COMMENT 'Loaded time',
+    reset_at DATETIME NULL COMMENT 'Reset time',
+    story_json TEXT NULL COMMENT 'Storyline json',
+    demo_flag TINYINT NOT NULL DEFAULT 1 COMMENT '1 means demo dataset',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT 'Logical delete flag',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Create time',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_pdd_user_dataset (user_id, dataset_key, deleted),
+    KEY idx_pdd_demo_status (demo_flag, status, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Portfolio demo dataset';

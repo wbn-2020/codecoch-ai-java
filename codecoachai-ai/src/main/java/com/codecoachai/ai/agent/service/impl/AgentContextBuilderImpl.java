@@ -2,9 +2,13 @@ package com.codecoachai.ai.agent.service.impl;
 
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
+import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -46,6 +50,8 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setPlanDate(planDate);
         context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(userId, targetJob.getId())));
         context.setApplications(resolveApplications(userId, targetJob.getId(), context));
+        context.setProjectEvidences(resolveProjectEvidences(userId, context));
+        context.setJobExperiments(resolveJobExperiments(userId, targetJob.getId(), context));
         context.setRecentMemories(recentMemories(userId));
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
         context.getContextWarnings().add("上下文已包含目标岗位、JD 分析、近期计划任务和已启用记忆。");
@@ -91,6 +97,10 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         snapshot.setId(application.getId());
         snapshot.setTargetJobId(application.getTargetJobId());
         snapshot.setResumeVersionId(application.getResumeVersionId());
+        snapshot.setResumeId(application.getResumeId());
+        snapshot.setResumeVersionNo(application.getResumeVersionNo());
+        snapshot.setResumeVersionName(application.getResumeVersionName());
+        snapshot.setResumeVersionCurrentFlag(application.getResumeVersionCurrentFlag());
         snapshot.setMatchReportId(application.getMatchReportId());
         snapshot.setCompanyName(application.getCompanyName());
         snapshot.setJobTitle(application.getJobTitle());
@@ -102,8 +112,77 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         snapshot.setFollowUpDueToday(application.getFollowUpDueToday());
         snapshot.setDaysUntilFollowUp(application.getDaysUntilFollowUp());
         snapshot.setNote(application.getNote());
+        snapshot.setLatestEventId(application.getLatestEventId());
+        snapshot.setLatestEventType(application.getLatestEventType());
+        snapshot.setLatestEventTime(application.getLatestEventTime());
+        snapshot.setLatestEventSummary(application.getLatestEventSummary());
         snapshot.setCreatedAt(application.getCreatedAt());
         snapshot.setUpdatedAt(application.getUpdatedAt());
+        return snapshot;
+    }
+
+    private List<ProjectEvidenceSnapshot> resolveProjectEvidences(Long userId, JobCoachAgentContext context) {
+        try {
+            List<ProjectEvidenceAgentContextVO> projects = FeignResultUtils.unwrap(
+                    resumeFeignClient.listProjectEvidenceAgentContext(userId));
+            if (projects == null || projects.isEmpty()) {
+                return List.of();
+            }
+            return projects.stream()
+                    .filter(Objects::nonNull)
+                    .map(this::toProjectEvidenceSnapshot)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.info("Project evidence context unavailable userId={}, reason={}", userId, ex.getMessage());
+            context.getContextWarnings().add("Project evidence context is temporarily unavailable; skipped project evidence tasks.");
+            return List.of();
+        }
+    }
+
+    private ProjectEvidenceSnapshot toProjectEvidenceSnapshot(ProjectEvidenceAgentContextVO project) {
+        ProjectEvidenceSnapshot snapshot = new ProjectEvidenceSnapshot();
+        snapshot.setProjectEvidenceId(project.getProjectEvidenceId());
+        snapshot.setTitle(project.getTitle());
+        snapshot.setTechStack(project.getTechStack());
+        snapshot.setCompletenessScore(project.getCompletenessScore());
+        snapshot.setMissingFields(project.getMissingFields() == null ? List.of() : project.getMissingFields());
+        snapshot.setSkillEvidenceCount(project.getSkillEvidenceCount());
+        snapshot.setTopSkillNames(project.getTopSkillNames() == null ? List.of() : project.getTopSkillNames());
+        snapshot.setTargetJobId(project.getTargetJobId());
+        snapshot.setSuggestedActionPath(project.getSuggestedActionPath());
+        return snapshot;
+    }
+
+    private List<JobExperimentSnapshot> resolveJobExperiments(Long userId, Long targetJobId,
+                                                              JobCoachAgentContext context) {
+        try {
+            List<JobExperimentAgentContextVO> experiments = FeignResultUtils.unwrap(
+                    resumeFeignClient.listJobExperimentAgentContext(userId, targetJobId));
+            if (experiments == null || experiments.isEmpty()) {
+                return List.of();
+            }
+            return experiments.stream()
+                    .filter(Objects::nonNull)
+                    .map(this::toJobExperimentSnapshot)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.info("Job experiment context unavailable userId={}, targetJobId={}, reason={}",
+                    userId, targetJobId, ex.getMessage());
+            context.getContextWarnings().add("求职实验上下文暂不可用，已跳过实验复盘候选任务。");
+            return List.of();
+        }
+    }
+
+    private JobExperimentSnapshot toJobExperimentSnapshot(JobExperimentAgentContextVO experiment) {
+        JobExperimentSnapshot snapshot = new JobExperimentSnapshot();
+        snapshot.setId(experiment.getId());
+        snapshot.setTitle(experiment.getTitle());
+        snapshot.setTargetDirection(experiment.getTargetDirection());
+        snapshot.setStatus(experiment.getStatus());
+        snapshot.setSampleCount(experiment.getSampleCount());
+        snapshot.setConfidenceLevel(experiment.getConfidenceLevel());
+        snapshot.setSampleWarning(experiment.getSampleWarning());
+        snapshot.setNextStrategy(experiment.getNextStrategy());
         return snapshot;
     }
 

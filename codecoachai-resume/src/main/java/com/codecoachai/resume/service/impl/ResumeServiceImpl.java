@@ -64,6 +64,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -74,6 +75,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ResumeServiceImpl implements ResumeService {
 
     private static final String BIZ_TYPE_RESUME = "RESUME";
@@ -692,23 +694,44 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private void syncResumeSearchAfterCommit(Long resumeId, Long userId, boolean upsert) {
+        String op = upsert ? "UPSERT" : "DELETE";
         Runnable action = () -> {
             if (upsert) {
-                resumeMqDispatcher.ifPresent(dispatcher -> dispatcher.dispatchResumeSearchUpsert(resumeId, userId));
+                resumeMqDispatcher.ifPresent(dispatcher -> {
+                    if (!dispatcher.dispatchResumeSearchUpsert(resumeId, userId)) {
+                        log.warn("Resume after-commit sync returned false syncType=resume_search_sync resumeId={} op={}",
+                                resumeId, op);
+                    }
+                });
             } else {
-                resumeMqDispatcher.ifPresent(dispatcher -> dispatcher.dispatchResumeSearchDelete(resumeId, userId));
+                resumeMqDispatcher.ifPresent(dispatcher -> {
+                    if (!dispatcher.dispatchResumeSearchDelete(resumeId, userId)) {
+                        log.warn("Resume after-commit sync returned false syncType=resume_search_sync resumeId={} op={}",
+                                resumeId, op);
+                    }
+                });
             }
         };
+        Runnable safeAction = () -> runAfterCommitSafely("resume_search_sync", resumeId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long resumeId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Resume after-commit sync failed syncType={} resumeId={} op={} reason={}",
+                    syncType, resumeId, op, ex.getMessage(), ex);
+        }
     }
 
     private ParsedResumeStructuredDTO parseStructuredResume(String structuredJson) {

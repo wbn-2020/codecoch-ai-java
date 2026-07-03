@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -12,7 +13,9 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.task.controller.NotificationController.NotificationVO;
 import com.codecoachai.task.domain.entity.Notification;
+import com.codecoachai.task.domain.vo.ReminderCandidateVO;
 import com.codecoachai.task.feign.AiFeignClient;
+import com.codecoachai.task.feign.ResumeFeignClient;
 import com.codecoachai.task.mapper.NotificationMapper;
 import com.codecoachai.task.mapper.NotificationReadMapper;
 import java.time.LocalDate;
@@ -33,36 +36,35 @@ class NotificationQueryServiceTest {
     private NotificationCommandService notificationCommandService;
     @Mock
     private AiFeignClient aiFeignClient;
+    @Mock
+    private ResumeFeignClient resumeFeignClient;
 
     @Test
-    void pageMyNotificationsAddsReminderDeepLinkContractFields() {
-        Notification notification = new Notification();
-        notification.setId(101L);
-        notification.setUserId(9L);
-        notification.setType("AGENT_REMINDER");
-        notification.setTitle("continue training");
-        notification.setContent("resume the pending task");
-        notification.setBizType("AGENT_TASK");
-        notification.setBizId("run-42");
-        notification.setReadStatus(0);
+    void pageMyNotificationsAggregatesAgentAndResumeReminderCandidates() {
+        Notification agentNotification = notification(101L, "AGENT_REMINDER", "AGENT_TASK", "run-42");
+        agentNotification.setTitle("continue training");
+        agentNotification.setContent("resume the pending task");
+        Notification resumeNotification = notification(102L, "APPLICATION_FOLLOW_UP_REMINDER", "JOB_APPLICATION",
+                "3001");
+        resumeNotification.setTitle("follow up application");
+        resumeNotification.setContent("application follow-up is due today");
 
         Page<Notification> page = Page.of(1, 20);
-        page.setRecords(List.of(notification));
-        page.setTotal(1);
+        page.setRecords(List.of(agentNotification, resumeNotification));
+        page.setTotal(2);
 
-        AiFeignClient.AgentReminderCandidateVO candidate = new AiFeignClient.AgentReminderCandidateVO();
-        candidate.setType("AGENT_REMINDER");
-        candidate.setBizType("AGENT_TASK");
-        candidate.setBizId("run-42");
-        candidate.setTitle("continue training");
-        candidate.setContent("resume the pending task");
-        candidate.setActionUrl("/agent/tasks?bizType=agent.daily-plan.generate&bizId=run-42");
-        candidate.setFallbackPath("/agent/today");
-        candidate.setFallbackLabel("today plan");
-        candidate.setPlanDate(LocalDate.of(2026, 6, 27));
+        ReminderCandidateVO agentCandidate = candidate("AGENT_REMINDER", "AGENT_TASK", "run-42",
+                "continue training", "resume the pending task",
+                "/agent/tasks?bizType=agent.daily-plan.generate&bizId=run-42", "/agent/today",
+                "today plan", LocalDate.now().minusDays(1));
+        ReminderCandidateVO resumeCandidate = candidate("APPLICATION_FOLLOW_UP_REMINDER", "JOB_APPLICATION", "3001",
+                "follow up application", "application follow-up is due today",
+                "/applications?followUp=due-today", "/applications", "applications", LocalDate.now());
 
-        when(aiFeignClient.listReminderCandidates(eq(9L), any(LocalDate.class)))
-                .thenReturn(Result.success(List.of(candidate)));
+        when(aiFeignClient.listReminderCandidates(eq(9L), eq(LocalDate.now().minusDays(1))))
+                .thenReturn(Result.success(List.of(agentCandidate)));
+        when(resumeFeignClient.listApplicationReminderCandidates(eq(9L), eq(LocalDate.now())))
+                .thenReturn(Result.success(List.of(resumeCandidate)));
         when(notificationMapper.selectUserNotificationPage(any(Page.class), eq(9L), eq(null), eq(null)))
                 .thenReturn(page);
 
@@ -70,18 +72,27 @@ class NotificationQueryServiceTest {
                 notificationMapper,
                 notificationReadMapper,
                 notificationCommandService,
-                aiFeignClient);
+                aiFeignClient,
+                resumeFeignClient);
 
         PageResult<NotificationVO> result = service.pageMyNotifications(9L, 1L, 20L, null, null);
 
-        assertEquals(1, result.getRecords().size());
-        NotificationVO record = result.getRecords().get(0);
-        assertEquals("/agent/tasks?bizType=agent.daily-plan.generate&bizId=run-42", record.getActionUrl());
-        assertEquals("/agent/today", record.getFallbackPath());
-        assertEquals("today plan", record.getFallbackLabel());
-        assertEquals(LocalDate.of(2026, 6, 27), record.getPlanDate());
-        assertEquals("AGENT_TASK", record.getRelatedType());
-        assertEquals("run-42", record.getRelatedId());
+        assertEquals(2, result.getRecords().size());
+        NotificationVO agentRecord = result.getRecords().get(0);
+        assertEquals("/agent/tasks?bizType=agent.daily-plan.generate&bizId=run-42", agentRecord.getActionUrl());
+        assertEquals("/agent/today", agentRecord.getFallbackPath());
+        assertEquals("today plan", agentRecord.getFallbackLabel());
+        assertEquals(LocalDate.now().minusDays(1), agentRecord.getPlanDate());
+        assertEquals("AGENT_TASK", agentRecord.getRelatedType());
+        assertEquals("run-42", agentRecord.getRelatedId());
+
+        NotificationVO resumeRecord = result.getRecords().get(1);
+        assertEquals("/applications?followUp=due-today", resumeRecord.getActionUrl());
+        assertEquals("/applications", resumeRecord.getFallbackPath());
+        assertEquals("applications", resumeRecord.getFallbackLabel());
+        assertEquals(LocalDate.now(), resumeRecord.getPlanDate());
+        assertEquals("JOB_APPLICATION", resumeRecord.getRelatedType());
+        assertEquals("3001", resumeRecord.getRelatedId());
 
         verify(notificationCommandService).ensureDailyReminder(
                 9L,
@@ -90,6 +101,31 @@ class NotificationQueryServiceTest {
                 "resume the pending task",
                 "AGENT_TASK",
                 "run-42");
+        verify(notificationCommandService).ensureDailyReminder(
+                9L,
+                "APPLICATION_FOLLOW_UP_REMINDER",
+                "follow up application",
+                "application follow-up is due today",
+                "JOB_APPLICATION",
+                "3001");
+    }
+
+    @Test
+    void countUnreadDegradesWhenResumeReminderCandidatesFail() {
+        when(aiFeignClient.listReminderCandidates(eq(9L), eq(LocalDate.now().minusDays(1))))
+                .thenReturn(Result.success(List.of()));
+        doThrow(new IllegalStateException("resume unavailable"))
+                .when(resumeFeignClient).listApplicationReminderCandidates(eq(9L), eq(LocalDate.now()));
+        when(notificationMapper.countUnreadForUser(9L)).thenReturn(7L);
+
+        NotificationQueryService service = new NotificationQueryService(
+                notificationMapper,
+                notificationReadMapper,
+                notificationCommandService,
+                aiFeignClient,
+                resumeFeignClient);
+
+        assertEquals(7L, service.countUnread(9L));
     }
 
     @Test
@@ -115,5 +151,34 @@ class NotificationQueryServiceTest {
         assertEquals("/dashboard", vo.getFallbackPath());
         assertEquals("dashboard", vo.getFallbackLabel());
         assertEquals(LocalDate.of(2026, 6, 28), vo.getPlanDate());
+    }
+
+    private Notification notification(Long id, String type, String bizType, String bizId) {
+        Notification notification = new Notification();
+        notification.setId(id);
+        notification.setUserId(9L);
+        notification.setType(type);
+        notification.setTitle("reminder");
+        notification.setContent("body");
+        notification.setBizType(bizType);
+        notification.setBizId(bizId);
+        notification.setReadStatus(0);
+        return notification;
+    }
+
+    private ReminderCandidateVO candidate(String type, String bizType, String bizId, String title, String content,
+                                          String actionUrl, String fallbackPath, String fallbackLabel,
+                                          LocalDate planDate) {
+        ReminderCandidateVO candidate = new ReminderCandidateVO();
+        candidate.setType(type);
+        candidate.setBizType(bizType);
+        candidate.setBizId(bizId);
+        candidate.setTitle(title);
+        candidate.setContent(content);
+        candidate.setActionUrl(actionUrl);
+        candidate.setFallbackPath(fallbackPath);
+        candidate.setFallbackLabel(fallbackLabel);
+        candidate.setPlanDate(planDate);
+        return candidate;
     }
 }

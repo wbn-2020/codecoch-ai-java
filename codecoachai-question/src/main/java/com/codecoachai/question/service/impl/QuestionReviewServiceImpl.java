@@ -350,26 +350,35 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
     }
 
     private void syncQuestionSearchAfterCommit(Long questionId, Long userId, boolean upsert) {
+        String op = upsert ? "UPSERT" : "DELETE";
         Runnable action = () -> {
             if (upsert) {
-                questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId);
+                if (!questionMqDispatcher.dispatchQuestionSearchUpsert(questionId, userId)) {
+                    log.warn("Question review after-commit sync returned false syncType=question_search_sync questionId={} op={} reason={}",
+                            questionId, op, "dispatcher returned false");
+                }
             } else {
-                questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId);
+                if (!questionMqDispatcher.dispatchQuestionSearchDelete(questionId, userId)) {
+                    log.warn("Question review after-commit sync returned false syncType=question_search_sync questionId={} op={} reason={}",
+                            questionId, op, "dispatcher returned false");
+                }
             }
         };
+        Runnable safeAction = () -> runAfterCommitSafely("question_search_sync", questionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
     }
 
     private void syncQuestionEmbeddingAfterCommit(Long questionId, boolean upsert) {
+        String op = upsert ? "UPSERT" : "DELETE";
         Runnable action = () -> {
             if (upsert) {
                 questionEmbeddingIndexService.indexQuestion(questionId);
@@ -377,36 +386,48 @@ public class QuestionReviewServiceImpl implements QuestionReviewService {
                 questionEmbeddingIndexService.deleteQuestion(questionId);
             }
         };
+        Runnable safeAction = () -> runAfterCommitSafely("question_embedding_sync", questionId, op, action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
     }
 
     private void syncQuestionDuplicateCheckAfterCommit(Long questionId, Long userId) {
-        Runnable action = () -> {
-            try {
-                questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
-            } catch (Exception ex) {
-                log.warn("Question duplicate check failed after review approval questionId={}", questionId, ex);
-            }
-        };
+        Runnable action = () -> questionDuplicateService.checkDuplicateForQuestion(questionId, userId);
+        Runnable safeAction = () -> runAfterCommitSafely("question_duplicate_check", questionId, "CHECK", action);
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            safeAction.run();
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                action.run();
+                safeAction.run();
             }
         });
+    }
+
+    private void runAfterCommitSafely(String syncType, Long questionId, String op, Runnable action) {
+        try {
+            action.run();
+        } catch (Exception ex) {
+            log.error("Question review after-commit sync failed syncType={} questionId={} op={} reason={}",
+                    syncType, questionId, op, buildAfterCommitFailureReason(ex), ex);
+        }
+    }
+
+    private String buildAfterCommitFailureReason(Exception ex) {
+        if (ex == null) {
+            return "unknown";
+        }
+        return StringUtils.hasText(ex.getMessage()) ? ex.getMessage() : ex.getClass().getSimpleName();
     }
 
     private GenerateQuestionDraftDTO toAiRequest(String batchId, Long adminUserId, AiQuestionGenerateRequestDTO dto) {

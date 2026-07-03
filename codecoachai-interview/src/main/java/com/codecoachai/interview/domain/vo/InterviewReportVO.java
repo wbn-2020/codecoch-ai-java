@@ -11,6 +11,7 @@ public class InterviewReportVO {
     private Long id;
     private Long sessionId;
     private Long userId;
+    private Long applicationId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
@@ -31,6 +32,10 @@ public class InterviewReportVO {
     private List<String> recommendedQuestions;
     private List<InterviewReportNextActionVO> nextActions;
     private List<Map<String, Object>> questionReviews;
+    private List<Map<String, Object>> rubricScores;
+    private List<Map<String, Object>> followUpTree;
+    private List<Map<String, Object>> adviceEvidence;
+    private List<Map<String, Object>> abilityProfileUpdates;
     private String reportContent;
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;

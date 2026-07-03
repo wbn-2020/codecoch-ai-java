@@ -3,6 +3,7 @@ package com.codecoachai.interview.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -16,9 +17,11 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
@@ -40,9 +43,11 @@ import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
+import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -67,6 +72,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -152,6 +158,41 @@ class InterviewServiceImplTest {
     }
 
     @Test
+    void createPersistsApplicationIdAfterOwnershipValidation() {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setApplicationId(501L);
+        dto.setInterviewMode(InterviewModeEnum.COMPREHENSIVE.name());
+        dto.setMaxQuestionCount(3);
+        InnerJobApplicationSummaryVO application = applicationSummary(501L, 10L);
+        when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenReturn(Result.success(application));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(targetJob()));
+        when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
+            InterviewSession session = invocation.getArgument(0);
+            session.setId(1L);
+            return 1;
+        });
+
+        var result = service.create(dto);
+
+        assertEquals(501L, result.getApplicationId());
+        assertEquals(300L, result.getTargetJobId());
+        ArgumentCaptor<InterviewSession> sessionCaptor = ArgumentCaptor.forClass(InterviewSession.class);
+        verify(sessionMapper).insert(sessionCaptor.capture());
+        assertEquals(501L, sessionCaptor.getValue().getApplicationId());
+    }
+
+    @Test
+    void createRejectsApplicationIdWhenOwnershipCannotBeValidated() {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setApplicationId(501L);
+        when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenThrow(new RuntimeException("resume unavailable"));
+
+        assertThrows(BusinessException.class, () -> service.create(dto));
+
+        verify(sessionMapper, never()).insert(any(InterviewSession.class));
+    }
+
+    @Test
     void startDoesNotHoldTransactionWhileCallingRemoteQuestionGeneration() {
         InterviewSession session = session();
         InterviewStage stage = stage();
@@ -173,6 +214,32 @@ class InterviewServiceImplTest {
                     "generated question persistence must run inside a short DB transaction");
             InterviewMessage message = invocation.getArgument(0);
             message.setId(1001L);
+            return 1;
+        });
+
+        StartInterviewVO result = service.start(1L);
+
+        assertNotNull(result.getCurrentQuestion());
+    }
+
+    @Test
+    void startAcceptsAiGeneratedFallbackQuestionWithoutPersistedQuestionId() {
+        InterviewSession session = session();
+        InterviewStage stage = stage();
+        InnerQuestionVO fallback = question();
+        fallback.setId(null);
+        fallback.setGroupId(null);
+        fallback.setTitle("AI_GENERATED_FALLBACK");
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(stageMapper.selectOne(any())).thenReturn(stage);
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+        when(questionFeignClient.select(any(InnerSelectQuestionDTO.class))).thenReturn(Result.success(fallback));
+        when(aiFeignClient.generateQuestion(any(GenerateInterviewQuestionDTO.class))).thenReturn(Result.success(aiQuestion()));
+        when(messageMapper.insert(any(InterviewMessage.class))).thenAnswer(invocation -> {
+            InterviewMessage message = invocation.getArgument(0);
+            assertEquals(null, message.getQuestionId());
+            assertNotNull(message.getQuestionContent());
+            message.setId(1002L);
             return 1;
         });
 
@@ -268,6 +335,7 @@ class InterviewServiceImplTest {
 
         InterviewReportVO result = service.report(1L);
 
+        assertEquals(501L, result.getApplicationId());
         assertEquals(300L, result.getTargetJobId());
         assertEquals(700L, result.getSkillProfileId());
         assertEquals(800L, result.getMatchReportId());
@@ -346,17 +414,15 @@ class InterviewServiceImplTest {
     }
 
     @Test
-    void generateReportForSseForceRegenerateCreatesNewReportVersion() {
+    void generateReportForSseForceRegenerateReusesExistingReportRow() {
         InterviewSession session = completedTargetJobSession();
         InterviewReport existing = generatedReportForSession();
         existing.setGenerationToken("token-old");
         AtomicReference<InterviewReport> latest = new AtomicReference<>(existing);
         when(sessionMapper.selectById(1L)).thenReturn(session);
         when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
-        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
-            InterviewReport report = invocation.getArgument(0);
-            report.setId(99L);
-            latest.set(report);
+        when(reportMapper.updateById(any(InterviewReport.class))).thenAnswer(invocation -> {
+            latest.set(invocation.getArgument(0));
             return 1;
         });
         when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
@@ -366,7 +432,38 @@ class InterviewServiceImplTest {
         InterviewReportGenerateResultVO result = service.generateReportForSse(1L, 88L, true, stage -> {
         });
 
-        assertEquals(99L, result.getReportId());
+        assertEquals(88L, result.getReportId());
+        verify(reportMapper, never()).insert(any(InterviewReport.class));
+        verify(reportMapper, org.mockito.Mockito.atLeastOnce()).updateById(org.mockito.ArgumentMatchers.<InterviewReport>argThat(report -> report.getId().equals(88L)
+                && ReportStatusEnum.GENERATED.name().equals(report.getStatus())));
+    }
+
+    @Test
+    void generateReportForSseSyncsGeneratedReportToApplicationEventWhenSessionIsBound() {
+        InterviewSession session = completedTargetJobSession();
+        session.setApplicationId(501L);
+        AtomicReference<InterviewReport> latest = new AtomicReference<>();
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
+        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
+            InterviewReport report = invocation.getArgument(0);
+            report.setId(88L);
+            latest.set(report);
+            return 1;
+        });
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
+        when(resumeFeignClient.createApplicationEvent(eq(10L), eq(501L), any())).thenReturn(Result.success());
+
+        service.generateReportForSse(1L, null, false, stage -> {
+        });
+
+        verify(resumeFeignClient).createApplicationEvent(eq(10L), eq(501L), argThat(event ->
+                "INTERVIEW_COMPLETED".equals(event.getEventType())
+                        && event.getReview() != null
+                        && Long.valueOf(1L).equals(event.getReview().get("interviewId"))
+                        && Long.valueOf(88L).equals(event.getReview().get("reportId"))));
     }
 
     @Test
@@ -421,6 +518,7 @@ class InterviewServiceImplTest {
         InterviewSession session = new InterviewSession();
         session.setId(1L);
         session.setUserId(10L);
+        session.setApplicationId(501L);
         session.setMode(InterviewModeEnum.COMPREHENSIVE.name());
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setAnsweredQuestionCount(0);
@@ -430,6 +528,23 @@ class InterviewServiceImplTest {
         session.setExperienceLevel("MID");
         session.setCreatedAt(LocalDateTime.now());
         return session;
+    }
+
+    private InnerJobApplicationSummaryVO applicationSummary(Long id, Long userId) {
+        InnerJobApplicationSummaryVO summary = new InnerJobApplicationSummaryVO();
+        summary.setId(id);
+        summary.setUserId(userId);
+        summary.setTargetJobId(300L);
+        summary.setMatchReportId(800L);
+        return summary;
+    }
+
+    private InnerTargetJobVO targetJob() {
+        InnerTargetJobVO targetJob = new InnerTargetJobVO();
+        targetJob.setId(300L);
+        targetJob.setUserId(10L);
+        targetJob.setJobTitle("Java Backend Engineer");
+        return targetJob;
     }
 
     private InterviewSession waitingSession() {
@@ -532,6 +647,7 @@ class InterviewServiceImplTest {
 
     private InterviewSession completedTargetJobSession() {
         InterviewSession session = session();
+        session.setApplicationId(null);
         session.setTargetJobId(300L);
         session.setTargetPosition("Java Backend Engineer");
         session.setStatus(InterviewStatusEnum.COMPLETED.name());

@@ -6,13 +6,13 @@ import com.codecoachai.task.feign.dto.ExecuteAgentDailyPlanDTO;
 import com.codecoachai.task.feign.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.task.feign.dto.GenerateReportDTO;
 import com.codecoachai.task.feign.dto.ParseResumeDTO;
+import com.codecoachai.task.domain.vo.ReminderCandidateVO;
 import com.codecoachai.task.feign.vo.AgentDailyPlanVO;
 import com.codecoachai.task.feign.vo.GenerateQuestionDraftVO;
 import com.codecoachai.task.feign.vo.GenerateReportVO;
 import com.codecoachai.task.feign.vo.ParseResumeVO;
 import java.time.LocalDate;
 import java.util.List;
-import lombok.Data;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -46,20 +46,7 @@ public interface AiFeignClient {
                                                 @RequestBody AgentRunFailureDTO dto);
 
     @GetMapping("/inner/agent/reminders/candidates")
-    Result<List<AgentReminderCandidateVO>> listReminderCandidates(@RequestParam("userId") Long userId,
-                                                                  @RequestParam(value = "planDate", required = false)
-                                                                  LocalDate planDate);
-
-    @Data
-    class AgentReminderCandidateVO {
-        private String type;
-        private String bizType;
-        private String bizId;
-        private String title;
-        private String content;
-        private String actionUrl;
-        private String fallbackPath;
-        private String fallbackLabel;
-        private LocalDate planDate;
-    }
+    Result<List<ReminderCandidateVO>> listReminderCandidates(@RequestParam("userId") Long userId,
+                                                             @RequestParam(value = "planDate", required = false)
+                                                             LocalDate planDate);
 }

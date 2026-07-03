@@ -8,6 +8,10 @@ public class JobApplicationVO {
     private Long id;
     private Long targetJobId;
     private Long resumeVersionId;
+    private Long resumeId;
+    private Integer resumeVersionNo;
+    private String resumeVersionName;
+    private Integer resumeVersionCurrentFlag;
     private Long matchReportId;
     private String companyName;
     private String jobTitle;
@@ -16,6 +20,10 @@ public class JobApplicationVO {
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
     private String note;
+    private Long latestEventId;
+    private String latestEventType;
+    private LocalDateTime latestEventTime;
+    private String latestEventSummary;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
