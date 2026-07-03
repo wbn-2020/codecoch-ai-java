@@ -82,18 +82,18 @@ public class AiCallLogService {
             logEntry.setPromptTemplateId(ctx.getPromptTemplateId());
             logEntry.setPromptTemplateVersionId(ctx.getPromptTemplateVersionId());
             logEntry.setPromptVersion(ctx.getPromptVersion());
-            logEntry.setInputVariablesJson(ctx.getInputVariablesJson());
+            logEntry.setInputVariablesJson(null);
             logEntry.setModelParamsJson(ctx.getModelParamsJson());
             logEntry.setPromptHash(ctx.getPromptHash());
             logEntry.setResponseFormat(StringUtils.hasText(ctx.getResponseFormat()) ? ctx.getResponseFormat() : "TEXT");
-            logEntry.setRequestPrompt(truncate(ctx.getPrompt(), 10000));
-            logEntry.setRequestBody(truncate(ctx.getRequestBody(), 10000));
+            logEntry.setRequestPrompt(null);
+            logEntry.setRequestBody(null);
 
             if (result != null) {
                 logEntry.setModelName(result.getModel());
                 logEntry.setModel(result.getModel());
-                logEntry.setResponseContent(truncate(result.getContent(), 10000));
-                logEntry.setResponseBody(truncate(result.getContent(), 10000));
+                logEntry.setResponseContent(null);
+                logEntry.setResponseBody(null);
                 logEntry.setPromptTokens(result.getPromptTokens());
                 logEntry.setCompletionTokens(result.getCompletionTokens());
                 logEntry.setTotalTokens(result.getTotalTokens());
@@ -135,8 +135,4 @@ public class AiCallLogService {
         return null;
     }
 
-    private String truncate(String text, int max) {
-        if (text == null) return null;
-        return text.length() > max ? text.substring(0, max) : text;
-    }
 }

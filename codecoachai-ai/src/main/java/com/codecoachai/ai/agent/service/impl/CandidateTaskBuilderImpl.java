@@ -3,6 +3,8 @@ package com.codecoachai.ai.agent.service.impl;
 import com.codecoachai.ai.agent.domain.context.CandidateTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
@@ -27,6 +29,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     public List<CandidateTask> build(JobCoachAgentContext context, int taskCount) {
         List<CandidateTask> candidates = new ArrayList<>();
         candidates.addAll(applicationFollowUpTasks(context));
+        candidates.addAll(projectEvidenceTasks(context));
+        candidates.addAll(jobExperimentTasks(context));
         TargetJobSnapshot target = context.getTargetJob();
         List<String> skills = inferSkillNames(target);
         String skillName = skills.get(0);
@@ -81,6 +85,82 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 .limit(2)
                 .map(this::applicationFollowUpTask)
                 .toList();
+    }
+
+    private List<CandidateTask> projectEvidenceTasks(JobCoachAgentContext context) {
+        if (context == null || context.getProjectEvidences() == null || context.getProjectEvidences().isEmpty()) {
+            return List.of();
+        }
+        return context.getProjectEvidences().stream()
+                .filter(this::isActionableProjectEvidence)
+                .sorted(Comparator.comparingInt(this::projectEvidenceRank)
+                        .thenComparing(ProjectEvidenceSnapshot::getProjectEvidenceId))
+                .limit(2)
+                .map(this::projectEvidenceTask)
+                .toList();
+    }
+
+    private List<CandidateTask> jobExperimentTasks(JobCoachAgentContext context) {
+        if (context == null || context.getJobExperiments() == null || context.getJobExperiments().isEmpty()) {
+            return List.of();
+        }
+        return context.getJobExperiments().stream()
+                .filter(experiment -> experiment != null && experiment.getId() != null)
+                .limit(2)
+                .map(this::jobExperimentTask)
+                .toList();
+    }
+
+    private CandidateTask jobExperimentTask(JobExperimentSnapshot experiment) {
+        String title = firstText(experiment.getTitle(), "求职实验");
+        String targetDirection = firstText(experiment.getTargetDirection(), "当前求职方向");
+        String nextStrategy = firstText(experiment.getNextStrategy(), "补充证据并确认下一轮策略。");
+        String sampleWarning = firstText(experiment.getSampleWarning(), "先复盘事实证据，避免样本不足时下强结论。");
+        return task("job-experiment-" + experiment.getId(),
+                AgentTaskTypeEnum.KNOWLEDGE_REVIEW.name(),
+                "复盘" + title + "的下一步",
+                nextStrategy,
+                sampleWarning + " 目标方向：" + targetDirection,
+                "LOW".equalsIgnoreCase(experiment.getConfidenceLevel()) ? "MEDIUM" : "HIGH",
+                20,
+                null,
+                null,
+                "JOB_EXPERIMENT",
+                experiment.getId(),
+                "/job-experiments/" + experiment.getId());
+    }
+
+    private boolean isActionableProjectEvidence(ProjectEvidenceSnapshot project) {
+        return project != null && project.getProjectEvidenceId() != null
+                && (project.getCompletenessScore() == null || project.getCompletenessScore() < 80
+                || project.getMissingFields() != null && !project.getMissingFields().isEmpty());
+    }
+
+    private int projectEvidenceRank(ProjectEvidenceSnapshot project) {
+        Integer score = project.getCompletenessScore();
+        return score == null ? 0 : score;
+    }
+
+    private CandidateTask projectEvidenceTask(ProjectEvidenceSnapshot project) {
+        String title = firstText(project.getTitle(), "project evidence");
+        String skillName = project.getTopSkillNames() == null || project.getTopSkillNames().isEmpty()
+                ? firstText(project.getTechStack(), "project expression")
+                : project.getTopSkillNames().get(0);
+        String missing = project.getMissingFields() == null || project.getMissingFields().isEmpty()
+                ? "interview-ready evidence"
+                : String.join(", ", project.getMissingFields());
+        return task("project-evidence-" + project.getProjectEvidenceId(),
+                AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
+                "Improve project evidence: " + title,
+                "Add missing project facts and interview material for " + title + ".",
+                "This project evidence is not interview-ready yet; missing: " + missing + ".",
+                project.getCompletenessScore() == null || project.getCompletenessScore() < 50 ? "HIGH" : "MEDIUM",
+                25,
+                toSkillCode(skillName),
+                skillName,
+                "PROJECT_EVIDENCE",
+                project.getProjectEvidenceId(),
+                firstText(project.getSuggestedActionPath(), "/project-evidence/" + project.getProjectEvidenceId() + "/edit"));
     }
 
     private boolean isActionableApplication(ApplicationSnapshot application) {

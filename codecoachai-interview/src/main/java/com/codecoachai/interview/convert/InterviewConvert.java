@@ -68,6 +68,12 @@ public final class InterviewConvert {
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
         vo.setBasedOnResume(session.getBasedOnResume());
+        vo.setTrainingScene(session.getTrainingScene());
+        vo.setTargetSkillDomain(session.getTargetSkillDomain());
+        vo.setTargetSkillCodes(parseStringList(session.getTargetSkillCodes()));
+        vo.setTargetLevel(session.getTargetLevel());
+        vo.setProjectEvidenceIds(parseLongList(session.getProjectEvidenceIds()));
+        vo.setFollowUpIntensity(session.getFollowUpIntensity());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setAnsweredQuestionCount(session.getAnsweredQuestionCount());
@@ -124,6 +130,10 @@ public final class InterviewConvert {
         vo.setRecommendedQuestions(recommendedQuestions);
         vo.setNextActions(buildNextActions(report, recommendedQuestions, mainProblems, projectProblems));
         vo.setQuestionReviews(parseObjectList(report.getQaReview()));
+        vo.setRubricScores(parseObjectList(report.getRubricScores()));
+        vo.setFollowUpTree(parseObjectList(report.getFollowUpTree()));
+        vo.setAdviceEvidence(parseObjectList(report.getAdviceEvidence()));
+        vo.setAbilityProfileUpdates(parseObjectList(report.getAbilityProfileUpdates()));
         vo.setReportContent(report.getReportContent());
         vo.setGeneratedAt(report.getGeneratedAt());
         vo.setCreatedAt(report.getCreatedAt());
@@ -193,10 +203,52 @@ public final class InterviewConvert {
                     report.getId(),
                     firstEvidence(!mainProblems.isEmpty() ? mainProblems : projectProblems)));
         }
+        appendAdviceActions(actions, report);
         for (int i = 0; i < actions.size(); i++) {
             actions.get(i).setPriority(i + 1);
         }
         return actions;
+    }
+
+    private static void appendAdviceActions(List<InterviewReportNextActionVO> actions, InterviewReport report) {
+        List<Map<String, Object>> adviceItems = parseObjectList(report.getAdviceEvidence());
+        for (Map<String, Object> item : adviceItems) {
+            String title = objectText(item.get("title"));
+            if (!StringUtils.hasText(title)) {
+                continue;
+            }
+            String actionUrl = objectText(item.get("actionUrl"));
+            if (!StringUtils.hasText(actionUrl)) {
+                actionUrl = "/agent/today?source=interviewReport";
+                if (report.getId() != null) {
+                    actionUrl += "&reportId=" + report.getId();
+                }
+            }
+            actions.add(nextAction(
+                    "AI_ADVICE",
+                    title,
+                    firstText(objectText(item.get("content")), objectText(item.get("sampleWarning"))),
+                    actionUrl,
+                    BIZ_INTERVIEW_REPORT,
+                    report.getId(),
+                    firstAdviceEvidence(item)));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String firstAdviceEvidence(Map<String, Object> item) {
+        Object sources = item.get("evidenceSources");
+        if (sources instanceof List<?> sourceList) {
+            for (Object source : sourceList) {
+                if (source instanceof Map<?, ?> sourceMap) {
+                    String summary = objectText(((Map<String, Object>) sourceMap).get("sourceSummary"));
+                    if (StringUtils.hasText(summary)) {
+                        return summary;
+                    }
+                }
+            }
+        }
+        return firstText(objectText(item.get("evidenceSummary")), objectText(item.get("content")));
     }
 
     private static InterviewReportNextActionVO nextAction(
@@ -304,6 +356,19 @@ public final class InterviewConvert {
         return List.of(value);
     }
 
+    private static List<Long> parseLongList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return Collections.emptyList();
+        }
+        try {
+            List<Long> list = OBJECT_MAPPER.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? Collections.emptyList() : list;
+        } catch (Exception ex) {
+            return Collections.emptyList();
+        }
+    }
+
     private static List<Map<String, Object>> parseObjectList(String value) {
         if (!StringUtils.hasText(value)) {
             return Collections.emptyList();
@@ -332,5 +397,9 @@ public final class InterviewConvert {
                 .filter(StringUtils::hasText)
                 .findFirst()
                 .orElse("");
+    }
+
+    private static String objectText(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 }

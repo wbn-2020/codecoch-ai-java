@@ -324,7 +324,13 @@ public class AiServiceImpl implements AiService {
     public GenerateFollowUpVO generateFollowUp(GenerateFollowUpDTO dto) {
         long start = System.currentTimeMillis();
         PromptRenderResult promptResult = promptRenderService.render(SCENE_FOLLOW_UP, defaultFollowUpPrompt(),
-                variables(dto), industryContextBlock(dto == null ? null : dto.getIndustryContext()), null);
+                variables(dto),
+                trainingContextPromptBlock(
+                        dto == null ? null : dto.getTrainingScene(),
+                        dto == null ? null : dto.getProjectEvidenceContext(),
+                        dto == null ? null : dto.getTrainingContextSummary())
+                        + industryContextBlock(dto == null ? null : dto.getIndustryContext()),
+                null);
         String rawResponse = null;
         try {
             GenerateFollowUpVO vo;
@@ -854,17 +860,22 @@ public class AiServiceImpl implements AiService {
     }
 
     private String questionPromptContent(String scene) {
+        String trainingBlock = trainingContextPromptBlock("{{trainingScene}}", "{{projectEvidenceContext}}", "{{trainingContextSummary}}");
         if (SCENE_PROJECT_QUESTION.equals(scene)) {
-            return defaultProjectQuestionPrompt();
+            return trainingBlock + defaultProjectQuestionPrompt();
         }
-        return defaultQuestionPrompt();
+        return trainingBlock + defaultQuestionPrompt();
     }
 
     private String evaluatePromptPrefix(EvaluateAnswerDTO dto) {
         String industryBlock = industryContextBlock(dto == null ? null : dto.getIndustryContext());
+        String trainingBlock = trainingContextPromptBlock(
+                dto == null ? null : dto.getTrainingScene(),
+                dto == null ? null : dto.getProjectEvidenceContext(),
+                dto == null ? null : dto.getTrainingContextSummary());
         if (!isProjectStage(dto == null ? null : dto.getStageType(), dto == null ? null : dto.getCurrentStage())
                 && !StringUtils.hasText(dto == null ? null : dto.getProjectContent())) {
-            return industryBlock;
+            return trainingBlock + industryBlock;
         }
         return """
                 这是项目深挖阶段的回答评分。评分必须重点关注：项目理解、技术深度、表达清晰度、问题解决能力、架构思维。
@@ -872,8 +883,28 @@ public class AiServiceImpl implements AiService {
                 {{projectContent}}
                 请避免只给通用 Java 评分，必须结合候选人在项目背景、技术架构、数据库设计、核心难点、性能优化、故障排查、技术取舍、个人职责上的表达进行判断。
                 """
+                + "\n" + trainingBlock
                 + "\n" + industryBlock
                 + "\n";
+    }
+
+    private String trainingContextPromptBlock(String trainingScene, String projectEvidenceContext, String trainingContextSummary) {
+        if (!StringUtils.hasText(trainingScene)
+                && !StringUtils.hasText(projectEvidenceContext)
+                && !StringUtils.hasText(trainingContextSummary)) {
+            return "";
+        }
+        return """
+                训练上下文：
+                - trainingScene: {{trainingScene}}
+                - targetSkillDomain: {{targetSkillDomain}}
+                - targetSkillCodes: {{targetSkillCodes}}
+                - targetLevel: {{targetLevel}}
+                - followUpIntensity: {{followUpIntensity}}
+                - projectEvidenceContext: {{projectEvidenceContext}}
+                - trainingContextSummary: {{trainingContextSummary}}
+                要求：如果存在项目素材上下文，只能使用摘要信息提问，不要要求或推断未提供的完整项目正文；如果是 Java 专项训练，问题必须聚焦目标能力域或能力点。
+                """;
     }
 
     private String reportPromptPrefix(GenerateReportDTO dto) {
@@ -897,7 +928,18 @@ public class AiServiceImpl implements AiService {
                 - 请将项目深挖问题写入 projectProblems，并在 reportContent 中体现项目表达与技术深度分析。
                 """
                 : "";
-        return """
+        String phaseTwoReportBlock = """
+                Phase 2C/2D structured output requirements:
+                - Output JSON only.
+                - Include rubricScores with exactly five dimensions: EXPRESSION_STRUCTURE, TECHNICAL_DEPTH, BUSINESS_UNDERSTANDING, RISK_AWARENESS, IMPLEMENTABILITY.
+                - Every rubric item must include score, comment, evidenceSummary, improvementSuggestion, sampleInsufficient, and sampleWarning.
+                - Include followUpTree items with questionMessageId, answerMessageId, followUpMessageId, followUpIntent, followUpReason, exposedRisk, answerSummary, and evidenceSource. Use summaries only, not full answers.
+                - Include adviceEvidence items with title, content, adviceType, confidence(HIGH/MEDIUM/LOW), sampleInsufficient, sampleWarning, feedbackStatus, actionUrl, and evidenceSources.
+                - evidenceSources may only use PROJECT_EVIDENCE, INTERVIEW_ANSWER, INTERVIEW_REPORT, JD_ANALYSIS, RESUME_MATCH, ABILITY_PROFILE, or AGENT_TASK. Use sourceSummary only; do not expose raw resume, raw JD, full project text, or full user answer.
+                - Include abilityProfileUpdates as candidates only. Mark sampleInsufficient true when fewer than two useful answers support the conclusion.
+                - If evidence is weak, lower confidence and explain sampleWarning instead of making a strong conclusion.
+                """;
+        return phaseTwoReportBlock + "\n" + """
                 学习反馈闭环要求：
                 - weakPoints 必须输出结构化薄弱点，覆盖 Java 基础、数据库、并发、缓存、架构设计、项目表达中实际暴露的问题。
                 - reviewSuggestions/suggestions 必须输出可执行复习建议，包含薄弱知识点、复习方向、练习题方向、下一轮面试建议。
@@ -991,6 +1033,9 @@ public class AiServiceImpl implements AiService {
             values.put("projectExperience", dto.getProjectContent());
             values.put("projectContent", dto.getProjectContent());
             values.put("historySummary", dto.getHistorySummary());
+            putTrainingVariables(values, dto.getTrainingScene(), dto.getTargetSkillDomain(), dto.getTargetSkillCodes(),
+                    dto.getTargetLevel(), dto.getProjectEvidenceIds(), dto.getProjectEvidenceContext(),
+                    dto.getTrainingContextSummary(), dto.getFollowUpIntensity());
         }
         if (answerDTO != null) {
             values.put("stageName", answerDTO.getCurrentStage());
@@ -999,18 +1044,21 @@ public class AiServiceImpl implements AiService {
             values.put("rootQuestionContent", answerDTO.getRootQuestionContent());
             values.put("currentQuestionContent", answerDTO.getCurrentQuestionContent());
             values.put("questionContent", firstText(answerDTO.getQuestionContent(), answerDTO.getCurrentQuestionContent()));
-            values.put("userAnswer", answerDTO.getAnswerContent());
-            values.put("answerContent", answerDTO.getAnswerContent());
+            values.put("userAnswer", maskInterviewText(answerDTO.getAnswerContent()));
+            values.put("answerContent", maskInterviewText(answerDTO.getAnswerContent()));
             values.put("referenceAnswer", answerDTO.getReferenceAnswer());
-            values.put("historySummary", answerDTO.getHistorySummary());
+            values.put("historySummary", maskInterviewText(answerDTO.getHistorySummary()));
             values.put("industryContext", answerDTO.getIndustryContext());
             values.put("aiComment", "");
             values.put("followUpCount", String.valueOf(safeInt(answerDTO.getFollowUpCount())));
             values.put("maxFollowUpCount", String.valueOf(maxFollowUp(answerDTO)));
             values.put("knowledgePoints", answerDTO.getKnowledgePoints());
             values.put("stageType", answerDTO.getStageType());
-            values.put("projectContent", answerDTO.getProjectContent());
-            values.put("projectExperience", answerDTO.getProjectContent());
+            values.put("projectContent", maskInterviewText(answerDTO.getProjectContent()));
+            values.put("projectExperience", maskInterviewText(answerDTO.getProjectContent()));
+            putTrainingVariables(values, answerDTO.getTrainingScene(), answerDTO.getTargetSkillDomain(), answerDTO.getTargetSkillCodes(),
+                    answerDTO.getTargetLevel(), answerDTO.getProjectEvidenceIds(), answerDTO.getProjectEvidenceContext(),
+                    answerDTO.getTrainingContextSummary(), answerDTO.getFollowUpIntensity());
         }
         return values;
     }
@@ -1024,15 +1072,44 @@ public class AiServiceImpl implements AiService {
         values.put("currentQuestionContent", dto.getCurrentQuestionContent());
         values.put("questionContent", firstText(dto.getQuestionContent(), dto.getCurrentQuestionContent()));
         values.put("referenceAnswer", dto.getReferenceAnswer());
-        values.put("userAnswer", dto.getAnswerContent());
-        values.put("answerContent", dto.getAnswerContent());
-        values.put("historySummary", dto.getHistorySummary());
+        values.put("userAnswer", maskInterviewText(dto.getAnswerContent()));
+        values.put("answerContent", maskInterviewText(dto.getAnswerContent()));
+        values.put("historySummary", maskInterviewText(dto.getHistorySummary()));
         values.put("industryContext", dto.getIndustryContext());
         values.put("aiComment", dto.getComment());
         values.put("followUpCount", String.valueOf(safeInt(dto.getFollowUpCount())));
         values.put("maxFollowUpCount", String.valueOf(maxFollowUp(dto)));
         values.put("knowledgePoints", dto.getKnowledgePoints());
+        putTrainingVariables(values, dto.getTrainingScene(), dto.getTargetSkillDomain(), dto.getTargetSkillCodes(),
+                dto.getTargetLevel(), dto.getProjectEvidenceIds(), dto.getProjectEvidenceContext(),
+                dto.getTrainingContextSummary(), dto.getFollowUpIntensity());
         return values;
+    }
+
+    private void putTrainingVariables(Map<String, String> values,
+                                      String trainingScene,
+                                      String targetSkillDomain,
+                                      List<String> targetSkillCodes,
+                                      String targetLevel,
+                                      List<Long> projectEvidenceIds,
+                                      String projectEvidenceContext,
+                                      String trainingContextSummary,
+                                      String followUpIntensity) {
+        values.put("trainingScene", trainingScene);
+        values.put("targetSkillDomain", targetSkillDomain);
+        values.put("targetSkillCodes", targetSkillCodes == null ? "" : String.join(",", targetSkillCodes));
+        values.put("targetLevel", targetLevel);
+        values.put("projectEvidenceIds", projectEvidenceIds == null ? "" : toJson(projectEvidenceIds));
+        values.put("projectEvidenceContext", maskInterviewText(projectEvidenceContext));
+        values.put("trainingContextSummary", maskInterviewText(trainingContextSummary));
+        values.put("followUpIntensity", followUpIntensity);
+    }
+
+    private String maskInterviewText(String value) {
+        if (!StringUtils.hasText(value)) {
+            return value;
+        }
+        return AiPiiMasker.maskResumeJson(value);
     }
 
     private Map<String, String> variables(GenerateReportDTO dto) {
@@ -1047,10 +1124,13 @@ public class AiServiceImpl implements AiService {
         values.put("industryDirection", dto.getIndustryDirection());
         values.put("industryContext", dto.getIndustryContext());
         values.put("difficulty", dto.getDifficulty());
-        values.put("resumeContent", dto.getResumeContent());
-        values.put("projectExperience", dto.getProjectContent());
-        values.put("projectContent", dto.getProjectContent());
-        values.put("historySummary", dto.getMessages() == null ? "" : String.join("\n", dto.getMessages()));
+        values.put("resumeContent", maskInterviewText(dto.getResumeContent()));
+        values.put("projectExperience", maskInterviewText(dto.getProjectContent()));
+        values.put("projectContent", maskInterviewText(dto.getProjectContent()));
+        values.put("historySummary", maskInterviewText(dto.getMessages() == null ? "" : String.join("\n", dto.getMessages())));
+        putTrainingVariables(values, dto.getTrainingScene(), dto.getTargetSkillDomain(), dto.getTargetSkillCodes(),
+                dto.getTargetLevel(), dto.getProjectEvidenceIds(), null,
+                dto.getTrainingContextSummary(), dto.getFollowUpIntensity());
         return values;
     }
 
@@ -1182,8 +1262,8 @@ public class AiServiceImpl implements AiService {
         values.put("knowledgePoint", dto.getKnowledgePoint());
         values.put("referenceAnswer", dto.getReferenceAnswer());
         values.put("analysis", dto.getAnalysis());
-        values.put("answerContent", dto.getAnswerContent());
-        values.put("userAnswer", dto.getAnswerContent());
+        values.put("answerContent", maskInterviewText(dto.getAnswerContent()));
+        values.put("userAnswer", maskInterviewText(dto.getAnswerContent()));
         values.put("answerDurationSeconds", dto.getAnswerDurationSeconds() == null ? "" : String.valueOf(dto.getAnswerDurationSeconds()));
         values.put("targetPosition", dto.getTargetPosition());
         values.put("experienceLevel", dto.getExperienceLevel());
@@ -1702,6 +1782,10 @@ public class AiServiceImpl implements AiService {
         vo.setReviewSuggestions(jsonOrDefault(firstNode(json, "reviewSuggestions", "studySuggestions", "learningSuggestions", "nextSteps"), null));
         vo.setRecommendedQuestions(jsonOrDefault(firstNode(json, "recommendedQuestions", "recommendQuestions", "practiceQuestions", "questionRecommendations"), null));
         vo.setQaReview(jsonOrDefault(firstNode(json, "qaReview", "questionReviews", "answerReviews", "qaReviews"), null));
+        vo.setRubricScores(jsonOrDefault(firstNode(json, "rubricScores", "dimensions", "rubric", "dimensionScores"), null));
+        vo.setFollowUpTree(jsonOrDefault(firstNode(json, "followUpTree", "followUpTrace", "followUps", "followUpReplay"), null));
+        vo.setAdviceEvidence(jsonOrDefault(firstNode(json, "adviceEvidence", "recommendations", "adviceItems", "evidenceBackedAdvice"), null));
+        vo.setAbilityProfileUpdates(jsonOrDefault(firstNode(json, "abilityProfileUpdates", "abilityUpdates", "profileUpdateCandidates"), null));
         vo.setReportContent(firstText(jsonText(json, "reportContent", "content", "report", "markdown"),
                 vo.getSummary()));
         return vo;
@@ -3441,12 +3525,12 @@ public class AiServiceImpl implements AiService {
         log.setPromptVersion(promptResult.getPromptVersion());
         log.setRequestId(requestId);
         log.setTraceId(traceId);
-        log.setInputVariablesJson(promptResult.getInputVariablesJson());
+        log.setInputVariablesJson(null);
         log.setModelParamsJson(promptResult.getModelParamsJson());
         log.setPromptHash(promptResult.getPromptHash());
         log.setResponseFormat("JSON");
-        log.setRequestPrompt(promptResult.getRenderedPrompt());
-        log.setResponseContent(response);
+        log.setRequestPrompt(null);
+        log.setResponseContent(null);
         log.setBusinessId(businessId);
         log.setRequestBody(buildRequestMetadata(promptResult, resolvedFailureType, requestId, traceId));
         log.setResponseBody(buildResponseMetadata(response, elapsed, errorMessage, resolvedFailureType));
@@ -3525,13 +3609,13 @@ public class AiServiceImpl implements AiService {
         metadata.put("promptTemplateVersion", promptResult.getPromptVersion());
         metadata.put("promptVersion", promptResult.getPromptVersion());
         metadata.put("fallbackUsed", promptResult.getFallbackUsed());
-        metadata.put("inputVariables", promptResult.getInputVariablesJson());
+        metadata.put("inputVariablesLength", length(promptResult.getInputVariablesJson()));
         metadata.put("modelParams", promptResult.getModelParamsJson());
         metadata.put("promptHash", promptResult.getPromptHash());
         metadata.put("requestId", requestId);
         metadata.put("traceId", traceId);
         metadata.put("timeoutSeconds", aiProperties.getTimeoutSeconds());
-        metadata.put("prompt", promptResult.getRenderedPrompt());
+        metadata.put("promptLength", length(promptResult.getRenderedPrompt()));
         return toJson(metadata);
     }
 
@@ -3543,8 +3627,12 @@ public class AiServiceImpl implements AiService {
         metadata.put("completionTokens", null);
         metadata.put("totalTokens", null);
         metadata.put("errorMessage", errorMessage);
-        metadata.put("response", response);
+        metadata.put("responseLength", length(response));
         return toJson(metadata);
+    }
+
+    private int length(String value) {
+        return value == null ? 0 : value.length();
     }
 
     private Map<String, Object> baseMetadata(String scene, AiFailureType failureType) {

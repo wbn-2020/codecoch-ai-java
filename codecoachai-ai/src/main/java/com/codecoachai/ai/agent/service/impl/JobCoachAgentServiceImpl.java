@@ -111,8 +111,10 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String EVIDENCE_TYPE_INTERVIEW_REPORT = "INTERVIEW_REPORT";
     private static final String EVIDENCE_TYPE_JOB_APPLICATION_EVENT = "JOB_APPLICATION_EVENT";
     private static final String EVIDENCE_TYPE_RESUME_OPTIMIZE_RECORD = "RESUME_OPTIMIZE_RECORD";
+    private static final String EVIDENCE_TYPE_PROJECT_EVIDENCE = "PROJECT_EVIDENCE";
     private static final String BIZ_TYPE_TARGET_JOB = "TARGET_JOB";
     private static final String BIZ_TYPE_JOB_APPLICATION = "JOB_APPLICATION";
+    private static final String BIZ_TYPE_PROJECT_EVIDENCE = "PROJECT_EVIDENCE";
     private static final String REPORT_STATUS_GENERATED = "GENERATED";
     private static final String RESUME_OPTIMIZE_STATUS_SUCCESS = "SUCCESS";
     private static final int DEFAULT_TASK_COUNT = 3;
@@ -1268,6 +1270,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private BusinessActionEvidence validateResumeOptimizeEvidence(AgentBusinessActionCompleteDTO dto) {
+        if (BIZ_TYPE_PROJECT_EVIDENCE.equals(normalizeCode(dto.getRelatedBizType()))) {
+            return validateProjectEvidenceCompletion(dto);
+        }
         String evidenceBizType = normalizeCode(dto.getEvidenceBizType());
         if (!EVIDENCE_TYPE_RESUME_OPTIMIZE_RECORD.equals(evidenceBizType) || dto.getEvidenceBizId() == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -1290,6 +1295,18 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "resume optimize evidence is not successful");
         }
         return businessActionEvidence(firstTimestamp(evidence.getOptimizedAt(), evidence.getCreatedAt()));
+    }
+
+    private BusinessActionEvidence validateProjectEvidenceCompletion(AgentBusinessActionCompleteDTO dto) {
+        String evidenceBizType = normalizeCode(dto.getEvidenceBizType());
+        if (!EVIDENCE_TYPE_PROJECT_EVIDENCE.equals(evidenceBizType)
+                || dto.getEvidenceBizId() == null
+                || dto.getRelatedBizId() == null
+                || !dto.getRelatedBizId().equals(dto.getEvidenceBizId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "PROJECT_EVIDENCE completion requires matching PROJECT_EVIDENCE evidence");
+        }
+        return new BusinessActionEvidence(null);
     }
 
     private BusinessActionEvidence businessActionEvidence(LocalDateTime occurredAt) {

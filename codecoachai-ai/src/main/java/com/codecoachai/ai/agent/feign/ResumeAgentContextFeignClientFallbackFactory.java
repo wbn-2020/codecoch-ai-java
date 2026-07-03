@@ -1,7 +1,9 @@
 package com.codecoachai.ai.agent.feign;
 
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
+import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.common.core.domain.Result;
 import java.util.Collections;
@@ -38,6 +40,17 @@ public class ResumeAgentContextFeignClientFallbackFactory
             @Override
             public Result<List<JobApplicationAgentContextVO>> listAgentApplications(
                     Long userId, Long targetJobId) {
+                return Result.success(Collections.emptyList());
+            }
+
+            @Override
+            public Result<List<ProjectEvidenceAgentContextVO>> listProjectEvidenceAgentContext(Long userId) {
+                return Result.success(Collections.emptyList());
+            }
+
+            @Override
+            public Result<List<JobExperimentAgentContextVO>> listJobExperimentAgentContext(Long userId,
+                                                                                           Long targetJobId) {
                 return Result.success(Collections.emptyList());
             }
         };

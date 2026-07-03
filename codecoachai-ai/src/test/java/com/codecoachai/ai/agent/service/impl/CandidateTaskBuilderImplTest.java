@@ -10,6 +10,8 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSna
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
 
 class CandidateTaskBuilderImplTest {
@@ -75,6 +77,25 @@ class CandidateTaskBuilderImplTest {
         assertTrue(followUp.getReason().contains("关联简历版本：后端投递版"));
     }
 
+    @Test
+    void buildCreatesJobExperimentTaskWhenExperimentNeedsNextAction() throws Exception {
+        JobCoachAgentContext context = context(List.of());
+        Object experiment = jobExperimentSnapshot();
+        Method setExperiments = JobCoachAgentContext.class.getMethod("setJobExperiments", List.class);
+        setExperiments.invoke(context, List.of(experiment));
+
+        List<CandidateTask> tasks = builder.build(context, 3);
+
+        CandidateTask experimentTask = tasks.stream()
+                .filter(task -> "JOB_EXPERIMENT".equals(task.getRelatedBizType()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("JOB_EXPERIMENT", experimentTask.getRelatedBizType());
+        assertEquals(7L, experimentTask.getRelatedBizId());
+        assertEquals("/job-experiments/7", experimentTask.getActionUrl());
+        assertTrue(experimentTask.getReason().contains("样本不足"));
+    }
+
     private JobCoachAgentContext context(List<ApplicationSnapshot> applications) {
         JobCoachAgentContext context = new JobCoachAgentContext();
         context.setTargetJobId(100L);
@@ -114,5 +135,19 @@ class CandidateTaskBuilderImplTest {
         application.setCreatedAt(LocalDateTime.of(2026, 6, 10, 9, 0));
         application.setUpdatedAt(LocalDateTime.of(2026, 6, 15, 9, 0));
         return application;
+    }
+
+    private Object jobExperimentSnapshot() throws Exception {
+        Class<?> type = Class.forName("com.codecoachai.ai.agent.domain.context.JobCoachAgentContext$JobExperimentSnapshot");
+        Constructor<?> constructor = type.getDeclaredConstructor();
+        Object snapshot = constructor.newInstance();
+        type.getMethod("setId", Long.class).invoke(snapshot, 7L);
+        type.getMethod("setTitle", String.class).invoke(snapshot, "Redis 方向投递实验");
+        type.getMethod("setTargetDirection", String.class).invoke(snapshot, "Java 后端 / Redis");
+        type.getMethod("setSampleCount", Integer.class).invoke(snapshot, 3);
+        type.getMethod("setConfidenceLevel", String.class).invoke(snapshot, "LOW");
+        type.getMethod("setSampleWarning", String.class).invoke(snapshot, "样本不足：投递少于 5 条。");
+        type.getMethod("setNextStrategy", String.class).invoke(snapshot, "继续积累可比较投递。");
+        return snapshot;
     }
 }

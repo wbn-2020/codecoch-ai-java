@@ -21,4 +21,11 @@ public class GenerateReportDTO {
     private String resumeContent;
     private String projectContent;
     private List<String> messages;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private List<String> targetSkillCodes;
+    private String targetLevel;
+    private List<Long> projectEvidenceIds;
+    private String followUpIntensity;
+    private String trainingContextSummary;
 }

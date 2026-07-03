@@ -27,6 +27,13 @@ public class InterviewSession extends BaseEntity {
     private String difficulty;
     private String interviewerStyle;
     private Boolean basedOnResume;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private String targetSkillCodes;
+    private String targetLevel;
+    private String projectEvidenceIds;
+    private String followUpIntensity;
+    private String trainingContextSummary;
     private String status;
     private String reportStatus;
     private Long currentStageId;

@@ -21,6 +21,7 @@ import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.SkillGapItem;
 import com.codecoachai.resume.domain.entity.SkillProfile;
 import com.codecoachai.resume.domain.entity.TargetJob;
+import com.codecoachai.resume.domain.entity.UserAbilityProfile;
 import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.enums.SkillProfileStatus;
@@ -43,10 +44,12 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.SkillGapItemMapper;
 import com.codecoachai.resume.mapper.SkillProfileMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
 import com.codecoachai.resume.service.SkillProfileService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -76,6 +79,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     private final ResumeJobMatchDetailMapper detailMapper;
     private final SkillProfileMapper profileMapper;
     private final SkillGapItemMapper gapItemMapper;
+    private final UserAbilityProfileMapper abilityProfileMapper;
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
@@ -213,6 +217,42 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             item.setSourceType("INTERVIEW_REPORT");
             item.setSourceBizId(dto.getInterviewId());
             gapItemMapper.insert(item);
+        }
+        upsertAbilityProfileUpdates(dto);
+    }
+
+    private void upsertAbilityProfileUpdates(InterviewWeakPointFeedbackDTO dto) {
+        JsonNode updates = readJsonSafely(dto.getAbilityProfileUpdatesJson());
+        if (updates == null || !updates.isArray()) {
+            return;
+        }
+        for (JsonNode update : updates) {
+            String skillCode = firstText(textValue(update, "skillCode"), textValue(update, "skillName"));
+            if (!StringUtils.hasText(skillCode)) {
+                continue;
+            }
+            UserAbilityProfile profile = abilityProfileMapper.selectOne(new LambdaQueryWrapper<UserAbilityProfile>()
+                    .eq(UserAbilityProfile::getUserId, dto.getUserId())
+                    .eq(UserAbilityProfile::getSkillCode, skillCode.trim())
+                    .last("limit 1"));
+            boolean create = profile == null;
+            if (create) {
+                profile = new UserAbilityProfile();
+                profile.setUserId(dto.getUserId());
+                profile.setSkillCode(skillCode.trim());
+            }
+            profile.setStatus(firstText(textValue(update, "status"), textValue(update, "candidateStatus"), "WEAK"));
+            profile.setEvidenceCount(Math.max(1, firstInteger(integerValue(update, "evidenceCount"), 1)));
+            profile.setLastEvaluatedAt(LocalDateTime.now());
+            profile.setConfidence(firstText(textValue(update, "confidence"), "LOW"));
+            profile.setSummary(firstText(textValue(update, "summary"),
+                    "Updated from interview report " + dto.getReportId()));
+            profile.setSourceType("INTERVIEW_REPORT");
+            if (create) {
+                abilityProfileMapper.insert(profile);
+            } else {
+                abilityProfileMapper.updateById(profile);
+            }
         }
     }
 

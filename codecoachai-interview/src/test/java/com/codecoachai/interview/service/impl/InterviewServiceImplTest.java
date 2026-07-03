@@ -223,6 +223,32 @@ class InterviewServiceImplTest {
     }
 
     @Test
+    void startAcceptsAiGeneratedFallbackQuestionWithoutPersistedQuestionId() {
+        InterviewSession session = session();
+        InterviewStage stage = stage();
+        InnerQuestionVO fallback = question();
+        fallback.setId(null);
+        fallback.setGroupId(null);
+        fallback.setTitle("AI_GENERATED_FALLBACK");
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(stageMapper.selectOne(any())).thenReturn(stage);
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+        when(questionFeignClient.select(any(InnerSelectQuestionDTO.class))).thenReturn(Result.success(fallback));
+        when(aiFeignClient.generateQuestion(any(GenerateInterviewQuestionDTO.class))).thenReturn(Result.success(aiQuestion()));
+        when(messageMapper.insert(any(InterviewMessage.class))).thenAnswer(invocation -> {
+            InterviewMessage message = invocation.getArgument(0);
+            assertEquals(null, message.getQuestionId());
+            assertNotNull(message.getQuestionContent());
+            message.setId(1002L);
+            return 1;
+        });
+
+        StartInterviewVO result = service.start(1L);
+
+        assertNotNull(result.getCurrentQuestion());
+    }
+
+    @Test
     void answerDoesNotHoldTransactionWhileCallingAiEvaluation() {
         InterviewSession session = waitingSession();
         InterviewStage stage = stage();

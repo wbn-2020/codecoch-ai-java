@@ -464,6 +464,10 @@ public class InnerInterviewReportController {
         report.setReviewSuggestions(firstText(payload.getReviewSuggestions(), payload.getSuggestions()));
         report.setRecommendedQuestions(payload.getRecommendedQuestions());
         report.setQaReview(payload.getQaReview());
+        report.setRubricScores(payload.getRubricScores());
+        report.setFollowUpTree(payload.getFollowUpTree());
+        report.setAdviceEvidence(payload.getAdviceEvidence());
+        report.setAbilityProfileUpdates(payload.getAbilityProfileUpdates());
         report.setSuggestions(payload.getSuggestions());
         report.setReportContent(firstText(payload.getReportContent(), payload.getSummary(), dto.getReportJson()));
     }
@@ -479,6 +483,10 @@ public class InnerInterviewReportController {
         report.setReviewSuggestions(null);
         report.setRecommendedQuestions(null);
         report.setQaReview(null);
+        report.setRubricScores(null);
+        report.setFollowUpTree(null);
+        report.setAdviceEvidence(null);
+        report.setAbilityProfileUpdates(null);
         report.setSuggestions(null);
         report.setReportContent(null);
     }

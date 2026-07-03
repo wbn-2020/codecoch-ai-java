@@ -14,6 +14,8 @@ public class JobCoachAgentContext {
     private LocalDate planDate;
     private TargetJobSnapshot targetJob;
     private List<ApplicationSnapshot> applications = new ArrayList<>();
+    private List<ProjectEvidenceSnapshot> projectEvidences = new ArrayList<>();
+    private List<JobExperimentSnapshot> jobExperiments = new ArrayList<>();
     private List<String> recentMemories = new ArrayList<>();
     private List<String> personalKnowledgeHints = new ArrayList<>();
     private String agentHistorySummary;
@@ -57,5 +59,30 @@ public class JobCoachAgentContext {
         private String latestEventSummary;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class ProjectEvidenceSnapshot {
+        private Long projectEvidenceId;
+        private String title;
+        private String techStack;
+        private Integer completenessScore;
+        private List<String> missingFields;
+        private Long skillEvidenceCount;
+        private List<String> topSkillNames;
+        private Long targetJobId;
+        private String suggestedActionPath;
+    }
+
+    @Data
+    public static class JobExperimentSnapshot {
+        private Long id;
+        private String title;
+        private String targetDirection;
+        private String status;
+        private Integer sampleCount;
+        private String confidenceLevel;
+        private String sampleWarning;
+        private String nextStrategy;
     }
 }

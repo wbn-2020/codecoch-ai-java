@@ -1,5 +1,6 @@
 package com.codecoachai.ai.domain.dto;
 
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -19,4 +20,12 @@ public class GenerateFollowUpDTO {
     private String historySummary;
     private String knowledgePoints;
     private String industryContext;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private List<String> targetSkillCodes;
+    private String targetLevel;
+    private List<Long> projectEvidenceIds;
+    private String projectEvidenceContext;
+    private String trainingContextSummary;
+    private String followUpIntensity;
 }

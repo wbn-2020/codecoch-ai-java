@@ -47,6 +47,7 @@ import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
+import com.codecoachai.interview.feign.vo.InnerProjectEvidenceTrainingContextVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
@@ -63,6 +64,7 @@ import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
 import feign.Response;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -103,6 +105,8 @@ public class InterviewServiceImpl implements InterviewService {
     private static final String REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS = "[\"至少提交 1 条有效回答后再结束面试\",\"如果只是想退出，可稍后重新开始面试训练\"]";
     private static final String REPORT_GENERATION_FAILED_MESSAGE =
             "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
+    private static final String TRAINING_SCENE_JAVA_SPECIALTY = "JAVA_SPECIALTY";
+    private static final String TRAINING_SCENE_PROJECT_DEEP_DIVE = "PROJECT_DEEP_DIVE";
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -130,6 +134,9 @@ public class InterviewServiceImpl implements InterviewService {
         resolveDefaultResumeIfNeeded(mode, request);
         validateResumeOwnership(userId, mode, request);
         IndustryTemplateSnapshot industrySnapshot = withRecommendationContext(resolveIndustrySnapshot(request), request);
+        List<String> targetSkillCodes = sanitizeStrings(request.getTargetSkillCodes());
+        List<Long> projectEvidenceIds = sanitizeLongs(request.getProjectEvidenceIds());
+        String trainingContextSummary = buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds);
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -148,6 +155,13 @@ public class InterviewServiceImpl implements InterviewService {
         session.setDifficulty(request.getDifficulty());
         session.setInterviewerStyle(request.getInterviewerStyle());
         session.setBasedOnResume(Boolean.TRUE.equals(request.getBasedOnResume()));
+        session.setTrainingScene(normalizeText(request.getTrainingScene()));
+        session.setTargetSkillDomain(normalizeText(request.getTargetSkillDomain()));
+        session.setTargetSkillCodes(toJsonOrNull(targetSkillCodes));
+        session.setTargetLevel(normalizeText(request.getTargetLevel()));
+        session.setProjectEvidenceIds(toJsonOrNull(projectEvidenceIds));
+        session.setFollowUpIntensity(normalizeText(request.getFollowUpIntensity()));
+        session.setTrainingContextSummary(trainingContextSummary);
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
         session.setAnsweredQuestionCount(0);
@@ -178,6 +192,12 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
         vo.setBasedOnResume(session.getBasedOnResume());
+        vo.setTrainingScene(session.getTrainingScene());
+        vo.setTargetSkillDomain(session.getTargetSkillDomain());
+        vo.setTargetSkillCodes(targetSkillCodes);
+        vo.setTargetLevel(session.getTargetLevel());
+        vo.setProjectEvidenceIds(projectEvidenceIds);
+        vo.setFollowUpIntensity(session.getFollowUpIntensity());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setMaxQuestionCount(session.getMaxQuestionCount());
@@ -320,6 +340,7 @@ public class InterviewServiceImpl implements InterviewService {
         evaluateDTO.setProjectContent(buildProjectContent(loadResume(session)));
         evaluateDTO.setIndustryContext(session.getIndustryContext());
         evaluateDTO.setHistorySummary(historySummary(session.getId()));
+        applyTrainingContext(session, evaluateDTO);
         progress(progressConsumer, "CALL_AI_REVIEW");
         EvaluateAnswerVO evaluation = tokenConsumer == null
                 ? FeignResultUtils.unwrap(aiFeignClient.evaluate(evaluateDTO))
@@ -517,6 +538,12 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
         vo.setBasedOnResume(session.getBasedOnResume());
+        vo.setTrainingScene(session.getTrainingScene());
+        vo.setTargetSkillDomain(session.getTargetSkillDomain());
+        vo.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
+        vo.setTargetLevel(session.getTargetLevel());
+        vo.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
+        vo.setFollowUpIntensity(session.getFollowUpIntensity());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setStages(stages(session.getId()).stream().map(InterviewConvert::toStageVO).toList());
@@ -698,6 +725,13 @@ public class InterviewServiceImpl implements InterviewService {
                         message.getAiComment(), message.getContent()))
                 .filter(StringUtils::hasText)
                 .toList());
+        reportDTO.setTrainingScene(session.getTrainingScene());
+        reportDTO.setTargetSkillDomain(session.getTargetSkillDomain());
+        reportDTO.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
+        reportDTO.setTargetLevel(session.getTargetLevel());
+        reportDTO.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
+        reportDTO.setFollowUpIntensity(session.getFollowUpIntensity());
+        reportDTO.setTrainingContextSummary(session.getTrainingContextSummary());
         return reportDTO;
     }
 
@@ -1143,7 +1177,7 @@ public class InterviewServiceImpl implements InterviewService {
         selectDTO.setExperienceLevel(session.getExperienceLevel());
         selectDTO.setExcludeGroupIds(usedGroupIds(session.getId()));
         InnerQuestionVO question = FeignResultUtils.unwrap(questionFeignClient.select(selectDTO));
-        if (question == null || question.getId() == null) {
+        if (question == null || !StringUtils.hasText(question.getContent())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "No persisted interview question is available for this stage");
         }
@@ -1171,6 +1205,7 @@ public class InterviewServiceImpl implements InterviewService {
         aiDTO.setResumeContent(resume == null ? null : resume.getSummary());
         aiDTO.setProjectContent(buildProjectContent(resume));
         aiDTO.setHistorySummary(historySummary(session.getId()));
+        applyTrainingContext(session, aiDTO);
         GenerateInterviewQuestionVO aiQuestion = FeignResultUtils.unwrap(aiFeignClient.generateQuestion(aiDTO));
         if (!StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionContent())
                 && !StringUtils.hasText(aiQuestion == null ? null : aiQuestion.getQuestionText())
@@ -1193,7 +1228,7 @@ public class InterviewServiceImpl implements InterviewService {
                                                     String questionContent, Long parentMessageId,
                                                     boolean followUp, int followUpCount) {
         session.setCurrentQuestionId(question.getId());
-        session.setCurrentQuestionGroupId(question.getGroupId());
+        session.setCurrentQuestionGroupId(question == null ? null : question.getGroupId());
         InterviewMessage message = saveMessage(session, stage, question, "AI", followUp ? "FOLLOW_UP" : "QUESTION",
                 questionContent, null, null, parentMessageId, followUp, followUpCount, null, null);
         return toCurrentQuestionVO(session, stage, message);
@@ -1359,6 +1394,14 @@ public class InterviewServiceImpl implements InterviewService {
         followUpDTO.setHistorySummary(evaluateDTO.getHistorySummary());
         followUpDTO.setKnowledgePoints(evaluation == null ? null : evaluation.getKnowledgePoints());
         followUpDTO.setIndustryContext(evaluateDTO.getIndustryContext());
+        followUpDTO.setTrainingScene(evaluateDTO.getTrainingScene());
+        followUpDTO.setTargetSkillDomain(evaluateDTO.getTargetSkillDomain());
+        followUpDTO.setTargetSkillCodes(evaluateDTO.getTargetSkillCodes());
+        followUpDTO.setTargetLevel(evaluateDTO.getTargetLevel());
+        followUpDTO.setProjectEvidenceIds(evaluateDTO.getProjectEvidenceIds());
+        followUpDTO.setProjectEvidenceContext(evaluateDTO.getProjectEvidenceContext());
+        followUpDTO.setTrainingContextSummary(evaluateDTO.getTrainingContextSummary());
+        followUpDTO.setFollowUpIntensity(evaluateDTO.getFollowUpIntensity());
         return followUpDTO;
     }
 
@@ -1535,6 +1578,10 @@ public class InterviewServiceImpl implements InterviewService {
                 : aiReport.getSuggestions());
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
+        report.setRubricScores(firstText(aiReport.getRubricScores(), buildFallbackRubricScores(messages, answerCount)));
+        report.setFollowUpTree(firstText(aiReport.getFollowUpTree(), buildFallbackFollowUpTree(messages)));
+        report.setAdviceEvidence(firstText(aiReport.getAdviceEvidence(), buildFallbackAdviceEvidence(report, messages, answerCount)));
+        report.setAbilityProfileUpdates(firstText(aiReport.getAbilityProfileUpdates(), buildFallbackAbilityProfileUpdates(messages, answerCount)));
         report.setReportContent(StringUtils.hasText(aiReport.getReportContent()) ? aiReport.getReportContent() : report.getSummary());
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(StringUtils.hasText(aiReport.getSuggestions()) ? aiReport.getSuggestions() : DEFAULT_REPORT_SUGGESTIONS);
@@ -1563,6 +1610,14 @@ public class InterviewServiceImpl implements InterviewService {
                 REPORT_AI_INCOMPLETE_SUGGESTIONS));
         report.setRecommendedQuestions(firstText(aiReport == null ? null : aiReport.getRecommendedQuestions(), "[]"));
         report.setQaReview(buildFallbackQaReview(messages));
+        report.setRubricScores(firstText(aiReport == null ? null : aiReport.getRubricScores(),
+                buildFallbackRubricScores(messages, answerCount)));
+        report.setFollowUpTree(firstText(aiReport == null ? null : aiReport.getFollowUpTree(),
+                buildFallbackFollowUpTree(messages)));
+        report.setAdviceEvidence(firstText(aiReport == null ? null : aiReport.getAdviceEvidence(),
+                buildFallbackAdviceEvidence(report, messages, answerCount)));
+        report.setAbilityProfileUpdates(firstText(aiReport == null ? null : aiReport.getAbilityProfileUpdates(),
+                buildFallbackAbilityProfileUpdates(messages, answerCount)));
         report.setReportContent(firstText(aiReport == null ? null : aiReport.getReportContent(), report.getSummary()));
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(firstText(aiReport == null ? null : aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
@@ -1873,8 +1928,252 @@ public class InterviewServiceImpl implements InterviewService {
         }
     }
 
+    private String buildFallbackRubricScores(List<InterviewMessage> messages, int answerCount) {
+        int baseScore = normalizeFivePointScore(averageAnswerScore(messages));
+        boolean sampleInsufficient = answerCount < 2;
+        String warning = sampleInsufficient ? "Sample is insufficient; this is a weak signal from saved interview answers." : null;
+        List<Map<String, Object>> scores = new ArrayList<>();
+        scores.add(rubricItem("EXPRESSION_STRUCTURE", baseScore,
+                "Structure is estimated from saved answer reviews.",
+                firstAnswerEvidence(messages), "Use STAR or context-action-result structure for each project answer.",
+                sampleInsufficient, warning));
+        scores.add(rubricItem("TECHNICAL_DEPTH", Math.max(1, baseScore - 1),
+                "Technical depth is estimated from AI answer comments and knowledge points.",
+                firstKnowledgeEvidence(messages), "Add implementation details, trade-offs, and boundary conditions.",
+                sampleInsufficient, warning));
+        scores.add(rubricItem("BUSINESS_UNDERSTANDING", baseScore,
+                "Business understanding is estimated from project and scenario explanations.",
+                firstAnswerEvidence(messages), "Connect technical choices to user impact and measurable results.",
+                sampleInsufficient, warning));
+        scores.add(rubricItem("RISK_AWARENESS", Math.max(1, baseScore - 1),
+                "Risk awareness is estimated from follow-up reasons and missing edge cases.",
+                firstFollowUpEvidence(messages), "Name failure modes, rollback strategy, monitoring, and data consistency risks.",
+                sampleInsufficient, warning));
+        scores.add(rubricItem("IMPLEMENTABILITY", baseScore,
+                "Implementability is estimated from whether answers include concrete steps.",
+                firstAnswerEvidence(messages), "Turn conclusions into steps, metrics, and verification methods.",
+                sampleInsufficient, warning));
+        return jsonArray(scores);
+    }
+
+    private Map<String, Object> rubricItem(String dimension, int score, String comment, String evidenceSummary,
+                                           String improvementSuggestion, boolean sampleInsufficient, String warning) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("dimension", dimension);
+        item.put("score", score);
+        item.put("comment", comment);
+        item.put("evidenceSummary", truncate(firstText(evidenceSummary, "No stable evidence yet."), 160));
+        item.put("improvementSuggestion", improvementSuggestion);
+        item.put("sampleInsufficient", sampleInsufficient);
+        item.put("sampleWarning", warning);
+        return item;
+    }
+
+    private String buildFallbackFollowUpTree(List<InterviewMessage> messages) {
+        List<Map<String, Object>> tree = new ArrayList<>();
+        for (InterviewMessage followUp : messages == null ? List.<InterviewMessage>of() : messages) {
+            if (!"AI".equalsIgnoreCase(followUp.getRole()) || !"FOLLOW_UP".equalsIgnoreCase(followUp.getMessageType())) {
+                continue;
+            }
+            InterviewMessage question = messageById(messages, followUp.getParentMessageId());
+            InterviewMessage answer = firstUserAnswer(messages, followUp.getParentMessageId());
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("questionMessageId", followUp.getParentMessageId());
+            item.put("answerMessageId", answer == null ? null : answer.getId());
+            item.put("followUpMessageId", followUp.getId());
+            item.put("questionSummary", truncate(firstText(question == null ? null : question.getQuestionContent(),
+                    question == null ? null : question.getContent()), 160));
+            item.put("answerSummary", truncate(firstText(answer == null ? null : answer.getUserAnswer(),
+                    answer == null ? null : answer.getContent()), 160));
+            item.put("followUpQuestion", truncate(followUp.getContent(), 160));
+            item.put("followUpIntent", "CLARIFY_RISK");
+            item.put("followUpReason", truncate(firstText(followUp.getFollowUpReason(), "Need to verify depth or risk boundary."), 160));
+            item.put("exposedRisk", inferExposedRisk(followUp));
+            item.put("evidenceSource", "INTERVIEW_MESSAGE");
+            tree.add(item);
+        }
+        return jsonArray(tree);
+    }
+
+    private String buildFallbackAdviceEvidence(InterviewReport report, List<InterviewMessage> messages, int answerCount) {
+        boolean sampleInsufficient = answerCount < 2;
+        List<Map<String, Object>> advice = new ArrayList<>();
+        advice.add(adviceItem("Replay weak interview answers", "PRACTICE_SKILL", "MEDIUM",
+                "Use the report weak points and follow-up trace to run one targeted practice round.",
+                "/interviews/create?source=interviewReport&reportId=" + (report == null ? "" : report.getId()),
+                report == null ? null : report.getId(), firstAnswerEvidence(messages), sampleInsufficient));
+        if (hasFollowUps(messages)) {
+            advice.add(adviceItem("Close follow-up risk gaps", "FOLLOW_UP_REVIEW", "MEDIUM",
+                    "Review every follow-up reason and prepare a stronger second answer.",
+                    "/agent/today?source=interviewReport&reportId=" + (report == null ? "" : report.getId()),
+                    report == null ? null : report.getId(), firstFollowUpEvidence(messages), sampleInsufficient));
+        }
+        return jsonArray(advice);
+    }
+
+    private Map<String, Object> adviceItem(String title, String type, String confidence, String content,
+                                           String actionUrl, Long reportId, String evidence, boolean sampleInsufficient) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("title", title);
+        item.put("adviceType", type);
+        item.put("confidence", sampleInsufficient ? "LOW" : confidence);
+        item.put("content", content);
+        item.put("actionUrl", actionUrl);
+        item.put("sampleInsufficient", sampleInsufficient);
+        item.put("sampleWarning", sampleInsufficient
+                ? "Sample is insufficient; advice is a candidate next step, not a strong conclusion."
+                : null);
+        item.put("feedbackStatus", "NONE");
+        List<Map<String, Object>> sources = new ArrayList<>();
+        Map<String, Object> source = new LinkedHashMap<>();
+        source.put("sourceType", "INTERVIEW_REPORT");
+        source.put("sourceId", reportId);
+        source.put("sourceSummary", truncate(firstText(evidence, "Generated from interview report summary."), 160));
+        sources.add(source);
+        item.put("evidenceSources", sources);
+        return item;
+    }
+
+    private String buildFallbackAbilityProfileUpdates(List<InterviewMessage> messages, int answerCount) {
+        boolean sampleInsufficient = answerCount < 2;
+        List<Map<String, Object>> updates = new ArrayList<>();
+        List<String> skillCodes = extractKnowledgePoints(messages);
+        for (String skillCode : skillCodes.stream().limit(5).toList()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("skillCode", skillCode);
+            item.put("candidateStatus", normalizeFivePointScore(averageAnswerScore(messages)) >= 3 ? "BASIC" : "WEAK");
+            item.put("confidence", sampleInsufficient ? "LOW" : "MEDIUM");
+            item.put("evidenceCount", answerCount);
+            item.put("sampleInsufficient", sampleInsufficient);
+            item.put("sampleWarning", sampleInsufficient
+                    ? "Need more interview samples before automatically updating the ability profile."
+                    : null);
+            updates.add(item);
+        }
+        return jsonArray(updates);
+    }
+
+    private int normalizeFivePointScore(Integer score) {
+        if (score == null || score <= 0) {
+            return 2;
+        }
+        if (score > 5) {
+            return Math.max(1, Math.min(5, Math.round(score / 20.0f)));
+        }
+        return Math.max(1, Math.min(5, score));
+    }
+
+    private String firstAnswerEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(this::isUserAnswer)
+                .map(message -> firstText(message.getAiComment(), message.getComment(), message.getUserAnswer(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String firstKnowledgeEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .map(InterviewMessage::getKnowledgePoints)
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(firstAnswerEvidence(messages));
+    }
+
+    private String firstFollowUpEvidence(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(message -> "AI".equalsIgnoreCase(message.getRole()))
+                .filter(message -> "FOLLOW_UP".equalsIgnoreCase(message.getMessageType()))
+                .map(message -> firstText(message.getFollowUpReason(), message.getContent()))
+                .filter(StringUtils::hasText)
+                .findFirst()
+                .orElse(firstAnswerEvidence(messages));
+    }
+
+    private InterviewMessage messageById(List<InterviewMessage> messages, Long messageId) {
+        if (messages == null || messageId == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(message -> messageId.equals(message.getId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private InterviewMessage firstUserAnswer(List<InterviewMessage> messages, Long parentMessageId) {
+        if (messages == null || parentMessageId == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(this::isUserAnswer)
+                .filter(message -> parentMessageId.equals(message.getParentMessageId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String inferExposedRisk(InterviewMessage followUp) {
+        String text = firstText(followUp == null ? null : followUp.getFollowUpReason(),
+                followUp == null ? null : followUp.getContent());
+        if (!StringUtils.hasText(text)) {
+            return "Risk needs further verification.";
+        }
+        String lower = text.toLowerCase();
+        if (lower.contains("risk") || lower.contains("fail") || lower.contains("rollback")) {
+            return "Risk awareness may be insufficient.";
+        }
+        if (lower.contains("why") || lower.contains("how") || lower.contains("detail")) {
+            return "Technical depth may need more evidence.";
+        }
+        return "Answer may need clearer evidence or boundary conditions.";
+    }
+
+    private boolean hasFollowUps(List<InterviewMessage> messages) {
+        return messages != null && messages.stream()
+                .anyMatch(message -> "AI".equalsIgnoreCase(message.getRole())
+                        && "FOLLOW_UP".equalsIgnoreCase(message.getMessageType()));
+    }
+
+    private List<String> extractKnowledgePoints(List<InterviewMessage> messages) {
+        if (messages == null) {
+            return List.of();
+        }
+        return messages.stream()
+                .map(InterviewMessage::getKnowledgePoints)
+                .filter(StringUtils::hasText)
+                .flatMap(value -> List.of(value.split("[,，;；/\\s]+")).stream())
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private String jsonArray(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value == null ? List.of() : value);
+        } catch (Exception ex) {
+            return "[]";
+        }
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (!StringUtils.hasText(value) || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxLength - 3)) + "...";
+    }
+
     private void validateResumeOwnership(Long userId, String mode, CreateInterviewDTO dto) {
-        boolean resumeRequired = Boolean.TRUE.equals(dto.getBasedOnResume())
+        boolean resumeRequired = !isTrainingWithoutResumeAllowed(dto)
+                && Boolean.TRUE.equals(dto.getBasedOnResume())
                 && (InterviewModeEnum.PROJECT_DEEP_DIVE.name().equals(mode) || InterviewModeEnum.COMPREHENSIVE.name().equals(mode));
         if (resumeRequired && dto.getResumeId() == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "请选择用于面试的简历");
@@ -2162,6 +2461,151 @@ public class InterviewServiceImpl implements InterviewService {
             index++;
         }
         return builder.toString().trim();
+    }
+
+    private void applyTrainingContext(InterviewSession session, GenerateInterviewQuestionDTO aiDTO) {
+        if (session == null || aiDTO == null) {
+            return;
+        }
+        aiDTO.setTrainingScene(session.getTrainingScene());
+        aiDTO.setTargetSkillDomain(session.getTargetSkillDomain());
+        aiDTO.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
+        aiDTO.setTargetLevel(session.getTargetLevel());
+        aiDTO.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
+        aiDTO.setProjectEvidenceContext(session.getTrainingContextSummary());
+        aiDTO.setTrainingContextSummary(session.getTrainingContextSummary());
+        aiDTO.setFollowUpIntensity(session.getFollowUpIntensity());
+    }
+
+    private void applyTrainingContext(InterviewSession session, EvaluateAnswerDTO aiDTO) {
+        if (session == null || aiDTO == null) {
+            return;
+        }
+        aiDTO.setTrainingScene(session.getTrainingScene());
+        aiDTO.setTargetSkillDomain(session.getTargetSkillDomain());
+        aiDTO.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
+        aiDTO.setTargetLevel(session.getTargetLevel());
+        aiDTO.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
+        aiDTO.setProjectEvidenceContext(session.getTrainingContextSummary());
+        aiDTO.setTrainingContextSummary(session.getTrainingContextSummary());
+        aiDTO.setFollowUpIntensity(session.getFollowUpIntensity());
+    }
+
+    private String buildTrainingContextSummary(Long userId, CreateInterviewDTO request,
+                                               List<String> targetSkillCodes, List<Long> projectEvidenceIds) {
+        String trainingScene = normalizeText(request.getTrainingScene());
+        if (!StringUtils.hasText(trainingScene)
+                && !StringUtils.hasText(request.getTargetSkillDomain())
+                && targetSkillCodes.isEmpty()
+                && projectEvidenceIds.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("trainingScene", trainingScene);
+        summary.put("targetSkillDomain", normalizeText(request.getTargetSkillDomain()));
+        summary.put("targetSkillCodes", targetSkillCodes);
+        summary.put("targetLevel", normalizeText(request.getTargetLevel()));
+        summary.put("projectEvidenceIds", projectEvidenceIds);
+        summary.put("followUpIntensity", normalizeText(request.getFollowUpIntensity()));
+        if (!projectEvidenceIds.isEmpty()) {
+            List<InnerProjectEvidenceTrainingContextVO> projects = loadProjectEvidenceTrainingContext(userId, projectEvidenceIds);
+            if (TRAINING_SCENE_PROJECT_DEEP_DIVE.equals(trainingScene) && projects.isEmpty()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "项目素材不可用，不能用于项目深挖训练");
+            }
+            summary.put("projectEvidenceSummaries", projects);
+        }
+        return toJsonOrNull(summary);
+    }
+
+    private List<InnerProjectEvidenceTrainingContextVO> loadProjectEvidenceTrainingContext(Long userId, List<Long> projectEvidenceIds) {
+        if (userId == null || projectEvidenceIds == null || projectEvidenceIds.isEmpty()) {
+            return List.of();
+        }
+        try {
+            List<InnerProjectEvidenceTrainingContextVO> result = FeignResultUtils.unwrap(
+                    resumeFeignClient.listProjectEvidenceTrainingContext(userId, projectEvidenceIds));
+            return result == null ? List.of() : result;
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "项目素材训练上下文暂时不可用");
+        }
+    }
+
+    private boolean isTrainingWithoutResumeAllowed(CreateInterviewDTO dto) {
+        if (dto == null) {
+            return false;
+        }
+        String scene = normalizeText(dto.getTrainingScene());
+        if (TRAINING_SCENE_JAVA_SPECIALTY.equals(scene)) {
+            return true;
+        }
+        return TRAINING_SCENE_PROJECT_DEEP_DIVE.equals(scene)
+                && dto.getProjectEvidenceIds() != null
+                && !sanitizeLongs(dto.getProjectEvidenceIds()).isEmpty();
+    }
+
+    private List<String> sanitizeStrings(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .limit(20)
+                .toList();
+    }
+
+    private List<Long> sanitizeLongs(List<Long> values) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(value -> value != null && value > 0)
+                .distinct()
+                .limit(10)
+                .toList();
+    }
+
+    private String toJsonOrNull(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof List<?> list && list.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
+    private List<String> readStringList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        try {
+            List<String> list = objectMapper.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? List.of() : list;
+        } catch (Exception ex) {
+            return List.of();
+        }
+    }
+
+    private List<Long> readLongList(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        try {
+            List<Long> list = objectMapper.readValue(value, new TypeReference<>() {
+            });
+            return list == null ? List.of() : list;
+        } catch (Exception ex) {
+            return List.of();
+        }
     }
 
     private void appendLine(StringBuilder builder, String label, String value) {

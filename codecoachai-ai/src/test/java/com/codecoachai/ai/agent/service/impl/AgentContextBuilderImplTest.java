@@ -11,6 +11,10 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -102,6 +106,46 @@ class AgentContextBuilderImplTest {
                 .anyMatch(warning -> warning.contains("投递上下文暂不可用")));
     }
 
+    @Test
+    void buildIncludesJobExperimentSnapshotsFromResumeService() {
+        when(resumeFeignClient.listJobExperimentAgentContext(USER_ID, TARGET_JOB_ID))
+                .thenReturn(Result.success(List.of(jobExperiment(7L))));
+
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertEquals(1, context.getJobExperiments().size());
+        JobExperimentSnapshot snapshot = context.getJobExperiments().get(0);
+        assertEquals(7L, snapshot.getId());
+        assertEquals("Redis 方向投递实验", snapshot.getTitle());
+        assertEquals("Java 后端 / Redis", snapshot.getTargetDirection());
+        assertEquals("RUNNING", snapshot.getStatus());
+        assertEquals(3, snapshot.getSampleCount());
+        assertEquals("LOW", snapshot.getConfidenceLevel());
+        assertTrue(snapshot.getSampleWarning().contains("样本不足"));
+        assertEquals("继续积累可比较投递。", snapshot.getNextStrategy());
+        verify(resumeFeignClient).listJobExperimentAgentContext(USER_ID, TARGET_JOB_ID);
+    }
+
+    @Test
+    void buildIncludesProjectEvidenceTitleAndTechStackFromResumeService() {
+        when(resumeFeignClient.listProjectEvidenceAgentContext(USER_ID))
+                .thenReturn(Result.success(List.of(projectEvidence(31L))));
+
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertEquals(1, context.getProjectEvidences().size());
+        ProjectEvidenceSnapshot snapshot = context.getProjectEvidences().get(0);
+        assertEquals(31L, snapshot.getProjectEvidenceId());
+        assertEquals("Redis rate-limit project", snapshot.getTitle());
+        assertEquals("Java, Spring Boot, Redis", snapshot.getTechStack());
+        assertEquals(80, snapshot.getCompletenessScore());
+        assertEquals(List.of("result"), snapshot.getMissingFields());
+        assertEquals(2L, snapshot.getSkillEvidenceCount());
+        assertEquals(List.of("Redis", "Lua"), snapshot.getTopSkillNames());
+        assertEquals(TARGET_JOB_ID, snapshot.getTargetJobId());
+        assertEquals("/project-evidence/31", snapshot.getSuggestedActionPath());
+    }
+
     private static void initTableInfo(Class<?> entityClass) {
         if (TableInfoHelper.getTableInfo(entityClass) == null) {
             MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
@@ -148,5 +192,32 @@ class AgentContextBuilderImplTest {
         application.setCreatedAt(LocalDateTime.of(2026, 6, 10, 9, 0));
         application.setUpdatedAt(LocalDateTime.of(2026, 6, 15, 9, 0));
         return application;
+    }
+
+    private JobExperimentAgentContextVO jobExperiment(Long id) {
+        JobExperimentAgentContextVO experiment = new JobExperimentAgentContextVO();
+        experiment.setId(id);
+        experiment.setTitle("Redis 方向投递实验");
+        experiment.setTargetDirection("Java 后端 / Redis");
+        experiment.setStatus("RUNNING");
+        experiment.setSampleCount(3);
+        experiment.setConfidenceLevel("LOW");
+        experiment.setSampleWarning("样本不足：投递少于 5 条。");
+        experiment.setNextStrategy("继续积累可比较投递。");
+        return experiment;
+    }
+
+    private ProjectEvidenceAgentContextVO projectEvidence(Long id) {
+        ProjectEvidenceAgentContextVO project = new ProjectEvidenceAgentContextVO();
+        project.setProjectEvidenceId(id);
+        project.setTitle("Redis rate-limit project");
+        project.setTechStack("Java, Spring Boot, Redis");
+        project.setCompletenessScore(80);
+        project.setMissingFields(List.of("result"));
+        project.setSkillEvidenceCount(2L);
+        project.setTopSkillNames(List.of("Redis", "Lua"));
+        project.setTargetJobId(TARGET_JOB_ID);
+        project.setSuggestedActionPath("/project-evidence/" + id);
+        return project;
     }
 }

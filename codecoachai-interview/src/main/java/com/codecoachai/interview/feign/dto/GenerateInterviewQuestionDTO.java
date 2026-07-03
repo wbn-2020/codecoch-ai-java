@@ -1,5 +1,6 @@
 package com.codecoachai.interview.feign.dto;
 
+import java.util.List;
 import lombok.Data;
 
 @Data
@@ -26,4 +27,12 @@ public class GenerateInterviewQuestionDTO {
     private String resumeContent;
     private String projectContent;
     private String historySummary;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private List<String> targetSkillCodes;
+    private String targetLevel;
+    private List<Long> projectEvidenceIds;
+    private String projectEvidenceContext;
+    private String trainingContextSummary;
+    private String followUpIntensity;
 }

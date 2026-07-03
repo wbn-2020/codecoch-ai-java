@@ -53,4 +53,24 @@ public class AgentBusinessActionNotifier {
         }
     }
 
+    public AgentTaskVO completeProjectEvidence(Long userId, Long projectEvidenceId, String note) {
+        if (userId == null || projectEvidenceId == null) {
+            return null;
+        }
+        AgentBusinessActionCompleteDTO event = new AgentBusinessActionCompleteDTO();
+        event.setUserId(userId);
+        event.setTaskType("RESUME_OPTIMIZE");
+        event.setRelatedBizType("PROJECT_EVIDENCE");
+        event.setRelatedBizId(projectEvidenceId);
+        event.setEvidenceBizType("PROJECT_EVIDENCE");
+        event.setEvidenceBizId(projectEvidenceId);
+        event.setNote(note);
+        try {
+            Result<AgentTaskVO> result = agentBusinessActionFeignClient.completeBusinessAction(event);
+            return result == null || !result.isSuccess() ? null : result.getData();
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
 }

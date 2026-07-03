@@ -21,6 +21,12 @@ public class InterviewDetailVO {
     private String difficulty;
     private String interviewerStyle;
     private Boolean basedOnResume;
+    private String trainingScene;
+    private String targetSkillDomain;
+    private List<String> targetSkillCodes;
+    private String targetLevel;
+    private List<Long> projectEvidenceIds;
+    private String followUpIntensity;
     private String status;
     private String reportStatus;
     private List<InterviewStageVO> stages;
