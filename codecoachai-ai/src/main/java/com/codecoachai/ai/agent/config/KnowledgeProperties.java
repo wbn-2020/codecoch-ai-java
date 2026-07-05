@@ -19,6 +19,7 @@ public class KnowledgeProperties {
     private int askDefaultLimit = 5;
     private long uploadMaxBytes = 8L * 1024 * 1024;
     private int uploadMaxTextChars = 100_000;
+    private int uploadMaxPdfPages = 50;
     private double nearDuplicateThreshold = 0.88D;
     private double askMinScore = 0.55D;
     /**
@@ -66,6 +67,10 @@ public class KnowledgeProperties {
 
     public int safeUploadMaxTextChars() {
         return Math.max(uploadMaxTextChars, 1);
+    }
+
+    public int safeUploadMaxPdfPages() {
+        return Math.max(uploadMaxPdfPages, 1);
     }
 
     public double safeNearDuplicateThreshold() {

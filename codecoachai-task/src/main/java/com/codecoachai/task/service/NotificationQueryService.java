@@ -44,7 +44,7 @@ public class NotificationQueryService {
                                                           String type) {
         List<ReminderCandidateVO> reminderCandidates = reminderCandidates(userId);
         ensureDailyReminders(userId, reminderCandidates);
-        Page<Notification> page = notificationMapper.selectUserNotificationPage(Page.of(pageNo, pageSize), userId,
+        Page<Notification> page = notificationMapper.selectUserNotificationPage(Page.of(defaultPage(pageNo), defaultSize(pageSize)), userId,
                 readStatus, type);
         Set<Long> readBroadcastIds = readBroadcastIds(userId, page.getRecords());
         Map<String, ReminderCandidateVO> reminderContractMap = buildReminderContractMap(reminderCandidates);
@@ -211,5 +211,13 @@ public class NotificationQueryService {
 
     private String normalizeKeyToken(String value) {
         return StringUtils.hasText(value) ? value.trim() : "";
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
 }

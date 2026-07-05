@@ -15,6 +15,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.core.io.Resource;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.http.MediaType;
@@ -87,8 +88,8 @@ public class FileUserController {
 
     @Operation(summary = "下载我的文件")
     @GetMapping("/{id}/download")
-    public ResponseEntity<byte[]> download(@PathVariable Long id,
-                                           @RequestParam(required = false) String bizType) {
+    public ResponseEntity<Resource> download(@PathVariable Long id,
+                                             @RequestParam(required = false) String bizType) {
         return fileStorageService.download(id, requireUserId(), normalizeBizTypeOrNull(bizType));
     }
 

@@ -112,7 +112,7 @@ public class AdminLogController {
         String resolvedStatus = StringUtils.hasText(loginStatus) ? normalizeStatus(loginStatus) : normalizeStatus(status);
         try {
             Page<LoginLog> page = loginLogMapper.selectPage(
-                    Page.of(pageNo, pageSize),
+                    Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                     new LambdaQueryWrapper<LoginLog>()
                             .eq(userId != null, LoginLog::getUserId, userId)
                             .and(StringUtils.hasText(keyword), wrapper -> wrapper
@@ -154,7 +154,7 @@ public class AdminLogController {
         adminPermissionGuard.require(PERM_OPERATION_LOG);
         try {
             Page<OperationLog> page = operationLogMapper.selectPage(
-                    Page.of(pageNo, pageSize),
+                    Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                     new LambdaQueryWrapper<OperationLog>()
                             .eq(userId != null, OperationLog::getUserId, userId)
                             .and(StringUtils.hasText(keyword), wrapper -> wrapper
@@ -196,7 +196,7 @@ public class AdminLogController {
         adminPermissionGuard.require(PERM_SLOW_SQL_LOG);
         try {
             Page<SlowSqlLog> page = slowSqlLogMapper.selectPage(
-                    Page.of(pageNo, pageSize),
+                    Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                     new LambdaQueryWrapper<SlowSqlLog>()
                             .and(StringUtils.hasText(keyword), wrapper -> wrapper
                                     .like(SlowSqlLog::getMapperId, keyword)
@@ -217,9 +217,17 @@ public class AdminLogController {
     }
 
     private <T> PageResult<T> emptyPage(Long pageNo, Long pageSize) {
-        long current = pageNo == null || pageNo < 1 ? 1L : pageNo;
-        long size = pageSize == null || pageSize < 1 ? 20L : pageSize;
+        long current = defaultPage(pageNo);
+        long size = defaultSize(pageSize);
         return PageResult.of(Collections.emptyList(), 0L, current, size);
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
 
     private AdminLogSummaryVO emptySummary() {

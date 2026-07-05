@@ -58,7 +58,7 @@ codecoachai:
     default-limit: 10
 
   ops:
-    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|8080|service}
+    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9208|service}
 
 feign:
   client:

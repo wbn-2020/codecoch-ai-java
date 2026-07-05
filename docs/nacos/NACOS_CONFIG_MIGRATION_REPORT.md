@@ -62,20 +62,20 @@ The following remain in MySQL or repository files and were not moved to Nacos:
 
 ## 5. Import Result
 
-Imported with:
+Historical record only. Static review workers must not rerun this command.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\nacos\import-nacos-config.ps1
+```text
+勿执行历史记录：powershell -NoProfile -ExecutionPolicy Bypass -File scripts\nacos\import-nacos-config.ps1 -ConfirmWrite
 ```
 
 Result: all 10 Data IDs imported successfully.
 
 ## 6. Build Result
 
-Command:
+Historical record only. Static review workers must not rerun this build command.
 
-```powershell
-mvn clean package -DskipTests
+```text
+勿执行历史记录：mvn clean package -DskipTests
 ```
 
 Result: SUCCESS.
@@ -102,7 +102,7 @@ Gateway routes are loaded from `codecoachai-gateway-dev.yml`.
 Confirmed:
 
 - No Gateway `/inner/**` route.
-- No user-facing `/ai/**` route.
+- User-facing SSE AI routes are exposed through Gateway for resume optimization, job target generation and interview question streaming; internal AI routes remain service-side only.
 - AI admin route remains `/admin/ai/**`.
 - Internal AI remains service-side `/inner/ai/**`, not exposed through Gateway.
 
@@ -130,7 +130,7 @@ Through Gateway `http://127.0.0.1:8080`:
 
 ## 11. Production Security Notes
 
-This is a local dev/demo configuration for a portfolio project. Production should not store database passwords, Redis passwords, or AI API keys in plaintext Nacos config. Recommended production options:
+This is a local dev/demo configuration for a portfolio project. Production should not store database passwords, Redis passwords, AI API keys, HMAC secrets, or crypto keys in plaintext Nacos config or repository docs. Recommended production options:
 
 - Environment variables
 - Nacos encrypted configuration

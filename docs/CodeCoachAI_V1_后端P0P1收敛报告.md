@@ -1,7 +1,7 @@
 # CodeCoachAI V1 后端 P0/P1 收敛报告
 
 生成时间：2026-05-14  
-仓库：`C:\my-claude\CodeCoachAI-java`  
+仓库：`<LOCAL_WORKSPACE>\CodeCoachAI-java`  
 分支：`dev`
 
 ## 1. 仓库状态

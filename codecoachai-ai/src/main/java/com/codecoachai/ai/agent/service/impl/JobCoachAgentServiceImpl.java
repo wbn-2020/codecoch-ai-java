@@ -974,6 +974,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setPlanDate(run.getPlanDate());
         vo.setTriggerType(run.getTriggerType());
         vo.setStatus(run.getStatus());
+        vo.setPromptVersionId(run.getPromptVersionId());
+        vo.setTraceId(run.getTraceId());
+        vo.setAiCallLogId(run.getAiCallLogId());
         vo.setResultSource(run.getResultSource());
         vo.setResultSourceLabel(AgentConvert.aiResultSourceLabel(run.getResultSource()));
         vo.setFallback(AgentConvert.isFallbackAiResultSource(run.getResultSource()));

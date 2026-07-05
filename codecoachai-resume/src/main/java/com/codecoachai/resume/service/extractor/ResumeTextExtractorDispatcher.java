@@ -21,6 +21,10 @@ public class ResumeTextExtractorDispatcher {
         if (content == null || content.length == 0) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容为空，请更换文件后重试");
         }
+        if (content.length > properties.maxSourceFileBytes()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Resume file is too large for online parsing. Please upload a smaller PDF/DOCX file.");
+        }
         ResumeTextExtractor extractor = extractors.stream()
                 .filter(item -> item.supports(fileExt))
                 .findFirst()

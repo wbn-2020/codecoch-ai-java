@@ -2331,48 +2331,90 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private String extractKnowledgeFileText(String extension, InputStream inputStream) throws Exception {
+        int maxChars = knowledgeProperties.safeUploadMaxTextChars();
         String text = switch (extension) {
-            case "pdf" -> extractPdfText(inputStream);
-            case "docx" -> extractDocxText(inputStream);
-            case "doc" -> extractDocText(inputStream);
-            default -> extractPlainText(inputStream);
+            case "pdf" -> extractPdfText(inputStream, maxChars);
+            case "docx" -> extractDocxText(inputStream, maxChars);
+            case "doc" -> extractDocText(inputStream, maxChars);
+            default -> extractPlainText(inputStream, maxChars);
         };
         String normalized = normalizeKnowledgeContent(text);
-        if (normalized.length() > knowledgeProperties.safeUploadMaxTextChars()) {
+        if (normalized.length() > maxChars) {
             log.warn("Personal knowledge uploaded text truncated, extension={}, originalChars={}, maxChars={}",
-                    extension, normalized.length(), knowledgeProperties.safeUploadMaxTextChars());
-            return normalized.substring(0, knowledgeProperties.safeUploadMaxTextChars());
+                    extension, normalized.length(), maxChars);
+            return normalized.substring(0, maxChars);
         }
         return normalized;
     }
 
-    private String extractPdfText(InputStream inputStream) throws Exception {
+    private String extractPdfText(InputStream inputStream, int maxChars) throws Exception {
         try (RandomAccessReadBuffer buffer = new RandomAccessReadBuffer(inputStream);
              PDDocument document = Loader.loadPDF(buffer)) {
-            return new PDFTextStripper().getText(document);
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setEndPage(Math.min(document.getNumberOfPages(), knowledgeProperties.safeUploadMaxPdfPages()));
+            return limitText(stripper.getText(document), maxChars);
         }
     }
 
-    private String extractDocxText(InputStream inputStream) throws Exception {
+    private String extractDocxText(InputStream inputStream, int maxChars) throws Exception {
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
-            return document.getParagraphs().stream()
-                    .map(paragraph -> firstText(paragraph.getText(), ""))
-                    .filter(StringUtils::hasText)
-                    .collect(Collectors.joining("\n"));
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            for (var paragraph : document.getParagraphs()) {
+                if (!appendLimitedLine(builder, firstText(paragraph.getText(), ""), maxChars)) {
+                    break;
+                }
+            }
+            return builder.toString();
         }
     }
 
-    private String extractDocText(InputStream inputStream) throws Exception {
+    private String extractDocText(InputStream inputStream, int maxChars) throws Exception {
         try (HWPFDocument document = new HWPFDocument(inputStream);
              WordExtractor extractor = new WordExtractor(document)) {
-            return extractor.getText();
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            for (String paragraph : extractor.getParagraphText()) {
+                if (!appendLimitedLine(builder, paragraph, maxChars)) {
+                    break;
+                }
+            }
+            return builder.toString();
         }
     }
 
-    private String extractPlainText(InputStream inputStream) throws Exception {
+    private String extractPlainText(InputStream inputStream, int maxChars) throws Exception {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-            return reader.lines().collect(Collectors.joining("\n"));
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            char[] buffer = new char[4096];
+            int length;
+            while (builder.length() < maxChars && (length = reader.read(buffer)) != -1) {
+                int remaining = maxChars - builder.length();
+                builder.append(buffer, 0, Math.min(length, remaining));
+            }
+            return builder.toString();
         }
+    }
+
+    private boolean appendLimitedLine(StringBuilder builder, String line, int maxChars) {
+        if (!StringUtils.hasText(line) || builder.length() >= maxChars) {
+            return builder.length() < maxChars;
+        }
+        if (!builder.isEmpty()) {
+            builder.append('\n');
+        }
+        int remaining = maxChars - builder.length();
+        if (remaining <= 0) {
+            return false;
+        }
+        String value = line.trim();
+        builder.append(value, 0, Math.min(value.length(), remaining));
+        return builder.length() < maxChars;
+    }
+
+    private String limitText(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars);
     }
 
     private String normalizeKnowledgeFingerprint(String content) {

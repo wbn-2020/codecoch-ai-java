@@ -1,7 +1,9 @@
 package com.codecoachai.resume.domain.vo;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import lombok.Data;
 
 @Data
@@ -20,6 +22,10 @@ public class JobSearchExperimentMetricsVO {
     private Integer sampleCount = 0;
     private String confidenceLevel = "LOW";
     private Boolean sampleInsufficient = true;
+    private Boolean resumeVersionSampleInsufficient = true;
     private String sampleWarning;
     private List<String> facts = new ArrayList<>();
+    private List<String> unsupportedConclusions = new ArrayList<>();
+    private List<String> weakObservations = new ArrayList<>();
+    private Map<Long, Integer> resumeVersionUsageCounts = new LinkedHashMap<>();
 }

@@ -86,6 +86,17 @@ public class AliyunOssFileService implements OssFileService {
     }
 
     @Override
+    public InputStream openStream(String ossKey) {
+        String key = applyPrefix(ossKey);
+        try {
+            return ossClient.getObject(properties.getBucket(), key).getObjectContent();
+        } catch (Exception ex) {
+            log.error("OSS stream open failed key={}", key, ex);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "OSS file stream open failed");
+        }
+    }
+
+    @Override
     public void delete(String ossKey) {
         ossClient.deleteObject(properties.getBucket(), applyPrefix(ossKey));
     }

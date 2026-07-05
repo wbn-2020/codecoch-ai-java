@@ -1,6 +1,8 @@
 # Vector RAG And Dedupe Runbook
 
-This runbook validates the Qdrant-backed question dedupe and personal knowledge RAG flow in a local development environment.
+This runbook validates the Qdrant-backed question dedupe and personal knowledge RAG flow in a local development environment. It is a runtime/manual-confirmation guide, not a static review checklist.
+
+During documentation-only or static review work, do not execute the Docker, Maven, service startup, frontend, migration, rebuild, retry, or HTTP calls below.
 
 ## Scope
 
@@ -13,16 +15,20 @@ This runbook validates the Qdrant-backed question dedupe and personal knowledge 
 
 Start the required infrastructure from the backend repository:
 
-```powershell
-docker compose up -d mysql redis nacos qdrant
+运行期/人工确认，静态审查勿执行：
+
+```text
+勿执行示例：docker compose up -d mysql redis nacos qdrant
 ```
 
 The Compose MySQL service initializes fresh volumes with `MYSQL_DATABASE=codecoachai_v1`, matching the Nacos datasource files and Flyway target database. This variable is only applied when the `mysql-data` volume is created for the first time. If the volume already existed from an older setup, verify that `codecoachai_v1` exists before running Flyway or starting services.
 
 Optional services for broader system testing:
 
-```powershell
-docker compose up -d rocketmq-namesrv rocketmq-broker elasticsearch
+运行期/人工确认，静态审查勿执行：
+
+```text
+勿执行示例：docker compose up -d rocketmq-namesrv rocketmq-broker elasticsearch
 ```
 
 Ports used by the vector path:
@@ -37,7 +43,9 @@ Ports used by the vector path:
 
 Use these in the terminal that starts the backend services:
 
-```powershell
+运行期/人工确认，静态审查勿执行：
+
+```text
 $env:CODECOACHAI_VECTOR_ENABLED = "true"
 $env:QDRANT_BASE_URL = "http://127.0.0.1:6333"
 $env:QDRANT_API_KEY = ""
@@ -51,8 +59,10 @@ $env:DASHSCOPE_API_KEY = "<your DashScope key>"
 
 Apply the migration that adds vector observability fields:
 
-```powershell
-mvn flyway:migrate
+运行期/人工确认，静态审查勿执行：
+
+```text
+勿执行示例：mvn flyway:migrate
 ```
 
 Relevant migration:
@@ -83,29 +93,37 @@ Qdrant point ids must be valid UUIDs or unsigned integers. The application deriv
 
 For focused validation, start at least these backend services:
 
-```powershell
-mvn -pl codecoachai-gateway spring-boot:run
-mvn -pl codecoachai-auth spring-boot:run
-mvn -pl codecoachai-user spring-boot:run
-mvn -pl codecoachai-question spring-boot:run
-mvn -pl codecoachai-ai spring-boot:run
+运行期/人工确认，静态审查勿执行：
+
+```text
+勿执行示例：mvn -pl codecoachai-gateway spring-boot:run
+勿执行示例：mvn -pl codecoachai-auth spring-boot:run
+勿执行示例：mvn -pl codecoachai-user spring-boot:run
+勿执行示例：mvn -pl codecoachai-question spring-boot:run
+勿执行示例：mvn -pl codecoachai-ai spring-boot:run
 ```
 
-Start the frontend from `C:\my-claude\CodeCoachAI-vue` when you need to validate the admin buttons:
+Start the frontend from `<LOCAL_WORKSPACE>\CodeCoachAI-vue` when you need to validate the admin buttons:
 
-```powershell
-npm run dev
+运行期/人工确认，静态审查勿执行：
+
+```text
+勿执行示例：npm run dev
 ```
 
 ## Validation Checklist
 
 1. Check Qdrant directly:
 
-```powershell
+运行期/人工确认，静态审查勿执行：
+
+```text
 Invoke-RestMethod http://127.0.0.1:6333/healthz
 ```
 
 2. Check the app vector health endpoint:
+
+运行期/人工确认，静态审查勿执行：
 
 ```text
 GET /admin/vector-store/health
@@ -122,6 +140,8 @@ Expected:
 
 3. Rebuild or retry question vectors:
 
+运行期/人工确认，静态审查勿执行：
+
 ```text
 POST /admin/questions/embedding/rebuild
 GET  /admin/questions/embedding/stats
@@ -134,6 +154,8 @@ Expected:
 - Failed rows keep `index_status=FAILED` and `last_error` for diagnosis.
 
 4. Validate question dedupe:
+
+运行期/人工确认，静态审查勿执行：
 
 ```text
 POST /admin/questions/check-duplicate
@@ -148,6 +170,8 @@ Expected:
 
 5. Rebuild or retry personal knowledge vectors:
 
+运行期/人工确认，静态审查勿执行：
+
 ```text
 POST /agent/knowledge/vectors/rebuild
 POST /agent/knowledge/vectors/retry-failed
@@ -161,6 +185,8 @@ Expected:
 - The knowledge-base chunk drawer shows each chunk's index status, embedding model, dimension, indexed time, and any last error.
 
 6. Validate personal RAG:
+
+运行期/人工确认，静态审查勿执行：
 
 ```text
 GET  /agent/knowledge/search

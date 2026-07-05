@@ -6,7 +6,7 @@ Use Flyway to manage the versioned scripts under `sql/migration/`.
 
 ```cmd
 set MYSQL_PASSWORD=your-local-password
-cd C:\my-claude\CodeCoachAI-java
+cd <CODECOACHAI_JAVA_HOME>
 mvn flyway:migrate -DskipTests
 ```
 
@@ -18,7 +18,21 @@ mvn flyway:migrate -DskipTests
 | Apply pending scripts | `mvn flyway:migrate` |
 | Validate applied scripts | `mvn flyway:validate` |
 | Repair metadata table | `mvn flyway:repair` |
-| Dangerous dev-only clean | `mvn flyway:clean -Dflyway.cleanDisabled=false` |
+
+## Dangerous cleanup
+
+`flyway:clean` drops schema objects and is not a common development command. Do not run it
+against shared, demo, staging, production, or any database that has not been backed up.
+
+Only use it for a disposable local schema after confirming the exact database name and
+connection URL, for example:
+
+```text
+DISPOSABLE LOCAL DATABASE ONLY:
+1. Confirm the target JDBC URL points to a throwaway local schema.
+2. Back up anything you may need.
+3. Run clean only with an explicit URL and local-only credentials.
+```
 
 ## Baseline
 

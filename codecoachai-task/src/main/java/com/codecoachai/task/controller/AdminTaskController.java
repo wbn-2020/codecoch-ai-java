@@ -109,7 +109,7 @@ public class AdminTaskController {
         // type 是早期管理页字段，bizType 是当前实体字段；统一解析后再查询。
         String resolvedBizType = StringUtils.hasText(bizType) ? bizType : type;
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
-                Page.of(pageNo, pageSize),
+                Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                 new LambdaQueryWrapper<AsyncTask>()
                         .and(StringUtils.hasText(keyword), wrapper -> wrapper
                                 .like(AsyncTask::getMessageId, keyword)
@@ -254,7 +254,7 @@ public class AdminTaskController {
             @RequestParam(required = false) String bizType) {
         permissionGuard.require(PERM_TASK_LIST);
         Page<MessageDeadLetter> page = deadLetterMapper.selectPage(
-                Page.of(pageNo, pageSize),
+                Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                 new LambdaQueryWrapper<MessageDeadLetter>()
                         .eq(StringUtils.hasText(handleStatus), MessageDeadLetter::getHandleStatus, handleStatus)
                         .eq(StringUtils.hasText(bizType), MessageDeadLetter::getBizType, bizType)
@@ -863,6 +863,14 @@ public class AdminTaskController {
         if (updated <= 0) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "dead letter status changed, please refresh and retry");
         }
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
 
     private static final class RetryDispatch {

@@ -182,6 +182,7 @@ public class QuestionStudyController {
             @RequestParam(defaultValue = "10") Integer count,
             @RequestParam(required = false) Long categoryId) {
         Long userId = SecurityAssert.requireLoginUserId();
+        int safeCount = normalizeCount(count);
 
         // 查询用户错题记录
         LambdaQueryWrapper<UserQuestionRecord> recordQuery = new LambdaQueryWrapper<UserQuestionRecord>()
@@ -200,7 +201,7 @@ public class QuestionStudyController {
                 .in(Question::getId, wrongIds)
                 .eq(Question::getStatus, 1)
                 .eq(categoryId != null, Question::getCategoryId, categoryId)
-                .last("limit " + count);
+                .last("limit " + safeCount);
         List<Question> questions = questionMapper.selectList(qQuery);
 
         // 随机打乱
@@ -215,6 +216,7 @@ public class QuestionStudyController {
     @PostMapping("/practice/generate")
     public Result<List<Question>> generatePractice(@Valid @RequestBody PracticeGenerateDTO dto) {
         SecurityAssert.requireLoginUserId();
+        int safeCount = normalizeCount(dto == null ? null : dto.getCount());
 
         // 从题库中按条件抽题
         LambdaQueryWrapper<Question> query = new LambdaQueryWrapper<Question>()
@@ -222,13 +224,13 @@ public class QuestionStudyController {
                 .like(Question::getTitle, dto.getTopic())
                 .eq(dto.getDifficulty() != null, Question::getDifficulty, dto.getDifficulty())
                 .eq(dto.getCategoryId() != null, Question::getCategoryId, dto.getCategoryId())
-                .last("limit " + (dto.getCount() != null ? dto.getCount() : 10));
+                .last("limit " + safeCount);
         List<Question> questions = questionMapper.selectList(query);
 
         // 如果按标题匹配不够，尝试按 content 匹配
-        if (questions.size() < (dto.getCount() != null ? dto.getCount() : 10)) {
+        if (questions.size() < safeCount) {
             List<Long> existIds = questions.stream().map(Question::getId).toList();
-            int remaining = (dto.getCount() != null ? dto.getCount() : 10) - questions.size();
+            int remaining = safeCount - questions.size();
             List<Question> extra = questionMapper.selectList(
                     new LambdaQueryWrapper<Question>()
                             .eq(Question::getStatus, 1)

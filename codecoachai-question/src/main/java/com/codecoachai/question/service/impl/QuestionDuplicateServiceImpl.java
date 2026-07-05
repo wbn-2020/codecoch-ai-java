@@ -1610,7 +1610,7 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     }
 
     private long defaultSize(Long pageSize) {
-        return pageSize == null || pageSize <= 0 ? 10L : pageSize;
+        return pageSize == null || pageSize <= 0 ? 10L : Math.min(pageSize, 100L);
     }
 
     private record MatchResult(QuestionDuplicateMatchType matchType, BigDecimal score, String reason,

@@ -8,9 +8,11 @@ x-default-logging: &default-logging
 
 # ============================================================
 # CodeCoachAI V3 本地开发环境 docker-compose
-# 启动基础设施：MySQL + Redis + Nacos + RocketMQ + Elasticsearch
+# 默认仅启动基础设施：MySQL + Redis + Nacos
+# 按需 profile：mq、mq-dashboard、search、vector
 # 业务服务建议在 IDE 中启动（方便调试）
 # 注意：该 compose 仅用于本机开发，端口默认绑定 127.0.0.1，不应直接用于公网或准生产。
+# MySQL 初始化挂载仅在首次创建 mysql-data 时执行，使用前确认目标 volume 可丢弃。
 # ============================================================
 
 services:
@@ -76,6 +78,9 @@ services:
   rocketmq-namesrv:
     image: apache/rocketmq:5.1.4
     container_name: codecoachai-rocketmq-namesrv
+    profiles:
+      - mq
+      - mq-dashboard
     logging: *default-logging
     ports:
       - "127.0.0.1:9876:9876"
@@ -87,6 +92,8 @@ services:
   rocketmq-broker:
     image: apache/rocketmq:5.1.4
     container_name: codecoachai-rocketmq-broker
+    profiles:
+      - mq
     logging: *default-logging
     ports:
       - "127.0.0.1:10911:10911"
@@ -100,8 +107,10 @@ services:
 
   # ---------- RocketMQ Dashboard（可选） ----------
   rocketmq-dashboard:
-    image: apacherocketmq/rocketmq-dashboard:latest
+    image: apacherocketmq/rocketmq-dashboard:1.0.0
     container_name: codecoachai-rocketmq-dashboard
+    profiles:
+      - mq-dashboard
     logging: *default-logging
     ports:
       - "127.0.0.1:18080:8080"
@@ -114,6 +123,8 @@ services:
   elasticsearch:
     image: elasticsearch:8.14.3
     container_name: codecoachai-elasticsearch
+    profiles:
+      - search
     logging: *default-logging
     ports:
       - "127.0.0.1:9200:9200"
@@ -135,6 +146,8 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.12.6
     container_name: codecoachai-qdrant
+    profiles:
+      - vector
     logging: *default-logging
     ports:
       - "127.0.0.1:6333:6333"

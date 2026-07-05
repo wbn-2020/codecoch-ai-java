@@ -81,6 +81,31 @@ class AiResultFeedbackServiceImplTest {
         assertEquals(10L, captor.getValue().getUserId());
     }
 
+    @Test
+    void createRejectsFeedbackWithoutSceneOrPagePath() {
+        AiResultFeedbackCreateDTO dto = baseDto();
+        dto.setScene(" ");
+        dto.setPagePath(null);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.create(10L, dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        verify(feedbackMapper, never()).insert(any(AiResultFeedback.class));
+    }
+
+    @Test
+    void createRejectsFeedbackWithoutBusinessOrAiCallTrace() {
+        AiResultFeedbackCreateDTO dto = baseDto();
+        dto.setBizType(null);
+        dto.setBizId(null);
+        dto.setAiCallLogId(null);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.create(10L, dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        verify(feedbackMapper, never()).insert(any(AiResultFeedback.class));
+    }
+
     private AiResultFeedbackCreateDTO baseDto() {
         AiResultFeedbackCreateDTO dto = new AiResultFeedbackCreateDTO();
         dto.setScene("INTERVIEW_REPORT");

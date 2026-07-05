@@ -45,6 +45,11 @@ public class AdminVectorStoreController {
     private static final String VECTOR_JOB_KNOWLEDGE_RETRY = "KNOWLEDGE_RETRY";
     private static final String VECTOR_SCOPE_KNOWLEDGE = "KNOWLEDGE";
     private static final String VECTOR_SCOPE_FAILED_OR_STALE = "FAILED_OR_STALE";
+    private static final Map<String, String> MYSQL_VECTOR_INDEX_TABLES = Map.of(
+            "question_embedding", "question_id",
+            "personal_knowledge_chunk", "id"
+    );
+    private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
 
     private final VectorStoreClient vectorStoreClient;
     private final VectorIndexJobService vectorIndexJobService;
@@ -291,19 +296,29 @@ public class AdminVectorStoreController {
 
     private Map<String, Object> tableIndexStats(String tableName, String idColumn) {
         Map<String, Object> stats = new LinkedHashMap<>();
+        if (!isAllowedVectorIndexTable(tableName, idColumn)) {
+            stats.put("tableName", tableName);
+            stats.put("idColumn", idColumn);
+            stats.put("total", 0L);
+            stats.put("statusCounts", List.of());
+            stats.put("modelCounts", List.of());
+            stats.put("errorMessage", "Unsupported vector index table metadata");
+            return stats;
+        }
+        String quotedTableName = quoteIdentifier(tableName);
         try {
             Long total = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(1) FROM " + tableName + " WHERE deleted = 0", Long.class);
+                    "SELECT COUNT(1) FROM " + quotedTableName + " WHERE deleted = 0", Long.class);
             List<Map<String, Object>> statusCounts = jdbcTemplate.queryForList(
                     "SELECT COALESCE(index_status, 'PENDING') AS status, COUNT(1) AS count "
-                            + "FROM " + tableName + " WHERE deleted = 0 "
+                            + "FROM " + quotedTableName + " WHERE deleted = 0 "
                             + "GROUP BY COALESCE(index_status, 'PENDING') ORDER BY status");
             List<Map<String, Object>> modelCounts = jdbcTemplate.queryForList(
                     "SELECT COALESCE(embedding_model, 'UNKNOWN') AS model, COUNT(1) AS count "
-                            + "FROM " + tableName + " WHERE deleted = 0 "
+                            + "FROM " + quotedTableName + " WHERE deleted = 0 "
                             + "GROUP BY COALESCE(embedding_model, 'UNKNOWN') ORDER BY count DESC, model LIMIT 8");
             String lastIndexedAt = jdbcTemplate.queryForObject(
-                    "SELECT MAX(indexed_at) FROM " + tableName + " WHERE deleted = 0", String.class);
+                    "SELECT MAX(indexed_at) FROM " + quotedTableName + " WHERE deleted = 0", String.class);
             stats.put("tableName", tableName);
             stats.put("idColumn", idColumn);
             stats.put("total", total == null ? 0L : total);
@@ -319,6 +334,23 @@ public class AdminVectorStoreController {
             stats.put("errorMessage", safeOperationalError(ex));
         }
         return stats;
+    }
+
+    private boolean isAllowedVectorIndexTable(String tableName, String idColumn) {
+        return isSafeIdentifier(tableName)
+                && isSafeIdentifier(idColumn)
+                && idColumn.equals(MYSQL_VECTOR_INDEX_TABLES.get(tableName));
+    }
+
+    private String quoteIdentifier(String identifier) {
+        if (!isSafeIdentifier(identifier)) {
+            throw new IllegalArgumentException("Unsafe SQL identifier: " + identifier);
+        }
+        return "`" + identifier + "`";
+    }
+
+    private boolean isSafeIdentifier(String identifier) {
+        return identifier != null && identifier.matches(SAFE_IDENTIFIER_PATTERN);
     }
 
     private Map<String, Object> vectorDeleteOutboxStats() {

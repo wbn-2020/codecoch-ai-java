@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,6 +45,30 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 @Slf4j
 public class SystemConfigServiceImpl implements SystemConfigService {
+
+    private static final Set<String> DASHBOARD_QUERY_TABLES = Set.of(
+            "sys_user",
+            "question",
+            "resume",
+            "interview_session",
+            "ai_call_log",
+            "study_plan",
+            "question_review",
+            "question_duplicate_review",
+            "prompt_template_version",
+            "resume_analysis_record",
+            "async_task",
+            "agent_run",
+            "slow_sql_log",
+            "notification",
+            "operation_log",
+            "login_log",
+            "target_job",
+            "study_task",
+            "practice_record",
+            "agent_task"
+    );
+    private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
 
     private final SystemConfigMapper systemConfigMapper;
     private final JdbcTemplate jdbcTemplate;
@@ -214,7 +239,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private SystemConfig getRequiredConfigEntityById(Long id) {
         SystemConfig config = getConfigEntityById(id);
         if (config == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "绯荤粺閰嶇疆涓嶅瓨鍦ㄦ垨宸蹭笉鍙敤");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "系统配置不存在或已不可用");
         }
         return config;
     }
@@ -222,7 +247,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     private SystemConfig getRequiredConfigEntityByKey(String configKey) {
         SystemConfig config = getConfigEntityByKey(configKey);
         if (config == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "绯荤粺閰嶇疆涓嶅瓨鍦ㄦ垨宸蹭笉鍙敤");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "系统配置不存在或已不可用");
         }
         return config;
     }
@@ -301,9 +326,11 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (!tableExists(tableName)) {
             return;
         }
-        String sql = "SELECT DATE(" + dateColumn + ") AS stat_date, COUNT(1) AS total FROM `" + tableName
-                + "` WHERE " + condition + " AND " + dateColumn
-                + " >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(" + dateColumn + ")";
+        String quotedDateColumn = quoteIdentifier(dateColumn);
+        String sql = "SELECT DATE(" + quotedDateColumn + ") AS stat_date, COUNT(1) AS total FROM "
+                + quoteIdentifier(tableName)
+                + " WHERE " + condition + " AND " + quotedDateColumn
+                + " >= DATE_SUB(CURDATE(), INTERVAL 6 DAY) GROUP BY DATE(" + quotedDateColumn + ")";
         try {
             jdbcTemplate.query(sql, rs -> {
                 LocalDate date = rs.getDate("stat_date").toLocalDate();
@@ -587,8 +614,8 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (!tableExists(tableName) || !columnExists(tableName, dateColumn)) {
             return 0L;
         }
-        String sql = "SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition
-                + " AND `" + dateColumn + "` >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
+        String sql = "SELECT COUNT(1) FROM " + quoteIdentifier(tableName) + " WHERE " + condition
+                + " AND " + quoteIdentifier(dateColumn) + " >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class);
             return count == null ? 0L : count;
@@ -695,7 +722,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (!tableExists(tableName)) {
             return 0L;
         }
-        String sql = "SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition;
+        String sql = "SELECT COUNT(1) FROM " + quoteIdentifier(tableName) + " WHERE " + condition;
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class);
             return count == null ? 0L : count;
@@ -706,6 +733,9 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     private boolean tableExists(String tableName) {
+        if (!DASHBOARD_QUERY_TABLES.contains(tableName)) {
+            return false;
+        }
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
@@ -717,6 +747,9 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     }
 
     private boolean columnExists(String tableName, String columnName) {
+        if (!DASHBOARD_QUERY_TABLES.contains(tableName) || !isSafeIdentifier(columnName)) {
+            return false;
+        }
         String sql = "SELECT COUNT(1) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
         try {
@@ -726,6 +759,17 @@ public class SystemConfigServiceImpl implements SystemConfigService {
             log.warn("Admin dashboard column existence check failed, table={}, column={}", tableName, columnName, ex);
             return false;
         }
+    }
+
+    private String quoteIdentifier(String identifier) {
+        if (!isSafeIdentifier(identifier)) {
+            throw new IllegalArgumentException("Unsafe SQL identifier: " + identifier);
+        }
+        return "`" + identifier + "`";
+    }
+
+    private boolean isSafeIdentifier(String identifier) {
+        return identifier != null && identifier.matches(SAFE_IDENTIFIER_PATTERN);
     }
 
     @FunctionalInterface

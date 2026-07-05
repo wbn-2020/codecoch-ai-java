@@ -15,6 +15,9 @@ public class AgentRunUserDetailVO {
     private LocalDate planDate;
     private String triggerType;
     private String status;
+    private Long promptVersionId;
+    private String traceId;
+    private Long aiCallLogId;
     private String resultSource;
     private String resultSourceLabel;
     private Boolean fallback;

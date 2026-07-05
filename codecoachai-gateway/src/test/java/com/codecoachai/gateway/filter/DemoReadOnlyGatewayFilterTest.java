@@ -18,6 +18,8 @@ class DemoReadOnlyGatewayFilterTest {
         assertTrue((Boolean) isWriteWhitePath.invoke(filter, "/auth/register"));
         assertTrue((Boolean) isWriteWhitePath.invoke(filter, "/auth/refresh-token"));
         assertTrue((Boolean) isWriteWhitePath.invoke(filter, "/auth/logout"));
+        assertTrue((Boolean) isWriteWhitePath.invoke(filter, "/portfolio-demo/load"));
+        assertTrue((Boolean) isWriteWhitePath.invoke(filter, "/portfolio-demo/reset"));
         assertFalse((Boolean) isWriteWhitePath.invoke(filter, "/user/profile"));
     }
 }
