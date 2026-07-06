@@ -27,17 +27,22 @@ import com.codecoachai.ai.agent.mapper.ReadinessScoreRecordMapper;
 import com.codecoachai.ai.agent.mapper.SkillGrowthSnapshotMapper;
 import com.codecoachai.ai.agent.service.AgentGrowthService;
 import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -52,10 +57,27 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private static final int GROWTH_WINDOW_DAYS = 30;
     private static final int MIN_TRUSTED_TASK_COUNT = 3;
     private static final int MIN_TRUSTED_DONE_TASK_COUNT = 2;
+    private static final BigDecimal MIN_STRONG_MEMORY_CONFIDENCE = BigDecimal.valueOf(0.6);
     private static final String DEFAULT_GROWTH_TIME_WINDOW = "最近30天";
     private static final String INCLUDED_TASK_SOURCE_LABEL = "当前纳入：任务完成记录";
     private static final String EXCLUDED_GROWTH_SOURCE_LABEL =
             "当前未纳入：AI 教练运行记录、复盘记录、成长记忆、反馈信号、提醒信号";
+    private static final int MAX_MANUAL_MEMORY_CONTENT_LENGTH = 2_000;
+    private static final Set<String> ALLOWED_MEMORY_TYPES = Set.of(
+            "USER_NOTE",
+            "SKILL_GAP",
+            "CAREER_GOAL",
+            "INTERVIEW_PREFERENCE",
+            "JOB_SEARCH_PREFERENCE",
+            "REVIEW_SUMMARY"
+    );
+    private static final Set<String> ALLOWED_MEMORY_SOURCE_TYPES = Set.of(
+            "MANUAL",
+            "AGENT_REVIEW",
+            "AGENT_FEEDBACK",
+            "JOB_EXPERIMENT",
+            "RESUME_JOB_MATCH"
+    );
 
     private final AgentTaskMapper agentTaskMapper;
     private final AgentRunMapper agentRunMapper;
@@ -191,13 +213,14 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
 
     @Override
     public AgentMemoryVO createMemory(Long userId, AgentMemoryCreateDTO dto) {
+        String content = normalizeManualMemoryContent(dto == null ? null : dto.getContent());
         AgentMemory memory = new AgentMemory();
         memory.setUserId(userId);
-        memory.setMemoryType(firstText(dto == null ? null : dto.getMemoryType(), "USER_NOTE"));
-        memory.setContent(firstText(dto == null ? null : dto.getContent(), "Manual job-preparation memory."));
-        memory.setSourceType(firstText(dto == null ? null : dto.getSourceType(), "MANUAL"));
+        memory.setMemoryType(normalizeMemoryCode(dto == null ? null : dto.getMemoryType(), "USER_NOTE", ALLOWED_MEMORY_TYPES));
+        memory.setContent(content);
+        memory.setSourceType(normalizeMemoryCode(dto == null ? null : dto.getSourceType(), "MANUAL", ALLOWED_MEMORY_SOURCE_TYPES));
         memory.setSourceId(dto == null ? null : dto.getSourceId());
-        memory.setConfidence(dto == null || dto.getConfidence() == null ? BigDecimal.valueOf(0.9) : dto.getConfidence());
+        memory.setConfidence(clampConfidence(dto == null ? null : dto.getConfidence()));
         memory.setEnabled(1);
         agentMemoryMapper.insert(memory);
         return toMemoryVO(memory);
@@ -207,6 +230,15 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     public AgentMemoryVO setMemoryEnabled(Long userId, Long id, boolean enabled) {
         AgentMemory memory = ownedMemory(userId, id);
         memory.setEnabled(enabled ? 1 : 0);
+        agentMemoryMapper.updateById(memory);
+        return toMemoryVO(agentMemoryMapper.selectById(id));
+    }
+
+    @Override
+    public AgentMemoryVO confirmMemory(Long userId, Long id) {
+        AgentMemory memory = ownedMemory(userId, id);
+        memory.setEnabled(1);
+        memory.setUpdatedAt(LocalDateTime.now());
         agentMemoryMapper.updateById(memory);
         return toMemoryVO(agentMemoryMapper.selectById(id));
     }
@@ -275,12 +307,12 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         }
         AgentMemory memory = new AgentMemory();
         memory.setUserId(userId);
-        memory.setMemoryType("WEAKNESS");
-        memory.setContent("Recent review shows low readiness; future plans should prioritize high-impact tasks.");
+        memory.setMemoryType("SKILL_GAP");
+        memory.setContent("Candidate memory: recent review shows low readiness; enable after user confirmation if future plans should prioritize high-impact tasks.");
         memory.setSourceType("AGENT_REVIEW");
         memory.setSourceId(review.getId());
         memory.setConfidence(BigDecimal.valueOf(0.75));
-        memory.setEnabled(1);
+        memory.setEnabled(0);
         agentMemoryMapper.insert(memory);
     }
 
@@ -516,7 +548,80 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         vo.setEnabled(memory.getEnabled());
         vo.setCreatedAt(memory.getCreatedAt());
         vo.setUpdatedAt(memory.getUpdatedAt());
+        attachMemoryGovernance(vo, memory);
         return vo;
+    }
+
+    private void attachMemoryGovernance(AgentMemoryVO vo, AgentMemory memory) {
+        boolean enabled = memory.getEnabled() != null && memory.getEnabled() == 1;
+        boolean lowConfidence = memory.getConfidence() == null
+                || memory.getConfidence().compareTo(MIN_STRONG_MEMORY_CONFIDENCE) < 0;
+        boolean manual = isManualMemorySource(memory.getSourceType());
+        boolean confirmed = manual || isConfirmedCompatible(memory);
+        boolean candidate = isCandidateMemorySource(memory.getSourceType()) && !confirmed;
+        vo.setLowConfidence(lowConfidence);
+        vo.setImpactPreview(List.of(
+                "AGENT_TASK",
+                "JOB_EXPERIMENT_REVIEW",
+                "QUESTION_RECOMMENDATION",
+                "INTERVIEW_TRAINING",
+                "RESUME_PROJECT_SUGGESTION"));
+        if (candidate) {
+            vo.setMemoryStatus("CANDIDATE");
+            vo.setEvidenceTrustStatus("CANDIDATE");
+            vo.setCanBeEvidence(false);
+            vo.setDisabledReason("WAITING_USER_CONFIRMATION");
+            vo.setConfirmedAt(null);
+            return;
+        }
+        if (!enabled) {
+            vo.setMemoryStatus("DISABLED");
+            vo.setEvidenceTrustStatus("DISABLED");
+            vo.setCanBeEvidence(false);
+            vo.setDisabledReason("DISABLED_BY_USER");
+            vo.setConfirmedAt(null);
+            return;
+        }
+        vo.setConfirmedAt(firstTime(memory.getUpdatedAt(), memory.getCreatedAt(), LocalDateTime.now()));
+        if (lowConfidence) {
+            vo.setMemoryStatus("LOW_CONFIDENCE");
+            vo.setEvidenceTrustStatus("PARTIAL");
+            vo.setCanBeEvidence(false);
+            vo.setDisabledReason("LOW_CONFIDENCE");
+            return;
+        }
+        vo.setMemoryStatus("CONFIRMED");
+        vo.setEvidenceTrustStatus("VERIFIED");
+        vo.setCanBeEvidence(true);
+        vo.setDisabledReason(null);
+    }
+
+    private boolean isCandidateMemorySource(String sourceType) {
+        String normalized = sourceType == null ? null : sourceType.trim().toUpperCase(Locale.ROOT);
+        return Set.of("AGENT_REVIEW", "AGENT_FEEDBACK", "JOB_EXPERIMENT", "RESUME_JOB_MATCH", "AI_SUMMARY", "SYSTEM")
+                .contains(normalized);
+    }
+
+    private boolean isManualMemorySource(String sourceType) {
+        String normalized = sourceType == null ? "MANUAL" : sourceType.trim().toUpperCase(Locale.ROOT);
+        return Set.of("MANUAL", "USER_MANUAL", "USER_NOTE").contains(normalized);
+    }
+
+    private boolean isConfirmedCompatible(AgentMemory memory) {
+        return memory.getEnabled() != null
+                && memory.getEnabled() == 1
+                && memory.getCreatedAt() != null
+                && memory.getUpdatedAt() != null
+                && memory.getUpdatedAt().isAfter(memory.getCreatedAt());
+    }
+
+    private LocalDateTime firstTime(LocalDateTime... values) {
+        for (LocalDateTime value : values) {
+            if (value != null) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private String writeJson(Object value) {
@@ -563,6 +668,33 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             }
         }
         return null;
+    }
+
+    private String normalizeManualMemoryContent(String content) {
+        if (!StringUtils.hasText(content)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Memory content cannot be empty");
+        }
+        String normalized = content.trim();
+        if (normalized.length() > MAX_MANUAL_MEMORY_CONTENT_LENGTH) {
+            return normalized.substring(0, MAX_MANUAL_MEMORY_CONTENT_LENGTH);
+        }
+        return normalized;
+    }
+
+    private String normalizeMemoryCode(String value, String fallback, Set<String> allowedValues) {
+        String normalized = StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : fallback;
+        return allowedValues.contains(normalized) ? normalized : fallback;
+    }
+
+    private BigDecimal clampConfidence(BigDecimal value) {
+        BigDecimal confidence = value == null ? BigDecimal.valueOf(0.9) : value;
+        if (confidence.compareTo(BigDecimal.ZERO) < 0) {
+            return BigDecimal.ZERO;
+        }
+        if (confidence.compareTo(BigDecimal.ONE) > 0) {
+            return BigDecimal.ONE;
+        }
+        return confidence;
     }
 
     private static final class GrowthEvidencePolicy {

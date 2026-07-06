@@ -28,6 +28,7 @@ import org.springframework.util.StringUtils;
 public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseService {
 
     private static final int DEFAULT_BATCH_SIZE = 5;
+    private static final int MAX_BATCH_SIZE = 20;
     private static final String DEFAULT_ERROR_MESSAGE = "简历解析失败，请稍后重试";
 
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
@@ -37,7 +38,7 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
 
     @Override
     public void parsePendingRecords(int batchSize) {
-        int actualBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+        int actualBatchSize = batchSize > 0 ? Math.min(batchSize, MAX_BATCH_SIZE) : DEFAULT_BATCH_SIZE;
         List<ResumeAnalysisRecord> records = analysisRecordMapper.selectList(new LambdaQueryWrapper<ResumeAnalysisRecord>()
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PENDING.getCode())
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)

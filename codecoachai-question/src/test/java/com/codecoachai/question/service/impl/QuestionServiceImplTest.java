@@ -26,6 +26,7 @@ import com.codecoachai.question.domain.dto.QuestionQueryDTO;
 import com.codecoachai.question.domain.dto.SubmitQuestionAnswerDTO;
 import com.codecoachai.question.domain.entity.PracticeRecord;
 import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.feign.vo.AgentTaskVO;
 import com.codecoachai.question.mapper.PracticeRecordMapper;
@@ -82,6 +83,7 @@ class QuestionServiceImplTest {
     @BeforeEach
     void setUp() {
         initTableInfo(Question.class);
+        initTableInfo(QuestionTagRelation.class);
         questionService = new QuestionServiceImpl(
                 questionMapper,
                 categoryMapper,
@@ -225,17 +227,19 @@ class QuestionServiceImplTest {
                 categoryMapper,
                 tagMapper,
                 groupMapper,
-                questionMapper);
-        when(questionMapper.selectCount(any())).thenReturn(0L);
+                questionMapper,
+                tagRelationMapper);
+        when(tagRelationMapper.selectCount(any())).thenReturn(0L);
 
         metadataService.deleteTag(13L);
 
-        ArgumentCaptor<LambdaQueryWrapper<Question>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(questionMapper).selectCount(wrapperCaptor.capture());
+        ArgumentCaptor<LambdaQueryWrapper<QuestionTagRelation>> wrapperCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(tagRelationMapper).selectCount(wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
-        assertTrue(sqlSegment.contains("question_tag_relation"), sqlSegment);
-        assertTrue(sqlSegment.contains("deleted = 0"), sqlSegment);
-        assertTrue(sqlSegment.contains("tag_id = 13"), sqlSegment);
+        assertTrue(sqlSegment.contains("tag_id"), sqlSegment);
+        assertTrue(wrapperCaptor.getValue().getParamNameValuePairs().containsValue(13L),
+                wrapperCaptor.getValue().getParamNameValuePairs().toString());
         verify(tagMapper).deleteById(13L);
     }
 

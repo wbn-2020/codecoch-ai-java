@@ -302,7 +302,7 @@ public class AiServiceImpl implements AiService {
             }
             if (Boolean.TRUE.equals(vo.getFollowUpValid()) && isInvalidFollowUp(vo.getFollowUpQuestion(), dto)) {
                 vo.setFollowUpQuestion(buildFallbackFollowUp(dto));
-                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "杩介棶鍐呭涓嶅璐村悎锛屽凡鏀圭敤閫氱敤杩介棶")));
+                vo.setFollowUpReason(markFallback(firstText(vo.getFollowUpReason(), "追问内容不够贴合，已改用通用追问")));
                 vo.setFollowUpValid(true);
             }
             vo.setAiCallLogId(logId);
@@ -3701,7 +3701,7 @@ public class AiServiceImpl implements AiService {
     private void fillFollowUpFromEvaluation(EvaluateAnswerVO vo, EvaluateAnswerDTO dto, String candidateQuestion) {
         if (!"FOLLOW_UP".equals(vo.getNextAction())) {
             vo.setFollowUpQuestion("");
-            vo.setFollowUpReason(firstText(vo.getFollowUpReason(), ""));
+            vo.setFollowUpReason(firstText(vo.getFollowUpReason(), "追问内容不够贴合，已改用通用追问"));
             vo.setFollowUpValid(false);
             return;
         }

@@ -101,9 +101,9 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     }
 
     @Override
-    public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
+    public ResponseEntity<Resource> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        return downloadFile(fileInfo);
+        return downloadResource(fileInfo);
     }
 
     @Override
@@ -127,40 +127,6 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     public ResponseEntity<Resource> adminDownload(Long fileId) {
         FileInfo fileInfo = getAvailableAdminFile(fileId);
         return downloadResource(fileInfo);
-    }
-
-    private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
-        if (!StringUtils.hasText(fileInfo.getStoragePath())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息不完整，暂时无法下载");
-        }
-
-        Path root = normalizeRoot();
-        Path target = root.resolve(fileInfo.getStoragePath()).normalize();
-        ensureInsideRoot(root, target);
-        if (!Files.isRegularFile(target)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可下载");
-        }
-
-        try {
-            byte[] bytes = Files.readAllBytes(target);
-            MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
-            return ResponseEntity.ok()
-                    .contentType(mediaType)
-                    .contentLength(bytes.length)
-                    .header(HEADER_ORIGINAL_FILENAME, encodeHeaderValue(fileInfo.getOriginalFilename()))
-                    .header(HEADER_FILE_EXT, fileInfo.getFileExt())
-                    .header(HEADER_FILE_SIZE, String.valueOf(fileInfo.getFileSize()))
-                    .header(HEADER_MIME_TYPE, StringUtils.hasText(fileInfo.getMimeType())
-                            ? fileInfo.getMimeType()
-                            : MediaType.APPLICATION_OCTET_STREAM_VALUE)
-                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                            .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
-                            .build()
-                            .toString())
-                    .body(bytes);
-        } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
-        }
     }
 
     @Override

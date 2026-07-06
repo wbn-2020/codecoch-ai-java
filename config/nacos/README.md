@@ -24,17 +24,19 @@ When uploading configs manually, prefer `docs/nacos/` first and keep any `config
 - `codecoachai.ai.mock-enabled` is `false`; set `DEEPSEEK_API_KEY` before starting AI service.
 - `codecoachai.ai.crypto.secret-key` is required before saving AI model API keys from the admin UI.
 
-## Suggested Environment Variables
+## Suggested Process-Level Environment Variables
 
-```powershell
-[Environment]::SetEnvironmentVariable("MYSQL_PASSWORD", "your-local-password", "User")
-[Environment]::SetEnvironmentVariable("CODECOACHAI_INTERNAL_SECRET", "change-me-in-private-nacos", "User")
-[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "sk-xxxxxxxx", "User")
-[Environment]::SetEnvironmentVariable("CODECOACHAI_AI_CRYPTO_SECRET_KEY", "change-me-at-least-16-chars", "User")
-[Environment]::SetEnvironmentVariable("OSS_BUCKET", "your-oss-bucket", "User")
-[Environment]::SetEnvironmentVariable("OSS_AK", "your-oss-access-key-id", "User")
-[Environment]::SetEnvironmentVariable("OSS_SK", "your-oss-access-key-secret", "User")
-[Environment]::SetEnvironmentVariable("OSS_STS_ROLE_ARN", "acs:ram::xxx:role/yyy", "User")
+Use process-level variables in the terminal that starts services. Do not persist placeholder secrets with user-level or machine-level environment variables, and do not commit real secrets into Nacos templates.
+
+```text
+$env:MYSQL_PASSWORD = "<local database password>"
+$env:CODECOACHAI_INTERNAL_SECRET = "<strong random 32+ byte value>"
+$env:DEEPSEEK_API_KEY = "<runtime DeepSeek API key>"
+$env:CODECOACHAI_AI_CRYPTO_SECRET_KEY = "<strong random 32+ byte value>"
+$env:OSS_BUCKET = "<runtime OSS bucket>"
+$env:OSS_AK = "<runtime OSS access key id>"
+$env:OSS_SK = "<runtime OSS access key secret>"
+$env:OSS_STS_ROLE_ARN = "<runtime OSS STS role ARN>"
 ```
 
-Restart the terminal or IDE after setting user-level environment variables.
+Generate strong random values outside the repository, inject them only for the current process or via a private secret manager, and rotate them if they were ever copied into a shared document.

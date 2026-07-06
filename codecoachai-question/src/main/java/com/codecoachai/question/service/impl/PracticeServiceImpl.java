@@ -321,11 +321,11 @@ public class PracticeServiceImpl implements PracticeService {
     }
 
     private long defaultPage(Long pageNo) {
-        return pageNo == null ? 1L : pageNo;
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
     }
 
     private long defaultSize(Long pageSize) {
-        return pageSize == null ? 10L : pageSize;
+        return pageSize == null || pageSize < 1 ? 10L : Math.min(pageSize, 100L);
     }
 
     private String safeError(String message) {

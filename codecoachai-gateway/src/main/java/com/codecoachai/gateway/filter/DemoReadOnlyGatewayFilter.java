@@ -27,7 +27,9 @@ public class DemoReadOnlyGatewayFilter implements GlobalFilter, Ordered {
             "/auth/register",
             "/auth/refresh-token",
             "/health",
-            "/ai/health");
+            "/ai/health",
+            "/portfolio-demo/load",
+            "/portfolio-demo/reset");
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 

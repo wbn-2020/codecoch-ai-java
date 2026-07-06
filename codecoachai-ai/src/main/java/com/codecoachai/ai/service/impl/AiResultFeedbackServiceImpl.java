@@ -50,6 +50,7 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
         if (!ALLOWED_TYPES.contains(feedbackType)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "暂不支持的反馈类型");
         }
+        validateTraceContext(dto);
         validateAiCallLogOwnership(userId, dto.getAiCallLogId());
 
         AiResultFeedback feedback = new AiResultFeedback();
@@ -113,6 +114,17 @@ public class AiResultFeedbackServiceImpl implements AiResultFeedbackService {
         vo.setPagePath(feedback.getPagePath());
         vo.setCreatedAt(feedback.getCreatedAt());
         return vo;
+    }
+
+    private void validateTraceContext(AiResultFeedbackCreateDTO dto) {
+        if (!StringUtils.hasText(dto.getScene()) || !StringUtils.hasText(dto.getPagePath())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "反馈缺少可追踪上下文");
+        }
+        boolean hasBusinessTrace = StringUtils.hasText(dto.getBizType()) && dto.getBizId() != null;
+        boolean hasAiCallTrace = dto.getAiCallLogId() != null;
+        if (!hasBusinessTrace && !hasAiCallTrace) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "反馈缺少业务或 AI 调用追踪字段");
+        }
     }
 
     private void validateAiCallLogOwnership(Long userId, Long aiCallLogId) {

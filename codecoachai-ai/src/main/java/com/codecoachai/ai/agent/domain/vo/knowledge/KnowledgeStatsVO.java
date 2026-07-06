@@ -20,6 +20,12 @@ public class KnowledgeStatsVO {
     private Map<String, Integer> embeddingModelCounts;
     private Map<String, Integer> duplicateTypeCounts;
     private List<DuplicateDocumentHotspot> duplicateDocumentHotspots;
+    private String knowledgeStatus;
+    private String disabledReason;
+    private Boolean lowConfidence;
+    private Boolean canBeEvidence;
+    private String evidenceTrustStatus;
+    private List<String> governanceActions;
 
     @Data
     public static class DuplicateDocumentHotspot {

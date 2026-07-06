@@ -20,6 +20,8 @@ import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -35,6 +37,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -132,9 +135,9 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     }
 
     @Override
-    public ResponseEntity<byte[]> download(Long fileId, Long userId, String bizType) {
+    public ResponseEntity<Resource> download(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        return downloadFile(fileInfo);
+        return downloadResource(fileInfo);
     }
 
     @Override
@@ -155,38 +158,56 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     public ResponseEntity<Resource> adminDownload(Long fileId) {
         FileInfo fileInfo = getAvailableAdminFile(fileId);
+        return redirectToSignedUrl(fileInfo, "OSS key is missing.");
+    }
+
+    private ResponseEntity<Resource> redirectToSignedUrl(FileInfo fileInfo, String missingMessage) {
         String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
         if (!StringUtils.hasText(key)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "OSS key is missing.");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, missingMessage);
         }
         return ResponseEntity.status(302)
                 .location(URI.create(ossFileService.signUrl(key, null)))
                 .build();
     }
 
-    private ResponseEntity<byte[]> downloadFile(FileInfo fileInfo) {
+    private ResponseEntity<Resource> downloadResource(FileInfo fileInfo) {
         String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
         if (!StringUtils.hasText(key)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
         }
-
-        byte[] bytes = ossFileService.download(key);
-        MediaType mediaType = resolveMediaType(fileInfo.getMimeType());
-        // 文件名走 RFC 5987 编码，避免中文简历名下载时在浏览器中乱码。
         return ResponseEntity.ok()
-                .contentType(mediaType)
-                .contentLength(bytes.length)
-                .header("X-Original-Filename", fileInfo.getOriginalFilename())
+                .contentType(resolveMediaType(fileInfo.getMimeType()))
+                .contentLength(fileInfo.getFileSize() == null ? -1L : fileInfo.getFileSize())
+                .header("X-Original-Filename", encodeHeaderValue(fileInfo.getOriginalFilename()))
                 .header("X-File-Ext", fileInfo.getFileExt())
                 .header("X-File-Size", String.valueOf(fileInfo.getFileSize()))
                 .header("X-Mime-Type", StringUtils.hasText(fileInfo.getMimeType())
                         ? fileInfo.getMimeType()
                         : MediaType.APPLICATION_OCTET_STREAM_VALUE)
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                        .filename(fileInfo.getOriginalFilename(), java.nio.charset.StandardCharsets.UTF_8)
+                        .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
                         .build()
-                        .toString())
-                .body(bytes);
+                .toString())
+                .body(new InputStreamResource(ossFileService.openStream(key)));
+    }
+
+    private MediaType resolveMediaType(String mimeType) {
+        if (!StringUtils.hasText(mimeType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        try {
+            return MediaType.parseMediaType(mimeType);
+        } catch (IllegalArgumentException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+    }
+
+    private String encodeHeaderValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
     /**
@@ -316,17 +337,6 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 .anyMatch(fileExt::equals);
         if (!allowed) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
-        }
-    }
-
-    private MediaType resolveMediaType(String mimeType) {
-        if (!StringUtils.hasText(mimeType)) {
-            return MediaType.APPLICATION_OCTET_STREAM;
-        }
-        try {
-            return MediaType.parseMediaType(mimeType);
-        } catch (IllegalArgumentException ex) {
-            return MediaType.APPLICATION_OCTET_STREAM;
         }
     }
 

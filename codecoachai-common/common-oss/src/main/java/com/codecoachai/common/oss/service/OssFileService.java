@@ -29,6 +29,8 @@ public interface OssFileService {
      */
     byte[] download(String ossKey);
 
+    InputStream openStream(String ossKey);
+
     /**
      * 删除单个对象。
      */

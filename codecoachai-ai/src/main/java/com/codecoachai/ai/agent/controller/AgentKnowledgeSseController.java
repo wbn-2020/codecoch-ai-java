@@ -16,8 +16,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -42,9 +45,13 @@ public class AgentKnowledgeSseController {
 
     private final V4FeatureGate v4FeatureGate;
 
-    public AgentKnowledgeSseController(AgentV4OpsService agentV4OpsService, V4FeatureGate v4FeatureGate) {
+    private final Executor aiSseStreamExecutor;
+
+    public AgentKnowledgeSseController(AgentV4OpsService agentV4OpsService, V4FeatureGate v4FeatureGate,
+                                       @Qualifier("aiSseStreamExecutor") Executor aiSseStreamExecutor) {
         this.agentV4OpsService = agentV4OpsService;
         this.v4FeatureGate = v4FeatureGate;
+        this.aiSseStreamExecutor = aiSseStreamExecutor;
     }
 
     @Operation(summary = "Stream personal knowledge ask",
@@ -58,7 +65,8 @@ public class AgentKnowledgeSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
 
-        CompletableFuture.runAsync(() -> {
+        try {
+            CompletableFuture.runAsync(() -> {
             try {
                 LoginUserContext.setLoginUser(loginUser);
                 send(emitter, active, "start", baseEvent(requestId, "Knowledge ask stream started"));
@@ -120,7 +128,14 @@ public class AgentKnowledgeSseController {
             } finally {
                 LoginUserContext.clear();
             }
-        });
+            }, aiSseStreamExecutor);
+        } catch (RejectedExecutionException ex) {
+            log.warn("Knowledge ask SSE executor rejected, requestId={}", requestId, ex);
+            Map<String, Object> data = baseEvent(requestId, "Knowledge ask stream is busy, please retry later");
+            data.put("code", "KNOWLEDGE_ASK_STREAM_FAILED");
+            send(emitter, active, "error", data);
+            complete(emitter, active);
+        }
         return emitter;
     }
 

@@ -4,6 +4,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.service.FileStorageService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -30,9 +31,9 @@ public class InnerFileController {
     }
 
     @GetMapping("/{id}/download")
-    public ResponseEntity<byte[]> download(@PathVariable("id") Long id,
-                                           @RequestParam("userId") Long userId,
-                                           @RequestParam("bizType") String bizType) {
+    public ResponseEntity<Resource> download(@PathVariable("id") Long id,
+                                             @RequestParam("userId") Long userId,
+                                             @RequestParam("bizType") String bizType) {
         return fileStorageService.download(id, userId, bizType);
     }
 }

@@ -87,8 +87,9 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
         requireCurrentUserId();
-        Page<Question> page = questionMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
-                buildQuestionWrapper(query, false).eq(Question::getStatus, CommonConstants.YES));
+        QuestionQueryDTO safeQuery = query == null ? new QuestionQueryDTO() : query;
+        Page<Question> page = questionMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
+                buildQuestionWrapper(safeQuery, false).eq(Question::getStatus, CommonConstants.YES));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -147,7 +148,8 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     public PageResult<QuestionListVO> pageFavorites(QuestionQueryDTO query) {
         Long userId = requireCurrentUserId();
-        Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
+        QuestionQueryDTO safeQuery = query == null ? new QuestionQueryDTO() : query;
+        Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
                 new LambdaQueryWrapper<UserQuestionRecord>()
                         .eq(UserQuestionRecord::getUserId, userId)
                         .eq(UserQuestionRecord::getFavorite, CommonConstants.YES)
@@ -168,7 +170,8 @@ public class QuestionServiceImpl implements QuestionService {
     @Override
     public PageResult<WrongQuestionVO> pageWrongRecords(QuestionQueryDTO query) {
         Long userId = requireCurrentUserId();
-        Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
+        QuestionQueryDTO safeQuery = query == null ? new QuestionQueryDTO() : query;
+        Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
                 new LambdaQueryWrapper<UserQuestionRecord>()
                         .eq(UserQuestionRecord::getUserId, userId)
                         .eq(UserQuestionRecord::getWrong, CommonConstants.YES)
@@ -199,8 +202,9 @@ public class QuestionServiceImpl implements QuestionService {
 
     @Override
     public PageResult<QuestionListVO> pageAdminQuestions(QuestionQueryDTO query) {
-        Page<Question> page = questionMapper.selectPage(Page.of(query.getPageNo(), query.getPageSize()),
-                buildQuestionWrapper(query, true));
+        QuestionQueryDTO safeQuery = query == null ? new QuestionQueryDTO() : query;
+        Page<Question> page = questionMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
+                buildQuestionWrapper(safeQuery, true));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -735,6 +739,14 @@ public class QuestionServiceImpl implements QuestionService {
         return StringUtils.hasText(answer) && answer.trim().length() >= 20
                 ? MasteryStatusEnum.MASTERED.name()
                 : MasteryStatusEnum.NOT_MASTERED.name();
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 10L : Math.min(pageSize, 100L);
     }
 
 }

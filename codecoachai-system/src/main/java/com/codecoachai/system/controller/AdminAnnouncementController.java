@@ -60,12 +60,20 @@ public class AdminAnnouncementController {
             @RequestParam(required = false) String keyword) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_LIST);
         Page<SysAnnouncement> page = announcementMapper.selectPage(
-                Page.of(pageNo, pageSize),
+                Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                 new LambdaQueryWrapper<SysAnnouncement>()
                         .eq(status != null, SysAnnouncement::getStatus, status)
                         .like(StringUtils.hasText(keyword), SysAnnouncement::getTitle, keyword)
                         .orderByDesc(SysAnnouncement::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords(), page.getTotal(), page.getCurrent(), page.getSize()));
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
 
     @Operation(summary = "公告详情（管理端）")

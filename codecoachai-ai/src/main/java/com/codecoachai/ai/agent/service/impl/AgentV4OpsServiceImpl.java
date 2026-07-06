@@ -122,6 +122,8 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
 
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_DEFAULT_LIMIT = 20;
     private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_LIMIT = 80;
+    private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_SCAN_CHUNKS = 80;
+    private static final int KNOWLEDGE_DUPLICATE_REVIEW_MAX_VECTOR_PROBES = 20;
     private static final Set<String> SUPPORTED_AGENT_FEEDBACK_TYPES = Set.of(
             "HELPFUL",
             "NOT_HELPFUL",
@@ -484,7 +486,67 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 ORDER BY count DESC, name ASC
                 """, userId));
         vo.setDuplicateDocumentHotspots(queryDuplicateDocumentHotspots(userId));
+        attachKnowledgeStatsGovernance(vo);
         return vo;
+    }
+
+    private void attachKnowledgeStatsGovernance(KnowledgeStatsVO vo) {
+        int documentCount = vo.getDocumentCount() == null ? 0 : vo.getDocumentCount();
+        int chunkCount = vo.getChunkCount() == null ? 0 : vo.getChunkCount();
+        int failedCount = metricCount(vo.getIndexStatusCounts(), "FAILED");
+        int pendingCount = metricCount(vo.getIndexStatusCounts(), "PENDING");
+        int duplicateCount = vo.getDuplicateChunkCount() == null ? 0 : vo.getDuplicateChunkCount();
+        List<String> actions = new ArrayList<>();
+        if (documentCount == 0 || chunkCount == 0) {
+            actions.add("SUPPLEMENT_KNOWLEDGE_DOCUMENT");
+            vo.setKnowledgeStatus("EMPTY");
+            vo.setEvidenceTrustStatus("UNAVAILABLE");
+            vo.setCanBeEvidence(false);
+            vo.setLowConfidence(true);
+            vo.setDisabledReason("EMPTY_KNOWLEDGE_BASE");
+            vo.setGovernanceActions(actions);
+            return;
+        }
+        if (failedCount > 0) {
+            actions.add("RETRY_FAILED_INDEX");
+        }
+        if (pendingCount > 0) {
+            actions.add("REBUILD_PENDING_INDEX");
+        }
+        if (duplicateCount > 0) {
+            actions.add("REVIEW_DUPLICATE_CHUNKS");
+        }
+        if (!Boolean.TRUE.equals(vo.getSemanticEnabled())) {
+            actions.add("ENABLE_SEMANTIC_RETRIEVAL");
+        }
+        boolean indexHealthy = failedCount == 0 && pendingCount == 0;
+        boolean semanticHealthy = Boolean.TRUE.equals(vo.getSemanticEnabled());
+        vo.setKnowledgeStatus(indexHealthy && semanticHealthy ? "READY" : "DEGRADED");
+        vo.setEvidenceTrustStatus(indexHealthy && semanticHealthy ? "VERIFIED" : "PARTIAL");
+        vo.setCanBeEvidence(indexHealthy);
+        vo.setLowConfidence(!indexHealthy || !semanticHealthy);
+        if (failedCount > 0) {
+            vo.setDisabledReason("INDEX_FAILED");
+        } else if (pendingCount > 0) {
+            vo.setDisabledReason("INDEX_PENDING");
+        } else if (!semanticHealthy) {
+            vo.setDisabledReason("SEMANTIC_RETRIEVAL_DISABLED");
+        } else {
+            vo.setDisabledReason(null);
+        }
+        vo.setGovernanceActions(actions.stream().distinct().toList());
+    }
+
+    private int metricCount(Map<String, Integer> counts, String key) {
+        if (counts == null || key == null) {
+            return 0;
+        }
+        return counts.entrySet().stream()
+                .filter(entry -> key.equalsIgnoreCase(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .filter(Objects::nonNull)
+                .findFirst()
+                .orElse(0);
     }
 
     private Map<Long, KnowledgeDocumentAggregate> knowledgeDocumentAggregates(List<Long> documentIds) {
@@ -811,28 +873,121 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
         List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
                 new LambdaQueryWrapper<PersonalKnowledgeChunk>()
                         .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .eq(PersonalKnowledgeChunk::getIndexStatus, "INDEXED")
                         .orderByDesc(PersonalKnowledgeChunk::getUpdatedAt)
-                        .last("LIMIT " + Math.max(size * 5, size)));
+                        .last("LIMIT " + Math.min(Math.max(size * 2, size),
+                                KNOWLEDGE_DUPLICATE_REVIEW_MAX_SCAN_CHUNKS)));
         vo.setScannedChunkCount(chunks.size());
         if (chunks.isEmpty()) {
             vo.setCandidateCount(0);
             vo.setItems(List.of());
             return vo;
         }
+        KnowledgeEmbeddingResult embedding;
+        try {
+            embedding = embedTexts(chunks.stream()
+                    .map(PersonalKnowledgeChunk::getContent)
+                    .toList());
+        } catch (Exception ex) {
+            log.warn("Review personal knowledge duplicate chunks embedding failed userId={}", userId, ex);
+            vo.setCandidateCount(0);
+            vo.setItems(List.of());
+            return vo;
+        }
+        List<List<Float>> vectors = embedding.vectors();
+        if (vectors.size() != chunks.size()) {
+            log.warn("Review personal knowledge duplicate chunks embedding size mismatch userId={} chunks={} vectors={}",
+                    userId, chunks.size(), vectors.size());
+            vo.setCandidateCount(0);
+            vo.setItems(List.of());
+            return vo;
+        }
+        int vectorProbeLimit = Math.min(chunks.size(), KNOWLEDGE_DUPLICATE_REVIEW_MAX_VECTOR_PROBES);
+        Map<Long, List<VectorSearchResult>> sourceHits = new LinkedHashMap<>();
+        Set<Long> candidateChunkIds = new LinkedHashSet<>();
+        for (int index = 0; index < vectorProbeLimit; index++) {
+            PersonalKnowledgeChunk chunk = chunks.get(index);
+            try {
+                List<VectorSearchResult> hits = vectorStoreClient.search(VectorSearchRequest.builder()
+                        .collectionName(knowledgeProperties.getCollection())
+                        .vector(vectors.get(index))
+                        .mustMatchPayload(Map.of("userId", userId))
+                        .limit(4)
+                        .build()).stream()
+                        .filter(hit -> hit.getScore() >= minScore)
+                        .filter(hit -> !Objects.equals(payloadLong(hit.getPayload(), "chunkId"), chunk.getId()))
+                        .toList();
+                if (!hits.isEmpty()) {
+                    sourceHits.put(chunk.getId(), hits);
+                    hits.stream()
+                            .map(hit -> payloadLong(hit.getPayload(), "chunkId"))
+                            .filter(Objects::nonNull)
+                            .forEach(candidateChunkIds::add);
+                }
+            } catch (Exception ex) {
+                log.warn("Review personal knowledge duplicate vector probe failed userId={} chunkId={}",
+                        userId, chunk.getId(), ex);
+            }
+        }
+        Map<Long, PersonalKnowledgeChunk> sourceChunkMap = chunks.stream()
+                .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, Function.identity(),
+                        (left, right) -> left, LinkedHashMap::new));
+        Map<Long, PersonalKnowledgeChunk> candidateChunkMap = candidateChunkIds.isEmpty()
+                ? Map.of()
+                : personalKnowledgeChunkMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                        .eq(PersonalKnowledgeChunk::getUserId, userId)
+                        .eq(PersonalKnowledgeChunk::getIndexStatus, "INDEXED")
+                        .in(PersonalKnowledgeChunk::getId, candidateChunkIds))
+                .stream()
+                .collect(Collectors.toMap(PersonalKnowledgeChunk::getId, Function.identity(),
+                        (left, right) -> left, LinkedHashMap::new));
+        Set<Long> documentIds = new LinkedHashSet<>();
+        chunks.stream().map(PersonalKnowledgeChunk::getDocumentId).filter(Objects::nonNull).forEach(documentIds::add);
+        candidateChunkMap.values().stream()
+                .map(PersonalKnowledgeChunk::getDocumentId)
+                .filter(Objects::nonNull)
+                .forEach(documentIds::add);
+        Map<Long, PersonalKnowledgeDocument> documentMap = documentIds.isEmpty()
+                ? Map.of()
+                : personalKnowledgeDocumentMapper.selectList(new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .in(PersonalKnowledgeDocument::getId, documentIds))
+                .stream()
+                .collect(Collectors.toMap(PersonalKnowledgeDocument::getId, Function.identity(),
+                        (left, right) -> left, LinkedHashMap::new));
         List<KnowledgeDuplicateReviewItemVO> items = new ArrayList<>();
         Set<String> seenPairs = new HashSet<>();
-        for (PersonalKnowledgeChunk chunk : chunks) {
+        for (Map.Entry<Long, List<VectorSearchResult>> entry : sourceHits.entrySet()) {
             if (items.size() >= size) {
                 break;
             }
-            List<KnowledgeSearchResultVO> matches = listSimilarKnowledgeChunks(userId, chunk.getId(), 3).stream()
-                    .filter(match -> match.getScore() != null && match.getScore() >= minScore)
+            PersonalKnowledgeChunk chunk = sourceChunkMap.get(entry.getKey());
+            if (chunk == null) {
+                continue;
+            }
+            List<KnowledgeSearchResultVO> matches = entry.getValue().stream()
+                    .map(hit -> {
+                        Long matchChunkId = payloadLong(hit.getPayload(), "chunkId");
+                        PersonalKnowledgeChunk matchChunk = matchChunkId == null ? null : candidateChunkMap.get(matchChunkId);
+                        PersonalKnowledgeDocument matchDocument = matchChunk == null
+                                ? null : documentMap.get(matchChunk.getDocumentId());
+                        if (matchChunk == null || matchDocument == null) {
+                            return null;
+                        }
+                        return toKnowledgeSearchVO(matchDocument, matchChunk,
+                                snippet(matchChunk.getContent(), chunk.getContent()), chunk.getContent(),
+                                hit.getScore(), "VECTOR_SIMILAR");
+                    })
+                    .filter(Objects::nonNull)
                     .filter(match -> seenPairs.add(knowledgePairKey(chunk.getId(), match.getChunkId())))
                     .toList();
             if (matches.isEmpty()) {
                 continue;
             }
-            PersonalKnowledgeDocument document = ownedDocument(userId, chunk.getDocumentId());
+            PersonalKnowledgeDocument document = documentMap.get(chunk.getDocumentId());
+            if (document == null) {
+                continue;
+            }
             KnowledgeDuplicateReviewItemVO item = new KnowledgeDuplicateReviewItemVO();
             item.setDocumentId(document.getId());
             item.setChunkId(chunk.getId());
@@ -1381,6 +1536,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             vo.setCitationWarning("没有引用达到最低相关度。");
             vo.setCitedReferenceNumbers(List.of());
             vo.setInvalidReferenceNumbers(List.of());
+            attachKnowledgeAskGovernance(vo);
             return vo;
         }
 
@@ -1408,6 +1564,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             vo.setCitedReferenceNumbers(List.of());
             vo.setInvalidReferenceNumbers(List.of());
         }
+        attachKnowledgeAskGovernance(vo);
         return vo;
     }
 
@@ -1447,6 +1604,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 empty.setCitedReferenceNumbers(List.of());
                 empty.setInvalidReferenceNumbers(List.of());
                 empty.setGeneratedAt(LocalDateTime.now());
+                attachKnowledgeAskGovernance(empty);
                 listener.onCitation(empty);
                 listener.onDone(null);
                 return;
@@ -1474,6 +1632,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 applyCitationValidation(vo, result.getContent(), references.size());
                 applyGroundingCheck(vo, result.getContent(), references, userId);
                 vo.setAiCallLogId(result.getAiCallLogId());
+                attachKnowledgeAskGovernance(vo);
                 listener.onCitation(vo);
                 listener.onDone(result.getAiCallLogId());
             } catch (Exception ex) {
@@ -2331,48 +2490,90 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     private String extractKnowledgeFileText(String extension, InputStream inputStream) throws Exception {
+        int maxChars = knowledgeProperties.safeUploadMaxTextChars();
         String text = switch (extension) {
-            case "pdf" -> extractPdfText(inputStream);
-            case "docx" -> extractDocxText(inputStream);
-            case "doc" -> extractDocText(inputStream);
-            default -> extractPlainText(inputStream);
+            case "pdf" -> extractPdfText(inputStream, maxChars);
+            case "docx" -> extractDocxText(inputStream, maxChars);
+            case "doc" -> extractDocText(inputStream, maxChars);
+            default -> extractPlainText(inputStream, maxChars);
         };
         String normalized = normalizeKnowledgeContent(text);
-        if (normalized.length() > knowledgeProperties.safeUploadMaxTextChars()) {
+        if (normalized.length() > maxChars) {
             log.warn("Personal knowledge uploaded text truncated, extension={}, originalChars={}, maxChars={}",
-                    extension, normalized.length(), knowledgeProperties.safeUploadMaxTextChars());
-            return normalized.substring(0, knowledgeProperties.safeUploadMaxTextChars());
+                    extension, normalized.length(), maxChars);
+            return normalized.substring(0, maxChars);
         }
         return normalized;
     }
 
-    private String extractPdfText(InputStream inputStream) throws Exception {
+    private String extractPdfText(InputStream inputStream, int maxChars) throws Exception {
         try (RandomAccessReadBuffer buffer = new RandomAccessReadBuffer(inputStream);
              PDDocument document = Loader.loadPDF(buffer)) {
-            return new PDFTextStripper().getText(document);
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setEndPage(Math.min(document.getNumberOfPages(), knowledgeProperties.safeUploadMaxPdfPages()));
+            return limitText(stripper.getText(document), maxChars);
         }
     }
 
-    private String extractDocxText(InputStream inputStream) throws Exception {
+    private String extractDocxText(InputStream inputStream, int maxChars) throws Exception {
         try (XWPFDocument document = new XWPFDocument(inputStream)) {
-            return document.getParagraphs().stream()
-                    .map(paragraph -> firstText(paragraph.getText(), ""))
-                    .filter(StringUtils::hasText)
-                    .collect(Collectors.joining("\n"));
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            for (var paragraph : document.getParagraphs()) {
+                if (!appendLimitedLine(builder, firstText(paragraph.getText(), ""), maxChars)) {
+                    break;
+                }
+            }
+            return builder.toString();
         }
     }
 
-    private String extractDocText(InputStream inputStream) throws Exception {
+    private String extractDocText(InputStream inputStream, int maxChars) throws Exception {
         try (HWPFDocument document = new HWPFDocument(inputStream);
              WordExtractor extractor = new WordExtractor(document)) {
-            return extractor.getText();
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            for (String paragraph : extractor.getParagraphText()) {
+                if (!appendLimitedLine(builder, paragraph, maxChars)) {
+                    break;
+                }
+            }
+            return builder.toString();
         }
     }
 
-    private String extractPlainText(InputStream inputStream) throws Exception {
+    private String extractPlainText(InputStream inputStream, int maxChars) throws Exception {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
-            return reader.lines().collect(Collectors.joining("\n"));
+            StringBuilder builder = new StringBuilder(Math.min(maxChars, 8192));
+            char[] buffer = new char[4096];
+            int length;
+            while (builder.length() < maxChars && (length = reader.read(buffer)) != -1) {
+                int remaining = maxChars - builder.length();
+                builder.append(buffer, 0, Math.min(length, remaining));
+            }
+            return builder.toString();
         }
+    }
+
+    private boolean appendLimitedLine(StringBuilder builder, String line, int maxChars) {
+        if (!StringUtils.hasText(line) || builder.length() >= maxChars) {
+            return builder.length() < maxChars;
+        }
+        if (!builder.isEmpty()) {
+            builder.append('\n');
+        }
+        int remaining = maxChars - builder.length();
+        if (remaining <= 0) {
+            return false;
+        }
+        String value = line.trim();
+        builder.append(value, 0, Math.min(value.length(), remaining));
+        return builder.length() < maxChars;
+    }
+
+    private String limitText(String text, int maxChars) {
+        if (text == null || text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars);
     }
 
     private String normalizeKnowledgeFingerprint(String content) {
@@ -3173,6 +3374,43 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                     .append("\n\n");
         }
         return prompt.toString();
+    }
+
+    private void attachKnowledgeAskGovernance(KnowledgeAskVO vo) {
+        boolean hasReferences = vo.getReferenceCount() != null && vo.getReferenceCount() > 0;
+        boolean citationValid = Boolean.TRUE.equals(vo.getCitationValid());
+        boolean answerGrounded = Boolean.TRUE.equals(vo.getAnswerGrounded());
+        List<String> actions = new ArrayList<>();
+        if (!hasReferences || Boolean.TRUE.equals(vo.getInsufficientReferences())) {
+            actions.add("SUPPLEMENT_KNOWLEDGE_DOCUMENT");
+            actions.add("NARROW_KNOWLEDGE_QUESTION");
+            vo.setCitationTrustStatus("UNAVAILABLE");
+            vo.setCanBeEvidence(false);
+            vo.setLowConfidence(true);
+            vo.setDisabledReason("INSUFFICIENT_REFERENCES");
+            vo.setGovernanceActions(actions);
+            return;
+        }
+        if (citationValid && answerGrounded) {
+            vo.setCitationTrustStatus("VERIFIED");
+            vo.setCanBeEvidence(true);
+            vo.setLowConfidence(false);
+            vo.setDisabledReason(null);
+            vo.setGovernanceActions(List.of());
+            return;
+        }
+        actions.add("REVIEW_KNOWLEDGE_CITATION");
+        if (!citationValid) {
+            actions.add("ADD_KNOWLEDGE_EVAL_CASE");
+        }
+        if (!answerGrounded) {
+            actions.add("RERUN_KNOWLEDGE_EVALUATION");
+        }
+        vo.setCitationTrustStatus("LOW_CONFIDENCE");
+        vo.setCanBeEvidence(false);
+        vo.setLowConfidence(true);
+        vo.setDisabledReason(!citationValid ? "CITATION_INVALID" : "ANSWER_NOT_GROUNDED");
+        vo.setGovernanceActions(actions.stream().distinct().toList());
     }
 
     private void applyCitationValidation(KnowledgeAskVO vo, String answer, int referenceCount) {

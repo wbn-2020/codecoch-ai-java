@@ -1465,13 +1465,20 @@ class JobCoachAgentServiceImplTest {
 
     @Test
     void getRunDetailReturnsUserSafeDetailWithoutRawPayloadAccessors() {
-        when(agentRunMapper.selectById(77L)).thenReturn(run(77L, USER_ID));
+        AgentRun run = run(77L, USER_ID);
+        run.setTraceId("trace-77");
+        run.setAiCallLogId(9001L);
+        run.setPromptVersionId(3001L);
+        when(agentRunMapper.selectById(77L)).thenReturn(run);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of(task(99L, USER_ID, AgentTaskStatusEnum.DONE.name())));
 
         AgentRunUserDetailVO vo = service.getRunDetail(USER_ID, 77L);
 
         assertEquals(77L, vo.getId());
         assertEquals(AgentRunStatusEnum.SUCCESS.name(), vo.getStatus());
+        assertEquals("trace-77", vo.getTraceId());
+        assertEquals(9001L, vo.getAiCallLogId());
+        assertEquals(3001L, vo.getPromptVersionId());
         assertEquals(1, vo.getTasks().size());
         List<String> accessors = Arrays.stream(AgentRunUserDetailVO.class.getMethods())
                 .map(Method::getName)

@@ -3,6 +3,7 @@ package com.codecoachai.resume.feign;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,7 +22,7 @@ public interface FileFeignClient {
                                      @RequestParam("userId") Long userId);
 
     @GetMapping("/inner/files/{id}/download")
-    ResponseEntity<byte[]> download(@PathVariable("id") Long id,
-                                    @RequestParam("userId") Long userId,
-                                    @RequestParam("bizType") String bizType);
+    ResponseEntity<Resource> download(@PathVariable("id") Long id,
+                                      @RequestParam("userId") Long userId,
+                                      @RequestParam("bizType") String bizType);
 }

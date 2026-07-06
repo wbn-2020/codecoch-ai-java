@@ -36,6 +36,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -57,6 +58,18 @@ public class UserServiceImpl implements UserService {
             + TEMP_PASSWORD_DIGIT
             + TEMP_PASSWORD_SPECIAL;
     private static final int TEMP_PASSWORD_LENGTH = 16;
+    private static final Set<String> USER_DASHBOARD_COUNT_TABLES = Set.of(
+            "resume",
+            "resume_analysis_record",
+            "resume_optimize_record",
+            "interview_session",
+            "practice_record",
+            "wrong_record",
+            "user_favorite",
+            "study_plan",
+            "study_task"
+    );
+    private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
 
     private final SysUserMapper sysUserMapper;
     private final SysUserRoleMapper sysUserRoleMapper;
@@ -153,8 +166,9 @@ public class UserServiceImpl implements UserService {
     @Override
     public PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query) {
         requireAdmin();
-        Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(query.getPageNo(), query.getPageSize()),
-                normalizeKeyword(query.getKeyword()), query.getStatus(), normalizeKeyword(query.getRoleCode()));
+        AdminUserQueryDTO safeQuery = query == null ? new AdminUserQueryDTO() : query;
+        Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
+                normalizeKeyword(safeQuery.getKeyword()), safeQuery.getStatus(), normalizeKeyword(safeQuery.getRoleCode()));
         Map<Long, List<String>> roleMap = listRoleCodesByUserIds(page.getRecords().stream()
                 .map(SysUser::getId)
                 .toList());
@@ -162,6 +176,14 @@ public class UserServiceImpl implements UserService {
                 .map(user -> UserConvert.toAdminUserPageVO(user, roleMap.getOrDefault(user.getId(), List.of())))
                 .toList();
         return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
 
     @Override
@@ -465,15 +487,29 @@ public class UserServiceImpl implements UserService {
         if (!tableExists(tableName)) {
             return 0L;
         }
-        Long count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM `" + tableName + "` WHERE " + condition,
+        Long count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM " + quoteIdentifier(tableName) + " WHERE " + condition,
                 Long.class, args);
         return count == null ? 0L : count;
     }
 
     private boolean tableExists(String tableName) {
+        if (!USER_DASHBOARD_COUNT_TABLES.contains(tableName)) {
+            return false;
+        }
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
         Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
         return count != null && count > 0;
+    }
+
+    private String quoteIdentifier(String identifier) {
+        if (!isSafeIdentifier(identifier)) {
+            throw new IllegalArgumentException("Unsafe SQL identifier: " + identifier);
+        }
+        return "`" + identifier + "`";
+    }
+
+    private boolean isSafeIdentifier(String identifier) {
+        return identifier != null && identifier.matches(SAFE_IDENTIFIER_PATTERN);
     }
 
     private void ensureNotDisablingLastAdmin(Long userId) {

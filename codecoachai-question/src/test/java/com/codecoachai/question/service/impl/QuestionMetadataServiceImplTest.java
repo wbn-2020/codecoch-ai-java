@@ -7,11 +7,12 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
-import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
+import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,27 +33,31 @@ class QuestionMetadataServiceImplTest {
     private QuestionGroupMapper groupMapper;
     @Mock
     private QuestionMapper questionMapper;
+    @Mock
+    private QuestionTagRelationMapper tagRelationMapper;
 
     @InjectMocks
     private QuestionMetadataServiceImpl metadataService;
 
     @BeforeEach
     void setUp() {
-        initTableInfo(Question.class);
+        initTableInfo(QuestionTagRelation.class);
     }
 
     @Test
     void deleteTagOnlyCountsActiveQuestionsRelatedToTag() {
-        when(questionMapper.selectCount(org.mockito.ArgumentMatchers.<LambdaQueryWrapper<Question>>any())).thenReturn(0L);
+        when(tagRelationMapper.selectCount(org.mockito.ArgumentMatchers.<LambdaQueryWrapper<QuestionTagRelation>>any()))
+                .thenReturn(0L);
 
         metadataService.deleteTag(13L);
 
-        ArgumentCaptor<LambdaQueryWrapper<Question>> wrapperCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(questionMapper).selectCount(wrapperCaptor.capture());
+        ArgumentCaptor<LambdaQueryWrapper<QuestionTagRelation>> wrapperCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(tagRelationMapper).selectCount(wrapperCaptor.capture());
         String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
-        assertTrue(sqlSegment.contains("question_tag_relation"), sqlSegment);
-        assertTrue(sqlSegment.contains("deleted = 0"), sqlSegment);
-        assertTrue(sqlSegment.contains("tag_id = 13"), sqlSegment);
+        assertTrue(sqlSegment.contains("tag_id"), sqlSegment);
+        assertTrue(wrapperCaptor.getValue().getParamNameValuePairs().containsValue(13L),
+                wrapperCaptor.getValue().getParamNameValuePairs().toString());
         verify(tagMapper).deleteById(13L);
     }
 

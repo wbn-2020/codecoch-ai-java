@@ -20,8 +20,8 @@ spring:
 codecoachai:
   v4:
     features:
-      growth-enabled: false
-      knowledge-enabled: false
+      growth-enabled: ${CODECOACHAI_V4_GROWTH_ENABLED:false}
+      knowledge-enabled: ${CODECOACHAI_V4_KNOWLEDGE_ENABLED:false}
 
   knowledge:
     collection: personal_knowledge_chunk

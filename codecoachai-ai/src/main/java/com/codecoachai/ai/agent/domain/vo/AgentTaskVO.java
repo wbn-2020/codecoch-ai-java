@@ -11,6 +11,13 @@ public class AgentTaskVO {
 
     private Long id;
     private Long runId;
+    private String schemaVersion;
+    private String traceId;
+    private Long aiCallLogId;
+    private Long promptVersionId;
+    private String resultSource;
+    private String resultSourceLabel;
+    private Boolean mock;
     private Long targetJobId;
     private String candidateId;
     private String taskType;
@@ -30,6 +37,8 @@ public class AgentTaskVO {
     private Long sourceId;
     private String trustStatus;
     private String evidenceSummary;
+    private List<SuggestionEvidenceSourceVO> evidenceSources = new ArrayList<>();
+    private SuggestionQualityGateVO qualityGate;
     private Boolean fallback;
     private Long reviewId;
     private String reviewSummary;

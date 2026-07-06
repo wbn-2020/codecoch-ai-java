@@ -1,10 +1,16 @@
 param(
-    [string]$NacosHome = $(if ($env:NACOS_HOME) { $env:NACOS_HOME } else { "C:\my-claude\comware\nacos-server-2.5.2" }),
+    [string]$NacosHome = $(if ($env:NACOS_HOME) { $env:NACOS_HOME } else { "" }),
     [int]$Port = 8848,
-    [switch]$ImportConfig
+    [switch]$Start,
+    [switch]$ImportConfig,
+    [switch]$ConfirmImport
 )
 
 $ErrorActionPreference = "Stop"
+
+if (-not $NacosHome) {
+    throw "Nacos home is not configured. Set NACOS_HOME or pass -NacosHome."
+}
 
 if (-not (Test-Path -LiteralPath $NacosHome)) {
     throw "Nacos home not found: $NacosHome"
@@ -19,6 +25,11 @@ $listening = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Si
 if ($listening) {
     Write-Host "Nacos already listens on port $Port, process=$($listening[0].OwningProcess)"
 } else {
+    if (-not $Start) {
+        Write-Host "Nacos is not listening on port $Port. Dry run only; pass -Start to launch it."
+        return
+    }
+
     $command = "set JAVA_TOOL_OPTIONS=--add-opens=java.base/java.io=ALL-UNNAMED && `"$startup`" -m standalone"
     Start-Process -FilePath "cmd.exe" `
         -ArgumentList "/c", $command `
@@ -40,7 +51,10 @@ if ($listening) {
 }
 
 if ($ImportConfig) {
+    if (-not $ConfirmImport) {
+        throw "ImportConfig writes docs/nacos/*.yml into Nacos. Re-run with -ImportConfig -ConfirmImport after checking address, namespace and group."
+    }
     $importScript = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..\..")) "scripts\nacos\import-nacos-config.ps1"
-    & $importScript
+    & $importScript -ConfirmWrite
 }
 
