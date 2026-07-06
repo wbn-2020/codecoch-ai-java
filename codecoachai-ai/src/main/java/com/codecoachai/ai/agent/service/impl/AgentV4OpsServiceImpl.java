@@ -914,7 +914,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                         .mustMatchPayload(Map.of("userId", userId))
                         .limit(4)
                         .build()).stream()
-                        .filter(hit -> hit.getScore() != null && hit.getScore() >= minScore)
+                        .filter(hit -> hit.getScore() >= minScore)
                         .filter(hit -> !Objects.equals(payloadLong(hit.getPayload(), "chunkId"), chunk.getId()))
                         .toList();
                 if (!hits.isEmpty()) {

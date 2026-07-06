@@ -152,8 +152,13 @@ class PortfolioDemoServiceImplTest {
                 "ai-ops-dashboard"
         ), storyline.getOpsSteps().stream().map(PortfolioDemoStorylineVO.Step::getKey).toList());
 
-        storyline.getSteps().forEach(PortfolioDemoServiceImplTest::assertStepIsDemoReady);
-        storyline.getOpsSteps().forEach(PortfolioDemoServiceImplTest::assertStepIsDemoReady);
+        storyline.getSteps().forEach(PortfolioDemoServiceImplTest::assertStepHasReadableDemoRoute);
+        storyline.getOpsSteps().forEach(PortfolioDemoServiceImplTest::assertStepHasReadableDemoRoute);
+        assertEquals(List.of("job-experiment-review"), storyline.getSteps().stream()
+                .filter(PortfolioDemoStorylineVO.Step::getDemoData)
+                .map(PortfolioDemoStorylineVO.Step::getKey)
+                .toList());
+        assertTrue(storyline.getOpsSteps().stream().noneMatch(PortfolioDemoStorylineVO.Step::getDemoData));
         assertEquals("/job-experiments/9/review?demoFlag=true", storyline.getSteps().get(6).getRoute());
         assertEquals("/admin/ai/prompt-regression?demoFlag=true", storyline.getOpsSteps().get(2).getRoute());
     }
@@ -193,8 +198,7 @@ class PortfolioDemoServiceImplTest {
         assertTrue(sqlSegment.contains("demo_flag"), sqlSegment);
     }
 
-    private static void assertStepIsDemoReady(PortfolioDemoStorylineVO.Step step) {
-        assertTrue(step.getDemoData(), step.getKey());
+    private static void assertStepHasReadableDemoRoute(PortfolioDemoStorylineVO.Step step) {
         assertFalse(step.getTitle().isBlank(), step.getKey());
         assertFalse(step.getEvidenceSummary().isBlank(), step.getKey());
         assertFalse(containsMojibake(step.getTitle()), step.getTitle());

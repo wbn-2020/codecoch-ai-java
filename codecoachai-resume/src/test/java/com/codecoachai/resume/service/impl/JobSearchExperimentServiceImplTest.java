@@ -124,7 +124,7 @@ class JobSearchExperimentServiceImplTest {
         assertTrue(review.getUnsupportedConclusion().contains("不能判断策略有效性"));
         assertTrue(review.getUnsupportedConclusion().contains("不比较简历版本优劣"));
         assertTrue(review.getNextAction().contains("只展示事实"));
-        assertTrue(weakObservations(review).stream().anyMatch(item -> item.contains("投递数：3")));
+        assertTrue(review.getFactSummary().contains("投递数：3"));
     }
 
     @Test
@@ -174,7 +174,7 @@ class JobSearchExperimentServiceImplTest {
         assertTrue(review.getSampleWarning().contains("面试样本不足"));
         assertTrue(review.getInsightSummary().contains("趋势观察"));
         assertTrue(review.getUnsupportedConclusion().contains("不判断面试能力变化"));
-        assertTrue(review.getNextAction().contains("面试训练"));
+        assertTrue(review.getNextAction().contains("面试复盘样本"));
     }
 
     @Test
