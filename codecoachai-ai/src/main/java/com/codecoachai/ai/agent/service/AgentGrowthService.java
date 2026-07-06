@@ -19,6 +19,7 @@ public interface AgentGrowthService {
     List<ReadinessScoreRecordVO> readinessTrend(Long userId, Integer days);
     PageResult<AgentMemoryVO> pageMemories(Long userId, AgentMemoryQueryDTO query);
     AgentMemoryVO createMemory(Long userId, AgentMemoryCreateDTO dto);
+    AgentMemoryVO confirmMemory(Long userId, Long id);
     AgentMemoryVO setMemoryEnabled(Long userId, Long id, boolean enabled);
     void deleteMemory(Long userId, Long id);
 }

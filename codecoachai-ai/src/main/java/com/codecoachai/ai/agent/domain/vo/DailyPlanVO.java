@@ -10,6 +10,16 @@ import lombok.Data;
 public class DailyPlanVO {
 
     private Long runId;
+    private String schemaVersion;
+    private String traceId;
+    private Long aiCallLogId;
+    private Long promptVersionId;
+    private String resultSource;
+    private String resultSourceLabel;
+    private Boolean fallback;
+    private Boolean mock;
+    private List<SuggestionEvidenceSourceVO> evidenceSources = new ArrayList<>();
+    private SuggestionQualityGateVO qualityGate;
     private Long targetJobId;
     private LocalDate date;
     private LocalDate planDate;

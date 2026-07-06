@@ -70,6 +70,12 @@ public class AgentGrowthController {
         return Result.success(agentGrowthService.setMemoryEnabled(userId, id, true));
     }
 
+    @PostMapping("/memories/{id}/confirm")
+    public Result<AgentMemoryVO> confirmMemory(@PathVariable Long id) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(agentGrowthService.confirmMemory(userId, id));
+    }
+
     @PostMapping("/memories/{id}/disable")
     public Result<AgentMemoryVO> disableMemory(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();

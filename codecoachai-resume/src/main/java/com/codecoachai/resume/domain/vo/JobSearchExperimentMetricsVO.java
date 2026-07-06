@@ -27,5 +27,6 @@ public class JobSearchExperimentMetricsVO {
     private List<String> facts = new ArrayList<>();
     private List<String> unsupportedConclusions = new ArrayList<>();
     private List<String> weakObservations = new ArrayList<>();
+    private Map<String, Object> sampleBoundary = new LinkedHashMap<>();
     private Map<Long, Integer> resumeVersionUsageCounts = new LinkedHashMap<>();
 }

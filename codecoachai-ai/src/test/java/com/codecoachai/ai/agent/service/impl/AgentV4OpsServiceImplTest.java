@@ -20,6 +20,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.agent.config.KnowledgeIndexExecutor;
 import com.codecoachai.ai.agent.config.KnowledgeProperties;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
+import com.codecoachai.ai.agent.domain.dto.KnowledgeAskDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentFeedback;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -29,6 +30,7 @@ import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocument;
 import com.codecoachai.ai.agent.domain.entity.PromptRegressionResult;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackStatsVO;
 import com.codecoachai.ai.agent.domain.vo.feedback.AgentFeedbackVO;
+import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeAskVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeChunkVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
@@ -309,6 +311,52 @@ class AgentV4OpsServiceImplTest {
         assertEquals(1, stats.getDuplicateDocumentHotspots().size());
         verify(personalKnowledgeDocumentMapper, never()).selectList(any());
         verify(personalKnowledgeChunkMapper, never()).selectList(any());
+    }
+
+    @Test
+    void getKnowledgeStatsDerivesGovernanceStatusAndActionsFromExistingCounts() {
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), eq(USER_ID))).thenReturn(2L, 4L, 2L);
+        when(jdbcTemplate.queryForList(anyString(), eq(USER_ID)))
+                .thenReturn(List.of(Map.of("name", "NOTE", "count", 2L)))
+                .thenReturn(List.of(
+                        Map.of("name", "INDEXED", "count", 2L),
+                        Map.of("name", "FAILED", "count", 1L),
+                        Map.of("name", "PENDING", "count", 1L)))
+                .thenReturn(List.of(Map.of("name", "UNKNOWN", "count", 4L)))
+                .thenReturn(List.of(Map.of("name", "NOTE", "count", 2L)))
+                .thenReturn(List.of(Map.of(
+                        "document_id", 100L,
+                        "title", "Java 闈㈣瘯鐭ヨ瘑",
+                        "document_type", "NOTE",
+                        "duplicate_chunk_count", 2L,
+                        "chunk_count", 4L)));
+
+        KnowledgeStatsVO stats = service.getKnowledgeStats(USER_ID);
+
+        assertEquals("DEGRADED", stats.getKnowledgeStatus());
+        assertEquals("PARTIAL", stats.getEvidenceTrustStatus());
+        assertFalse(stats.getCanBeEvidence());
+        assertTrue(stats.getLowConfidence());
+        assertEquals("INDEX_FAILED", stats.getDisabledReason());
+        assertTrue(stats.getGovernanceActions().contains("RETRY_FAILED_INDEX"));
+        assertTrue(stats.getGovernanceActions().contains("REVIEW_DUPLICATE_CHUNKS"));
+    }
+
+    @Test
+    void askKnowledgeWithoutReferencesIsExplicitlyNotCitableEvidence() {
+        AgentV4OpsServiceImpl spyService = spy(service);
+        doReturn(List.of()).when(spyService).searchKnowledge(eq(USER_ID), anyString(), any(), any(), any(), any());
+        KnowledgeAskDTO dto = new KnowledgeAskDTO();
+        dto.setQuestion("How should I review Java concurrency?");
+
+        KnowledgeAskVO vo = spyService.askKnowledge(USER_ID, dto);
+
+        assertEquals("UNAVAILABLE", vo.getCitationTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
+        assertTrue(vo.getLowConfidence());
+        assertEquals("INSUFFICIENT_REFERENCES", vo.getDisabledReason());
+        assertTrue(vo.getGovernanceActions().contains("SUPPLEMENT_KNOWLEDGE_DOCUMENT"));
+        verify(aiCallLogService, never()).callAndLog(any());
     }
 
     @Test

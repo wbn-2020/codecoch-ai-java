@@ -11,7 +11,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.agent.domain.dto.AgentMemoryCreateDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentMemoryQueryDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -32,6 +34,7 @@ import com.codecoachai.ai.agent.mapper.SkillGrowthSnapshotMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -214,6 +217,77 @@ class AgentGrowthServiceImplTest {
     }
 
     @Test
+    void createMemoryMarksManualEnabledMemoryAsConfirmedEvidence() {
+        AgentGrowthServiceImpl service = service();
+        AgentMemoryCreateDTO dto = new AgentMemoryCreateDTO();
+        dto.setContent("Review system design tradeoffs before interviews.");
+        dto.setConfidence(BigDecimal.valueOf(0.9));
+
+        AgentMemoryVO vo = service.createMemory(10L, dto);
+
+        assertEquals("CONFIRMED", vo.getMemoryStatus());
+        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
+        assertTrue(vo.getCanBeEvidence());
+        assertFalse(vo.getLowConfidence());
+        assertNotNull(vo.getConfirmedAt());
+        assertTrue(vo.getImpactPreview().contains("AGENT_TASK"));
+    }
+
+    @Test
+    void pageMemoriesMarksAgentDisabledMemoryAsCandidateUntilConfirmed() {
+        AgentGrowthServiceImpl service = service();
+        Page<AgentMemory> page = Page.of(1, 10);
+        page.setTotal(1);
+        page.setRecords(List.of(memory(88L, 10L, 0, "AGENT_REVIEW", BigDecimal.valueOf(0.75))));
+        when(agentMemoryMapper.selectPage(any(), any())).thenReturn(page);
+
+        AgentMemoryVO vo = service.pageMemories(10L, new AgentMemoryQueryDTO()).getRecords().get(0);
+
+        assertEquals("CANDIDATE", vo.getMemoryStatus());
+        assertEquals("CANDIDATE", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
+        assertEquals("WAITING_USER_CONFIRMATION", vo.getDisabledReason());
+        assertTrue(vo.getImpactPreview().contains("AGENT_TASK"));
+    }
+
+    @Test
+    void pageMemoriesKeepsEnabledAgentMemoryCandidateWithoutConfirmationSignal() {
+        AgentGrowthServiceImpl service = service();
+        LocalDateTime createdAt = LocalDateTime.of(2026, 7, 6, 9, 0);
+        AgentMemory candidate = memory(90L, 10L, 1, "AGENT_REVIEW", BigDecimal.valueOf(0.85));
+        candidate.setCreatedAt(createdAt);
+        candidate.setUpdatedAt(createdAt);
+        Page<AgentMemory> page = Page.of(1, 10);
+        page.setTotal(1);
+        page.setRecords(List.of(candidate));
+        when(agentMemoryMapper.selectPage(any(), any())).thenReturn(page);
+
+        AgentMemoryVO vo = service.pageMemories(10L, new AgentMemoryQueryDTO()).getRecords().get(0);
+
+        assertEquals("CANDIDATE", vo.getMemoryStatus());
+        assertEquals("CANDIDATE", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
+        assertNull(vo.getConfirmedAt());
+    }
+
+    @Test
+    void pageMemoriesMarksLowConfidenceMemoryAsWeakObservationOnly() {
+        AgentGrowthServiceImpl service = service();
+        Page<AgentMemory> page = Page.of(1, 10);
+        page.setTotal(1);
+        page.setRecords(List.of(memory(89L, 10L, 1, "MANUAL", BigDecimal.valueOf(0.4))));
+        when(agentMemoryMapper.selectPage(any(), any())).thenReturn(page);
+
+        AgentMemoryVO vo = service.pageMemories(10L, new AgentMemoryQueryDTO()).getRecords().get(0);
+
+        assertEquals("LOW_CONFIDENCE", vo.getMemoryStatus());
+        assertEquals("PARTIAL", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
+        assertTrue(vo.getLowConfidence());
+        assertEquals("LOW_CONFIDENCE", vo.getDisabledReason());
+    }
+
+    @Test
     void setMemoryEnabledRejectsOtherUsersMemory() {
         AgentGrowthServiceImpl service = service();
         when(agentMemoryMapper.selectById(99L)).thenReturn(memory(99L, 20L, 1));
@@ -235,6 +309,33 @@ class AgentGrowthServiceImplTest {
         verify(agentMemoryMapper).updateById(memoryCaptor.capture());
         assertEquals(0, memoryCaptor.getValue().getEnabled());
         assertEquals(0, vo.getEnabled());
+    }
+
+    @Test
+    void confirmMemoryPromotesOwnedCandidateToEvidenceWithConfirmationTime() {
+        AgentGrowthServiceImpl service = service();
+        AgentMemory candidate = memory(99L, 10L, 0, "AGENT_REVIEW", BigDecimal.valueOf(0.85));
+        LocalDateTime createdAt = LocalDateTime.of(2026, 7, 6, 9, 0);
+        candidate.setCreatedAt(createdAt);
+        candidate.setUpdatedAt(createdAt);
+        AgentMemory confirmed = memory(99L, 10L, 1, "AGENT_REVIEW", BigDecimal.valueOf(0.85));
+        confirmed.setCreatedAt(createdAt);
+        confirmed.setUpdatedAt(createdAt.plusMinutes(1));
+        when(agentMemoryMapper.selectById(99L))
+                .thenReturn(candidate)
+                .thenReturn(confirmed);
+
+        AgentMemoryVO vo = service.confirmMemory(10L, 99L);
+
+        ArgumentCaptor<AgentMemory> memoryCaptor = ArgumentCaptor.forClass(AgentMemory.class);
+        verify(agentMemoryMapper).updateById(memoryCaptor.capture());
+        assertEquals(1, memoryCaptor.getValue().getEnabled());
+        assertNotNull(memoryCaptor.getValue().getUpdatedAt());
+        assertTrue(memoryCaptor.getValue().getUpdatedAt().isAfter(createdAt));
+        assertEquals("CONFIRMED", vo.getMemoryStatus());
+        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
+        assertTrue(vo.getCanBeEvidence());
+        assertNotNull(vo.getConfirmedAt());
     }
 
     @Test
@@ -268,13 +369,17 @@ class AgentGrowthServiceImplTest {
     }
 
     private AgentMemory memory(Long id, Long userId, Integer enabled) {
+        return memory(id, userId, enabled, "MANUAL", BigDecimal.valueOf(0.8));
+    }
+
+    private AgentMemory memory(Long id, Long userId, Integer enabled, String sourceType, BigDecimal confidence) {
         AgentMemory memory = new AgentMemory();
         memory.setId(id);
         memory.setUserId(userId);
         memory.setMemoryType("WEAKNESS");
         memory.setContent("Weak area");
-        memory.setSourceType("MANUAL");
-        memory.setConfidence(BigDecimal.valueOf(0.8));
+        memory.setSourceType(sourceType);
+        memory.setConfidence(confidence);
         memory.setEnabled(enabled);
         return memory;
     }

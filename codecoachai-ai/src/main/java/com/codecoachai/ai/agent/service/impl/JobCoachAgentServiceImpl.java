@@ -31,6 +31,7 @@ import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunUserDetailVO;
 import com.codecoachai.ai.agent.domain.vo.AgentTaskVO;
 import com.codecoachai.ai.agent.domain.vo.DailyPlanVO;
+import com.codecoachai.ai.agent.domain.vo.SuggestionEvidenceSourceVO;
 import com.codecoachai.ai.agent.feign.InterviewReportEvidenceFeignClient;
 import com.codecoachai.ai.agent.feign.QuestionPracticeEvidenceFeignClient;
 import com.codecoachai.ai.agent.feign.ResumeJobApplicationEvidenceFeignClient;
@@ -338,7 +339,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .eq(StringUtils.hasText(status), AgentTask::getStatus, status)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
-                .stream().map(this::toReviewedTaskVO).toList();
+                .stream().map(task -> toReviewedTaskVO(task, run)).toList();
     }
 
     @Override
@@ -359,7 +360,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .orderByDesc(AgentTask::getDueDate)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByDesc(AgentTask::getId));
-        return PageResult.of(page.getRecords().stream().map(this::toReviewedTaskVO).toList(), page.getTotal(), pageNo, pageSize);
+        return PageResult.of(page.getRecords().stream().map(this::toReviewedTaskVOWithRunTrace).toList(), page.getTotal(), pageNo, pageSize);
     }
 
     @Override
@@ -367,7 +368,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     public AgentTaskVO startTask(Long userId, Long taskId) {
         AgentTask task = requireUserTask(userId, taskId);
         if (AgentTaskStatusEnum.DOING.name().equals(task.getStatus())) {
-            return AgentConvert.toTaskVO(task);
+            return toReviewedTaskVOWithRunTrace(task);
         }
         transitionTask(userId, taskId, AgentTaskStatusEnum.DOING.name(),
                 List.of(AgentTaskStatusEnum.TODO.name()),
@@ -417,7 +418,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                                              boolean verifiedBusinessAction) {
         AgentTask task = requireUserTask(userId, taskId);
         if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())) {
-            return enrichTaskReview(AgentConvert.toTaskVO(task), task);
+            return toReviewedTaskVOWithRunTrace(task);
         }
         if (!verifiedBusinessAction && isEvidenceBoundTaskType(task.getTaskType())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -436,7 +437,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         List<ActivationHandoffVO> activationHandoffs = taskActivationHandoffs(latest);
         String requestId = activationHandoffs.isEmpty() ? null : activationHandoffs.get(0).getRequestId();
         emitTaskCompletedMetricAfterCommit(latest, requestId, activationHandoffs, verifiedBusinessAction);
-        return enrichTaskReview(AgentConvert.toTaskVO(latest), review);
+        return applyTaskRunTrace(enrichTaskReview(AgentConvert.toTaskVO(latest), review), latest);
     }
 
     @Override
@@ -453,7 +454,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             return null;
         }
         if (AgentTaskStatusEnum.DONE.name().equals(task.getStatus())) {
-            return enrichTaskReview(AgentConvert.toTaskVO(task), task);
+            return toReviewedTaskVOWithRunTrace(task);
         }
         return completeTaskInternal(dto.getUserId(), task.getId(), businessActionCompleteNote(dto), true);
     }
@@ -463,7 +464,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     public AgentTaskVO skipTask(Long userId, Long taskId, AgentTaskSkipDTO dto) {
         AgentTask task = requireUserTask(userId, taskId);
         if (AgentTaskStatusEnum.SKIPPED.name().equals(task.getStatus())) {
-            return enrichTaskReview(AgentConvert.toTaskVO(task), task);
+            return toReviewedTaskVOWithRunTrace(task);
         }
         transitionTask(userId, taskId, AgentTaskStatusEnum.SKIPPED.name(),
                 List.of(AgentTaskStatusEnum.TODO.name(), AgentTaskStatusEnum.DOING.name()),
@@ -472,7 +473,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .set(AgentTask::getSkipReason, dto == null ? null : dto.getSkipReason()));
         AgentTask latest = taskAfterTransitionEntity(userId, taskId, AgentTaskStatusEnum.SKIPPED.name());
         AgentReview review = upsertTaskReview(latest, dto == null ? null : dto.getSkipReason());
-        return enrichTaskReview(AgentConvert.toTaskVO(latest), review);
+        return applyTaskRunTrace(enrichTaskReview(AgentConvert.toTaskVO(latest), review), latest);
     }
 
     @Override
@@ -480,7 +481,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     public AgentTaskVO restoreTask(Long userId, Long taskId) {
         AgentTask task = requireUserTask(userId, taskId);
         if (AgentTaskStatusEnum.TODO.name().equals(task.getStatus())) {
-            return AgentConvert.toTaskVO(task);
+            return toReviewedTaskVOWithRunTrace(task);
         }
         transitionTask(userId, taskId, AgentTaskStatusEnum.TODO.name(),
                 List.of(AgentTaskStatusEnum.SKIPPED.name()),
@@ -545,7 +546,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .eq(StringUtils.hasText(actual.getStatus()), AgentTask::getStatus, actual.getStatus())
                         .eq(StringUtils.hasText(actual.getPriority()), AgentTask::getPriority, actual.getPriority())
                         .orderByDesc(AgentTask::getCreatedAt));
-        return PageResult.of(page.getRecords().stream().map(this::toReviewedTaskVO).toList(), page.getTotal(), pageNo, pageSize);
+        return PageResult.of(page.getRecords().stream().map(this::toReviewedTaskVOWithRunTrace).toList(), page.getTotal(), pageNo, pageSize);
     }
 
     private RunCreateResult createRun(Long userId, Long targetJobId, LocalDate planDate) {
@@ -925,6 +926,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private DailyPlanVO toDailyPlan(AgentRun run) {
         DailyPlanVO vo = new DailyPlanVO();
         vo.setRunId(run.getId());
+        AgentConvert.applyRunTrace(vo, run);
         vo.setTargetJobId(run.getTargetJobId());
         vo.setDate(run.getPlanDate());
         vo.setPlanDate(run.getPlanDate());
@@ -949,7 +951,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .eq(AgentTask::getDeleted, 0)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
-                .stream().map(this::toReviewedTaskVO).toList());
+                .stream().map(task -> toReviewedTaskVO(task, run)).toList());
         vo.setActivationHandoffs(planActivationHandoffs(run));
         return vo;
     }
@@ -962,7 +964,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .eq(AgentTask::getDeleted, 0)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
-                .stream().map(this::toReviewedTaskVO).toList());
+                .stream().map(task -> toReviewedTaskVO(task, run)).toList());
         return vo;
     }
 
@@ -1004,7 +1006,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .eq(AgentTask::getDeleted, 0)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
-                .stream().map(this::toReviewedTaskVO).toList());
+                .stream().map(task -> toReviewedTaskVO(task, run)).toList());
         return vo;
     }
 
@@ -1380,7 +1382,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private AgentTaskVO taskAfterTransition(Long userId, Long taskId, String expectedStatus) {
-        return AgentConvert.toTaskVO(taskAfterTransitionEntity(userId, taskId, expectedStatus));
+        return toReviewedTaskVOWithRunTrace(taskAfterTransitionEntity(userId, taskId, expectedStatus));
     }
 
     private AgentTask taskAfterTransitionEntity(Long userId, Long taskId, String expectedStatus) {
@@ -1393,6 +1395,21 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
 
     private AgentTaskVO toReviewedTaskVO(AgentTask task) {
         return enrichTaskReview(AgentConvert.toTaskVO(task), task);
+    }
+
+    private AgentTaskVO toReviewedTaskVO(AgentTask task, AgentRun run) {
+        return AgentConvert.applyRunTrace(toReviewedTaskVO(task), run);
+    }
+
+    private AgentTaskVO toReviewedTaskVOWithRunTrace(AgentTask task) {
+        return applyTaskRunTrace(toReviewedTaskVO(task), task);
+    }
+
+    private AgentTaskVO applyTaskRunTrace(AgentTaskVO vo, AgentTask task) {
+        if (vo == null || task == null || task.getAgentRunId() == null) {
+            return vo;
+        }
+        return AgentConvert.applyRunTrace(vo, agentRunMapper.selectById(task.getAgentRunId()));
     }
 
     private AgentTaskVO enrichTaskReview(AgentTaskVO vo, AgentTask task) {
@@ -1847,6 +1864,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 nextActions.isEmpty() ? "Continue the next daily-plan task." : nextActions.get(0));
         AgentCoachActionVO vo = toCoachActionVO(task, request, result, null);
         vo.setResultSource(readReviewSource(review.getReviewJson()));
+        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
         vo.setAiCallLogId(review.getAiCallLogId());
         return vo;
     }
@@ -1874,6 +1892,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 StringUtils.hasText(task.getActionUrl()) ? "Open the task entry and complete one focused action." : "Continue this task from the Agent task list.");
         AgentCoachActionVO vo = toCoachActionVO(task, request, result, null);
         vo.setResultSource(AiResultSourceEnum.FALLBACK.name());
+        vo.setFallback(true);
         return vo;
     }
 
@@ -1894,15 +1913,35 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setSummary(truncate(result.summary(), 1000));
         vo.setReasons(result.reasons().stream().filter(StringUtils::hasText).map(item -> truncate(item, 300)).limit(3).toList());
         vo.setEvidenceRefs(result.evidenceRefs().stream().filter(StringUtils::hasText).limit(5).toList());
+        vo.setEvidenceSources(coachActionEvidenceSources(task, vo.getEvidenceRefs()));
         vo.setNextAction(truncate(firstText(result.nextAction(), vo.getReasons().isEmpty() ? null : vo.getReasons().get(0)), 300));
         vo.setRequestId(request.requestId());
         vo.setTraceId(request.traceId());
         vo.setIdempotencyKey(request.idempotencyKey());
         vo.setResultSource(routeResult == null ? AiResultSourceEnum.FALLBACK.name() : routeResult.getResultSource());
+        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
         vo.setAiCallLogId(routeResult == null ? null : routeResult.getAiCallLogId());
         vo.setLatencyMs(routeResult == null ? null : routeResult.getElapsedMs());
         vo.setEstimatedCost(routeResult == null ? null : routeResult.getEstimatedCost());
         return vo;
+    }
+
+    private List<SuggestionEvidenceSourceVO> coachActionEvidenceSources(AgentTask task, List<String> evidenceRefs) {
+        if (task == null || evidenceRefs == null || evidenceRefs.isEmpty()) {
+            return List.of();
+        }
+        SuggestionEvidenceSourceVO source = new SuggestionEvidenceSourceVO();
+        source.setId("agent-task:" + task.getId());
+        source.setSourceType(firstText(task.getRelatedBizType(), task.getTaskType(), "JOB_COACH_AGENT_TASK"));
+        source.setSourceId(task.getRelatedBizId() == null ? task.getId() : task.getRelatedBizId());
+        source.setSourceTitle(task.getTitle());
+        source.setSourceLabel("Agent 任务");
+        source.setEvidenceSummary(truncate(String.join(", ", evidenceRefs), 200));
+        source.setSourceSummary(truncate(firstText(task.getReason(), task.getRelatedSkillName(), "Agent 任务上下文摘要"), 300));
+        source.setTrustStatus(task.getAgentRunId() == null ? "PARTIAL" : "VERIFIED");
+        source.setSourceUpdatedAt(task.getUpdatedAt());
+        source.setActionUrl(task.getActionUrl());
+        return List.of(source);
     }
 
     private CoachActionResult parseCoachActionResult(String content) {

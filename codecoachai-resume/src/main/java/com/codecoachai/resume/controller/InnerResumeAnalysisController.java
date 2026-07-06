@@ -1,9 +1,11 @@
 package com.codecoachai.resume.controller;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.feign.vo.InnerFileDownloadVO;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
@@ -13,6 +15,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.time.LocalDateTime;
+import java.util.Objects;
+import java.util.Set;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +26,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -39,13 +44,23 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/inner/resumes/analysis-records")
 public class InnerResumeAnalysisController {
 
+    private static final String TASK_SERVICE_NAME = "codecoachai-task";
+    private static final int CALLBACK_LOG_MAX_LENGTH = 256;
+    private static final Set<String> MUTABLE_PARSE_STATUSES = Set.of(
+            ResumeParseStatus.PENDING.name(),
+            ResumeParseStatus.PARSING.name()
+    );
+
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final FileContentService fileContentService;
     private final ResumeTextExtractorDispatcher textExtractorDispatcher;
 
     @Operation(summary = "获取简历解析任务原始数据（rawText + 元信息）")
     @GetMapping("/{id}/raw")
-    public Result<RawVO> getAnalysisRaw(@PathVariable("id") Long id) {
+    public Result<RawVO> getAnalysisRaw(@PathVariable("id") Long id,
+                                        @RequestHeader(value = HeaderConstants.SERVICE_NAME, required = false)
+                                        String serviceName) {
+        requireTaskService(serviceName);
         ResumeAnalysisRecord record = analysisRecordMapper.selectById(id);
         if (record == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
@@ -77,15 +92,28 @@ public class InnerResumeAnalysisController {
 
     @Operation(summary = "回写 AI 解析结果（task-service 调用）")
     @PostMapping("/{id}/complete-parse")
-    public Result<Void> completeParse(@PathVariable("id") Long id, @Valid @RequestBody CompleteDTO dto) {
+    public Result<Void> completeParse(@PathVariable("id") Long id,
+                                      @RequestHeader(value = HeaderConstants.SERVICE_NAME, required = false)
+                                      String serviceName,
+                                      @Valid @RequestBody CompleteDTO dto) {
+        requireTaskService(serviceName);
         ResumeAnalysisRecord existing = analysisRecordMapper.selectById(id);
         if (existing == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
         }
         String status = StringUtils.hasText(dto.getParseStatus()) ? dto.getParseStatus() : "SUCCESS";
+        ResumeParseStatus parseStatus = ResumeParseStatus.of(status);
+        if (parseStatus == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported resume parse status: " + status);
+        }
+        logCallbackDiagnostics(id, status, dto);
 
         LambdaUpdateWrapper<ResumeAnalysisRecord> upd = new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .eq(ResumeAnalysisRecord::getId, id)
+                .eq(ResumeAnalysisRecord::getDeleted, 0)
+                .and(wrapper -> wrapper.in(ResumeAnalysisRecord::getParseStatus, MUTABLE_PARSE_STATUSES)
+                        .or()
+                        .isNull(ResumeAnalysisRecord::getParseStatus))
                 .set(ResumeAnalysisRecord::getParseStatus, status)
                 .set(ResumeAnalysisRecord::getUpdatedAt, LocalDateTime.now());
         if (StringUtils.hasText(dto.getStructuredJson())) {
@@ -97,7 +125,16 @@ public class InnerResumeAnalysisController {
         if (StringUtils.hasText(dto.getErrorMessage())) {
             upd.set(ResumeAnalysisRecord::getErrorMessage, safeParseErrorMessage());
         }
-        analysisRecordMapper.update(null, upd);
+        int updated = analysisRecordMapper.update(null, upd);
+        if (updated <= 0) {
+            ResumeAnalysisRecord latest = analysisRecordMapper.selectById(id);
+            if (isIdempotentDuplicate(latest, status, dto)) {
+                log.info("Resume analysis record {} duplicate callback ignored, status={}", id, status);
+                return Result.success();
+            }
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Resume analysis callback rejected because current status is not mutable: " + id);
+        }
         log.info("Resume analysis record {} updated to {}", id, status);
         return Result.success();
     }
@@ -124,6 +161,48 @@ public class InnerResumeAnalysisController {
 
     private String safeParseErrorMessage() {
         return "简历解析失败，请稍后重试";
+    }
+
+    private void requireTaskService(String serviceName) {
+        if (!TASK_SERVICE_NAME.equals(serviceName)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "Resume analysis inner API only accepts task service");
+        }
+    }
+
+    private void logCallbackDiagnostics(Long id, String status, CompleteDTO dto) {
+        if (StringUtils.hasText(dto.getModelTrace())) {
+            log.info("Resume analysis callback modelTrace received, id={}, status={}, traceSummary={}",
+                    id, status, safeLogText(dto.getModelTrace()));
+        }
+        if (StringUtils.hasText(dto.getErrorMessage())) {
+            log.warn("Resume analysis callback error received, id={}, status={}, errorSummary={}",
+                    id, status, safeLogText(dto.getErrorMessage()));
+        }
+    }
+
+    private boolean isIdempotentDuplicate(ResumeAnalysisRecord latest, String status, CompleteDTO dto) {
+        if (latest == null || !Objects.equals(latest.getParseStatus(), status)) {
+            return false;
+        }
+        if (StringUtils.hasText(dto.getStructuredJson())
+                && !Objects.equals(latest.getStructuredJson(), dto.getStructuredJson())) {
+            return false;
+        }
+        if (StringUtils.hasText(dto.getRawText()) && !Objects.equals(latest.getRawText(), dto.getRawText())) {
+            return false;
+        }
+        return true;
+    }
+
+    private String safeLogText(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "";
+        }
+        String normalized = text.replaceAll("[\\r\\n\\t]+", " ").trim();
+        if (normalized.length() <= CALLBACK_LOG_MAX_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, CALLBACK_LOG_MAX_LENGTH) + "...";
     }
 
     private record RawTextPayload(String rawText, String originalFilename, String fileExt) {

@@ -15,9 +15,16 @@ public class JobSearchExperimentStrategyVO {
     private Boolean sampleInsufficient;
     private String sampleWarning;
     private String actionUrl;
+    private String resultSource;
+    private Boolean fallback = false;
+    private Map<String, Object> sampleBoundary;
     private List<String> unsupportedConclusions = new ArrayList<>();
     private List<String> weakObservations = new ArrayList<>();
+    private List<Map<String, Object>> nextActions = new ArrayList<>();
+    private List<Map<String, Object>> actionCandidates = new ArrayList<>();
     private List<EvidenceSource> evidenceSources = new ArrayList<>();
+    private Map<String, Object> qualityGate;
+    private Map<String, Object> reviewDsl;
 
     @Data
     public static class EvidenceSource {

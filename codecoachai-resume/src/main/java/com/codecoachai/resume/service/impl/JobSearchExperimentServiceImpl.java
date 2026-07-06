@@ -249,10 +249,17 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         strategyMap.put("sampleInsufficient", strategy.getSampleInsufficient());
         strategyMap.put("sampleWarning", strategy.getSampleWarning());
         strategyMap.put("actionUrl", strategy.getActionUrl());
+        strategyMap.put("resultSource", strategy.getResultSource());
+        strategyMap.put("fallback", strategy.getFallback());
+        strategyMap.put("sampleBoundary", strategy.getSampleBoundary());
         strategyMap.put("unsupportedConclusions", strategy.getUnsupportedConclusions());
         strategyMap.put("weakObservations", strategy.getWeakObservations());
+        strategyMap.put("nextActions", strategy.getNextActions());
+        strategyMap.put("actionCandidates", strategy.getActionCandidates());
         strategyMap.put("facts", metrics.getFacts());
         strategyMap.put("evidenceSources", strategy.getEvidenceSources());
+        strategyMap.put("qualityGate", strategy.getQualityGate());
+        strategyMap.put("reviewDsl", strategy.getReviewDsl());
         dto.setStrategy(strategyMap);
         return createReview(experimentId, dto);
     }
@@ -385,13 +392,15 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         metrics.setSampleInsufficient(metrics.getApplicationCount() < 10 || metrics.getInterviewCompletedCount() < 3);
         metrics.setConfidenceLevel(confidenceLevel(metrics));
         metrics.getUnsupportedConclusions().addAll(unsupportedConclusions(metrics));
-        metrics.getWeakObservations().addAll(metrics.getFacts());
         if (metrics.getApplicationCount() >= 5 && metrics.getApplicationCount() < 10) {
-            metrics.getWeakObservations().add("低置信度弱建议：继续沿当前岗位方向投递，但不要据此判断策略优劣。");
+            metrics.getWeakObservations().add("低置信度弱观察：当前投递已有 5-9 条，可以记录反馈方向，但不能判断策略优劣。");
         } else if (metrics.getApplicationCount() >= 10 && metrics.getInterviewCompletedCount() < 3) {
-            metrics.getWeakObservations().add("趋势观察：投递反馈可复盘，但面试样本不足，不能判断面试能力变化。");
+            metrics.getWeakObservations().add("趋势观察：投递样本达到 10 条，可观察反馈趋势，但面试样本不足，不能判断面试能力变化。");
+        } else if (metrics.getApplicationCount() >= 10) {
+            metrics.getWeakObservations().add("趋势观察：投递和面试样本达到复盘口径，可观察反馈节奏，但仍需保留岗位、渠道和时间窗口边界。");
         }
         metrics.setSampleWarning(sampleWarning(metrics));
+        metrics.setSampleBoundary(buildSampleBoundary(metrics));
         return metrics;
     }
 
@@ -402,15 +411,18 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         strategy.setConfidenceLevel(metrics.getConfidenceLevel());
         strategy.setSampleInsufficient(metrics.getSampleInsufficient());
         strategy.setSampleWarning(metrics.getSampleWarning());
-        strategy.setActionUrl("/agent/today?source=jobExperiment&experimentId=" + experiment.getId());
+        strategy.setResultSource("RULE");
+        strategy.setFallback(false);
+        strategy.setSampleBoundary(metrics.getSampleBoundary());
         strategy.getUnsupportedConclusions().addAll(metrics.getUnsupportedConclusions());
         strategy.getWeakObservations().addAll(metrics.getWeakObservations());
+        strategy.setQualityGate(buildStrategyQualityGate(metrics));
         if (metrics.getApplicationCount() < 5) {
             strategy.setContent("当前只展示事实：继续记录投递、反馈和岗位来源，累计到 5 条可比较投递前不判断策略有效性。");
         } else if (metrics.getApplicationCount() < 10) {
-            strategy.setContent("可以给低置信度弱建议：保留当前实验方向，补足到 10 条可比较投递后再做策略判断。");
+            strategy.setContent("可以给低置信度弱观察：保留当前实验方向，补足到 10 条可比较投递后再做策略判断。");
         } else if (metrics.getInterviewCompletedCount() < 3) {
-            strategy.setContent("投递样本可做趋势观察；先基于当前 JD 和项目证据安排面试训练，完成面试达到 3 次前不判断面试能力变化。");
+            strategy.setContent("投递样本达到 10 条，可做带边界的趋势观察；先补齐面试复盘样本，完成面试达到 3 次前不判断面试能力变化。");
         } else {
             strategy.setContent("基于当前样本进入下一轮实验：复盘 JD 关键词、项目证据、渠道和反馈节奏，并标注这些影响因素。");
         }
@@ -430,7 +442,250 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                 break;
             }
         }
+        List<Map<String, Object>> actionCandidates = buildActionCandidates(experiment, metrics);
+        strategy.setActionCandidates(actionCandidates);
+        strategy.setNextActions(actionCandidates);
+        strategy.setActionUrl(firstActionRoute(actionCandidates));
+        strategy.setReviewDsl(buildReviewDsl(experiment, metrics, strategy));
         return strategy;
+    }
+
+    private Map<String, Object> buildSampleBoundary(JobSearchExperimentMetricsVO metrics) {
+        Map<String, Object> boundary = new LinkedHashMap<>();
+        boundary.put("sampleLevel", sampleLevel(metrics));
+        boundary.put("applicationCount", metrics.getApplicationCount());
+        boundary.put("feedbackCount", metrics.getFeedbackCount());
+        boundary.put("interviewCompletedCount", metrics.getInterviewCompletedCount());
+        boundary.put("resumeVersionUsageCounts", metrics.getResumeVersionUsageCounts());
+        boundary.put("sampleInsufficient", metrics.getSampleInsufficient());
+        boundary.put("resumeVersionSampleInsufficient", metrics.getResumeVersionSampleInsufficient());
+        boundary.put("sampleWarning", metrics.getSampleWarning());
+        boundary.put("blockedConclusionTypes", blockedConclusionTypes(metrics));
+        boundary.put("minComparableApplications", 10);
+        boundary.put("minInterviewTrendSamples", 3);
+        boundary.put("minResumeVersionUsage", 3);
+        return boundary;
+    }
+
+    private String sampleLevel(JobSearchExperimentMetricsVO metrics) {
+        if (metrics.getApplicationCount() < 5) {
+            return "FACT_ONLY";
+        }
+        if (metrics.getApplicationCount() < 10) {
+            return "LOW_CONFIDENCE_OBSERVATION";
+        }
+        if (metrics.getInterviewCompletedCount() < 3) {
+            return "TREND_WITH_INTERVIEW_BOUNDARY";
+        }
+        return "REVIEWABLE_WITH_BOUNDARY";
+    }
+
+    private List<String> blockedConclusionTypes(JobSearchExperimentMetricsVO metrics) {
+        List<String> types = new ArrayList<>();
+        if (metrics.getApplicationCount() < 5) {
+            types.add("STRATEGY_EFFECTIVENESS");
+            types.add("CHANNEL_QUALITY");
+        } else if (metrics.getApplicationCount() < 10) {
+            types.add("STRONG_STRATEGY");
+            types.add("DIRECTION_WINNER");
+        }
+        if (metrics.getInterviewCompletedCount() < 3) {
+            types.add("INTERVIEW_ABILITY_TREND");
+        }
+        if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
+            types.add("RESUME_VERSION_COMPARISON");
+        }
+        types.add("SINGLE_FACTOR_CAUSAL_ATTRIBUTION");
+        return types;
+    }
+
+    private List<Map<String, Object>> buildActionCandidates(JobSearchExperiment experiment,
+                                                            JobSearchExperimentMetricsVO metrics) {
+        List<Map<String, Object>> actions = new ArrayList<>();
+        String evidenceRoute = "/job-experiments/" + experiment.getId() + "?tab=evidence";
+        if (metrics.getApplicationCount() < 10) {
+            actions.add(actionCandidate(experiment, metrics, "COLLECT_APPLICATION_SAMPLE",
+                    "补充投递样本",
+                    "继续记录投递、反馈和岗位来源，达到 10 条可比较投递前不做强策略判断。",
+                    "当前投递数为 " + metrics.getApplicationCount() + "，样本门槛未达到。",
+                    "/applications?experimentId=" + experiment.getId(),
+                    metrics.getApplicationCount() < 5 ? "HIGH" : "MEDIUM",
+                    false));
+        }
+        if (metrics.getTargetJobCount() < 1) {
+            actions.add(actionCandidate(experiment, metrics, "ADD_TARGET_JOB_EVIDENCE",
+                    "补充目标岗位证据",
+                    "为实验绑定目标岗位或岗位方向，避免把投递生命周期误写成岗位质量结论。",
+                    "当前实验缺少目标岗位证据。",
+                    evidenceRoute,
+                    "MEDIUM",
+                    false));
+        }
+        if (metrics.getResumeVersionCount() < 1) {
+            actions.add(actionCandidate(experiment, metrics, "BIND_RESUME_VERSION",
+                    "绑定简历版本",
+                    "为本轮实验绑定实际使用的简历版本；没有版本证据时不比较简历策略。",
+                    "当前实验缺少简历版本证据。",
+                    evidenceRoute,
+                    "MEDIUM",
+                    false));
+        } else if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
+            actions.add(actionCandidate(experiment, metrics, "COLLECT_RESUME_VERSION_SAMPLE",
+                    "补齐简历版本使用样本",
+                    "单个简历版本使用少于 3 次时，只记录事实，不比较版本优劣。",
+                    "简历版本使用样本不足。",
+                    evidenceRoute,
+                    "LOW",
+                    false));
+        }
+        if (metrics.getProjectEvidenceCount() < 1) {
+            actions.add(actionCandidate(experiment, metrics, "ADD_PROJECT_EVIDENCE",
+                    "补充项目证据",
+                    "绑定项目证据或匹配报告后，再观察 JD 缺口和反馈之间的关系。",
+                    "当前实验缺少项目证据。",
+                    evidenceRoute,
+                    "MEDIUM",
+                    false));
+        }
+        if (metrics.getApplicationCount() >= 10 && metrics.getInterviewCompletedCount() < 3) {
+            actions.add(actionCandidate(experiment, metrics, "COLLECT_INTERVIEW_REVIEW_SAMPLE",
+                    "补充面试复盘样本",
+                    "记录面试完成事件或面试复盘；少于 3 次完成面试前不判断面试能力趋势。",
+                    "投递样本已达到 10 条，但面试样本不足。",
+                    null,
+                    "MEDIUM",
+                    false));
+        }
+        if (actions.isEmpty()) {
+            actions.add(actionCandidate(experiment, metrics, "PLAN_NEXT_EXPERIMENT_ROUND",
+                    "规划下一轮实验",
+                    "围绕 JD 关键词、项目证据、渠道和反馈节奏设计下一轮实验，保留样本边界。",
+                    "当前样本达到复盘口径，但仍不能做单因素因果归因。",
+                    "/job-experiments/" + experiment.getId() + "/review",
+                    "MEDIUM",
+                    !Boolean.TRUE.equals(metrics.getSampleInsufficient())));
+        }
+        return actions;
+    }
+
+    private Map<String, Object> actionCandidate(JobSearchExperiment experiment, JobSearchExperimentMetricsVO metrics,
+                                                String actionType, String title, String description, String reason,
+                                                String targetRoute, String priority, boolean strongRecommendation) {
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("id", "job-experiment:" + experiment.getId() + ":" + actionType.toLowerCase().replace("_", "-"));
+        action.put("dedupeKey", actionType + ":job-experiment:" + experiment.getId());
+        action.put("sourceType", "JOB_EXPERIMENT_REVIEW");
+        action.put("sourceId", experiment.getId());
+        action.put("actionType", actionType);
+        action.put("title", title);
+        action.put("description", description);
+        action.put("reason", reason);
+        action.put("priority", priority);
+        action.put("status", "TODO");
+        action.put("confidenceLevel", metrics.getConfidenceLevel());
+        action.put("sampleInsufficient", metrics.getSampleInsufficient());
+        action.put("strongRecommendation", strongRecommendation && !Boolean.TRUE.equals(metrics.getSampleInsufficient()));
+        action.put("qualityGate", buildStrategyQualityGate(metrics));
+        if (StringUtils.hasText(targetRoute)) {
+            action.put("targetRoute", targetRoute);
+            action.put("actionUrl", targetRoute);
+        } else {
+            action.put("targetRouteMissing", true);
+        }
+        return action;
+    }
+
+    private String firstActionRoute(List<Map<String, Object>> actions) {
+        for (Map<String, Object> action : actions == null ? List.<Map<String, Object>>of() : actions) {
+            Object route = action.get("targetRoute");
+            if (route instanceof String text && StringUtils.hasText(text)) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> buildReviewDsl(JobSearchExperiment experiment, JobSearchExperimentMetricsVO metrics,
+                                               JobSearchExperimentStrategyVO strategy) {
+        Map<String, Object> dsl = new LinkedHashMap<>();
+        dsl.put("schemaVersion", "V4_JOB_EXPERIMENT_REVIEW_DSL_MVP");
+        dsl.put("facts", metrics.getFacts());
+        dsl.put("limits", metrics.getSampleBoundary());
+        dsl.put("sampleBoundary", metrics.getSampleBoundary());
+        dsl.put("weakObservations", structuredWeakObservations(metrics));
+        dsl.put("unsupportedConclusions", structuredUnsupportedConclusions(metrics));
+        dsl.put("hypotheses", List.of(buildHypothesis(experiment)));
+        dsl.put("nextActions", strategy.getNextActions());
+        dsl.put("actionCandidates", strategy.getActionCandidates());
+        dsl.put("evidenceSources", strategy.getEvidenceSources());
+        dsl.put("qualityGate", strategy.getQualityGate());
+        return dsl;
+    }
+
+    private Map<String, Object> buildHypothesis(JobSearchExperiment experiment) {
+        Map<String, Object> hypothesis = new LinkedHashMap<>();
+        hypothesis.put("targetDirection", experiment.getTargetDirection());
+        hypothesis.put("assumption", firstText(experiment.getGoal(), "围绕当前目标方向观察投递反馈与证据覆盖关系"));
+        hypothesis.put("timeWindowStart", experiment.getStartDate() == null ? null : experiment.getStartDate().toString());
+        hypothesis.put("timeWindowEnd", experiment.getEndDate() == null ? null : experiment.getEndDate().toString());
+        hypothesis.put("expectedSignal", "反馈、面试完成样本、简历版本使用次数和项目证据覆盖");
+        return hypothesis;
+    }
+
+    private List<Map<String, Object>> structuredWeakObservations(JobSearchExperimentMetricsVO metrics) {
+        List<Map<String, Object>> observations = new ArrayList<>();
+        for (String observation : metrics.getWeakObservations()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("observationType", sampleLevel(metrics));
+            item.put("text", observation);
+            item.put("evidenceCount", metrics.getApplicationCount());
+            item.put("confidenceLevel", metrics.getConfidenceLevel());
+            item.put("actionHint", Boolean.TRUE.equals(metrics.getSampleInsufficient()) ? "先补样本或补证据" : "进入下一轮实验前保留样本边界");
+            observations.add(item);
+        }
+        return observations;
+    }
+
+    private List<Map<String, Object>> structuredUnsupportedConclusions(JobSearchExperimentMetricsVO metrics) {
+        List<Map<String, Object>> conclusions = new ArrayList<>();
+        for (String conclusion : metrics.getUnsupportedConclusions()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("conclusionType", conclusionType(conclusion));
+            item.put("blockedReason", conclusion);
+            item.put("requiredSampleHint", requiredSampleHint(conclusion));
+            conclusions.add(item);
+        }
+        return conclusions;
+    }
+
+    private String conclusionType(String conclusion) {
+        if (conclusion == null) {
+            return "UNKNOWN";
+        }
+        if (conclusion.contains("面试")) {
+            return "INTERVIEW_ABILITY_TREND";
+        }
+        if (conclusion.contains("简历版本")) {
+            return "RESUME_VERSION_COMPARISON";
+        }
+        if (conclusion.contains("策略") || conclusion.contains("岗位方向")) {
+            return "STRONG_STRATEGY";
+        }
+        return "SINGLE_FACTOR_CAUSAL_ATTRIBUTION";
+    }
+
+    private String requiredSampleHint(String conclusion) {
+        String type = conclusionType(conclusion);
+        if ("INTERVIEW_ABILITY_TREND".equals(type)) {
+            return "完成面试至少 3 次后再观察面试能力趋势。";
+        }
+        if ("RESUME_VERSION_COMPARISON".equals(type)) {
+            return "每个参与比较的简历版本至少使用 3 次。";
+        }
+        if ("STRONG_STRATEGY".equals(type)) {
+            return "投递达到 10 条后才允许观察趋势，仍不能做强因果归因。";
+        }
+        return "需要结合岗位、渠道、时间窗口和多类证据人工复核。";
     }
 
     private String sampleWarning(JobSearchExperimentMetricsVO metrics) {
@@ -524,6 +779,27 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         return generated + "；" + requested.trim();
     }
 
+    private Map<String, Object> buildTrustedSuggestion(JobSearchExperimentStrategyVO reviewStrategy,
+                                                       JobSearchExperimentMetricsVO metrics) {
+        Map<String, Object> suggestion = new LinkedHashMap<>();
+        suggestion.put("schemaVersion", "V4_TRUSTED_RESULT_V1");
+        suggestion.put("title", reviewStrategy.getTitle());
+        suggestion.put("content", reviewStrategy.getContent());
+        suggestion.put("confidenceLevel", metrics.getConfidenceLevel());
+        suggestion.put("sampleInsufficient", metrics.getSampleInsufficient());
+        suggestion.put("sampleWarning", metrics.getSampleWarning());
+        suggestion.put("unsupportedConclusions", metrics.getUnsupportedConclusions());
+        suggestion.put("weakObservations", metrics.getWeakObservations());
+        suggestion.put("qualityGate", reviewStrategy.getQualityGate());
+        suggestion.put("evidenceSources", reviewStrategy.getEvidenceSources());
+        suggestion.put("nextAction", reviewStrategy.getActionCandidates().isEmpty()
+                ? null
+                : reviewStrategy.getActionCandidates().get(0));
+        suggestion.put("fallback", false);
+        suggestion.put("resultSource", "RULE");
+        return suggestion;
+    }
+
     private Map<String, Object> safeReviewStrategy(JobSearchExperimentStrategyVO reviewStrategy, JobSearchExperimentMetricsVO metrics) {
         Map<String, Object> strategy = new LinkedHashMap<>();
         strategy.put("title", reviewStrategy.getTitle());
@@ -533,10 +809,45 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         strategy.put("confidenceLevel", metrics.getConfidenceLevel());
         strategy.put("sampleInsufficient", metrics.getSampleInsufficient());
         strategy.put("sampleWarning", metrics.getSampleWarning());
+        strategy.put("sampleBoundary", metrics.getSampleBoundary());
         strategy.put("unsupportedConclusions", metrics.getUnsupportedConclusions());
         strategy.put("weakObservations", metrics.getWeakObservations());
+        strategy.put("nextActions", reviewStrategy.getNextActions());
+        strategy.put("actionCandidates", reviewStrategy.getActionCandidates());
+        strategy.put("qualityGate", buildStrategyQualityGate(metrics));
         strategy.put("facts", metrics.getFacts());
+        strategy.put("reviewDsl", reviewStrategy.getReviewDsl());
+        strategy.put("trustedSuggestion", buildTrustedSuggestion(reviewStrategy, metrics));
         return strategy;
+    }
+
+    private Map<String, Object> buildStrategyQualityGate(JobSearchExperimentMetricsVO metrics) {
+        Map<String, Object> gate = new LinkedHashMap<>();
+        List<String> reasons = new ArrayList<>();
+        if (Boolean.TRUE.equals(metrics.getSampleInsufficient())) {
+            gate.put("gateStatus", "WARN");
+            gate.put("suggestionStrength", "LOW_SAMPLE");
+            reasons.add(StringUtils.hasText(metrics.getSampleWarning())
+                    ? metrics.getSampleWarning()
+                    : "样本不足，仅作为下一轮实验假设");
+        } else if ("LOW".equalsIgnoreCase(metrics.getConfidenceLevel())) {
+            gate.put("gateStatus", "WARN");
+            gate.put("suggestionStrength", "WEAK");
+            reasons.add("置信度较低，不能作为强结论");
+        } else {
+            gate.put("gateStatus", "PASS");
+            gate.put("suggestionStrength", "NORMAL");
+            reasons.add("样本边界、弱观察和不可下结论项已标注");
+        }
+        gate.put("reasons", reasons);
+        gate.put("blockedConclusions", metrics.getUnsupportedConclusions());
+        gate.put("sampleSize", metrics.getApplicationCount());
+        gate.put("minSampleSize", 10);
+        gate.put("sampleBoundary", metrics.getSampleBoundary());
+        gate.put("sampleLevel", sampleLevel(metrics));
+        gate.put("strongRecommendationAllowed", !Boolean.TRUE.equals(metrics.getSampleInsufficient())
+                && !"LOW".equalsIgnoreCase(metrics.getConfidenceLevel()));
+        return gate;
     }
 
     private RelationSummary verifyRelation(Long userId, String type, Long relationId) {
@@ -743,13 +1054,68 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         vo.setUnsupportedConclusion(review.getUnsupportedConclusion());
         vo.setSampleWarning(review.getSampleWarning());
         vo.setNextAction(review.getNextAction());
-        vo.setStrategy(readMap(review.getStrategyJson()));
+        Map<String, Object> strategy = readMap(review.getStrategyJson());
+        vo.setStrategy(strategy);
+        vo.setFacts(toStringList(strategy.get("facts")));
+        vo.setSampleBoundary(toStringKeyMap(strategy.get("sampleBoundary")));
+        vo.setUnsupportedConclusions(toStringList(strategy.get("unsupportedConclusions")));
+        vo.setWeakObservations(toStringList(strategy.get("weakObservations")));
+        List<Map<String, Object>> actionCandidates = toMapList(strategy.get("actionCandidates"));
+        if (actionCandidates.isEmpty()) {
+            actionCandidates = toMapList(strategy.get("nextActions"));
+        }
+        vo.setActionCandidates(actionCandidates);
+        vo.setReviewDsl(toStringKeyMap(strategy.get("reviewDsl")));
+        vo.setTrustedSuggestion(toStringKeyMap(strategy.get("trustedSuggestion")));
         vo.setAiTraceId(review.getAiTraceId());
+        vo.setTraceId(review.getAiTraceId());
+        vo.setAiCallLogId(null);
+        vo.setResultSource("RULE");
+        vo.setFallback(false);
+        Object qualityGate = strategy.get("qualityGate");
+        vo.setQualityGate(toStringKeyMap(qualityGate));
         vo.setConfidenceLevel(review.getConfidenceLevel());
         vo.setDemoFlag(review.getDemoFlag());
         vo.setCreatedAt(review.getCreatedAt());
         vo.setUpdatedAt(review.getUpdatedAt());
         return vo;
+    }
+
+    private List<String> toStringList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        return list.stream()
+                .filter(Objects::nonNull)
+                .map(String::valueOf)
+                .toList();
+    }
+
+    private List<Map<String, Object>> toMapList(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> safe = new ArrayList<>();
+        for (Object item : list) {
+            Map<String, Object> map = toStringKeyMap(item);
+            if (map != null) {
+                safe.add(map);
+            }
+        }
+        return safe;
+    }
+
+    private Map<String, Object> toStringKeyMap(Object value) {
+        if (!(value instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Map<String, Object> safe = new LinkedHashMap<>();
+        map.forEach((key, item) -> {
+            if (key != null) {
+                safe.put(String.valueOf(key), item);
+            }
+        });
+        return safe;
     }
 
     private JobExperimentAgentContextVO toAgentContextVO(JobSearchExperiment experiment) {

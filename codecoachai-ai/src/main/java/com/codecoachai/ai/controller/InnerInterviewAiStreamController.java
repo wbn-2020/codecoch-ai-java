@@ -8,9 +8,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,7 +22,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Slf4j
 @RestController
-@RequiredArgsConstructor
 @RequestMapping("/inner/ai/interview")
 public class InnerInterviewAiStreamController {
 
@@ -28,12 +29,21 @@ public class InnerInterviewAiStreamController {
 
     private final AiService aiService;
 
+    private final Executor aiSseStreamExecutor;
+
+    public InnerInterviewAiStreamController(AiService aiService,
+                                            @Qualifier("aiSseStreamExecutor") Executor aiSseStreamExecutor) {
+        this.aiService = aiService;
+        this.aiSseStreamExecutor = aiSseStreamExecutor;
+    }
+
     @PostMapping(value = "/evaluate/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE + ";charset=UTF-8")
     public SseEmitter evaluateStream(@RequestBody EvaluateAnswerDTO dto) {
         String requestId = UUID.randomUUID().toString();
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
-        CompletableFuture.runAsync(() -> {
+        try {
+            CompletableFuture.runAsync(() -> {
             try {
                 send(emitter, active, "start", baseEvent(requestId, "answer evaluation stream started"));
                 AtomicBoolean emittedToken = new AtomicBoolean(false);
@@ -65,7 +75,15 @@ public class InnerInterviewAiStreamController {
                 send(emitter, active, "error", error);
                 complete(emitter, active);
             }
-        });
+            }, aiSseStreamExecutor);
+        } catch (RejectedExecutionException ex) {
+            log.warn("Inner interview answer evaluation stream executor rejected, requestId={}", requestId, ex);
+            Map<String, Object> error = baseEvent(requestId, "answer evaluation stream is busy, please retry later");
+            error.put("type", "error");
+            error.put("code", "INTERVIEW_ANSWER_EVALUATE_STREAM_FAILED");
+            send(emitter, active, "error", error);
+            complete(emitter, active);
+        }
         return emitter;
     }
 

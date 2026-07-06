@@ -29,7 +29,7 @@ class InnerInterviewAiStreamControllerTest {
             vo.setNextAction("FINISH");
             return vo;
         });
-        InnerInterviewAiStreamController controller = new InnerInterviewAiStreamController(aiService);
+        InnerInterviewAiStreamController controller = new InnerInterviewAiStreamController(aiService, Runnable::run);
 
         SseEmitter emitter = controller.evaluateStream(new EvaluateAnswerDTO());
         assertNotNull(emitter);

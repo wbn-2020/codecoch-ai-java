@@ -17,6 +17,11 @@ public class KnowledgeAskVO {
     private String citationWarning;
     private List<Integer> citedReferenceNumbers;
     private List<Integer> invalidReferenceNumbers;
+    private String citationTrustStatus;
+    private Boolean lowConfidence;
+    private Boolean canBeEvidence;
+    private String disabledReason;
+    private List<String> governanceActions;
     /** 疑似未被任何引用片段支撑的句子（grounding 校验）。 */
     private List<String> unsupportedSentences;
     private Double minReferenceScore;

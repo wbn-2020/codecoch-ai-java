@@ -12,6 +12,8 @@ public class AgentCoachActionVO {
     private String summary;
     private List<String> reasons = new ArrayList<>();
     private List<String> evidenceRefs = new ArrayList<>();
+    private List<SuggestionEvidenceSourceVO> evidenceSources = new ArrayList<>();
+    private Boolean fallback;
     private String nextAction;
     private String requestId;
     private String traceId;
