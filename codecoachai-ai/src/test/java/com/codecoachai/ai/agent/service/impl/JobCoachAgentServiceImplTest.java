@@ -53,10 +53,12 @@ import com.codecoachai.ai.agent.feign.vo.PracticeRecordEvidenceVO;
 import com.codecoachai.ai.agent.feign.vo.ResumeOptimizeRecordEvidenceVO;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.AgentMetricsService;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
 import com.codecoachai.ai.agent.service.AgentPromptBuilder;
+import com.codecoachai.ai.agent.service.AgentWeekPlanService;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
 import com.codecoachai.ai.service.AiCallLogService;
@@ -113,6 +115,10 @@ class JobCoachAgentServiceImplTest {
     @Mock
     private AgentMetricsService agentMetricsService;
     @Mock
+    private AgentContextUsageReferenceService usageReferenceService;
+    @Mock
+    private AgentWeekPlanService agentWeekPlanService;
+    @Mock
     private QuestionPracticeEvidenceFeignClient questionPracticeEvidenceFeignClient;
     @Mock
     private ResumeJobApplicationEvidenceFeignClient resumeJobApplicationEvidenceFeignClient;
@@ -147,6 +153,8 @@ class JobCoachAgentServiceImplTest {
                 agentOutputParser,
                 agentOutputValidator,
                 agentMetricsService,
+                usageReferenceService,
+                agentWeekPlanService,
                 aiCallLogService,
                 questionPracticeEvidenceFeignClient,
                 resumeJobApplicationEvidenceFeignClient,

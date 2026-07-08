@@ -31,7 +31,7 @@ class CandidateTaskBuilderImplTest {
         assertEquals(AgentTaskTypeEnum.APPLICATION_FOLLOW_UP.name(), first.getType());
         assertEquals("JOB_APPLICATION", first.getRelatedBizType());
         assertEquals(11L, first.getRelatedBizId());
-        assertEquals("/applications", first.getActionUrl());
+        assertEquals("/applications?applicationId=11&openEvents=1", first.getActionUrl());
         assertEquals(15, first.getEstimatedMinutes());
         assertEquals("HIGH", first.getPriority());
         assertTrue(first.getCandidateId().startsWith("application-follow-up-"));

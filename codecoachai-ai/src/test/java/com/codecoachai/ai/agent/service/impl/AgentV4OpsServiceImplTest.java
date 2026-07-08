@@ -45,6 +45,7 @@ import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentVersionMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionCaseMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.service.AiCallLogService;
@@ -106,6 +107,8 @@ class AgentV4OpsServiceImplTest {
     private VectorStoreClient vectorStoreClient;
     @Mock
     private KnowledgeIndexExecutor knowledgeIndexExecutor;
+    @Mock
+    private AgentContextUsageReferenceService usageReferenceService;
 
     private AgentV4OpsServiceImpl service;
 
@@ -136,7 +139,8 @@ class AgentV4OpsServiceImplTest {
                 vectorStoreClient,
                 new AiRouterProperties(),
                 new KnowledgeProperties(),
-                knowledgeIndexExecutor);
+                knowledgeIndexExecutor,
+                usageReferenceService);
     }
 
     @Test

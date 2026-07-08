@@ -45,6 +45,7 @@ import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
+import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
@@ -169,6 +170,7 @@ class InterviewServiceImplTest {
         dto.setMaxQuestionCount(3);
         InnerJobApplicationSummaryVO application = applicationSummary(501L, 10L);
         when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenReturn(Result.success(application));
+        when(resumeFeignClient.getSuccessResumeJobMatchReport(800L)).thenReturn(Result.success(matchReport()));
         when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(targetJob()));
         when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
             InterviewSession session = invocation.getArgument(0);
@@ -262,7 +264,10 @@ class InterviewServiceImplTest {
         when(messageMapper.selectOne(any())).thenReturn(currentQuestion);
         when(questionFeignClient.getQuestion(101L)).thenReturn(Result.success(question()));
         when(messageMapper.selectList(any())).thenReturn(List.of(currentQuestion));
-        when(messageMapper.selectCount(any())).thenReturn(1L);
+        when(messageMapper.selectCount(any())).thenReturn(0L);
+        when(sessionMapper.update(any(), any())).thenReturn(1);
+        when(questionFeignClient.select(any(InnerSelectQuestionDTO.class))).thenReturn(Result.success(question()));
+        when(aiFeignClient.generateQuestion(any(GenerateInterviewQuestionDTO.class))).thenReturn(Result.success(aiQuestion()));
         when(messageMapper.insert(any(InterviewMessage.class))).thenAnswer(invocation -> {
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive(),
                     "answer and evaluation persistence must run inside short DB transactions");
@@ -294,7 +299,10 @@ class InterviewServiceImplTest {
         when(messageMapper.selectOne(any())).thenReturn(currentQuestion);
         when(questionFeignClient.getQuestion(101L)).thenReturn(Result.success(question()));
         when(messageMapper.selectList(any())).thenReturn(List.of(currentQuestion));
-        when(messageMapper.selectCount(any())).thenReturn(1L);
+        when(messageMapper.selectCount(any())).thenReturn(0L);
+        when(sessionMapper.update(any(), any())).thenReturn(1);
+        when(questionFeignClient.select(any(InnerSelectQuestionDTO.class))).thenReturn(Result.success(question()));
+        when(aiFeignClient.generateQuestion(any(GenerateInterviewQuestionDTO.class))).thenReturn(Result.success(aiQuestion()));
         when(messageMapper.insert(any(InterviewMessage.class))).thenAnswer(invocation -> {
             InterviewMessage message = invocation.getArgument(0);
             message.setId("ANSWER".equals(message.getMessageType()) ? 2001L : 2002L);
@@ -549,6 +557,15 @@ class InterviewServiceImplTest {
         targetJob.setUserId(10L);
         targetJob.setJobTitle("Java Backend Engineer");
         return targetJob;
+    }
+
+    private InnerResumeJobMatchReportVO matchReport() {
+        InnerResumeJobMatchReportVO report = new InnerResumeJobMatchReportVO();
+        report.setReportId(800L);
+        report.setUserId(10L);
+        report.setTargetJobId(300L);
+        report.setStatus("SUCCESS");
+        return report;
     }
 
     private InterviewSession waitingSession() {

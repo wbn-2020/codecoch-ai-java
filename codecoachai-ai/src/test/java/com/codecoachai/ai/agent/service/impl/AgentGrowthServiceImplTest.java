@@ -226,8 +226,8 @@ class AgentGrowthServiceImplTest {
         AgentMemoryVO vo = service.createMemory(10L, dto);
 
         assertEquals("CONFIRMED", vo.getMemoryStatus());
-        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
-        assertTrue(vo.getCanBeEvidence());
+        assertEquals("INPUT_ONLY", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
         assertFalse(vo.getLowConfidence());
         assertNotNull(vo.getConfirmedAt());
         assertTrue(vo.getImpactPreview().contains("AGENT_TASK"));
@@ -319,6 +319,7 @@ class AgentGrowthServiceImplTest {
         candidate.setCreatedAt(createdAt);
         candidate.setUpdatedAt(createdAt);
         AgentMemory confirmed = memory(99L, 10L, 1, "AGENT_REVIEW", BigDecimal.valueOf(0.85));
+        confirmed.setSourceType("USER_CONFIRMED_AGENT_REVIEW");
         confirmed.setCreatedAt(createdAt);
         confirmed.setUpdatedAt(createdAt.plusMinutes(1));
         when(agentMemoryMapper.selectById(99L))
@@ -333,8 +334,8 @@ class AgentGrowthServiceImplTest {
         assertNotNull(memoryCaptor.getValue().getUpdatedAt());
         assertTrue(memoryCaptor.getValue().getUpdatedAt().isAfter(createdAt));
         assertEquals("CONFIRMED", vo.getMemoryStatus());
-        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
-        assertTrue(vo.getCanBeEvidence());
+        assertEquals("INPUT_ONLY", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
         assertNotNull(vo.getConfirmedAt());
     }
 

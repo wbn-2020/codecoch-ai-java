@@ -26,6 +26,7 @@ import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
@@ -188,6 +189,7 @@ class V4ResumeCareerServiceImplTest {
         dto.setCompanyName("测试科技");
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
 
         service.createApplication(dto);
 
@@ -208,6 +210,7 @@ class V4ResumeCareerServiceImplTest {
         dto.setMatchReportId(99L);
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
         JobApplication existing = application(188L, USER_ID);
         existing.setMatchReportId(99L);
         when(jobApplicationMapper.selectOne(any())).thenReturn(existing);
@@ -255,6 +258,7 @@ class V4ResumeCareerServiceImplTest {
         when(jobApplicationMapper.selectById(55L)).thenReturn(current);
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
         JobApplication linked = application(188L, USER_ID);
         linked.setMatchReportId(99L);
         when(jobApplicationMapper.selectOne(any())).thenReturn(linked);
@@ -792,8 +796,8 @@ class V4ResumeCareerServiceImplTest {
         assertEquals("303", result.get(2).getBizId());
         assertEquals("APPLICATION_FOLLOW_UP_REMINDER", result.get(0).getType());
         assertEquals("JOB_APPLICATION", result.get(0).getBizType());
-        assertEquals("/applications?followUp=overdue", result.get(0).getActionUrl());
-        assertEquals("/applications?followUp=due-today", result.get(2).getActionUrl());
+        assertEquals("/applications?applicationId=301&openEvents=1", result.get(0).getActionUrl());
+        assertEquals("/applications?applicationId=303&openEvents=1", result.get(2).getActionUrl());
         assertEquals("/applications", result.get(0).getFallbackPath());
         assertEquals("查看投递工作台", result.get(0).getFallbackLabel());
         assertEquals(reminderDate, result.get(0).getPlanDate());
@@ -912,6 +916,15 @@ class V4ResumeCareerServiceImplTest {
         report.setResumeVersionId(77L);
         report.setTargetJobId(88L);
         return report;
+    }
+
+    private TargetJob targetJob(Long id, Long userId) {
+        TargetJob targetJob = new TargetJob();
+        targetJob.setId(id);
+        targetJob.setUserId(userId);
+        targetJob.setJobTitle("Java Backend Engineer");
+        targetJob.setCompanyName("Demo Company");
+        return targetJob;
     }
 
     private JobApplication application(Long id, Long userId) {
