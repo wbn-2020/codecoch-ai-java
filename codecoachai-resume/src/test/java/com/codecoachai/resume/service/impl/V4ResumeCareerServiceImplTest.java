@@ -41,6 +41,7 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -75,6 +76,8 @@ class V4ResumeCareerServiceImplTest {
     private ResumeSuggestionAdoptionMapper resumeSuggestionAdoptionMapper;
     @Mock
     private JobApplicationEventMapper jobApplicationEventMapper;
+    @Mock
+    private TargetJobMapper targetJobMapper;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
     @Mock
@@ -112,6 +115,7 @@ class V4ResumeCareerServiceImplTest {
                 resumeJobMatchReportMapper,
                 resumeSuggestionAdoptionMapper,
                 jobApplicationEventMapper,
+                targetJobMapper,
                 agentBusinessActionNotifier,
                 notificationBusinessResolver,
                 new ObjectMapper());
