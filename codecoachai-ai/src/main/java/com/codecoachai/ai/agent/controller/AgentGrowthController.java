@@ -7,14 +7,19 @@ import com.codecoachai.ai.agent.config.V4FeatureGate;
 import com.codecoachai.ai.agent.domain.vo.growth.GrowthOverviewVO;
 import com.codecoachai.ai.agent.domain.vo.growth.ReadinessScoreRecordVO;
 import com.codecoachai.ai.agent.domain.vo.growth.SkillGrowthSnapshotVO;
+import com.codecoachai.ai.agent.domain.vo.impact.AgentContextImpactPreviewVO;
 import com.codecoachai.ai.agent.domain.vo.memory.AgentMemoryVO;
 import com.codecoachai.ai.agent.domain.vo.review.AgentReviewVO;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.AgentGrowthService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
@@ -31,6 +36,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentGrowthController {
 
     private final AgentGrowthService agentGrowthService;
+
+    private final AgentContextUsageReferenceService usageReferenceService;
 
     private final V4FeatureGate v4FeatureGate;
 
@@ -64,6 +71,12 @@ public class AgentGrowthController {
         return Result.success(agentGrowthService.createMemory(userId, dto));
     }
 
+    @GetMapping("/memories/{id}/impact-preview")
+    public Result<AgentContextImpactPreviewVO> memoryImpactPreview(@PathVariable Long id) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(usageReferenceService.previewMemory(userId, id));
+    }
+
     @PostMapping("/memories/{id}/enable")
     public Result<AgentMemoryVO> enableMemory(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -77,16 +90,36 @@ public class AgentGrowthController {
     }
 
     @PostMapping("/memories/{id}/disable")
-    public Result<AgentMemoryVO> disableMemory(@PathVariable Long id) {
+    public Result<AgentMemoryVO> disableMemory(@PathVariable Long id,
+                                               @RequestParam(defaultValue = "false") Boolean confirmed,
+                                               @RequestParam(required = false) String reason) {
         Long userId = SecurityAssert.requireLoginUserId();
+        requireMemoryImpactConfirmation(userId, id, confirmed, reason);
         return Result.success(agentGrowthService.setMemoryEnabled(userId, id, false));
     }
 
     @DeleteMapping("/memories/{id}")
-    public Result<Void> deleteMemory(@PathVariable Long id) {
+    public Result<Void> deleteMemory(@PathVariable Long id,
+                                     @RequestParam(defaultValue = "false") Boolean confirmed,
+                                     @RequestParam(required = false) String reason) {
         Long userId = SecurityAssert.requireLoginUserId();
+        requireMemoryImpactConfirmation(userId, id, confirmed, reason);
         agentGrowthService.deleteMemory(userId, id);
         return Result.success();
+    }
+
+    private void requireMemoryImpactConfirmation(Long userId, Long memoryId, Boolean confirmed, String reason) {
+        AgentContextImpactPreviewVO preview = usageReferenceService.previewMemory(userId, memoryId);
+        boolean hasImpact = Boolean.TRUE.equals(preview.getFutureContextImpact())
+                || positive(preview.getReferenceCount())
+                || positive(preview.getRecentReferenceCount());
+        if (hasImpact && (!Boolean.TRUE.equals(confirmed) || !StringUtils.hasText(reason))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "记忆存在历史引用或未来上下文影响，请先查看影响预览并确认原因");
+        }
+    }
+
+    private boolean positive(Integer value) {
+        return value != null && value > 0;
     }
 
     @GetMapping("/growth/profile/overview")

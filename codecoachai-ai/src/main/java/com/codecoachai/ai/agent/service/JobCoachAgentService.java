@@ -6,6 +6,7 @@ import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentTaskDeferDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
@@ -41,6 +42,8 @@ public interface JobCoachAgentService {
     AgentTaskVO startTask(Long userId, Long taskId);
 
     AgentTaskVO skipTask(Long userId, Long taskId, AgentTaskSkipDTO dto);
+
+    AgentTaskVO deferTask(Long userId, Long taskId, AgentTaskDeferDTO dto);
 
     AgentTaskVO restoreTask(Long userId, Long taskId);
 

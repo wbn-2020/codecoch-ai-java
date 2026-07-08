@@ -29,9 +29,11 @@ public class AgentTask extends BaseEntity {
     private String actionUrl;
     private String status;
     private String skipReason;
+    private String deferReason;
     private LocalDate dueDate;
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
+    private LocalDateTime deferredAt;
     private LocalDateTime skippedAt;
     private Integer sortOrder;
 }

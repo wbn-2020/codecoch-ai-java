@@ -12,6 +12,8 @@ public interface FileStorageService {
 
     InnerFileUploadVO upload(MultipartFile file, String bizType, Long userId);
 
+    void deleteUserFile(Long fileId, Long userId, String bizType);
+
     ResponseEntity<Resource> download(Long fileId, Long userId, String bizType);
 
     String downloadUrl(Long fileId, Long userId, String bizType);

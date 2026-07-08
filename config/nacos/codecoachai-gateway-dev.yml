@@ -47,7 +47,7 @@ spring:
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/applications,/applications/**,/resume-versions,/resume-versions/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/applications,/applications/**,/application-packages,/application-packages/**,/resume-versions,/resume-versions/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
 
         # ========== 面试 ==========
         - id: interview
@@ -59,7 +59,7 @@ spring:
         - id: ai
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**
+            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**
           filters:
             - name: RequestRateLimiter
               args:

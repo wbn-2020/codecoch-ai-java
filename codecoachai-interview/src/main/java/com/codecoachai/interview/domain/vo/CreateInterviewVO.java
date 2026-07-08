@@ -8,6 +8,9 @@ public class CreateInterviewVO {
 
     private Long id;
     private Long applicationId;
+    private Long applicationPackageId;
+    private Long jdAnalysisId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;

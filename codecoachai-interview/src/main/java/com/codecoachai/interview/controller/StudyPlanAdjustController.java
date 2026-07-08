@@ -49,7 +49,7 @@ public class StudyPlanAdjustController {
                 new LambdaQueryWrapper<StudyTask>()
                         .eq(StudyTask::getPlanId, planId)
                         .eq(StudyTask::getUserId, userId)
-                        .eq(StudyTask::getTaskStatus, "PENDING")
+                        .in(StudyTask::getTaskStatus, List.of("TODO", "PENDING"))
                         .lt(StudyTask::getPlannedDate, today));
 
         if (overdueTasks.isEmpty()) {
@@ -115,7 +115,7 @@ public class StudyPlanAdjustController {
 
         for (StudyTask t : allTasks) {
             switch (t.getTaskStatus()) {
-                case "COMPLETED" -> completed++;
+                case "DONE", "COMPLETED" -> completed++;
                 case "SKIPPED" -> skipped++;
                 default -> {
                     if (t.getPlannedDate() != null && t.getPlannedDate().isBefore(today)) {

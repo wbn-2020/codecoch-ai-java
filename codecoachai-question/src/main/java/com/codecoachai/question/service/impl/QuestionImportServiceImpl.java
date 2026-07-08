@@ -1014,7 +1014,8 @@ public class QuestionImportServiceImpl implements QuestionImportService {
             } catch (Exception ex) {
                 failCount++;
                 String title = parsedQuestion != null ? parsedQuestion.getTitle() : null;
-                log.warn("Question import row failed, rowIndex={}, title={}", rowIndex, title, ex);
+                log.warn("Question import row failed, rowIndex={}, titleLength={}, titleHash={}",
+                        rowIndex, textLength(title), shortHash(title), ex);
                 addError(rowIndex, title, "\u884c\u6570\u636e\u5bfc\u5165\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u5b57\u6bb5\u683c\u5f0f\u3001\u5206\u7c7b\u548c\u9898\u76ee\u5185\u5bb9");
             }
         }
@@ -1044,6 +1045,18 @@ public class QuestionImportServiceImpl implements QuestionImportService {
             err.setTitle(title);
             err.setReason(reason);
             result.getErrors().add(err);
+        }
+
+        private int textLength(String value) {
+            return value == null ? 0 : value.length();
+        }
+
+        private String shortHash(String value) {
+            if (!StringUtils.hasText(value)) {
+                return null;
+            }
+            String hash = QuestionTextNormalizeUtils.sha256Hex(value);
+            return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
         }
 
         private void queueImportedQuestionId(Long questionId) {

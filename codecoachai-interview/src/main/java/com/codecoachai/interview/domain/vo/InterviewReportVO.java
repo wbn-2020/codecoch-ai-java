@@ -36,6 +36,7 @@ public class InterviewReportVO {
     private List<Map<String, Object>> followUpTree;
     private List<Map<String, Object>> adviceEvidence;
     private List<Map<String, Object>> abilityProfileUpdates;
+    private List<InterviewVoiceTraceVO> voiceTraces;
     private String reportContent;
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;

@@ -7,6 +7,7 @@ import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import com.codecoachai.ai.guard.RetryGuard;
 import com.codecoachai.ai.guard.TokenAccountant;
+import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -101,11 +102,35 @@ public class AiModelRouter {
         String primary = StringUtils.hasText(ctx.getForceProvider())
                 ? ctx.getForceProvider()
                 : routerCfg.getDefaultProvider();
+        String fallback = Boolean.TRUE.equals(routerCfg.getFallbackEnabled())
+                && !StringUtils.hasText(ctx.getForceProvider())
+                ? routerCfg.getFallbackProvider()
+                : null;
         String modelType = StringUtils.hasText(ctx.getModelType()) ? ctx.getModelType() : "chat";
+        AtomicBoolean primaryEmitted = new AtomicBoolean(false);
+        java.util.function.Consumer<String> primaryDelta = delta -> {
+            if (StringUtils.hasText(delta)) {
+                primaryEmitted.set(true);
+            }
+            if (onDelta != null) {
+                onDelta.accept(delta);
+            }
+        };
         try {
-            CallResult result = providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, onDelta);
+            CallResult result = providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, primaryDelta);
             return toRouteResult(result, primary, AiResultSourceEnum.LLM.name(), ctx);
         } catch (AiProviderException ex) {
+            if (!primaryEmitted.get() && StringUtils.hasText(fallback)) {
+                log.warn("Stream provider [{}] failed before first token ({}), fallback to [{}]",
+                        primary, ex.getFailureType(), fallback);
+                try {
+                    CallResult result = providerAiCaller.chatStream(fallback, ctx.getPrompt(), modelType, onDelta);
+                    return toRouteResult(result, primary + " -> " + fallback, AiResultSourceEnum.FALLBACK.name(), ctx);
+                } catch (AiProviderException fallbackEx) {
+                    tokenAccountant.rollbackMinuteCount(ctx.getUserId());
+                    throw fallbackEx;
+                }
+            }
             tokenAccountant.rollbackMinuteCount(ctx.getUserId());
             throw ex;
         }
@@ -181,6 +206,8 @@ public class AiModelRouter {
         private Double estimatedCost;
         private Long elapsedMs;
         private Long aiCallLogId;
+        private String traceId;
+        private String requestId;
         /** 路由轨迹，例：deepseek 或 deepseek -> dashscope */
         private String routeTrace;
         /** 结果来源：LLM / MOCK / FALLBACK */

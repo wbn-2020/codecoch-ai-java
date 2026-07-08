@@ -11,7 +11,10 @@ public class CreateInterviewDTO {
 
     private Long resumeId;
     private Long applicationId;
+    private String applicationPackageId;
     private Long targetJobId;
+    private Long jdAnalysisId;
+    private Long resumeVersionId;
     private Long skillProfileId;
     private Long matchReportId;
     private String title;

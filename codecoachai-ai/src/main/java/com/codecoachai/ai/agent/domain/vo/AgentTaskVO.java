@@ -48,9 +48,11 @@ public class AgentTaskVO {
     private String reviewNote;
     private String status;
     private String skipReason;
+    private String deferReason;
     private LocalDate dueDate;
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
+    private LocalDateTime deferredAt;
     private LocalDateTime skippedAt;
     private Integer sortOrder;
     private LocalDateTime createdAt;

@@ -2,11 +2,13 @@ package com.codecoachai.ai.agent.task;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -109,7 +111,7 @@ public class AgentRunRetentionCleanupTask {
     private void cleanupCandidate(Map<String, Object> row) {
         Long runId = toLong(row.get("runId"));
         if (runId == null) {
-            log.warn("Skip agent run retention cleanup row because runId is missing: {}", row);
+            log.warn("Skip agent run retention cleanup row because runId is missing: {}", safeRowSummary(row));
             return;
         }
         LocalDateTime now = LocalDateTime.now();
@@ -178,5 +180,34 @@ public class AgentRunRetentionCleanupTask {
         }
         String text = String.valueOf(value).trim();
         return text.isEmpty() ? null : text;
+    }
+
+    private Map<String, Object> safeRowSummary(Map<String, Object> row) {
+        if (row == null) {
+            return Map.of("fieldCount", 0);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("fieldCount", row.size());
+        summary.put("fields", row.keySet());
+        summary.put("runId", toLong(row.get("runId")));
+        addTextMeta(summary, "outputJson", row.get("outputJson"));
+        summary.put("rowHash", shortHash(row.keySet() + "|" + textMeta(row.get("outputJson"))));
+        return summary;
+    }
+
+    private void addTextMeta(Map<String, Object> summary, String field, Object value) {
+        String text = trimToNull(value);
+        summary.put(field + "Length", text == null ? 0 : text.length());
+        summary.put(field + "Hash", shortHash(text));
+    }
+
+    private String textMeta(Object value) {
+        String text = trimToNull(value);
+        return text == null ? "empty" : text.length() + ":" + shortHash(text);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 }

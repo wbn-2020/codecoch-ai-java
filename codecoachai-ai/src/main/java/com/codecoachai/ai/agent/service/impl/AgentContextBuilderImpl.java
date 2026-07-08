@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.service.impl;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MemoryReference;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
@@ -20,9 +21,12 @@ import com.codecoachai.ai.agent.service.AgentContextBuilder;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +37,9 @@ import org.springframework.util.StringUtils;
 @Service
 @RequiredArgsConstructor
 public class AgentContextBuilderImpl implements AgentContextBuilder {
+
+    private static final BigDecimal MIN_STRONG_MEMORY_CONFIDENCE = BigDecimal.valueOf(0.6);
+    private static final String USER_CONFIRMED_MEMORY_SOURCE_PREFIX = "USER_CONFIRMED_";
 
     private final ResumeAgentContextFeignClient resumeFeignClient;
     private final AgentTaskMapper agentTaskMapper;
@@ -52,7 +59,14 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setApplications(resolveApplications(userId, targetJob.getId(), context));
         context.setProjectEvidences(resolveProjectEvidences(userId, context));
         context.setJobExperiments(resolveJobExperiments(userId, targetJob.getId(), context));
-        context.setRecentMemories(recentMemories(userId));
+        List<AgentMemory> recentMemoryRecords = recentMemoryRecords(userId);
+        context.setRecentMemories(recentMemoryRecords.stream()
+                .map(memory -> memory.getMemoryType() + ": " + memory.getContent())
+                .filter(StringUtils::hasText)
+                .toList());
+        context.setRecentMemoryReferences(recentMemoryRecords.stream()
+                .map(this::toMemoryReference)
+                .toList());
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
         context.getContextWarnings().add("上下文已包含目标岗位、JD 分析、近期计划任务和已启用记忆。");
         return context;
@@ -213,16 +227,54 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         return jdText.length() > 500 ? jdText.substring(0, 500) : jdText;
     }
 
-    private List<String> recentMemories(Long userId) {
+    private List<AgentMemory> recentMemoryRecords(Long userId) {
         return agentMemoryMapper.selectList(new LambdaQueryWrapper<AgentMemory>()
                         .eq(AgentMemory::getUserId, userId)
                         .eq(AgentMemory::getEnabled, 1)
+                        .eq(AgentMemory::getDeleted, 0)
                         .orderByDesc(AgentMemory::getUpdatedAt)
-                        .last("LIMIT 10"))
+                        .last("LIMIT 30"))
                 .stream()
-                .map(memory -> memory.getMemoryType() + ": " + memory.getContent())
-                .filter(StringUtils::hasText)
+                .filter(this::canEnterAgentContext)
+                .filter(memory -> StringUtils.hasText(memory.getContent()))
+                .limit(10)
                 .toList();
+    }
+
+    private MemoryReference toMemoryReference(AgentMemory memory) {
+        MemoryReference reference = new MemoryReference();
+        reference.setId(memory.getId());
+        reference.setMemoryType(memory.getMemoryType());
+        reference.setSourceType(memory.getSourceType());
+        reference.setSourceId(memory.getSourceId());
+        reference.setConfidence(memory.getConfidence());
+        reference.setSnapshotHash(TextFingerprintUtils.sha256Hex("agent-memory:" + memory.getId() + ":"
+                + firstText(memory.getSourceType(), "") + ":" + firstText(String.valueOf(memory.getUpdatedAt()), "")));
+        return reference;
+    }
+
+    private boolean canEnterAgentContext(AgentMemory memory) {
+        if (memory == null || memory.getEnabled() == null || memory.getEnabled() != 1) {
+            return false;
+        }
+        if (memory.getConfidence() == null
+                || memory.getConfidence().compareTo(MIN_STRONG_MEMORY_CONFIDENCE) < 0) {
+            return false;
+        }
+        if (isManualMemorySource(memory.getSourceType())) {
+            return true;
+        }
+        return isUserConfirmedMemorySource(memory.getSourceType());
+    }
+
+    private boolean isManualMemorySource(String sourceType) {
+        String normalized = sourceType == null ? "MANUAL" : sourceType.trim().toUpperCase(Locale.ROOT);
+        return List.of("MANUAL", "USER_MANUAL", "USER_NOTE").contains(normalized);
+    }
+
+    private boolean isUserConfirmedMemorySource(String sourceType) {
+        return sourceType != null
+                && sourceType.trim().toUpperCase(Locale.ROOT).startsWith(USER_CONFIRMED_MEMORY_SOURCE_PREFIX);
     }
 
     private String agentHistorySummary(Long userId, Long targetJobId, LocalDate planDate) {
@@ -230,6 +282,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                 .eq(AgentTask::getUserId, userId)
                 .eq(AgentTask::getTargetJobId, targetJobId)
+                .eq(AgentTask::getDeleted, 0)
                 .ge(AgentTask::getDueDate, start)
                 .le(AgentTask::getDueDate, planDate));
         long done = tasks.stream().filter(task -> "DONE".equals(task.getStatus())).count();

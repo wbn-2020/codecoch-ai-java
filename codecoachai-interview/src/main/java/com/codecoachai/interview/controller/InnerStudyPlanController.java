@@ -34,4 +34,10 @@ public class InnerStudyPlanController {
     public Result<StudyPlanGenerateVO> execute(@PathVariable Long planId) {
         return Result.success(studyPlanService.executeGeneration(planId));
     }
+
+    @PostMapping("/users/{userId}/plans/{planId}/execute")
+    public Result<StudyPlanGenerateVO> execute(@PathVariable Long userId,
+                                               @PathVariable Long planId) {
+        return Result.success(studyPlanService.executeGeneration(planId, userId));
+    }
 }

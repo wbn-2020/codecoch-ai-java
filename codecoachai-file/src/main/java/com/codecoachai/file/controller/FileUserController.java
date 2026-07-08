@@ -10,6 +10,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.file.domain.vo.FileInfoVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileBizTypes;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.Map;
@@ -44,7 +45,7 @@ public class FileUserController {
     private final ObjectProvider<StsTokenService> stsTokenServiceProvider;
     private final FileStorageService fileStorageService;
 
-    @Operation(summary = "上传文件", description = "兼容文档中的 /files/upload；真实 OSS 场景仍推荐 STS 直传")
+    @Operation(summary = "上传文件", description = "正式上传入口；STS direct upload remains compatibility-only until complete/register validation is enabled")
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<InnerFileUploadVO> upload(@RequestPart("file") MultipartFile file,
                                             @RequestParam(defaultValue = "RESUME") String bizType) {
@@ -52,7 +53,7 @@ public class FileUserController {
     }
 
     @Operation(summary = "获取 OSS 直传临时凭证",
-            description = "返回当前登录用户在指定业务下的 STS 凭证，前端使用 ali-oss SDK 直传")
+            description = "Compatibility entry for direct upload credentials; caller must not treat uploaded objects as registered files")
     @GetMapping("/sts-token")
     public Result<StsTokenVO> stsToken(@RequestParam(defaultValue = "resume") String bizType) {
         StsTokenService stsTokenService = stsTokenServiceProvider.getIfAvailable();
@@ -63,19 +64,23 @@ public class FileUserController {
         if (userId == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED, "请先登录");
         }
+        String normalizedBizType = normalizeBizType(bizType);
         String dir;
-        switch (bizType) {
-            case "resume":
+        switch (normalizedBizType) {
+            case "RESUME":
                 dir = OssKeyBuilder.resumeDir(userId);
                 break;
-            case "avatar":
+            case "AVATAR":
                 dir = "avatar/" + userId + "/";
                 break;
-            case "attachment":
+            case "ATTACHMENT":
                 dir = "attachment/" + userId + "/";
                 break;
+            case "INTERVIEW_VOICE":
+                dir = "interview_voice/" + userId + "/";
+                break;
             default:
-                dir = "tmp/" + userId + "/";
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "file bizType is not supported");
         }
         return Result.success(stsTokenService.generate(dir));
     }
@@ -109,14 +114,12 @@ public class FileUserController {
     }
 
     private String normalizeBizType(String bizType) {
-        String normalized = normalizeBizTypeOrNull(bizType);
-        return normalized == null ? "RESUME" : normalized;
+        String normalized = FileBizTypes.normalizeOrNull(bizType);
+        return FileBizTypes.requireAllowed(normalized == null ? "RESUME" : normalized);
     }
 
     private String normalizeBizTypeOrNull(String bizType) {
-        if (bizType == null || bizType.isBlank()) {
-            return null;
-        }
-        return bizType.trim().toUpperCase();
+        String normalized = FileBizTypes.normalizeOrNull(bizType);
+        return normalized == null ? null : FileBizTypes.requireAllowed(normalized);
     }
 }

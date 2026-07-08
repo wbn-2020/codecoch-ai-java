@@ -18,6 +18,11 @@ codecoachai:
         - png
         - jpg
         - jpeg
+        - webm
+        - wav
+        - mp3
+        - m4a
+        - ogg
 
   oss:
     enabled: true

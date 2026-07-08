@@ -63,6 +63,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private static final String EXCLUDED_GROWTH_SOURCE_LABEL =
             "当前未纳入：AI 教练运行记录、复盘记录、成长记忆、反馈信号、提醒信号";
     private static final int MAX_MANUAL_MEMORY_CONTENT_LENGTH = 2_000;
+    private static final String USER_CONFIRMED_MEMORY_SOURCE_PREFIX = "USER_CONFIRMED_";
     private static final Set<String> ALLOWED_MEMORY_TYPES = Set.of(
             "USER_NOTE",
             "SKILL_GAP",
@@ -221,7 +222,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         memory.setSourceType(normalizeMemoryCode(dto == null ? null : dto.getSourceType(), "MANUAL", ALLOWED_MEMORY_SOURCE_TYPES));
         memory.setSourceId(dto == null ? null : dto.getSourceId());
         memory.setConfidence(clampConfidence(dto == null ? null : dto.getConfidence()));
-        memory.setEnabled(1);
+        memory.setEnabled(isManualMemorySource(memory.getSourceType()) ? 1 : 0);
         agentMemoryMapper.insert(memory);
         return toMemoryVO(memory);
     }
@@ -229,6 +230,9 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     @Override
     public AgentMemoryVO setMemoryEnabled(Long userId, Long id, boolean enabled) {
         AgentMemory memory = ownedMemory(userId, id);
+        if (enabled && requiresUserConfirmation(memory)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "候选记忆需要用户确认后才能启用");
+        }
         memory.setEnabled(enabled ? 1 : 0);
         agentMemoryMapper.updateById(memory);
         return toMemoryVO(agentMemoryMapper.selectById(id));
@@ -237,6 +241,9 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     @Override
     public AgentMemoryVO confirmMemory(Long userId, Long id) {
         AgentMemory memory = ownedMemory(userId, id);
+        if (!isManualMemorySource(memory.getSourceType()) && !isUserConfirmedMemorySource(memory.getSourceType())) {
+            memory.setSourceType(USER_CONFIRMED_MEMORY_SOURCE_PREFIX + normalizeMemorySourceTag(memory.getSourceType()));
+        }
         memory.setEnabled(1);
         memory.setUpdatedAt(LocalDateTime.now());
         agentMemoryMapper.updateById(memory);
@@ -557,7 +564,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         boolean lowConfidence = memory.getConfidence() == null
                 || memory.getConfidence().compareTo(MIN_STRONG_MEMORY_CONFIDENCE) < 0;
         boolean manual = isManualMemorySource(memory.getSourceType());
-        boolean confirmed = manual || isConfirmedCompatible(memory);
+        boolean confirmed = manual || isUserConfirmedMemorySource(memory.getSourceType());
         boolean candidate = isCandidateMemorySource(memory.getSourceType()) && !confirmed;
         vo.setLowConfidence(lowConfidence);
         vo.setImpactPreview(List.of(
@@ -582,7 +589,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             vo.setConfirmedAt(null);
             return;
         }
-        vo.setConfirmedAt(firstTime(memory.getUpdatedAt(), memory.getCreatedAt(), LocalDateTime.now()));
+        vo.setConfirmedAt(confirmed ? firstTime(memory.getUpdatedAt(), memory.getCreatedAt(), LocalDateTime.now()) : null);
         if (lowConfidence) {
             vo.setMemoryStatus("LOW_CONFIDENCE");
             vo.setEvidenceTrustStatus("PARTIAL");
@@ -591,8 +598,8 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             return;
         }
         vo.setMemoryStatus("CONFIRMED");
-        vo.setEvidenceTrustStatus("VERIFIED");
-        vo.setCanBeEvidence(true);
+        vo.setEvidenceTrustStatus("INPUT_ONLY");
+        vo.setCanBeEvidence(false);
         vo.setDisabledReason(null);
     }
 
@@ -607,12 +614,15 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         return Set.of("MANUAL", "USER_MANUAL", "USER_NOTE").contains(normalized);
     }
 
-    private boolean isConfirmedCompatible(AgentMemory memory) {
-        return memory.getEnabled() != null
-                && memory.getEnabled() == 1
-                && memory.getCreatedAt() != null
-                && memory.getUpdatedAt() != null
-                && memory.getUpdatedAt().isAfter(memory.getCreatedAt());
+    private boolean isUserConfirmedMemorySource(String sourceType) {
+        return sourceType != null
+                && sourceType.trim().toUpperCase(Locale.ROOT).startsWith(USER_CONFIRMED_MEMORY_SOURCE_PREFIX);
+    }
+
+    private boolean requiresUserConfirmation(AgentMemory memory) {
+        return memory != null
+                && !isManualMemorySource(memory.getSourceType())
+                && !isUserConfirmedMemorySource(memory.getSourceType());
     }
 
     private LocalDateTime firstTime(LocalDateTime... values) {
@@ -684,6 +694,11 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private String normalizeMemoryCode(String value, String fallback, Set<String> allowedValues) {
         String normalized = StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : fallback;
         return allowedValues.contains(normalized) ? normalized : fallback;
+    }
+
+    private String normalizeMemorySourceTag(String value) {
+        String normalized = StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : "UNKNOWN";
+        return normalized.replaceAll("[^A-Z0-9_]", "_");
     }
 
     private BigDecimal clampConfidence(BigDecimal value) {

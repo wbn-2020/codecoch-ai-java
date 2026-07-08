@@ -2,6 +2,7 @@ package com.codecoachai.ai.agent.domain.context;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.Data;
@@ -17,6 +18,7 @@ public class JobCoachAgentContext {
     private List<ProjectEvidenceSnapshot> projectEvidences = new ArrayList<>();
     private List<JobExperimentSnapshot> jobExperiments = new ArrayList<>();
     private List<String> recentMemories = new ArrayList<>();
+    private List<MemoryReference> recentMemoryReferences = new ArrayList<>();
     private List<String> personalKnowledgeHints = new ArrayList<>();
     private String agentHistorySummary;
     private List<String> contextWarnings = new ArrayList<>();
@@ -84,5 +86,15 @@ public class JobCoachAgentContext {
         private String confidenceLevel;
         private String sampleWarning;
         private String nextStrategy;
+    }
+
+    @Data
+    public static class MemoryReference {
+        private Long id;
+        private String memoryType;
+        private String sourceType;
+        private Long sourceId;
+        private BigDecimal confidence;
+        private String snapshotHash;
     }
 }

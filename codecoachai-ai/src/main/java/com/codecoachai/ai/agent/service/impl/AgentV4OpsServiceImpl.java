@@ -6,6 +6,7 @@ import com.codecoachai.ai.agent.config.KnowledgeIndexExecutor;
 import com.codecoachai.ai.agent.config.KnowledgeProperties;
 import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.agent.domain.dto.AdminAnalyticsMetricSaveDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentContextUsageReferenceRecordDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentFeedbackCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AnalyticsJobRunDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
@@ -56,6 +57,7 @@ import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentVersionMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionCaseMapper;
 import com.codecoachai.ai.agent.mapper.PromptRegressionResultMapper;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
 import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
@@ -78,6 +80,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -159,6 +163,10 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             "chunkHash", "keyword",
             "embeddingModel", "keyword"
     );
+    private static final String USAGE_SOURCE_KNOWLEDGE_DOCUMENT = "KNOWLEDGE_DOCUMENT";
+    private static final String USAGE_SOURCE_KNOWLEDGE_CHUNK = "KNOWLEDGE_CHUNK";
+    private static final String USAGE_CONSUMER_AI_CALL = "AI_CALL";
+    private static final String USAGE_SCENE_KNOWLEDGE_ASK = "KNOWLEDGE_ASK";
 
     private final AgentFeedbackMapper agentFeedbackMapper;
     private final AgentTaskMapper agentTaskMapper;
@@ -179,6 +187,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     private final AiRouterProperties aiRouterProperties;
     private final KnowledgeProperties knowledgeProperties;
     private final KnowledgeIndexExecutor knowledgeIndexExecutor;
+    private final AgentContextUsageReferenceService usageReferenceService;
 
     @Override
     public AgentFeedbackVO createFeedback(Long userId, AgentFeedbackCreateDTO dto) {
@@ -1555,6 +1564,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             applyCitationValidation(vo, result.getContent(), references.size());
             applyGroundingCheck(vo, result.getContent(), references, userId);
             vo.setAiCallLogId(result.getAiCallLogId());
+            recordKnowledgeAskUsage(userId, references, result);
         } catch (Exception ex) {
             log.warn("Personal knowledge ask generation failed userId={}", userId, ex);
             vo.setAnswer("已找到相关引用，但暂时无法生成 AI 答案，请先查看下方检索到的资料。");
@@ -1632,6 +1642,7 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
                 applyCitationValidation(vo, result.getContent(), references.size());
                 applyGroundingCheck(vo, result.getContent(), references, userId);
                 vo.setAiCallLogId(result.getAiCallLogId());
+                recordKnowledgeAskUsage(userId, references, result);
                 attachKnowledgeAskGovernance(vo);
                 listener.onCitation(vo);
                 listener.onDone(result.getAiCallLogId());
@@ -1643,6 +1654,81 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
             log.warn("Personal knowledge ask stream failed userId={}", userId, ex);
             listener.onError(firstText(ex.getMessage(), "知识库问答流式生成失败"));
         }
+    }
+
+    private void recordKnowledgeAskUsage(Long userId, List<KnowledgeSearchResultVO> references, RouteResult result) {
+        if (result == null || result.getAiCallLogId() == null || references == null || references.isEmpty()) {
+            return;
+        }
+        try {
+            List<AgentContextUsageReferenceRecordDTO> records = new ArrayList<>();
+            Set<String> seen = new LinkedHashSet<>();
+            for (KnowledgeSearchResultVO reference : references) {
+                if (reference == null) {
+                    continue;
+                }
+                if (reference.getDocumentId() != null) {
+                    addKnowledgeUsageRecord(records, seen, userId, USAGE_SOURCE_KNOWLEDGE_DOCUMENT,
+                            reference.getDocumentId(), reference, result,
+                            TextFingerprintUtils.sha256Hex("knowledge-document:" + reference.getDocumentId() + ":"
+                                    + firstText(reference.getNormalizationVersion(), "")));
+                }
+                if (reference.getChunkId() != null) {
+                    addKnowledgeUsageRecord(records, seen, userId, USAGE_SOURCE_KNOWLEDGE_CHUNK,
+                            reference.getChunkId(), reference, result,
+                            firstText(reference.getChunkHash(),
+                                    TextFingerprintUtils.sha256Hex("knowledge-chunk:" + reference.getChunkId() + ":"
+                                            + firstText(reference.getNormalizationVersion(), ""))));
+                }
+            }
+            usageReferenceService.recordAll(records);
+        } catch (RuntimeException ex) {
+            log.warn("Knowledge ask usage reference record failed userId={} aiCallLogId={} referenceCount={}",
+                    userId, result.getAiCallLogId(), references.size(), ex);
+        }
+    }
+
+    private void addKnowledgeUsageRecord(List<AgentContextUsageReferenceRecordDTO> records, Set<String> seen,
+                                         Long userId, String sourceType, Long sourceId,
+                                         KnowledgeSearchResultVO reference, RouteResult result, String snapshotHash) {
+        String key = sourceType + ":" + sourceId;
+        if (!seen.add(key)) {
+            return;
+        }
+        AgentContextUsageReferenceRecordDTO record = new AgentContextUsageReferenceRecordDTO();
+        record.setUserId(userId);
+        record.setSourceType(sourceType);
+        record.setSourceId(sourceId);
+        record.setSourceVersion(firstText(reference.getNormalizationVersion(), ""));
+        record.setConsumerType(USAGE_CONSUMER_AI_CALL);
+        record.setConsumerId(result.getAiCallLogId());
+        record.setTraceId(result.getTraceId());
+        record.setUsageScene(USAGE_SCENE_KNOWLEDGE_ASK);
+        record.setUsageStrength(usageStrength(reference.getScore()));
+        record.setConfidence(confidence(reference.getScore()));
+        record.setSnapshotHash(snapshotHash);
+        records.add(record);
+    }
+
+    private BigDecimal confidence(Double score) {
+        if (score == null) {
+            return BigDecimal.valueOf(0.5);
+        }
+        double clamped = Math.max(0D, Math.min(1D, score));
+        return BigDecimal.valueOf(clamped).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    private String usageStrength(Double score) {
+        if (score == null) {
+            return "MEDIUM";
+        }
+        if (score >= 0.75D) {
+            return "STRONG";
+        }
+        if (score < 0.45D) {
+            return "WEAK";
+        }
+        return "MEDIUM";
     }
 
     @Override

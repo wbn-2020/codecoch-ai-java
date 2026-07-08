@@ -39,13 +39,15 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
     private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
     private static final Pattern JSON_SENSITIVE_TEXT = Pattern.compile(
             "(?i)(\"(?:resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
-                    + "requestPrompt|responseContent|requestBody|responseBody|answer|comment|remark|feedback|"
+                    + "requestPrompt|responseContent|requestBody|responseBody|rawText|structuredJson|modelTrace|"
+                    + "transcript|draftText|confirmedText|reason|title|answer|comment|remark|feedback|"
                     + "projectExperience|description|content)\"\\s*:\\s*\")[^\"]*(\")");
     private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;&]+)");
     private static final Pattern QUERY_SENSITIVE_PARAM = Pattern.compile(
             "(?i)(^|[&?])((?:api[-_]?key|authorization|bearer|token|password|secret|idempotencyKey|reason|"
                     + "resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
-                    + "requestPrompt|responseContent|requestBody|responseBody|answer|comment|remark|feedback|"
+                    + "requestPrompt|responseContent|requestBody|responseBody|rawText|structuredJson|modelTrace|"
+                    + "transcript|draftText|confirmedText|title|answer|comment|remark|feedback|"
                     + "projectExperience|description|content)=)[^&]*");
 
     private static final String INSERT_SQL =

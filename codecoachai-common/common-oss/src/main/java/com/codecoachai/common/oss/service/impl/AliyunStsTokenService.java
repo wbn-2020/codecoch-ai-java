@@ -99,7 +99,7 @@ public class AliyunStsTokenService implements StsTokenService {
                 + "  \"Statement\": [\n"
                 + "    {\n"
                 + "      \"Effect\": \"Allow\",\n"
-                + "      \"Action\": [\"oss:PutObject\", \"oss:GetObject\"],\n"
+                + "      \"Action\": [\"oss:PutObject\"],\n"
                 + "      \"Resource\": [\"acs:oss:*:*:" + resourcePath + "\"]\n"
                 + "    }\n"
                 + "  ]\n"

@@ -141,14 +141,17 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历文件上传失败，请稍后重试");
         }
 
+        registerUploadedFileRollbackCleanup(uploadedFile, userId);
+
         ResumeAnalysisRecord record = new ResumeAnalysisRecord();
         record.setUserId(userId);
         record.setFileId(uploadedFile.getFileId());
         record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
         record.setParseStatus(ResumeParseStatus.PENDING.getCode());
         analysisRecordMapper.insert(record);
-        MqDispatchReceipt receipt = dispatchResumeParse(record, uploadedFile);
-        boolean dispatched = receipt != null;
+        dispatchResumeParseAfterCommit(record, uploadedFile);
+        MqDispatchReceipt receipt = null;
+        boolean dispatched = true;
 
         ResumeUploadVO vo = new ResumeUploadVO();
         vo.setFileId(uploadedFile.getFileId());
@@ -185,6 +188,69 @@ public class ResumeServiceImpl implements ResumeService {
             analysisRecordMapper.updateById(record);
         }
         return receipt;
+    }
+
+    private void dispatchResumeParseAfterCommit(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+        Runnable action = () -> dispatchResumeParseSafely(record, uploadedFile);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void dispatchResumeParseSafely(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+        try {
+            MqDispatchReceipt receipt = dispatchResumeParse(record, uploadedFile);
+            if (receipt == null) {
+                log.warn("Resume parse dispatch deferred recordId={} fileId={} reason=no_dispatch_receipt",
+                        record == null ? null : record.getId(),
+                        uploadedFile == null ? null : uploadedFile.getFileId());
+            }
+        } catch (RuntimeException ex) {
+            if (record != null && record.getId() != null) {
+                record.setErrorMessage("Resume parse dispatch failed after commit; waiting for compensation retry");
+                analysisRecordMapper.updateById(record);
+            }
+            log.error("Resume parse after-commit dispatch failed recordId={} fileId={} failureType={}",
+                    record == null ? null : record.getId(),
+                    uploadedFile == null ? null : uploadedFile.getFileId(),
+                    ex.getClass().getSimpleName());
+        }
+    }
+
+    private void registerUploadedFileRollbackCleanup(InnerFileUploadVO uploadedFile, Long userId) {
+        if (uploadedFile == null || uploadedFile.getFileId() == null || userId == null
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    deleteUploadedFileQuietly(uploadedFile, userId, "resume_upload_tx_rollback");
+                }
+            }
+        });
+    }
+
+    private void deleteUploadedFileQuietly(InnerFileUploadVO uploadedFile, Long userId, String reason) {
+        if (uploadedFile == null || uploadedFile.getFileId() == null || userId == null) {
+            return;
+        }
+        try {
+            fileFeignClient.delete(uploadedFile.getFileId(), userId, BIZ_TYPE_RESUME);
+            log.warn("Resume uploaded file cleaned after rollback fileId={} userId={} reason={}",
+                    uploadedFile.getFileId(), userId, reason);
+        } catch (Exception ex) {
+            log.error("Resume uploaded file cleanup failed fileId={} userId={} reason={} failureType={}",
+                    uploadedFile.getFileId(), userId, reason, ex.getClass().getSimpleName());
+        }
     }
 
     private MqDispatchReceipt dispatchResumeOptimize(ResumeOptimizeRecord record) {

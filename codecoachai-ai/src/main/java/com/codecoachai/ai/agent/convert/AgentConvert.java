@@ -46,9 +46,11 @@ public final class AgentConvert {
         applyTaskTrustEvidence(vo, task);
         vo.setStatus(task.getStatus());
         vo.setSkipReason(task.getSkipReason());
+        vo.setDeferReason(task.getDeferReason());
         vo.setDueDate(task.getDueDate());
         vo.setStartedAt(task.getStartedAt());
         vo.setCompletedAt(task.getCompletedAt());
+        vo.setDeferredAt(task.getDeferredAt());
         vo.setSkippedAt(task.getSkippedAt());
         vo.setSortOrder(task.getSortOrder());
         vo.setCreatedAt(task.getCreatedAt());
@@ -97,7 +99,8 @@ public final class AgentConvert {
         boolean hasReason = StringUtils.hasText(task.getReason());
         boolean hasBusinessEvidence = StringUtils.hasText(task.getRelatedBizType()) || task.getRelatedBizId() != null;
         boolean hasAction = StringUtils.hasText(task.getActionUrl());
-        boolean degradedStatus = "SKIPPED".equalsIgnoreCase(task.getStatus()) || "EXPIRED".equalsIgnoreCase(task.getStatus());
+        boolean degradedStatus = "DEFERRED".equalsIgnoreCase(task.getStatus())
+                || "SKIPPED".equalsIgnoreCase(task.getStatus()) || "EXPIRED".equalsIgnoreCase(task.getStatus());
 
         String trustStatus;
         if (degradedStatus || (!hasRun && !hasReason && !hasBusinessEvidence && !hasAction)) {

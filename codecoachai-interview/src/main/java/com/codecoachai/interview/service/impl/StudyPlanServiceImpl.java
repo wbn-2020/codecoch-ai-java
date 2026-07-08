@@ -1,6 +1,7 @@
 package com.codecoachai.interview.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
@@ -333,10 +334,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     @Override
     public StudyPlanGenerateVO executeGeneration(Long id) {
-        StudyPlan plan = studyPlanMapper.selectById(id);
-        if (plan == null || !CommonConstants.NO.equals(plan.getDeleted())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
-        }
+        StudyPlan plan = getAvailablePlan(id);
+        return executeGeneration(plan.getId(), plan.getUserId());
+    }
+
+    @Override
+    public StudyPlanGenerateVO executeGeneration(Long id, Long userId) {
+        StudyPlan plan = getOwnedPlan(id, requireExecutionUserId(userId));
         if (PLAN_ACTIVE.equals(plan.getPlanStatus()) || PLAN_FAILED.equals(plan.getPlanStatus())) {
             return toGenerateVO(plan);
         }
@@ -352,7 +356,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private StudyPlanGenerateVO submitForGeneration(StudyPlan plan, Integer skillGapCount) {
         MqDispatchReceipt receipt = dispatchGenerate(plan);
         StudyPlanGenerateVO vo = receipt == null
-                ? executeGeneration(plan.getId())
+                ? executeGeneration(plan.getId(), plan.getUserId())
                 : withAsyncReceipt(toGenerateVO(plan), receipt);
         if (skillGapCount != null) {
             vo.setSkillGapCount(skillGapCount);
@@ -383,11 +387,11 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             GenerateLearningPlanDTO aiRequest = readRequestJson(plan, GenerateLearningPlanDTO.class);
             GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(aiFeignClient.generateLearningPlan(aiRequest));
             validateAiPlan(aiPlan);
-            StudyPlan success = transactionTemplate.execute(status -> markReportPlanSuccess(plan.getId(), aiPlan));
+            StudyPlan success = transactionTemplate.execute(status -> markReportPlanSuccess(plan, aiPlan));
             return toGenerateVO(success);
         } catch (RuntimeException ex) {
             log.warn("Study plan generation failed, planId={}, reportId={}", plan.getId(), plan.getReportId(), ex);
-            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId()));
+            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId(), plan.getUserId()));
             return toGenerateVO(failed);
         }
     }
@@ -401,22 +405,22 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                     aiFeignClient.generateTargetedStudyPlan(aiRequest));
             validateAiPlan(aiPlan);
             StudyPlan success = transactionTemplate.execute(status ->
-                    markTargetedPlanSuccess(plan.getId(), aiPlan, selectedGaps, aiRequest));
+                    markTargetedPlanSuccess(plan, aiPlan, selectedGaps, aiRequest));
             StudyPlanGenerateVO vo = toGenerateVO(success);
             vo.setSkillGapCount(selectedGaps.size());
             return vo;
         } catch (RuntimeException ex) {
             log.warn("Gap-driven study plan generation failed, planId={}, profileId={}",
                     plan.getId(), plan.getSkillProfileId(), ex);
-            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId()));
+            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId(), plan.getUserId()));
             return toGenerateVO(failed);
         }
     }
 
-    private StudyPlan markReportPlanSuccess(Long planId, GenerateLearningPlanVO aiPlan) {
-        StudyPlan plan = studyPlanMapper.selectById(planId);
-        cleanupTasks(planId);
-        cleanupRelations(planId);
+    private StudyPlan markReportPlanSuccess(StudyPlan executionPlan, GenerateLearningPlanVO aiPlan) {
+        StudyPlan plan = getOwnedPlan(executionPlan.getId(), executionPlan.getUserId());
+        cleanupTasks(plan.getId(), plan.getUserId());
+        cleanupRelations(plan.getId(), plan.getUserId());
         plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), defaultTitle(plan)));
         plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
         plan.setDurationDays(normalizeDuration(aiPlan.getDurationDays()));
@@ -425,16 +429,16 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setFailureReason(null);
         insertTasks(plan, aiPlan);
         plan.setPlanStatus(PLAN_ACTIVE);
-        studyPlanMapper.updateById(plan);
+        updateOwnedPlan(plan);
         return plan;
     }
 
-    private StudyPlan markTargetedPlanSuccess(Long planId, GenerateLearningPlanVO aiPlan,
+    private StudyPlan markTargetedPlanSuccess(StudyPlan executionPlan, GenerateLearningPlanVO aiPlan,
                                               List<InnerSkillGapItemVO> selectedGaps,
                                               GenerateTargetedStudyPlanDTO aiRequest) {
-        StudyPlan plan = studyPlanMapper.selectById(planId);
-        cleanupTasks(planId);
-        cleanupRelations(planId);
+        StudyPlan plan = getOwnedPlan(executionPlan.getId(), executionPlan.getUserId());
+        cleanupTasks(plan.getId(), plan.getUserId());
+        cleanupRelations(plan.getId(), plan.getUserId());
         insertTargetedTasks(plan, aiPlan, selectedGaps == null ? List.of() : selectedGaps);
         plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), plan.getPlanTitle()));
         plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
@@ -445,17 +449,17 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setResultJson(toJson(aiPlan));
         plan.setFailureReason(null);
         plan.setPlanStatus(PLAN_ACTIVE);
-        studyPlanMapper.updateById(plan);
+        updateOwnedPlan(plan);
         return plan;
     }
 
-    private StudyPlan markStudyPlanFailed(Long planId) {
-        cleanupTasks(planId);
-        cleanupRelations(planId);
-        StudyPlan plan = studyPlanMapper.selectById(planId);
+    private StudyPlan markStudyPlanFailed(Long planId, Long userId) {
+        cleanupTasks(planId, userId);
+        cleanupRelations(planId, userId);
+        StudyPlan plan = getOwnedPlan(planId, userId);
         plan.setPlanStatus(PLAN_FAILED);
         plan.setFailureReason(studyPlanFailureMessage());
-        studyPlanMapper.updateById(plan);
+        updateOwnedPlan(plan);
         return plan;
     }
 
@@ -495,7 +499,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             studyPlanMapper.insert(plan);
         } else {
             studyPlanMapper.updateById(plan);
-            cleanupTasks(plan.getId());
+            cleanupTasks(plan.getId(), userId);
         }
 
         GenerateLearningPlanDTO aiRequest = buildAiRequest(plan, session, report, dto, resume, optimizeRecord);
@@ -718,12 +722,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return start.plusDays(Math.max(0, dayOffset - 1));
     }
 
-    private void cleanupRelations(Long planId) {
-        if (planId == null) {
+    private void cleanupRelations(Long planId, Long userId) {
+        if (planId == null || userId == null) {
             return;
         }
         relationMapper.delete(new LambdaQueryWrapper<StudyPlanSkillRelation>()
-                .eq(StudyPlanSkillRelation::getStudyPlanId, planId));
+                .eq(StudyPlanSkillRelation::getStudyPlanId, planId)
+                .eq(StudyPlanSkillRelation::getUserId, userId));
     }
 
     private Map<String, Object> targetJobSnapshot(InnerSkillProfileVO profile) {
@@ -857,11 +862,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
     }
 
-    private void cleanupTasks(Long planId) {
-        if (planId == null) {
+    private void cleanupTasks(Long planId, Long userId) {
+        if (planId == null || userId == null) {
             return;
         }
-        studyTaskMapper.delete(new LambdaQueryWrapper<StudyTask>().eq(StudyTask::getPlanId, planId));
+        studyTaskMapper.delete(new LambdaQueryWrapper<StudyTask>()
+                .eq(StudyTask::getPlanId, planId)
+                .eq(StudyTask::getUserId, userId));
     }
 
     private StudyPlan latestPlan(Long userId, Long reportId) {
@@ -910,6 +917,34 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
         }
         return plan;
+    }
+
+    private StudyPlan getAvailablePlan(Long id) {
+        StudyPlan plan = studyPlanMapper.selectOne(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, id)
+                .eq(StudyPlan::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (plan == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
+        }
+        return plan;
+    }
+
+    private Long requireExecutionUserId(Long userId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户ID不能为空");
+        }
+        return userId;
+    }
+
+    private void updateOwnedPlan(StudyPlan plan) {
+        int updated = studyPlanMapper.update(plan, new LambdaUpdateWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, plan.getId())
+                .eq(StudyPlan::getUserId, plan.getUserId())
+                .eq(StudyPlan::getDeleted, CommonConstants.NO));
+        if (updated == 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
+        }
     }
 
     private InnerResumeDetailVO loadResume(Long userId, Long resumeId) {
@@ -1299,6 +1334,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private String normalizeTaskStatus(String status) {
         String value = status.trim().toUpperCase(Locale.ROOT);
+        if ("PENDING".equals(value)) {
+            return TASK_TODO;
+        }
         if (!List.of(TASK_TODO, "DOING", "DONE", TASK_COMPLETED, TASK_SKIPPED).contains(value)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "学习任务状态不支持");
         }

@@ -41,6 +41,7 @@ import com.codecoachai.ai.service.AiService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
 import com.codecoachai.ai.security.AiPiiMasker;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -3541,7 +3542,7 @@ public class AiServiceImpl implements AiService {
         log.setCompletionTokens(null);
         log.setTotalTokens(null);
         log.setStatus(errorMessage == null ? CommonConstants.YES : CommonConstants.NO);
-        log.setErrorMessage(errorMessage);
+        log.setErrorMessage(safeAiErrorSummary(errorMessage, resolvedFailureType));
         try {
             aiCallLogMapper.insert(log);
             return log.getId();
@@ -3626,13 +3627,42 @@ public class AiServiceImpl implements AiService {
         metadata.put("promptTokens", null);
         metadata.put("completionTokens", null);
         metadata.put("totalTokens", null);
-        metadata.put("errorMessage", errorMessage);
+        metadata.put("errorMessage", safeAiErrorSummary(errorMessage, failureType));
+        metadata.put("errorLength", length(errorMessage));
+        metadata.put("errorHash", shortHash(errorMessage));
         metadata.put("responseLength", length(response));
         return toJson(metadata);
     }
 
     private int length(String value) {
         return value == null ? 0 : value.length();
+    }
+
+    private String safeAiErrorSummary(String errorMessage, AiFailureType failureType) {
+        if (!StringUtils.hasText(errorMessage)) {
+            return null;
+        }
+        AiFailureType resolvedFailureType = failureType == null ? AiFailureType.UNKNOWN_ERROR : failureType;
+        return "errorType=" + resolvedFailureType.name()
+                + "; errorLength=" + errorMessage.length()
+                + "; errorHash=" + shortHash(errorMessage)
+                + "; summary=" + aiFailureSummary(resolvedFailureType);
+    }
+
+    private String aiFailureSummary(AiFailureType failureType) {
+        return switch (failureType == null ? AiFailureType.UNKNOWN_ERROR : failureType) {
+            case CONFIG_ERROR -> "AI provider configuration is unavailable";
+            case TIMEOUT -> "AI provider request timed out";
+            case HTTP_ERROR -> "AI provider returned an error response";
+            case EMPTY_RESPONSE -> "AI provider returned an empty response";
+            case PARSE_ERROR -> "AI response format could not be parsed";
+            case NONE, UNKNOWN_ERROR -> "AI provider call failed";
+        };
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private Map<String, Object> baseMetadata(String scene, AiFailureType failureType) {

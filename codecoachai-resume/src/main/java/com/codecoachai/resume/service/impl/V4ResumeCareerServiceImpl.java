@@ -18,6 +18,7 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeSuggestionAdoption;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.ApplicationInsightItemVO;
 import com.codecoachai.resume.domain.vo.ApplicationQualityVO;
@@ -40,6 +41,7 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -82,6 +84,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final ResumeJobMatchReportMapper resumeJobMatchReportMapper;
     private final ResumeSuggestionAdoptionMapper resumeSuggestionAdoptionMapper;
     private final JobApplicationEventMapper jobApplicationEventMapper;
+    private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final NotificationBusinessResolver notificationBusinessResolver;
     private final ObjectMapper objectMapper;
@@ -914,7 +917,22 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         if (request.getResumeVersionId() != null) {
             ownedVersion(request.getResumeVersionId());
         }
+        if (request.getTargetJobId() != null) {
+            ownedTargetJob(request.getTargetJobId(), userId);
+        }
         return request;
+    }
+
+    private TargetJob ownedTargetJob(Long targetJobId, Long userId) {
+        TargetJob targetJob = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
+                .eq(TargetJob::getId, targetJobId)
+                .eq(TargetJob::getUserId, userId)
+                .eq(TargetJob::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (targetJob == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job does not exist or is unavailable");
+        }
+        return targetJob;
     }
 
     private void syncApplicationStatusFromEvent(JobApplication app, JobApplicationEvent event) {
@@ -1426,11 +1444,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setBizId(String.valueOf(app.getId()));
         vo.setTitle(overdue ? "投递跟进已逾期" : "今日待跟进投递");
         vo.setContent(applicationReminderContent(app, overdue));
-        vo.setActionUrl(overdue ? "/applications?followUp=overdue" : "/applications?followUp=due-today");
+        vo.setActionUrl(applicationEventActionUrl(app));
         vo.setFallbackPath("/applications");
         vo.setFallbackLabel("查看投递工作台");
         vo.setPlanDate(reminderDate);
         return vo;
+    }
+
+    private String applicationEventActionUrl(JobApplication app) {
+        if (app == null || app.getId() == null) {
+            return "/applications";
+        }
+        return "/applications?applicationId=" + app.getId() + "&openEvents=1";
     }
 
     private String applicationReminderContent(JobApplication app, boolean overdue) {

@@ -6,7 +6,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -98,8 +97,8 @@ class RoleServiceImplTest {
 
         assertDoesNotThrow(() -> roleService.assignRolesToUser(9L, List.of(1L)));
 
-        verify(sysUserRoleMapper).delete(any());
-        verify(sysUserRoleMapper, times(1)).insert(any(SysUserRole.class));
+        verify(sysUserRoleMapper, never()).delete(any());
+        verify(sysUserRoleMapper, never()).insert(any(SysUserRole.class));
         verify(adminPermissionCache).invalidateUserPermissions(9L);
     }
 

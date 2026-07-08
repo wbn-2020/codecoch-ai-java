@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -66,12 +67,13 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
 
             ResumeJobMatchSubmitVO result = response.getData();
             if ("FAILED".equalsIgnoreCase(result.getStatus())) {
-                String reason = StringUtils.hasText(result.getErrorMessage())
+                String userReason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "resume job match report failed";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
-                log.warn("Resume job match report failed reportId={} reason={}", payload.getReportId(), reason);
+                String safeReason = safeFailureReason(result.getErrorMessage(), "resume job match report failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, userReason);
+                log.warn("Resume job match report failed reportId={} reason={}", payload.getReportId(), safeReason);
                 return;
             }
 
@@ -80,17 +82,23 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
                     String.valueOf(payload.getReportId()), "简历匹配报告已生成", "您的简历岗位匹配报告已生成完毕，请查看");
             log.info("Resume job match task completed reportId={}", payload.getReportId());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Resume job match task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "resume job match terminal failure");
+            log.warn("Resume job match task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Resume job match task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "resume job match non-retryable failure");
+            log.error("Resume job match task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Resume job match task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "resume job match retryable failure");
+            log.error("Resume job match task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("resume job match retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -109,6 +117,19 @@ public class ResumeJobMatchConsumer implements RocketMQListener<MqMessage<Resume
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "resume job match failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

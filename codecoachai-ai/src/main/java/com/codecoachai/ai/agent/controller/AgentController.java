@@ -2,6 +2,7 @@ package com.codecoachai.ai.agent.controller;
 
 import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentTaskDeferDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
@@ -90,6 +91,14 @@ public class AgentController {
                                         @RequestBody(required = false) AgentTaskSkipDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(jobCoachAgentService.skipTask(userId, id, dto));
+    }
+
+    @PostMapping("/tasks/{id}/defer")
+    @OperationLog(module = "agent", action = "DEFER_AGENT_TASK", description = "Defer Agent task")
+    public Result<AgentTaskVO> deferTask(@PathVariable Long id,
+                                         @RequestBody(required = false) AgentTaskDeferDTO dto) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(jobCoachAgentService.deferTask(userId, id, dto));
     }
 
     @PostMapping("/tasks/{id}/restore")

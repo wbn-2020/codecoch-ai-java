@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -56,13 +57,15 @@ public class StudyPlanGenerateConsumer implements RocketMQListener<MqMessage<Stu
                 throw new NonRetryableMqException("study plan payload is invalid");
             }
 
-            Result<StudyPlanGenerateVO> response = interviewFeignClient.executeStudyPlan(payload.getPlanId());
+            Result<StudyPlanGenerateVO> response = interviewFeignClient.executeStudyPlan(
+                    payload.getUserId(), payload.getPlanId());
             if (response == null || response.getCode() != 0 || response.getData() == null) {
                 if (response != null && isBusinessFailure(response.getCode())) {
-                    throw new TerminalTaskFailureException("study plan execute failed: " + response.getMessage());
+                    throw new TerminalTaskFailureException(safeFailureReason(response.getMessage(),
+                            "study plan execute failed"));
                 }
                 throw new RuntimeException("study plan execute returned invalid result: "
-                        + (response == null ? "null" : response.getMessage()));
+                        + safeFailureReason(response == null ? null : response.getMessage(), "no response"));
             }
 
             StudyPlanGenerateVO result = response.getData();
@@ -70,9 +73,10 @@ public class StudyPlanGenerateConsumer implements RocketMQListener<MqMessage<Stu
                 String reason = StringUtils.hasText(result.getFailureReason())
                         ? result.getFailureReason()
                         : "学习计划生成失败";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
-                log.warn("Study plan generation failed planId={} reason={}", payload.getPlanId(), reason);
+                String safeReason = safeFailureReason(reason, "study plan generation failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, safeReason);
+                log.warn("Study plan generation failed planId={} reason={}", payload.getPlanId(), safeReason);
                 return;
             }
 
@@ -83,17 +87,23 @@ public class StudyPlanGenerateConsumer implements RocketMQListener<MqMessage<Stu
             log.info("Study plan generation task completed planId={} taskCount={}",
                     payload.getPlanId(), result.getTaskCount());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Study plan generation task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "study plan terminal failure");
+            log.warn("Study plan generation task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Study plan generation task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "study plan non-retryable failure");
+            log.error("Study plan generation task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Study plan generation task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "study plan retryable failure");
+            log.error("Study plan generation task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("study plan retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -112,6 +122,19 @@ public class StudyPlanGenerateConsumer implements RocketMQListener<MqMessage<Stu
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "study plan failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

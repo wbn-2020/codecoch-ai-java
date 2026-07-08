@@ -2,10 +2,14 @@ package com.codecoachai.interview.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.interview.domain.entity.StudyCheckin;
+import com.codecoachai.interview.domain.entity.StudyPlan;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.mapper.StudyCheckinMapper;
+import com.codecoachai.interview.mapper.StudyPlanMapper;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -32,12 +36,15 @@ public class StudyCheckinController {
 
     private final StudyCheckinMapper checkinMapper;
     private final StudyTaskMapper studyTaskMapper;
+    private final StudyPlanMapper studyPlanMapper;
 
     @Operation(summary = "今日打卡")
     @PostMapping
     public Result<StudyCheckin> checkin(@RequestBody(required = false) CheckinDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
         LocalDate today = LocalDate.now();
+        Long planId = dto == null ? null : dto.getPlanId();
+        validateOwnedPlan(userId, planId);
 
         // 检查是否已打卡
         StudyCheckin existing = checkinMapper.selectOne(
@@ -57,7 +64,7 @@ public class StudyCheckinController {
 
         StudyCheckin checkin = new StudyCheckin();
         checkin.setUserId(userId);
-        checkin.setPlanId(dto != null ? dto.getPlanId() : null);
+        checkin.setPlanId(planId);
         checkin.setCheckinDate(today);
         checkin.setCompletedTasks(completedToday.intValue());
         checkin.setStudyMinutes(dto != null ? dto.getStudyMinutes() : 0);
@@ -125,6 +132,7 @@ public class StudyCheckinController {
     @GetMapping("/progress")
     public Result<ProgressVO> progress(@RequestParam(required = false) Long planId) {
         Long userId = SecurityAssert.requireLoginUserId();
+        validateOwnedPlan(userId, planId);
 
         LambdaQueryWrapper<StudyTask> baseQuery = new LambdaQueryWrapper<StudyTask>()
                 .eq(StudyTask::getUserId, userId);
@@ -145,6 +153,19 @@ public class StudyCheckinController {
         vo.setPendingTasks((int) (totalTasks - completedTasks - skippedTasks));
         vo.setCompletionRate(totalTasks > 0 ? Math.round(completedTasks * 100.0 / totalTasks) : 0);
         return Result.success(vo);
+    }
+
+    private void validateOwnedPlan(Long userId, Long planId) {
+        if (planId == null) {
+            return;
+        }
+        Long count = studyPlanMapper.selectCount(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, planId)
+                .eq(StudyPlan::getUserId, userId)
+                .eq(StudyPlan::getDeleted, 0));
+        if (count == null || count == 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或无权访问");
+        }
     }
 
     @Data

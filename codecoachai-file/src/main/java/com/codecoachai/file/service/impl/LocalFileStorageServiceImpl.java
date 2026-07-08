@@ -13,6 +13,7 @@ import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileBizTypes;
 import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -25,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +39,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -69,7 +73,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public InnerFileUploadVO upload(MultipartFile file, String bizType, Long userId) {
-        validateBasic(file, bizType, userId);
+        String normalizedBizType = FileBizTypes.requireAllowed(bizType);
+        validateBasic(file, normalizedBizType, userId);
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
         validateExtension(fileExt);
@@ -78,7 +83,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
 
         Path root = normalizeRoot();
         String storedFilename = UUID.randomUUID() + "." + fileExt;
-        String relativePath = Path.of("resume", LocalDate.now().format(DATE_PATH_FORMATTER), storedFilename)
+        String relativePath = Path.of(FileBizTypes.directoryName(normalizedBizType),
+                        LocalDate.now().format(DATE_PATH_FORMATTER), storedFilename)
                 .toString()
                 .replace('\\', '/');
         Path target = root.resolve(relativePath).normalize();
@@ -87,7 +93,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         try {
             Files.createDirectories(target.getParent());
             file.transferTo(target);
-            FileInfo fileInfo = buildFileInfo(file, bizType, userId, originalFilename, storedFilename, fileExt,
+            registerRollbackCleanup(target);
+            FileInfo fileInfo = buildFileInfo(file, normalizedBizType, userId, originalFilename, storedFilename, fileExt,
                     relativePath);
             fileInfoMapper.insert(fileInfo);
             return toVO(fileInfo);
@@ -98,6 +105,16 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             }
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败，请稍后重试");
         }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteUserFile(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        fileInfoMapper.deleteById(fileInfo.getId());
+        deleteQuietly(resolveStoragePath(fileInfo.getStoragePath()));
+        log.info("Local file compensation deleted fileId={} userId={} bizType={}",
+                fileId, userId, fileInfo.getBizType());
     }
 
     @Override
@@ -190,10 +207,14 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         if (userId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "缺少用户编号");
         }
+        String normalizedBizType = FileBizTypes.normalizeOrNull(bizType);
+        if (normalizedBizType != null) {
+            normalizedBizType = FileBizTypes.requireAllowed(normalizedBizType);
+        }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
                 .eq(FileInfo::getUserId, userId)
-                .eq(StringUtils.hasText(bizType), FileInfo::getBizType, bizType)
+                .eq(StringUtils.hasText(normalizedBizType), FileInfo::getBizType, normalizedBizType)
                 .eq(FileInfo::getStatus, STATUS_AVAILABLE)
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
@@ -360,9 +381,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage path is missing.");
         }
 
-        Path root = normalizeRoot();
-        Path target = root.resolve(fileInfo.getStoragePath()).normalize();
-        ensureInsideRoot(root, target);
+        Path target = resolveStoragePath(fileInfo.getStoragePath());
         if (!Files.isRegularFile(target)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "File is not available for download.");
         }
@@ -385,6 +404,13 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         } catch (IOException ex) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "File read failed, please retry later.");
         }
+    }
+
+    private Path resolveStoragePath(String storagePath) {
+        Path root = normalizeRoot();
+        Path target = root.resolve(storagePath).normalize();
+        ensureInsideRoot(root, target);
+        return target;
     }
 
     private List<Long> resolveParseStatusFileIds(AdminFileQueryDTO query) {
@@ -432,5 +458,20 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         } catch (IOException ignored) {
             // Best-effort cleanup after metadata persistence failure.
         }
+    }
+
+    private void registerRollbackCleanup(Path target) {
+        if (target == null || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        AtomicBoolean cleaned = new AtomicBoolean(false);
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED && cleaned.compareAndSet(false, true)) {
+                    deleteQuietly(target);
+                }
+            }
+        });
     }
 }

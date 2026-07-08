@@ -8,6 +8,9 @@ import com.codecoachai.question.util.QuestionRecommendationRequestPayloadUtils;
 import com.codecoachai.question.util.QuestionRecommendationResultPayloadUtils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.LocalDateTime;
@@ -20,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.HexFormat;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,16 +43,6 @@ public class QuestionRecommendationRetentionCleanupTask {
             QuestionRecommendationBatchStatus.SUCCESS.getCode(),
             QuestionRecommendationBatchStatus.FAILED.getCode()
     );
-    private static final String LEGACY_REQUEST_PAYLOAD_SQL = """
-              AND (
-                    request_json LIKE '%targetJobJson%'
-                 OR request_json LIKE '%matchReportJson%'
-                 OR request_json LIKE '%skillProfileJson%'
-                 OR request_json LIKE '%skillGapsJson%'
-                 OR request_json LIKE '%studyPlanJson%'
-                 OR request_json LIKE '%studyTasksJson%'
-              )
-            """;
     private static final String FIND_LEGACY_REQUEST_ROWS = """
             SELECT id,
                    user_id,
@@ -64,19 +58,18 @@ public class QuestionRecommendationRetentionCleanupTask {
             WHERE deleted = 0
               AND request_json IS NOT NULL
               AND request_json <> ''
-            """ + LEGACY_REQUEST_PAYLOAD_SQL + """
             ORDER BY updated_at ASC
             LIMIT ?
             """;
     private static final String FIND_EXPIRED_BATCH_IDS = """
-            SELECT id
+            SELECT id,
+                   request_json
             FROM question_recommendation_batch
             WHERE deleted = 0
               AND updated_at <= ?
               AND status IN (?, ?)
               AND request_json IS NOT NULL
               AND request_json <> ''
-            """ + LEGACY_REQUEST_PAYLOAD_SQL + """
             ORDER BY updated_at ASC
             LIMIT ?
             """;
@@ -174,7 +167,11 @@ public class QuestionRecommendationRetentionCleanupTask {
         for (Map<String, Object> row : rows) {
             QuestionRecommendationBatch batch = toBatch(row);
             if (batch.getId() == null) {
-                log.warn("Skip question_recommendation_batch legacy request minimization row because id is missing: {}", row);
+                log.warn("Skip question_recommendation_batch legacy request minimization row because id is missing: {}",
+                        safeRowSummary(row));
+                continue;
+            }
+            if (!containsLegacyRequestPayload(row.get("request_json"))) {
                 continue;
             }
             MinimizedRequestUpdate minimizedUpdate = buildMinimizedRequestUpdate(batch, row.get("request_json"));
@@ -211,7 +208,7 @@ public class QuestionRecommendationRetentionCleanupTask {
                 Types.INTEGER
         };
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(FIND_EXPIRED_BATCH_IDS, args, argTypes);
-        List<Long> ids = extractIds(rows);
+        List<Long> ids = extractLegacyRequestIds(rows);
         if (ids.isEmpty()) {
             return;
         }
@@ -263,7 +260,8 @@ public class QuestionRecommendationRetentionCleanupTask {
     private String buildMinimizedResultJson(Map<String, Object> row) {
         Long batchId = toLong(row.get("id"));
         if (batchId == null) {
-            log.warn("Skip question_recommendation_batch result minimization row because id is missing: {}", row);
+            log.warn("Skip question_recommendation_batch result minimization row because id is missing: {}",
+                    safeRowSummary(row));
             return null;
         }
         String resultJson = toText(row.get("result_json"));
@@ -298,12 +296,40 @@ public class QuestionRecommendationRetentionCleanupTask {
         for (Map<String, Object> row : rows) {
             Long id = toLong(row.get("id"));
             if (id == null) {
-                log.warn("Skip question_recommendation_batch retention cleanup row because id is missing: {}", row);
+                log.warn("Skip question_recommendation_batch retention cleanup row because id is missing: {}",
+                        safeRowSummary(row));
                 continue;
             }
             ids.add(id);
         }
         return ids;
+    }
+
+    private List<Long> extractLegacyRequestIds(List<Map<String, Object>> rows) {
+        List<Long> ids = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Long id = toLong(row.get("id"));
+            if (id == null) {
+                log.warn("Skip question_recommendation_batch retention cleanup row because id is missing: {}",
+                        safeRowSummary(row));
+                continue;
+            }
+            if (containsLegacyRequestPayload(row.get("request_json"))) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    private boolean containsLegacyRequestPayload(Object requestJsonValue) {
+        String requestJson = toText(requestJsonValue);
+        return StringUtils.hasText(requestJson)
+                && (requestJson.contains("targetJobJson")
+                || requestJson.contains("matchReportJson")
+                || requestJson.contains("skillProfileJson")
+                || requestJson.contains("skillGapsJson")
+                || requestJson.contains("studyPlanJson")
+                || requestJson.contains("studyTasksJson"));
     }
 
     private QuestionRecommendationBatch toBatch(Map<String, Object> row) {
@@ -485,6 +511,47 @@ public class QuestionRecommendationRetentionCleanupTask {
 
     private String toText(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Map<String, Object> safeRowSummary(Map<String, Object> row) {
+        if (row == null) {
+            return Map.of("fieldCount", 0);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("fieldCount", row.size());
+        summary.put("fields", row.keySet());
+        addTextMeta(summary, "request_json", row.get("request_json"));
+        addTextMeta(summary, "result_json", row.get("result_json"));
+        summary.put("rowHash", shortSha256(row.keySet() + "|" + textMeta(row.get("request_json"))
+                + "|" + textMeta(row.get("result_json"))));
+        return summary;
+    }
+
+    private void addTextMeta(Map<String, Object> summary, String field, Object value) {
+        String text = toText(value);
+        if (!StringUtils.hasText(text)) {
+            summary.put(field + "Length", 0);
+            return;
+        }
+        summary.put(field + "Length", text.length());
+        summary.put(field + "Hash", shortSha256(text));
+    }
+
+    private String textMeta(Object value) {
+        String text = toText(value);
+        if (!StringUtils.hasText(text)) {
+            return "empty";
+        }
+        return text.length() + ":" + shortSha256(text);
+    }
+
+    private String shortSha256(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(value.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
     }
 
     private String nodeText(JsonNode node, String fieldName) {

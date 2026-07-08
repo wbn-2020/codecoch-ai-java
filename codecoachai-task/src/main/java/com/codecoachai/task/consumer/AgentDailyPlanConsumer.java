@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -62,10 +63,11 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
             Result<AgentDailyPlanVO> response = aiFeignClient.executeAgentDailyPlan(payload.getRunId(), toExecuteDto(payload));
             if (response == null || response.getCode() != 0 || response.getData() == null) {
                 if (response != null && isBusinessFailure(response.getCode())) {
-                    throw new TerminalTaskFailureException("agent daily plan execute failed: " + response.getMessage());
+                    throw new TerminalTaskFailureException(safeFailureReason(response.getMessage(),
+                            "agent daily plan execute failed"));
                 }
                 throw new RuntimeException("agent daily plan execute returned invalid result: "
-                        + (response == null ? "null" : response.getMessage()));
+                        + safeFailureReason(response == null ? null : response.getMessage(), "no response"));
             }
 
             AgentDailyPlanVO result = response.getData();
@@ -73,17 +75,19 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                 String reason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "agent daily plan failed";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
-                log.warn("Agent daily plan failed runId={} reason={}", payload.getRunId(), reason);
+                String safeReason = safeFailureReason(reason, "agent daily plan failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, safeReason);
+                log.warn("Agent daily plan failed runId={} reason={}", payload.getRunId(), safeReason);
                 return;
             }
             if ("CANCELED".equalsIgnoreCase(result.getStatus())) {
                 String reason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "agent daily plan canceled";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                log.info("Agent daily plan canceled runId={} reason={}", payload.getRunId(), reason);
+                String safeReason = safeFailureReason(reason, "agent daily plan canceled");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                log.info("Agent daily plan canceled runId={} reason={}", payload.getRunId(), safeReason);
                 return;
             }
             if (!"SUCCESS".equalsIgnoreCase(result.getStatus())) {
@@ -96,19 +100,25 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                     String.valueOf(payload.getRunId()), "今日计划已生成", "智能教练已完成今日训练计划，请回到今日计划页查看");
             log.info("Agent daily plan completed runId={}", payload.getRunId());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Agent daily plan task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            failAgentRun(envelope.getPayload(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "agent daily plan terminal failed");
+            log.warn("Agent daily plan task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            failAgentRun(envelope.getPayload(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Agent daily plan task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            failAgentRun(envelope.getPayload(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "agent daily plan non-retryable failure");
+            log.error("Agent daily plan task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            failAgentRun(envelope.getPayload(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Agent daily plan task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "agent daily plan retryable failure");
+            log.error("Agent daily plan task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("agent daily plan retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -155,6 +165,19 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "agent daily plan failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

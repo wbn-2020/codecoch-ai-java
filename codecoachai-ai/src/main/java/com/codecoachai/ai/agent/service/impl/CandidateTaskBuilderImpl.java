@@ -201,7 +201,7 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 null,
                 "JOB_APPLICATION",
                 application.getId(),
-                "/applications");
+                "/applications?applicationId=" + application.getId() + "&openEvents=1");
     }
 
     private String applicationFollowUpReason(ApplicationSnapshot application) {
