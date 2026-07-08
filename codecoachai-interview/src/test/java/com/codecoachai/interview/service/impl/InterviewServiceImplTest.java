@@ -55,6 +55,7 @@ import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
+import com.codecoachai.interview.service.InterviewVoiceService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import feign.Request;
 import feign.Response;
@@ -111,6 +112,8 @@ class InterviewServiceImplTest {
     private InterviewMqDispatcher interviewMqDispatcher;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock
+    private InterviewVoiceService interviewVoiceService;
 
     private InterviewService service;
 
@@ -142,6 +145,7 @@ class InterviewServiceImplTest {
                 industryTemplateService,
                 interviewMqDispatcher,
                 agentBusinessActionNotifier,
+                interviewVoiceService,
                 new ObjectMapper(),
                 new TransactionTemplate(new FlaggingTransactionManager()));
         service = transactionalProxy(target);
