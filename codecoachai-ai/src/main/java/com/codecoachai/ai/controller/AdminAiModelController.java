@@ -66,10 +66,23 @@ public class AdminAiModelController {
         return Result.success(rows);
     }
 
+    @GetMapping("/admin/ai/model-configs")
+    public Result<List<AiModelConfig>> listCompat(@RequestParam(required = false) String keyword,
+                                                  @RequestParam(required = false) String provider,
+                                                  @RequestParam(required = false) Integer enabled,
+                                                  @RequestParam(required = false) Integer status) {
+        return list(keyword, provider, enabled, status);
+    }
+
     @GetMapping("/admin/ai/models/{id}")
     public Result<AiModelConfig> detail(@PathVariable Long id) {
         permissionGuard.require(PERM_MODEL_LIST);
         return Result.success(maskApiKey(get(id)));
+    }
+
+    @GetMapping("/admin/ai/model-configs/{id}")
+    public Result<AiModelConfig> detailCompat(@PathVariable Long id) {
+        return detail(id);
     }
 
     @PostMapping("/admin/ai/models")

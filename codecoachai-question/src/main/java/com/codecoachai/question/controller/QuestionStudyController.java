@@ -10,6 +10,7 @@ import com.codecoachai.question.domain.entity.QuestionRelation;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.domain.enums.QuestionRelationStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationType;
+import com.codecoachai.question.domain.vo.QuestionPracticeVO;
 import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRelationMapper;
@@ -54,7 +55,7 @@ public class QuestionStudyController {
 
     @Operation(summary = "每日推荐题目")
     @GetMapping("/daily-recommend")
-    public Result<List<Question>> dailyRecommend(
+    public Result<List<QuestionPracticeVO>> dailyRecommend(
             @RequestParam(defaultValue = "10") Integer count) {
         Long userId = SecurityAssert.requireLoginUserId();
         int safeCount = normalizeCount(count);
@@ -97,7 +98,8 @@ public class QuestionStudyController {
             recommended.addAll(distinctByCanonicalGroup(extra, remaining));
         }
 
-        return Result.success(recommended.size() > safeCount ? recommended.subList(0, safeCount) : recommended);
+        List<Question> safeRecommended = recommended.size() > safeCount ? recommended.subList(0, safeCount) : recommended;
+        return Result.success(toPracticeVOList(safeRecommended));
     }
 
     // ==================== 薄弱知识点分析 ====================
@@ -178,7 +180,7 @@ public class QuestionStudyController {
 
     @Operation(summary = "错题重刷（获取错题列表用于重新练习）")
     @GetMapping("/wrong-records/retry")
-    public Result<List<Question>> wrongRetry(
+    public Result<List<QuestionPracticeVO>> wrongRetry(
             @RequestParam(defaultValue = "10") Integer count,
             @RequestParam(required = false) Long categoryId) {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -207,14 +209,14 @@ public class QuestionStudyController {
         // 随机打乱
         List<Question> shuffled = new ArrayList<>(questions);
         Collections.shuffle(shuffled);
-        return Result.success(shuffled);
+        return Result.success(toPracticeVOList(shuffled));
     }
 
     // ==================== 专项练习生成 ====================
 
     @Operation(summary = "专项练习生成（根据主题/知识点从题库抽题）")
     @PostMapping("/practice/generate")
-    public Result<List<Question>> generatePractice(@Valid @RequestBody PracticeGenerateDTO dto) {
+    public Result<List<QuestionPracticeVO>> generatePractice(@Valid @RequestBody PracticeGenerateDTO dto) {
         SecurityAssert.requireLoginUserId();
         int safeCount = normalizeCount(dto == null ? null : dto.getCount());
 
@@ -237,6 +239,7 @@ public class QuestionStudyController {
                             .like(Question::getContent, dto.getTopic())
                             .notIn(!existIds.isEmpty(), Question::getId, existIds)
                             .eq(dto.getDifficulty() != null, Question::getDifficulty, dto.getDifficulty())
+                            .eq(dto.getCategoryId() != null, Question::getCategoryId, dto.getCategoryId())
                             .last("limit " + remaining));
             questions.addAll(extra);
         }
@@ -244,7 +247,7 @@ public class QuestionStudyController {
         // 随机打乱
         List<Question> shuffled = new ArrayList<>(questions);
         Collections.shuffle(shuffled);
-        return Result.success(shuffled);
+        return Result.success(toPracticeVOList(shuffled));
     }
 
     private int normalizeCount(Integer count) {
@@ -285,6 +288,11 @@ public class QuestionStudyController {
         List<Question> result = new ArrayList<>();
         Set<String> seenCanonicalKeys = new HashSet<>();
         Set<Long> blockedIds = new HashSet<>();
+        Map<Long, Set<Long>> sameIntentNeighborMap = loadSameIntentNeighborIdMap(candidates.stream()
+                .map(Question::getId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList());
         for (Question candidate : candidates) {
             if (candidate == null || candidate.getId() == null || blockedIds.contains(candidate.getId())) {
                 continue;
@@ -296,7 +304,7 @@ public class QuestionStudyController {
                 continue;
             }
             result.add(candidate);
-            blockedIds.addAll(loadSameIntentNeighborIds(List.of(candidate.getId())));
+            blockedIds.addAll(sameIntentNeighborMap.getOrDefault(candidate.getId(), Set.of()));
             if (result.size() >= limit) {
                 break;
             }
@@ -327,6 +335,34 @@ public class QuestionStudyController {
         return ids;
     }
 
+    private Map<Long, Set<Long>> loadSameIntentNeighborIdMap(List<Long> questionIds) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return Map.of();
+        }
+        Set<Long> seedIds = new HashSet<>(questionIds);
+        List<QuestionRelation> relations = questionRelationMapper.selectList(new LambdaQueryWrapper<QuestionRelation>()
+                .eq(QuestionRelation::getRelationType, QuestionRelationType.SAME_INTENT.name())
+                .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name())
+                .and(wrapper -> wrapper.in(QuestionRelation::getSourceQuestionId, questionIds)
+                        .or()
+                        .in(QuestionRelation::getTargetQuestionId, questionIds)));
+        Map<Long, Set<Long>> neighborMap = new HashMap<>();
+        for (QuestionRelation relation : relations) {
+            Long sourceId = relation.getSourceQuestionId();
+            Long targetId = relation.getTargetQuestionId();
+            if (sourceId == null || targetId == null) {
+                continue;
+            }
+            if (seedIds.contains(sourceId)) {
+                neighborMap.computeIfAbsent(sourceId, id -> new HashSet<>()).add(targetId);
+            }
+            if (seedIds.contains(targetId)) {
+                neighborMap.computeIfAbsent(targetId, id -> new HashSet<>()).add(sourceId);
+            }
+        }
+        return neighborMap;
+    }
+
     private Map<Long, String> loadCategoryNameMap(Set<Long> categoryIds) {
         if (categoryIds == null || categoryIds.isEmpty()) {
             return Map.of();
@@ -347,6 +383,30 @@ public class QuestionStudyController {
         }
         String name = categoryNameMap.get(categoryId);
         return name == null || name.isBlank() ? "题目分类 " + categoryId : name;
+    }
+
+    private List<QuestionPracticeVO> toPracticeVOList(List<Question> questions) {
+        if (questions == null || questions.isEmpty()) {
+            return List.of();
+        }
+        return questions.stream()
+                .map(this::toPracticeVO)
+                .toList();
+    }
+
+    private QuestionPracticeVO toPracticeVO(Question question) {
+        QuestionPracticeVO vo = new QuestionPracticeVO();
+        vo.setId(question.getId());
+        vo.setTitle(question.getTitle());
+        vo.setContent(question.getContent());
+        vo.setCategoryId(question.getCategoryId());
+        vo.setGroupId(question.getGroupId());
+        vo.setDifficulty(question.getDifficulty());
+        vo.setQuestionType(question.getQuestionType());
+        vo.setExperienceLevel(question.getExperienceLevel());
+        vo.setIsHighFrequency(question.getIsHighFrequency());
+        vo.setStatus(question.getStatus());
+        return vo;
     }
 
     // ==================== DTO / VO ====================

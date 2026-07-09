@@ -176,8 +176,9 @@ public class InterviewReportAsyncService {
         dto.setDifficulty(session.getDifficulty());
         dto.setResumeContent(resume == null ? null : resume.getSummary());
         dto.setProjectContent(buildProjectContent(resume));
+        Map<Long, InterviewMessage> messagesById = messageById(messages);
         dto.setMessages(messages.stream()
-                .map(message -> firstText(message.getQuestionContent(), message.getUserAnswer(), message.getAiComment(), message.getContent()))
+                .map(message -> reportMessageText(message, messagesById))
                 .filter(StringUtils::hasText)
                 .toList());
         dto.setTrainingScene(session.getTrainingScene());
@@ -188,6 +189,42 @@ public class InterviewReportAsyncService {
         dto.setFollowUpIntensity(session.getFollowUpIntensity());
         dto.setTrainingContextSummary(session.getTrainingContextSummary());
         return dto;
+    }
+
+    private String reportMessageText(InterviewMessage message, Map<Long, InterviewMessage> messagesById) {
+        if (message == null) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        appendLine(builder, "Role", message.getRole());
+        appendLine(builder, "Type", message.getMessageType());
+        appendLine(builder, "Question", firstText(message.getQuestionContent(), questionContentByParent(message, messagesById)));
+        appendLine(builder, "CandidateAnswer", message.getUserAnswer());
+        appendLine(builder, "AiComment", firstText(message.getAiComment(), message.getComment()));
+        appendLine(builder, "Score", message.getScore() == null ? null : message.getScore().toString());
+        appendLine(builder, "Content", message.getContent());
+        return builder.toString().trim();
+    }
+
+    private Map<Long, InterviewMessage> messageById(List<InterviewMessage> messages) {
+        Map<Long, InterviewMessage> result = new LinkedHashMap<>();
+        if (messages == null) {
+            return result;
+        }
+        for (InterviewMessage message : messages) {
+            if (message != null && message.getId() != null) {
+                result.putIfAbsent(message.getId(), message);
+            }
+        }
+        return result;
+    }
+
+    private String questionContentByParent(InterviewMessage message, Map<Long, InterviewMessage> messagesById) {
+        if (message == null || message.getParentMessageId() == null) {
+            return null;
+        }
+        InterviewMessage parent = messagesById == null ? null : messagesById.get(message.getParentMessageId());
+        return parent == null ? null : firstText(parent.getQuestionContent(), parent.getContent());
     }
 
     private List<InterviewMessage> messageEntities(Long sessionId) {

@@ -89,7 +89,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         validateBasic(file, normalizedBizType, userId);
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
-        validateExtension(fileExt);
+        validateExtension(normalizedBizType, fileExt);
         validateSize(file);
         // 先做文件头/内容校验，再上传 OSS，避免伪装扩展名的文件进入对象存储。
         FileUploadValidator.validateContent(file, fileExt);
@@ -359,12 +359,8 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         return filename.substring(index + 1).toLowerCase(Locale.ROOT);
     }
 
-    private void validateExtension(String fileExt) {
-        boolean allowed = properties.getAllowedExtensions().stream()
-                .filter(StringUtils::hasText)
-                .map(item -> item.toLowerCase(Locale.ROOT))
-                .anyMatch(fileExt::equals);
-        if (!allowed) {
+    private void validateExtension(String bizType, String fileExt) {
+        if (!FileBizTypes.isExtensionAllowed(bizType, fileExt, properties.getAllowedExtensions())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
         }
     }

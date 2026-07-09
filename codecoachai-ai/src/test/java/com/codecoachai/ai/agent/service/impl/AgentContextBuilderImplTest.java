@@ -18,9 +18,13 @@ import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeChunk;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocument;
 import com.codecoachai.ai.agent.feign.ResumeAgentContextFeignClient;
 import com.codecoachai.ai.agent.mapper.AgentMemoryMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeChunkMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.common.core.domain.Result;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -46,6 +50,10 @@ class AgentContextBuilderImplTest {
     private AgentTaskMapper agentTaskMapper;
     @Mock
     private AgentMemoryMapper agentMemoryMapper;
+    @Mock
+    private PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
+    @Mock
+    private PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
 
     private AgentContextBuilderImpl builder;
 
@@ -53,15 +61,24 @@ class AgentContextBuilderImplTest {
     static void initMybatisPlusTableInfo() {
         initTableInfo(AgentTask.class);
         initTableInfo(AgentMemory.class);
+        initTableInfo(PersonalKnowledgeDocument.class);
+        initTableInfo(PersonalKnowledgeChunk.class);
     }
 
     @BeforeEach
     void setUp() {
-        builder = new AgentContextBuilderImpl(resumeFeignClient, agentTaskMapper, agentMemoryMapper);
+        builder = new AgentContextBuilderImpl(
+                resumeFeignClient,
+                agentTaskMapper,
+                agentMemoryMapper,
+                personalKnowledgeDocumentMapper,
+                personalKnowledgeChunkMapper);
         when(resumeFeignClient.getTargetJob(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(targetJob()));
         when(resumeFeignClient.getAnalysis(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(null));
         when(agentMemoryMapper.selectList(any())).thenReturn(List.of());
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(personalKnowledgeDocumentMapper.selectList(any())).thenReturn(List.of());
+        when(personalKnowledgeChunkMapper.selectList(any())).thenReturn(List.of());
     }
 
     @Test

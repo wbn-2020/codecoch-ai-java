@@ -36,15 +36,15 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
     private static final Pattern EMAIL = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
     private static final Pattern CHINA_MOBILE = Pattern.compile("(?<!\\d)1[3-9]\\d{9}(?!\\d)");
     private static final Pattern ID_CARD = Pattern.compile("(?<![0-9Xx])\\d{6}(?:19|20)\\d{2}\\d{2}\\d{2}\\d{3}[0-9Xx](?![0-9Xx])");
-    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret)\"\\s*:\\s*\")[^\"]+(\")");
+    private static final Pattern JSON_SECRET = Pattern.compile("(?i)(\"(?:api[-_]?key|authorization|bearer|token|password|secret|idempotency[-_]?key)\"\\s*:\\s*\")[^\"]+(\")");
     private static final Pattern JSON_SENSITIVE_TEXT = Pattern.compile(
             "(?i)(\"(?:resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
                     + "requestPrompt|responseContent|requestBody|responseBody|rawText|structuredJson|modelTrace|"
                     + "transcript|draftText|confirmedText|reason|title|answer|comment|remark|feedback|"
                     + "projectExperience|description|content)\"\\s*:\\s*\")[^\"]*(\")");
-    private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret)\\b\\s*[:=]\\s*([^\\s,;&]+)");
+    private static final Pattern KV_SECRET = Pattern.compile("(?i)\\b(api[-_ ]?key|authorization|bearer|token|password|secret|idempotency[-_ ]?key)\\b\\s*[:=]\\s*([^\\s,;&]+)");
     private static final Pattern QUERY_SENSITIVE_PARAM = Pattern.compile(
-            "(?i)(^|[&?])((?:api[-_]?key|authorization|bearer|token|password|secret|idempotencyKey|reason|"
+            "(?i)(^|[&?])((?:api[-_]?key|authorization|bearer|token|password|secret|idempotency[-_]?key|reason|"
                     + "resumeContent|jobDescription|jd|prompt|renderedPrompt|aiResponse|rawOutputText|"
                     + "requestPrompt|responseContent|requestBody|responseBody|rawText|structuredJson|modelTrace|"
                     + "transcript|draftText|confirmedText|title|answer|comment|remark|feedback|"

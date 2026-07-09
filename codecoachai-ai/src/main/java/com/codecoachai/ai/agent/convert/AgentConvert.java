@@ -322,21 +322,18 @@ public final class AgentConvert {
     }
 
     public static boolean isFallbackAiResultSource(String source) {
-        return AiResultSourceEnum.FALLBACK.name().equals(source);
+        AiResultSourceEnum resultSource = AiResultSourceEnum.normalize(source);
+        return resultSource == AiResultSourceEnum.FALLBACK || resultSource == AiResultSourceEnum.DEGRADED;
     }
 
     public static boolean isMockAiResultSource(String source) {
-        return AiResultSourceEnum.MOCK.name().equals(source);
+        return AiResultSourceEnum.normalize(source) == AiResultSourceEnum.MOCK;
     }
 
     private static AiResultSourceEnum aiResultSourceEnum(String source) {
         if (!StringUtils.hasText(source)) {
             return null;
         }
-        try {
-            return AiResultSourceEnum.valueOf(source.trim());
-        } catch (IllegalArgumentException ex) {
-            return null;
-        }
+        return AiResultSourceEnum.normalize(source);
     }
 }

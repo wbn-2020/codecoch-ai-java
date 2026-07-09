@@ -4,6 +4,7 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MemoryReference;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.PersonalKnowledgeReference;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
@@ -13,10 +14,14 @@ import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeChunk;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocument;
 import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.feign.ResumeAgentContextFeignClient;
 import com.codecoachai.ai.agent.mapper.AgentMemoryMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeChunkMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -25,8 +30,10 @@ import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,10 +47,16 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
 
     private static final BigDecimal MIN_STRONG_MEMORY_CONFIDENCE = BigDecimal.valueOf(0.6);
     private static final String USER_CONFIRMED_MEMORY_SOURCE_PREFIX = "USER_CONFIRMED_";
+    private static final String SOURCE_KNOWLEDGE_CHUNK = "KNOWLEDGE_CHUNK";
+    private static final BigDecimal PERSONAL_KNOWLEDGE_CONTEXT_CONFIDENCE = BigDecimal.valueOf(0.75);
+    private static final int MAX_PERSONAL_KNOWLEDGE_HINTS = 6;
+    private static final int MAX_PERSONAL_KNOWLEDGE_HINT_LENGTH = 220;
 
     private final ResumeAgentContextFeignClient resumeFeignClient;
     private final AgentTaskMapper agentTaskMapper;
     private final AgentMemoryMapper agentMemoryMapper;
+    private final PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
+    private final PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
 
     @Override
     public JobCoachAgentContext build(Long userId, Long targetJobId, LocalDate planDate) {
@@ -66,6 +79,12 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
                 .toList());
         context.setRecentMemoryReferences(recentMemoryRecords.stream()
                 .map(this::toMemoryReference)
+                .toList());
+        List<PersonalKnowledgeReference> knowledgeReferences = personalKnowledgeReferences(userId, context);
+        context.setPersonalKnowledgeReferences(knowledgeReferences);
+        context.setPersonalKnowledgeHints(knowledgeReferences.stream()
+                .map(this::toPersonalKnowledgeHint)
+                .filter(StringUtils::hasText)
                 .toList());
         context.setAgentHistorySummary(agentHistorySummary(userId, targetJob.getId(), planDate));
         context.getContextWarnings().add("上下文已包含目标岗位、JD 分析、近期计划任务和已启用记忆。");
@@ -277,6 +296,80 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
                 && sourceType.trim().toUpperCase(Locale.ROOT).startsWith(USER_CONFIRMED_MEMORY_SOURCE_PREFIX);
     }
 
+    private List<PersonalKnowledgeReference> personalKnowledgeReferences(Long userId, JobCoachAgentContext context) {
+        try {
+            List<PersonalKnowledgeChunk> chunks = personalKnowledgeChunkMapper.selectList(
+                    new LambdaQueryWrapper<PersonalKnowledgeChunk>()
+                            .eq(PersonalKnowledgeChunk::getUserId, userId)
+                            .eq(PersonalKnowledgeChunk::getIndexStatus, "INDEXED")
+                            .eq(PersonalKnowledgeChunk::getDeleted, 0)
+                            .orderByDesc(PersonalKnowledgeChunk::getUpdatedAt)
+                            .last("LIMIT " + MAX_PERSONAL_KNOWLEDGE_HINTS));
+            if (chunks == null || chunks.isEmpty()) {
+                return List.of();
+            }
+            Map<Long, PersonalKnowledgeDocument> documents = knowledgeDocuments(userId, chunks);
+            return chunks.stream()
+                    .filter(Objects::nonNull)
+                    .map(chunk -> toPersonalKnowledgeReference(chunk, documents.get(chunk.getDocumentId())))
+                    .filter(Objects::nonNull)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.info("Personal knowledge context unavailable userId={}, reason={}", userId, ex.getMessage());
+            context.getContextWarnings().add("Personal knowledge hints are temporarily unavailable; skipped personal knowledge context.");
+            return List.of();
+        }
+    }
+
+    private Map<Long, PersonalKnowledgeDocument> knowledgeDocuments(Long userId, List<PersonalKnowledgeChunk> chunks) {
+        List<Long> documentIds = chunks.stream()
+                .map(PersonalKnowledgeChunk::getDocumentId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (documentIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PersonalKnowledgeDocument> documents = personalKnowledgeDocumentMapper.selectList(
+                new LambdaQueryWrapper<PersonalKnowledgeDocument>()
+                        .eq(PersonalKnowledgeDocument::getUserId, userId)
+                        .in(PersonalKnowledgeDocument::getId, documentIds)
+                        .eq(PersonalKnowledgeDocument::getDeleted, 0));
+        Map<Long, PersonalKnowledgeDocument> result = new LinkedHashMap<>();
+        if (documents != null) {
+            documents.stream().filter(Objects::nonNull).forEach(document -> result.put(document.getId(), document));
+        }
+        return result;
+    }
+
+    private PersonalKnowledgeReference toPersonalKnowledgeReference(PersonalKnowledgeChunk chunk,
+                                                                    PersonalKnowledgeDocument document) {
+        if (chunk == null || chunk.getId() == null) {
+            return null;
+        }
+        if (document != null && "DISABLED".equalsIgnoreCase(firstText(document.getStatus(), ""))) {
+            return null;
+        }
+        PersonalKnowledgeReference reference = new PersonalKnowledgeReference();
+        reference.setSourceType(SOURCE_KNOWLEDGE_CHUNK);
+        reference.setSourceId(chunk.getId());
+        reference.setSourceVersion(firstText(chunk.getChunkHash(), chunk.getNormalizationVersion(), ""));
+        reference.setSourceTitle(firstText(chunk.getSourceRef(), document == null ? null : document.getTitle(),
+                "Knowledge chunk " + chunk.getId()));
+        reference.setConfidence(PERSONAL_KNOWLEDGE_CONTEXT_CONFIDENCE);
+        reference.setSnapshotHash(TextFingerprintUtils.sha256Hex("knowledge-chunk:" + chunk.getId() + ":"
+                + firstText(chunk.getChunkHash(), "") + ":" + firstText(String.valueOf(chunk.getUpdatedAt()), "")));
+        return reference;
+    }
+
+    private String toPersonalKnowledgeHint(PersonalKnowledgeReference reference) {
+        if (reference == null || reference.getSourceId() == null) {
+            return null;
+        }
+        return truncate("knowledgeChunk#" + reference.getSourceId() + " "
+                + firstText(reference.getSourceTitle(), "personal knowledge"), MAX_PERSONAL_KNOWLEDGE_HINT_LENGTH);
+    }
+
     private String agentHistorySummary(Long userId, Long targetJobId, LocalDate planDate) {
         LocalDate start = planDate.minusDays(6);
         List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
@@ -300,5 +393,13 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
             }
         }
         return null;
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength);
     }
 }

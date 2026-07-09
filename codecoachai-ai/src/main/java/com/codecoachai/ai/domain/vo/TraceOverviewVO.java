@@ -15,6 +15,12 @@ public class TraceOverviewVO {
     private Integer sampleCount = 0;
     private LocalDateTime firstSeenAt;
     private LocalDateTime lastSeenAt;
+    private LocalDateTime queryStartTime;
+    private LocalDateTime queryEndTime;
+    private Boolean defaultTimeWindowApplied = false;
+    private Integer queryLimit;
+    private Integer maxLimit;
+    private Integer lowConfidenceCount = 0;
     private Integer aiCallCount;
     private Integer agentRunCount;
     private Integer agentTaskCount;

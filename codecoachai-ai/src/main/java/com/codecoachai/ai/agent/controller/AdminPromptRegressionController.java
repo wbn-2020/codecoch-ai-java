@@ -86,9 +86,11 @@ public class AdminPromptRegressionController {
     }
 
     @GetMapping("/results")
-    public Result<List<PromptRegressionResultVO>> results(@RequestParam(required = false) Long caseId) {
+    public Result<PageResult<PromptRegressionResultVO>> results(@RequestParam(required = false) Long caseId,
+                                                                @RequestParam(defaultValue = "1") Long pageNo,
+                                                                @RequestParam(defaultValue = "20") Long pageSize) {
         permissionGuard.require("admin:agent:prompt-regression:list");
-        return Result.success(agentV4OpsService.listPromptResults(caseId));
+        return Result.success(agentV4OpsService.pagePromptResults(caseId, pageNo, pageSize));
     }
 
     private String requireConfirmedCaseSave(String action, Long id, PromptRegressionCaseSaveDTO dto) {
@@ -106,11 +108,6 @@ public class AdminPromptRegressionController {
                                                                 @RequestParam(defaultValue = "1") Long pageNo,
                                                                 @RequestParam(defaultValue = "10") Long pageSize) {
         permissionGuard.require("admin:agent:prompt-regression:list");
-        List<PromptRegressionCaseVO> records = agentV4OpsService.listPromptCases(promptType, enabled);
-        long safePageNo = pageNo == null || pageNo < 1 ? 1 : pageNo;
-        long safePageSize = pageSize == null || pageSize < 1 ? 10 : Math.min(pageSize, 100);
-        int from = (int) Math.min((safePageNo - 1) * safePageSize, records.size());
-        int to = (int) Math.min(from + safePageSize, records.size());
-        return Result.success(PageResult.of(records.subList(from, to), records.size(), safePageNo, safePageSize));
+        return Result.success(agentV4OpsService.pagePromptCases(promptType, enabled, pageNo, pageSize));
     }
 }

@@ -50,6 +50,7 @@ import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -407,6 +408,11 @@ public class QuestionServiceImpl implements QuestionService {
         Set<String> seenCanonicalKeys = new HashSet<>();
         Set<Long> selectedQuestionIds = new HashSet<>();
         Set<Long> blockedQuestionIds = new HashSet<>();
+        Map<Long, Set<Long>> sameIntentNeighborMap = findSameIntentNeighborIds(candidates.stream()
+                .map(Question::getId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList());
         for (Question candidate : candidates) {
             if (candidate == null || candidate.getId() == null || blockedQuestionIds.contains(candidate.getId())) {
                 continue;
@@ -419,7 +425,7 @@ public class QuestionServiceImpl implements QuestionService {
             }
             result.add(candidate);
             selectedQuestionIds.add(candidate.getId());
-            blockedQuestionIds.addAll(findSameIntentNeighborIds(candidate.getId()));
+            blockedQuestionIds.addAll(sameIntentNeighborMap.getOrDefault(candidate.getId(), Set.of()));
             blockedQuestionIds.removeAll(selectedQuestionIds);
             if (result.size() >= limit) {
                 break;
@@ -428,26 +434,32 @@ public class QuestionServiceImpl implements QuestionService {
         return result;
     }
 
-    private Set<Long> findSameIntentNeighborIds(Long questionId) {
-        if (questionId == null) {
-            return Set.of();
+    private Map<Long, Set<Long>> findSameIntentNeighborIds(List<Long> questionIds) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return Map.of();
         }
+        Set<Long> seedIds = new HashSet<>(questionIds);
         List<QuestionRelation> relations = relationMapper.selectList(new LambdaQueryWrapper<QuestionRelation>()
                 .eq(QuestionRelation::getRelationType, QuestionRelationType.SAME_INTENT.name())
                 .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name())
-                .and(wrapper -> wrapper.eq(QuestionRelation::getSourceQuestionId, questionId)
+                .and(wrapper -> wrapper.in(QuestionRelation::getSourceQuestionId, questionIds)
                         .or()
-                        .eq(QuestionRelation::getTargetQuestionId, questionId)));
-        Set<Long> ids = new HashSet<>();
+                        .in(QuestionRelation::getTargetQuestionId, questionIds)));
+        Map<Long, Set<Long>> neighborMap = new HashMap<>();
         for (QuestionRelation relation : relations) {
-            if (relation.getSourceQuestionId() != null && !relation.getSourceQuestionId().equals(questionId)) {
-                ids.add(relation.getSourceQuestionId());
+            Long sourceId = relation.getSourceQuestionId();
+            Long targetId = relation.getTargetQuestionId();
+            if (sourceId == null || targetId == null) {
+                continue;
             }
-            if (relation.getTargetQuestionId() != null && !relation.getTargetQuestionId().equals(questionId)) {
-                ids.add(relation.getTargetQuestionId());
+            if (seedIds.contains(sourceId)) {
+                neighborMap.computeIfAbsent(sourceId, id -> new HashSet<>()).add(targetId);
+            }
+            if (seedIds.contains(targetId)) {
+                neighborMap.computeIfAbsent(targetId, id -> new HashSet<>()).add(sourceId);
             }
         }
-        return ids;
+        return neighborMap;
     }
 
     private void applyQuestion(Question question, AdminQuestionSaveDTO dto) {

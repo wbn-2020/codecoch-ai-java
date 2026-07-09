@@ -236,7 +236,7 @@ class AgentV4OpsServiceImplTest {
     }
 
     @Test
-    void listPromptResultsMasksSensitiveOutputAndErrorText() {
+    void pagePromptResultsMasksSensitiveOutputAndErrorText() {
         PromptRegressionResult result = new PromptRegressionResult();
         result.setId(400L);
         result.setCaseId(500L);
@@ -245,9 +245,12 @@ class AgentV4OpsServiceImplTest {
                 {"phone":"13812345678","email":"ops@example.com","apiKey":"sk-live-secret","authorization":"Bearer abc.def"}
                 """);
         result.setErrorMessage("prompt regression failed for 13812345678 ops@example.com token=abc123");
-        when(promptRegressionResultMapper.selectList(any())).thenReturn(java.util.List.of(result));
+        Page<PromptRegressionResult> page = Page.of(1, 20);
+        page.setTotal(1);
+        page.setRecords(java.util.List.of(result));
+        when(promptRegressionResultMapper.selectPage(any(), any())).thenReturn(page);
 
-        var vo = service.listPromptResults(500L).get(0);
+        var vo = service.pagePromptResults(500L, 1L, 20L).getRecords().get(0);
 
         assertFalse(vo.getOutputJson().contains("13812345678"));
         assertFalse(vo.getOutputJson().contains("ops@example.com"));

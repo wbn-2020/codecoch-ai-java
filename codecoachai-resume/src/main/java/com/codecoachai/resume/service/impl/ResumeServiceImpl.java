@@ -61,6 +61,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
@@ -86,7 +87,7 @@ public class ResumeServiceImpl implements ResumeService {
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
-    private static final long MAX_UPLOAD_SIZE_BYTES = 10L * 1024L * 1024L;
+    private static final long MAX_UPLOAD_SIZE_BYTES = 50L * 1024L * 1024L;
     private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
             "title", "resumeName", "realName", "email", "phone", "targetPosition",
             "skillStack", "workExperience", "educationExperience", "summary");
@@ -127,6 +128,9 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setIsDefault(count == null || count == 0 ? CommonConstants.YES : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
+        if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
+            selectDefaultResumeForUser(userId, resume.getId());
+        }
         syncResumeSearchAfterCommit(resume.getId(), userId, true);
         return toDetailVO(resume);
     }
@@ -361,6 +365,9 @@ public class ResumeServiceImpl implements ResumeService {
         ParsedResumeStructuredDTO structuredResume = parseStructuredResume(record.getStructuredJson());
         Resume resume = buildResumeFromStructured(record, structuredResume);
         resumeMapper.insert(resume);
+        if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
+            selectDefaultResumeForUser(userId, resume.getId());
+        }
         insertProjects(resume.getId(), structuredResume.getProjectExperiences());
 
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
@@ -518,13 +525,26 @@ public class ResumeServiceImpl implements ResumeService {
     public ResumeDetailVO setDefault(Long id) {
         Resume resume = getOwnedResume(id);
         Long userId = requireCurrentUserId();
-        List<Resume> resumes = resumeMapper.selectList(new LambdaQueryWrapper<Resume>().eq(Resume::getUserId, userId));
-        for (Resume item : resumes) {
-            item.setIsDefault(item.getId().equals(id) ? CommonConstants.YES : CommonConstants.NO);
-            resumeMapper.updateById(item);
+        return toDetailVO(selectDefaultResumeForUser(userId, resume.getId()));
+    }
+
+    private Resume selectDefaultResumeForUser(Long userId, Long resumeId) {
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .set(Resume::getIsDefault, CommonConstants.NO)
+                .eq(Resume::getUserId, userId)
+                .eq(Resume::getDeleted, CommonConstants.NO)
+                .eq(Resume::getIsDefault, CommonConstants.YES)
+                .ne(Resume::getId, resumeId));
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .set(Resume::getIsDefault, CommonConstants.YES)
+                .eq(Resume::getId, resumeId)
+                .eq(Resume::getUserId, userId)
+                .eq(Resume::getDeleted, CommonConstants.NO));
+        Resume latest = getOwnedResume(resumeId, userId);
+        if (!Objects.equals(latest.getIsDefault(), CommonConstants.YES)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "默认简历设置失败，请稍后重试");
         }
-        resume.setIsDefault(CommonConstants.YES);
-        return toDetailVO(resume);
+        return latest;
     }
 
     @Override
@@ -1641,7 +1661,7 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件仅支持 pdf/doc/docx/md/txt");
         }
         if (file.getSize() > MAX_UPLOAD_SIZE_BYTES) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件大小不能超过 10MB");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件大小不能超过 50MB");
         }
     }
 

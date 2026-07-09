@@ -46,6 +46,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
     private static final String RAW_PERMISSION = "admin:ai:log:raw:view";
     private static final int DEFAULT_LIMIT = 20;
     private static final int MAX_LIMIT = 50;
+    private static final int DEFAULT_TIME_WINDOW_DAYS = 7;
 
     private static final String MOD_AI_CALL = "AI_CALL";
     private static final String MOD_AGENT_RUN = "AGENT_RUN";
@@ -64,7 +65,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
 
     private static final Pattern EMAIL_PATTERN = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
     private static final Pattern PHONE_PATTERN = Pattern.compile("(?<!\\d)(?:\\+?\\d[\\d\\s-]{7,}\\d)(?!\\d)");
-    private static final Pattern TOKEN_PATTERN = Pattern.compile("(?i)(api[_-]?key|authorization|token|secret|password)\\s*[:=]\\s*[^,\\s}]+");
+    private static final Pattern TOKEN_PATTERN = Pattern.compile("(?i)(api[_-]?key|authorization|token|secret|password|idempotency[_-]?key)\\s*[:=]\\s*[^,\\s}]+");
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -1286,8 +1287,8 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
             if (MOD_AGENT_TASK.equals(node.getNodeType())) {
                 Long agentRunId = metaLong(node, "agentRunId");
                 if (agentRunId != null && byId.containsKey("agent-run-" + agentRunId)) {
-                    addEdge(edges, seen, "agent-run-" + agentRunId, node.getId(), "AGENT_TASK", "generated task", "HIGH",
-                            "Agent task records agentRunId.");
+                    addEdge(edges, seen, "agent-run-" + agentRunId, node.getId(), "AGENT_TASK", "generated task", "MEDIUM",
+                            "Agent task records agentRunId; this is a structural link, not proof of the same traceId.");
                 }
             }
             if (MOD_AGENT_WEEK_PLAN.equals(node.getNodeType())) {
@@ -1383,6 +1384,12 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         overview.setSampleCount(nodes.size());
         overview.setFirstSeenAt(nodes.stream().map(TraceNodeVO::getOccurredAt).filter(Objects::nonNull).min(LocalDateTime::compareTo).orElse(null));
         overview.setLastSeenAt(nodes.stream().map(TraceNodeVO::getOccurredAt).filter(Objects::nonNull).max(LocalDateTime::compareTo).orElse(null));
+        overview.setQueryStartTime(seed.startTime);
+        overview.setQueryEndTime(seed.endTime);
+        overview.setDefaultTimeWindowApplied(seed.defaultTimeWindowApplied);
+        overview.setQueryLimit(seed.limit);
+        overview.setMaxLimit(MAX_LIMIT);
+        overview.setLowConfidenceCount((int) nodes.stream().filter(item -> "LOW".equals(item.getAssociationConfidence())).count());
         overview.setAiCallCount(countFor(statuses, MOD_AI_CALL));
         overview.setAgentRunCount(countFor(statuses, MOD_AGENT_RUN));
         overview.setAgentTaskCount(countFor(statuses, MOD_AGENT_TASK));
@@ -1443,7 +1450,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
                 .findFirst()
                 .ifPresent(node -> {
                     TraceRiskVO risk = risk("raw-available", "RAW_AVAILABLE", "INFO", "Sensitive source recorded",
-                            "Raw source material exists in at least one module. Trace Cockpit returns only hash, length, and permission hints.", node.getId());
+                            "Raw source material exists in at least one module. Trace Cockpit preview shows hash and length only; raw text is not returned here.", node.getId());
                     risk.setLink(firstLink(node));
                     risks.add(risk);
                 });
@@ -1652,6 +1659,8 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         rawAccess.setState(rawFieldsAvailable ? "RECORDED_CAN_REQUEST" : "NOT_RECORDED");
         rawAccess.setRawAccessPermission(RAW_PERMISSION);
         rawAccess.setRequiredPermission(RAW_PERMISSION);
+        rawAccess.setDisplayPolicy("HASH_LENGTH_ONLY");
+        rawAccess.setNote("Trace Cockpit preview never includes raw source text; only hash, length, and permission hints are shown.");
         return rawAccess;
     }
 
@@ -1664,6 +1673,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         item.setValue(maskText(value, 160));
         item.setHash(hash);
         item.setLength(length);
+        item.setDisplayPolicy(StringUtils.hasText(value) ? "MASKED_PREVIEW" : "HASH_LENGTH_ONLY");
         node.getPreviews().add(item);
     }
 
@@ -2094,6 +2104,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         private String scene;
         private LocalDateTime startTime;
         private LocalDateTime endTime;
+        private boolean defaultTimeWindowApplied;
         private int limit;
 
         static TraceQuery from(TraceCockpitQueryDTO dto) {
@@ -2116,6 +2127,7 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
             query.endTime = source.getEndTime();
             query.limit = clampLimit(source.getPageSize());
             query.applyKeyword();
+            query.applyDefaultTimeWindow();
             if (!StringUtils.hasText(query.businessId) && StringUtils.hasText(query.bizId)) {
                 query.businessId = query.bizId;
             }
@@ -2146,6 +2158,28 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
             } else if ("userTime".equalsIgnoreCase(lookupType) && userId == null) {
                 userId = parseLongStatic(keyword);
             }
+        }
+
+        private void applyDefaultTimeWindow() {
+            if (startTime != null || endTime != null || hasExactLookupSeed()) {
+                return;
+            }
+            if (userId == null && !StringUtils.hasText(scene)) {
+                return;
+            }
+            endTime = LocalDateTime.now();
+            startTime = endTime.minusDays(DEFAULT_TIME_WINDOW_DAYS);
+            defaultTimeWindowApplied = true;
+        }
+
+        private boolean hasExactLookupSeed() {
+            return StringUtils.hasText(traceId)
+                    || StringUtils.hasText(requestId)
+                    || StringUtils.hasText(businessId)
+                    || StringUtils.hasText(bizId)
+                    || StringUtils.hasText(messageId)
+                    || agentRunId != null
+                    || asyncTaskId != null;
         }
 
         private boolean hasSearchSeed() {

@@ -2,6 +2,7 @@ package com.codecoachai.file.util;
 
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.springframework.util.StringUtils;
@@ -14,6 +15,7 @@ public final class FileBizTypes {
             "ATTACHMENT",
             "INTERVIEW_VOICE"
     );
+    private static final Set<String> INTERVIEW_VOICE_EXTENSIONS = Set.of("webm", "wav", "mp3", "m4a", "ogg");
 
     private FileBizTypes() {
     }
@@ -35,5 +37,21 @@ public final class FileBizTypes {
 
     public static String directoryName(String bizType) {
         return requireAllowed(bizType).toLowerCase(Locale.ROOT);
+    }
+
+    public static boolean isExtensionAllowed(String bizType, String fileExt, List<String> configuredExtensions) {
+        String normalizedBizType = requireAllowed(bizType);
+        String ext = StringUtils.hasText(fileExt) ? fileExt.trim().toLowerCase(Locale.ROOT) : "";
+        boolean configuredAllowed = configuredExtensions != null && configuredExtensions.stream()
+                .filter(StringUtils::hasText)
+                .map(item -> item.toLowerCase(Locale.ROOT))
+                .anyMatch(ext::equals);
+        if (INTERVIEW_VOICE_EXTENSIONS.contains(ext)) {
+            return "INTERVIEW_VOICE".equals(normalizedBizType);
+        }
+        if (configuredAllowed) {
+            return true;
+        }
+        return false;
     }
 }

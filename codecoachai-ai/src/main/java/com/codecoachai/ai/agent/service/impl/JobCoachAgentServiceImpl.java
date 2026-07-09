@@ -10,6 +10,7 @@ import com.codecoachai.ai.agent.domain.context.DailyPlanResult.FocusSkill;
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult.PlanTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MemoryReference;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.PersonalKnowledgeReference;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentRunQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentContextUsageReferenceRecordDTO;
@@ -133,6 +134,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String HANDOFF_STAGE_FIRST_PLAN = "first_plan_generated";
     private static final String HANDOFF_STAGE_FIRST_TASK_COMPLETED = "first_task_completed";
     private static final String USAGE_SOURCE_MEMORY = "MEMORY";
+    private static final String USAGE_SOURCE_KNOWLEDGE_CHUNK = "KNOWLEDGE_CHUNK";
     private static final String USAGE_CONSUMER_AGENT_RUN = "AGENT_RUN";
     private static final String USAGE_SCENE_AGENT_CONTEXT = "AGENT_CONTEXT";
     private static final List<String> ACTIVE_PLAN_STATUSES = List.of(
@@ -293,7 +295,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 }
                 clearRunTasks(run);
                 saveTasks(userId, run, planResult, candidates);
-                recordAgentContextMemoryUsage(userId, run, context);
+                recordAgentContextUsage(userId, run, context);
                 return toDailyPlan(agentRunMapper.selectById(run.getId()));
             });
         } catch (BusinessException ex) {
@@ -881,31 +883,55 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         return rows > 0;
     }
 
-    private void recordAgentContextMemoryUsage(Long userId, AgentRun run, JobCoachAgentContext context) {
-        if (run == null || run.getId() == null || context == null
-                || context.getRecentMemoryReferences() == null || context.getRecentMemoryReferences().isEmpty()) {
+    private void recordAgentContextUsage(Long userId, AgentRun run, JobCoachAgentContext context) {
+        if (run == null || run.getId() == null || context == null) {
             return;
         }
         List<AgentContextUsageReferenceRecordDTO> records = new ArrayList<>();
-        for (MemoryReference reference : context.getRecentMemoryReferences()) {
-            if (reference == null || reference.getId() == null) {
-                continue;
+        if (context.getRecentMemoryReferences() != null) {
+            for (MemoryReference reference : context.getRecentMemoryReferences()) {
+                if (reference == null || reference.getId() == null) {
+                    continue;
+                }
+                AgentContextUsageReferenceRecordDTO record = baseUsageReference(userId, run, USAGE_SOURCE_MEMORY,
+                        reference.getId(), "");
+                record.setUsageStrength(memoryUsageStrength(reference));
+                record.setConfidence(reference.getConfidence());
+                record.setSnapshotHash(reference.getSnapshotHash());
+                records.add(record);
             }
-            AgentContextUsageReferenceRecordDTO record = new AgentContextUsageReferenceRecordDTO();
-            record.setUserId(userId);
-            record.setSourceType(USAGE_SOURCE_MEMORY);
-            record.setSourceId(reference.getId());
-            record.setSourceVersion("");
-            record.setConsumerType(USAGE_CONSUMER_AGENT_RUN);
-            record.setConsumerId(run.getId());
-            record.setTraceId(run.getTraceId());
-            record.setUsageScene(USAGE_SCENE_AGENT_CONTEXT);
-            record.setUsageStrength(memoryUsageStrength(reference));
-            record.setConfidence(reference.getConfidence());
-            record.setSnapshotHash(reference.getSnapshotHash());
-            records.add(record);
         }
-        usageReferenceService.recordAll(records);
+        if (context.getPersonalKnowledgeReferences() != null) {
+            for (PersonalKnowledgeReference reference : context.getPersonalKnowledgeReferences()) {
+                if (reference == null || reference.getSourceId() == null) {
+                    continue;
+                }
+                AgentContextUsageReferenceRecordDTO record = baseUsageReference(userId, run,
+                        firstText(reference.getSourceType(), USAGE_SOURCE_KNOWLEDGE_CHUNK), reference.getSourceId(),
+                        reference.getSourceVersion());
+                record.setUsageStrength("MEDIUM");
+                record.setConfidence(reference.getConfidence());
+                record.setSnapshotHash(reference.getSnapshotHash());
+                records.add(record);
+            }
+        }
+        if (!records.isEmpty()) {
+            usageReferenceService.recordAll(records);
+        }
+    }
+
+    private AgentContextUsageReferenceRecordDTO baseUsageReference(Long userId, AgentRun run, String sourceType,
+                                                                   Long sourceId, String sourceVersion) {
+        AgentContextUsageReferenceRecordDTO record = new AgentContextUsageReferenceRecordDTO();
+        record.setUserId(userId);
+        record.setSourceType(sourceType);
+        record.setSourceId(sourceId);
+        record.setSourceVersion(sourceVersion);
+        record.setConsumerType(USAGE_CONSUMER_AGENT_RUN);
+        record.setConsumerId(run.getId());
+        record.setTraceId(run.getTraceId());
+        record.setUsageScene(USAGE_SCENE_AGENT_CONTEXT);
+        return record;
     }
 
     private String memoryUsageStrength(MemoryReference reference) {
@@ -1777,13 +1803,19 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private String reviewSourceLabel(String source) {
-        if (AiResultSourceEnum.LLM.name().equals(source)) {
+        AiResultSourceEnum normalized = AiResultSourceEnum.normalize(source);
+        if (normalized == AiResultSourceEnum.LLM) {
             return REVIEW_SOURCE_LLM_LABEL;
         }
-        if (AiResultSourceEnum.FALLBACK.name().equals(source)) {
+        if (normalized == AiResultSourceEnum.FALLBACK || normalized == AiResultSourceEnum.DEGRADED) {
             return REVIEW_SOURCE_FALLBACK_LABEL;
         }
         return REVIEW_SOURCE_RULE_LABEL;
+    }
+
+    private boolean isFallbackOrDegradedSource(String source) {
+        AiResultSourceEnum normalized = AiResultSourceEnum.normalize(source);
+        return normalized == AiResultSourceEnum.FALLBACK || normalized == AiResultSourceEnum.DEGRADED;
     }
 
     private String readRequestId(String inputSnapshotJson) {
@@ -1951,7 +1983,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 nextActions.isEmpty() ? "Continue the next daily-plan task." : nextActions.get(0));
         AgentCoachActionVO vo = toCoachActionVO(task, request, result, null);
         vo.setResultSource(readReviewSource(review.getReviewJson()));
-        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
+        vo.setFallback(isFallbackOrDegradedSource(vo.getResultSource()));
         vo.setAiCallLogId(review.getAiCallLogId());
         return vo;
     }
@@ -2006,7 +2038,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setTraceId(request.traceId());
         vo.setIdempotencyKey(request.idempotencyKey());
         vo.setResultSource(routeResult == null ? AiResultSourceEnum.FALLBACK.name() : routeResult.getResultSource());
-        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
+        vo.setFallback(isFallbackOrDegradedSource(vo.getResultSource()));
         vo.setAiCallLogId(routeResult == null ? null : routeResult.getAiCallLogId());
         vo.setLatencyMs(routeResult == null ? null : routeResult.getElapsedMs());
         vo.setEstimatedCost(routeResult == null ? null : routeResult.getEstimatedCost());

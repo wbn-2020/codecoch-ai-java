@@ -23,6 +23,11 @@ public class JobApplicationPackageListItemVO {
     private Boolean fallback;
     private String traceId;
     private Integer snapshotVersion;
+    private Integer contextPackageCount;
+    private Integer contextVersionNo;
+    private Long latestContextPackageId;
+    private String latestContextPackageNo;
+    private Boolean latestContextPackage;
     private LocalDateTime refreshedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

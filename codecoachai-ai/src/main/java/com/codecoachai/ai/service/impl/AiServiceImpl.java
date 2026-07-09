@@ -2173,9 +2173,6 @@ public class AiServiceImpl implements AiService {
         try {
             validateResumeJobMatchJson(json, dto);
         } catch (AiProviderException ex) {
-            if (isUnsupportedResumeMatchEvidenceError(ex)) {
-                throw ex;
-            }
             return fallbackResumeJobMatchJson(
                     "匹配报告内容结构不完整，请结合简历和岗位描述明细复核后重新生成。", ex);
         }
@@ -2511,15 +2508,6 @@ public class AiServiceImpl implements AiService {
         markResumeMatchSchemaWarning(warnings, "rawResponse", firstText(ex == null ? null : ex.getMessage(), "匹配报告内容暂时不可解析，已标记为来源待复核"));
         root.set("schemaWarnings", warnings);
         return root.toString();
-    }
-
-    private boolean isUnsupportedResumeMatchEvidenceError(RuntimeException ex) {
-        String message = ex == null ? null : ex.getMessage();
-        if (!StringUtils.hasText(message)) {
-            return false;
-        }
-        String lower = message.toLowerCase();
-        return lower.contains("unsupported fact") || lower.contains("cannot be based on missing evidence");
     }
 
     private List<String> resumeMatchDimensionAliases(String dimension) {

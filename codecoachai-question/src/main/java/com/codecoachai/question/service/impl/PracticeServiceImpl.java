@@ -29,6 +29,7 @@ import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.codecoachai.question.service.PracticeService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -86,9 +87,12 @@ public class PracticeServiceImpl implements PracticeService {
             markFailed(record, ex.getMessage());
         }
         practiceRecordMapper.updateById(record);
-        markRecommendationCompleted(recommendationContext);
-        AgentTaskVO completedAgentTask = agentBusinessActionNotifier.completeQuestionPractice(
-                userId, resolveTargetJobId(record, dto), record.getId());
+        AgentTaskVO completedAgentTask = null;
+        if (PracticeReviewStatus.SUCCESS.name().equals(record.getReviewStatus())) {
+            markRecommendationCompleted(recommendationContext);
+            completedAgentTask = agentBusinessActionNotifier.completeQuestionPractice(
+                    userId, resolveTargetJobId(record, dto), record.getId());
+        }
         PracticeRecordVO vo = toVO(record, question);
         applyAgentTaskFeedback(vo, completedAgentTask);
         return vo;
@@ -106,8 +110,11 @@ public class PracticeServiceImpl implements PracticeService {
                         .eq(StringUtils.hasText(actualQuery.getReviewStatus()), PracticeRecord::getReviewStatus,
                                 actualQuery.getReviewStatus())
                         .orderByDesc(PracticeRecord::getCreatedAt));
+        Map<Long, Question> questionMap = loadQuestionsById(page.getRecords().stream()
+                .map(PracticeRecord::getQuestionId)
+                .toList());
         return PageResult.of(page.getRecords().stream()
-                        .map(record -> toVO(record, questionMapper.selectById(record.getQuestionId())))
+                        .map(record -> toVO(record, questionMap.get(record.getQuestionId())))
                         .toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
     }
@@ -215,6 +222,26 @@ public class PracticeServiceImpl implements PracticeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Question not found");
         }
         return question;
+    }
+
+    private Map<Long, Question> loadQuestionsById(List<Long> questionIds) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<Long> ids = questionIds.stream()
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        Map<Long, Question> questionMap = new LinkedHashMap<>();
+        for (Question question : questionMapper.selectBatchIds(ids)) {
+            if (question != null && question.getId() != null) {
+                questionMap.put(question.getId(), question);
+            }
+        }
+        return questionMap;
     }
 
     private RecommendationContext resolveRecommendationContext(Long userId, Long questionId, PracticeSubmitDTO dto) {

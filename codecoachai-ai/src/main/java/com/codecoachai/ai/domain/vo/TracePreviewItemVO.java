@@ -9,4 +9,5 @@ public class TracePreviewItemVO {
     private String value;
     private String hash;
     private Integer length;
+    private String displayPolicy;
 }

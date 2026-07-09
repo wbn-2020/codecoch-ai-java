@@ -77,7 +77,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         validateBasic(file, normalizedBizType, userId);
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
-        validateExtension(fileExt);
+        validateExtension(normalizedBizType, fileExt);
         validateSize(file);
         FileUploadValidator.validateContent(file, fileExt);
 
@@ -278,12 +278,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         return filename.substring(index + 1).toLowerCase(Locale.ROOT);
     }
 
-    private void validateExtension(String fileExt) {
-        boolean allowed = properties.getAllowedExtensions().stream()
-                .filter(StringUtils::hasText)
-                .map(item -> item.toLowerCase(Locale.ROOT))
-                .anyMatch(fileExt::equals);
-        if (!allowed) {
+    private void validateExtension(String bizType, String fileExt) {
+        if (!FileBizTypes.isExtensionAllowed(bizType, fileExt, properties.getAllowedExtensions())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件类型不支持");
         }
     }

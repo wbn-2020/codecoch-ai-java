@@ -10,4 +10,6 @@ public class TraceRawAccessStatusVO {
     private Boolean rawFieldsIncluded = false;
     private String rawAccessPermission;
     private String requiredPermission;
+    private String displayPolicy;
+    private String note;
 }

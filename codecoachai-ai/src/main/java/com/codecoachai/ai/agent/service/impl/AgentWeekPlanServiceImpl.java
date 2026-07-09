@@ -76,7 +76,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     private static final String USAGE_SCENE_WEEK_PLAN = "WEEK_PLAN_GENERATION";
     private static final Pattern EMAIL_PATTERN = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
     private static final Pattern PHONE_PATTERN = Pattern.compile("(?<!\\d)(?:\\+?\\d[\\d\\s-]{7,}\\d)(?!\\d)");
-    private static final Pattern TOKEN_PATTERN = Pattern.compile("(?i)(api[_-]?key|authorization|token|secret|password)\\s*[:=]\\s*[^,\\s}]+");
+    private static final Pattern TOKEN_PATTERN = Pattern.compile("(?i)(api[_-]?key|authorization|token|secret|password|idempotency[_-]?key)\\s*[:=]\\s*[^,\\s}]+");
     private static final List<String> WEEK_PLAN_TASK_STATUSES = List.of(
             AgentTaskStatusEnum.TODO.name(),
             AgentTaskStatusEnum.DOING.name(),

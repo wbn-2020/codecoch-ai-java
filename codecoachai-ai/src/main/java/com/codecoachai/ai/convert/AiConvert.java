@@ -174,10 +174,13 @@ public final class AiConvert {
             return AiResultSourceEnum.MOCK;
         }
         if (routeTrace.contains("->")
+                || routeTrace.contains("degraded")
                 || requestBody.contains("\"fallbackused\":true")
                 || requestBody.contains("fallbackused=true")
+                || requestBody.contains("degraded")
                 || responseBody.contains("\"fallback\":true")
-                || responseBody.contains("\"truststatus\":\"fallback\"")) {
+                || responseBody.contains("\"truststatus\":\"fallback\"")
+                || responseBody.contains("degraded")) {
             return AiResultSourceEnum.FALLBACK;
         }
         return AiResultSourceEnum.LLM;

@@ -1,6 +1,8 @@
 package com.codecoachai.ai.service.impl;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.Mockito.verify;
@@ -8,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.config.AiProperties;
+import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
@@ -106,6 +109,52 @@ class AiServiceImplFailureHandlingTest {
         verify(aiCallLogMapper).insert(any(AiCallLog.class));
     }
 
+    @Test
+    void analyzeResumeJobMatchReturnsFallbackWhenProviderInventsUnsupportedEvidence() {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "overallScore": 80,
+                  "dimensionScores": {
+                    "techStack": 80,
+                    "projectExperience": 75,
+                    "businessFit": 78,
+                    "communication": 82
+                  },
+                  "strengths": [
+                    {
+                      "title": "Cloud platform experience",
+                      "evidence": "The resume shows AWS production experience.",
+                      "relatedSkills": ["AWS"]
+                    }
+                  ],
+                  "gaps": [
+                    {
+                      "skillName": "Redis",
+                      "category": "middleware",
+                      "severity": "MEDIUM",
+                      "targetLevel": 3,
+                      "currentLevel": 2,
+                      "description": "Needs deeper cache consistency evidence.",
+                      "evidence": "JD asks for Redis; resume only mentions basic backend work.",
+                      "recommendedActions": ["Add Redis project evidence"]
+                    }
+                  ],
+                  "resumeRisks": [],
+                  "optimizationSuggestions": [],
+                  "recommendedLearningTopics": ["Redis cache consistency"],
+                  "recommendedInterviewTopics": ["Redis scenarios"],
+                  "summary": "Mostly aligned."
+                }
+                """);
+        routeResult.setAiCallLogId(910L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+
+        var result = assertDoesNotThrow(() -> service.analyzeResumeJobMatch(resumeJobMatchDTO()));
+
+        assertTrue(result.getResultJson().contains("\"trustStatus\":\"FALLBACK\""));
+    }
+
     private PracticeReviewDTO practiceReviewDTO() {
         PracticeReviewDTO dto = new PracticeReviewDTO();
         dto.setUserId(10L);
@@ -154,6 +203,19 @@ class AiServiceImplFailureHandlingTest {
         dto.setQuestionType("SHORT_ANSWER");
         dto.setDifficulty("MEDIUM");
         dto.setCount(3);
+        return dto;
+    }
+
+    private AnalyzeResumeJobMatchDTO resumeJobMatchDTO() {
+        AnalyzeResumeJobMatchDTO dto = new AnalyzeResumeJobMatchDTO();
+        dto.setReportId(90L);
+        dto.setUserId(10L);
+        dto.setResumeId(20L);
+        dto.setTargetJobId(30L);
+        dto.setJdAnalysisId(40L);
+        dto.setResumeSnapshotJson("{\"skills\":[\"Java\",\"Spring Boot\"],\"projects\":[\"Order service\"]}");
+        dto.setJobDescriptionAnalysisJson("{\"requiredSkills\":[\"Java\",\"Redis\"],\"summary\":\"Backend role\"}");
+        dto.setTargetJobJson("{\"jobTitle\":\"Java backend engineer\"}");
         return dto;
     }
 }

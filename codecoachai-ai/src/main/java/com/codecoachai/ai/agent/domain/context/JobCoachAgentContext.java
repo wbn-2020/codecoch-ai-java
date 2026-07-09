@@ -20,6 +20,7 @@ public class JobCoachAgentContext {
     private List<String> recentMemories = new ArrayList<>();
     private List<MemoryReference> recentMemoryReferences = new ArrayList<>();
     private List<String> personalKnowledgeHints = new ArrayList<>();
+    private List<PersonalKnowledgeReference> personalKnowledgeReferences = new ArrayList<>();
     private String agentHistorySummary;
     private List<String> contextWarnings = new ArrayList<>();
 
@@ -94,6 +95,16 @@ public class JobCoachAgentContext {
         private String memoryType;
         private String sourceType;
         private Long sourceId;
+        private BigDecimal confidence;
+        private String snapshotHash;
+    }
+
+    @Data
+    public static class PersonalKnowledgeReference {
+        private String sourceType;
+        private Long sourceId;
+        private String sourceVersion;
+        private String sourceTitle;
         private BigDecimal confidence;
         private String snapshotHash;
     }

@@ -3,9 +3,11 @@ package com.codecoachai.interview.service.impl;
 import com.codecoachai.interview.domain.dto.AsrRequest;
 import com.codecoachai.interview.domain.vo.AsrResult;
 import com.codecoachai.interview.service.AsrService;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 @Service
+@ConditionalOnProperty(prefix = "codecoachai.interview.asr", name = "enabled", havingValue = "false", matchIfMissing = true)
 public class UnavailableAsrService implements AsrService {
 
     private static final String PROVIDER = "UNCONFIGURED";

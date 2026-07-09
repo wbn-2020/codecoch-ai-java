@@ -64,6 +64,9 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private static final int PROJECT_READY_SCORE = 60;
     private static final Set<String> PACKAGE_STATUSES = Set.of("DRAFT", "READY", "APPLIED", "ARCHIVED");
     private static final String INVALID_PACKAGE_STATUS_FILTER = "__INVALID_STATUS__";
+    private static final String TRUST_VERIFIED = "VERIFIED";
+    private static final String TRUST_PARTIAL = "PARTIAL";
+    private static final String TRUST_FALLBACK = "FALLBACK";
 
     private final TargetJobMapper targetJobMapper;
     private final JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper;
@@ -150,6 +153,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         snapshot.setFallback(Boolean.FALSE);
         snapshot.setFallbackReason(null);
         snapshot.setSnapshotVersion(1);
+        refreshTraceOutputSummary(snapshot);
         snapshot.setRefreshedAt(LocalDateTime.now());
 
         Long packageId = insertPackage(userId, snapshot);
@@ -160,7 +164,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 "targetJobId", snapshot.getTargetJobId(),
                 "matchReportId", snapshot.getMatchReportId(),
                 "readinessLevel", snapshot.getReadinessLevel()));
-        return snapshot;
+        return toPackageDetail(ownedPackage(userId, packageId));
     }
 
     @Override
@@ -184,8 +188,8 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             args.add(normalizedStatus);
         }
         if (StringUtils.hasText(keyword)) {
-            where.append(" AND (company_name LIKE ? OR job_title LIKE ? OR package_no LIKE ?)");
-            String like = "%" + keyword.trim() + "%";
+            where.append(" AND (company_name LIKE ? ESCAPE '!' OR job_title LIKE ? ESCAPE '!' OR package_no LIKE ? ESCAPE '!')");
+            String like = "%" + escapeLikeKeyword(keyword) + "%";
             args.add(like);
             args.add(like);
             args.add(like);
@@ -206,6 +210,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                         FROM job_application_package
                         """ + where + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (rs, rowNum) -> toListItem(rs), queryArgs.toArray());
+        applyPackageVersionInfo(userId, records);
         return PageResult.of(records, total, effectivePageNo, effectivePageSize);
     }
 
@@ -225,13 +230,14 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         snapshot.setFallback(Boolean.FALSE);
         snapshot.setFallbackReason(null);
         snapshot.setSnapshotVersion((row.snapshotVersion == null ? 0 : row.snapshotVersion) + 1);
+        refreshTraceOutputSummary(snapshot);
         snapshot.setRefreshedAt(LocalDateTime.now());
         normalizePersistentActions(snapshot, row.id);
         updatePackageSnapshot(userId, row.id, snapshot, snapshot.getSnapshotVersion(), snapshot.getRefreshedAt());
         writePackageEvent(userId, row.id, "PACKAGE_REFRESHED", "Application package refreshed", payloadOf(
                 "snapshotVersion", snapshot.getSnapshotVersion(),
                 "readinessLevel", snapshot.getReadinessLevel()));
-        return snapshot;
+        return toPackageDetail(ownedPackage(userId, row.id));
     }
 
     @Override
@@ -243,7 +249,10 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         JobApplicationPackageVO detail = toPackageDetail(row);
         String normalizedActionCode = normalizeActionCode(actionCode);
         JobApplicationPackageVO.CareerActionItemVO action = findAction(detail, normalizedActionCode);
-        String actionType = normalizeActionCode(action == null ? normalizedActionCode : action.getActionType());
+        if (action == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Application package action is not available in current snapshot");
+        }
+        String actionType = normalizeActionCode(action.getActionType());
         if (!knownActionType(actionType)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported application package action");
         }
@@ -273,7 +282,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         }
         result.setStatus("CONTRACT_READY");
         result.setMessage("Action contract generated. The backend did not send external messages or auto-apply.");
-        result.setActionUrl(action == null ? defaultActionUrl(actionType, detail) : action.getActionUrl());
+        result.setActionUrl(StringUtils.hasText(action.getActionUrl()) ? action.getActionUrl() : defaultActionUrl(actionType, detail));
         result.getPayload().putAll(actionPayload(actionType, detail));
         writePackageEvent(userId, row.id, "ACTION_CONTRACT_GENERATED", "Generated package action contract", payloadOf(
                 "actionCode", normalizedActionCode,
@@ -412,6 +421,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setFallback(row.fallback);
         vo.setFallbackReason(row.fallbackReason);
         vo.setSnapshotVersion(row.snapshotVersion);
+        applyPackageVersionInfo(vo, packageVersionInfo(row));
         vo.setRefreshedAt(row.refreshedAt);
         normalizePersistentActions(vo, row.id);
         return vo;
@@ -469,7 +479,175 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         row.fallbackReason = rs.getString("fallback_reason");
         row.snapshotVersion = getInteger(rs, "snapshot_version");
         row.refreshedAt = getLocalDateTime(rs, "refreshed_at");
+        row.createdAt = getLocalDateTime(rs, "created_at");
+        row.updatedAt = getLocalDateTime(rs, "updated_at");
         return row;
+    }
+
+    private void applyPackageVersionInfo(JobApplicationPackageVO vo, PackageVersionInfo versionInfo) {
+        if (vo == null || versionInfo == null) {
+            return;
+        }
+        vo.setContextPackageCount(versionInfo.contextPackageCount);
+        vo.setContextVersionNo(versionInfo.contextVersionNo);
+        vo.setLatestContextPackageId(versionInfo.latestContextPackageId);
+        vo.setLatestContextPackageNo(versionInfo.latestContextPackageNo);
+        vo.setLatestContextPackage(Boolean.TRUE.equals(versionInfo.latestContextPackage));
+    }
+
+    private void applyPackageVersionInfo(JobApplicationPackageListItemVO vo, PackageVersionInfo versionInfo) {
+        if (vo == null || versionInfo == null) {
+            return;
+        }
+        vo.setContextPackageCount(versionInfo.contextPackageCount);
+        vo.setContextVersionNo(versionInfo.contextVersionNo);
+        vo.setLatestContextPackageId(versionInfo.latestContextPackageId);
+        vo.setLatestContextPackageNo(versionInfo.latestContextPackageNo);
+        vo.setLatestContextPackage(Boolean.TRUE.equals(versionInfo.latestContextPackage));
+    }
+
+    private PackageVersionInfo packageVersionInfo(PackageRow row) {
+        if (row == null) {
+            return PackageVersionInfo.empty();
+        }
+        return packageVersionInfo(row.userId, row.id, row.targetJobId, row.resumeVersionId, row.matchReportId, row.createdAt);
+    }
+
+    private PackageVersionInfo packageVersionInfo(Long userId, Long packageId, Long targetJobId,
+                                                  Long resumeVersionId, Long matchReportId,
+                                                  LocalDateTime createdAt) {
+        if (userId == null || packageId == null) {
+            return PackageVersionInfo.empty();
+        }
+        StringBuilder where = new StringBuilder(" WHERE user_id = ? AND deleted = 0");
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        appendNullableCondition(where, args, "target_job_id", targetJobId);
+        appendNullableCondition(where, args, "resume_version_id", resumeVersionId);
+        appendNullableCondition(where, args, "match_report_id", matchReportId);
+
+        Long total = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM job_application_package" + where,
+                Long.class, args.toArray());
+        List<Object> latestArgs = new ArrayList<>(args);
+        List<PackageVersionInfo> latest = jdbcTemplate.query("""
+                        SELECT id, package_no
+                        FROM job_application_package
+                        """ + where + " ORDER BY created_at DESC, id DESC LIMIT 1",
+                (rs, rowNum) -> {
+                    PackageVersionInfo info = new PackageVersionInfo();
+                    info.latestContextPackageId = rs.getLong("id");
+                    info.latestContextPackageNo = rs.getString("package_no");
+                    return info;
+                }, latestArgs.toArray());
+
+        PackageVersionInfo result = latest.isEmpty() ? new PackageVersionInfo() : latest.get(0);
+        result.contextPackageCount = total == null ? 0 : Math.toIntExact(Math.min(total, Integer.MAX_VALUE));
+        result.latestContextPackage = Objects.equals(result.latestContextPackageId, packageId);
+        if (createdAt != null) {
+            List<Object> versionArgs = new ArrayList<>(args);
+            versionArgs.add(createdAt);
+            versionArgs.add(createdAt);
+            versionArgs.add(packageId);
+            Long versionNo = jdbcTemplate.queryForObject("""
+                            SELECT COUNT(1)
+                            FROM job_application_package
+                            """ + where + " AND (created_at < ? OR (created_at = ? AND id <= ?))",
+                    Long.class, versionArgs.toArray());
+            result.contextVersionNo = versionNo == null ? null : Math.toIntExact(Math.min(versionNo, Integer.MAX_VALUE));
+        }
+        if (result.contextVersionNo == null && result.contextPackageCount > 0) {
+            result.contextVersionNo = Boolean.TRUE.equals(result.latestContextPackage)
+                    ? result.contextPackageCount
+                    : 1;
+        }
+        return result;
+    }
+
+    private void appendNullableCondition(StringBuilder where, List<Object> args, String column, Object value) {
+        if (value == null) {
+            where.append(" AND ").append(column).append(" IS NULL");
+            return;
+        }
+        where.append(" AND ").append(column).append(" = ?");
+        args.add(value);
+    }
+
+    private void applyPackageVersionInfo(Long userId, List<JobApplicationPackageListItemVO> records) {
+        if (userId == null || CollectionUtils.isEmpty(records)) {
+            return;
+        }
+        Map<PackageContextKey, List<JobApplicationPackageListItemVO>> itemsByContext = new LinkedHashMap<>();
+        for (JobApplicationPackageListItemVO record : records) {
+            if (record == null) {
+                continue;
+            }
+            itemsByContext.computeIfAbsent(packageContextKey(record.getTargetJobId(),
+                    record.getRecommendedResumeVersionId(), record.getMatchReportId()), key -> new ArrayList<>()).add(record);
+        }
+        if (itemsByContext.isEmpty()) {
+            return;
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, package_no, target_job_id, resume_version_id, match_report_id, created_at
+                FROM job_application_package
+                WHERE user_id = ? AND deleted = 0 AND (
+                """);
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        int index = 0;
+        for (PackageContextKey key : itemsByContext.keySet()) {
+            if (index++ > 0) {
+                sql.append(" OR ");
+            }
+            StringBuilder contextWhere = new StringBuilder("(1 = 1");
+            appendNullableCondition(contextWhere, args, "target_job_id", key.targetJobId());
+            appendNullableCondition(contextWhere, args, "resume_version_id", key.resumeVersionId());
+            appendNullableCondition(contextWhere, args, "match_report_id", key.matchReportId());
+            contextWhere.append(")");
+            sql.append(contextWhere);
+        }
+        sql.append(") ORDER BY created_at ASC, id ASC");
+        Map<PackageContextKey, List<PackageVersionCandidate>> candidatesByContext = new LinkedHashMap<>();
+        jdbcTemplate.query(sql.toString(), rs -> {
+            PackageVersionCandidate candidate = new PackageVersionCandidate();
+            candidate.id = rs.getLong("id");
+            candidate.packageNo = rs.getString("package_no");
+            candidate.targetJobId = getLong(rs, "target_job_id");
+            candidate.resumeVersionId = getLong(rs, "resume_version_id");
+            candidate.matchReportId = getLong(rs, "match_report_id");
+            candidate.createdAt = getLocalDateTime(rs, "created_at");
+            candidatesByContext.computeIfAbsent(packageContextKey(candidate.targetJobId,
+                    candidate.resumeVersionId, candidate.matchReportId), key -> new ArrayList<>()).add(candidate);
+        }, args.toArray());
+        for (Map.Entry<PackageContextKey, List<JobApplicationPackageListItemVO>> entry : itemsByContext.entrySet()) {
+            List<PackageVersionCandidate> candidates = candidatesByContext.getOrDefault(entry.getKey(), List.of());
+            applyPackageVersionInfo(entry.getValue(), candidates);
+        }
+    }
+
+    private void applyPackageVersionInfo(List<JobApplicationPackageListItemVO> records,
+                                         List<PackageVersionCandidate> candidates) {
+        if (CollectionUtils.isEmpty(records) || CollectionUtils.isEmpty(candidates)) {
+            return;
+        }
+        int count = candidates.size();
+        PackageVersionCandidate latest = candidates.get(count - 1);
+        Map<Long, Integer> versionNoById = new LinkedHashMap<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            versionNoById.put(candidates.get(i).id, i + 1);
+        }
+        for (JobApplicationPackageListItemVO record : records) {
+            Long id = toLong(record.getId());
+            record.setContextPackageCount(count);
+            record.setContextVersionNo(versionNoById.get(id));
+            record.setLatestContextPackageId(latest.id);
+            record.setLatestContextPackageNo(latest.packageNo);
+            record.setLatestContextPackage(Objects.equals(latest.id, id));
+        }
+    }
+
+    private PackageContextKey packageContextKey(Long targetJobId, Long resumeVersionId, Long matchReportId) {
+        return new PackageContextKey(targetJobId, resumeVersionId, matchReportId);
     }
 
     private JobApplicationVO createApplicationFromPackage(PackageRow row, JobApplicationPackageVO detail,
@@ -846,6 +1024,9 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setBusinessFitScore(context.report.getBusinessFitScore());
         vo.setCommunicationScore(context.report.getCommunicationScore());
         vo.setStatus(context.report.getStatus());
+        vo.setTrustStatus(matchTrustStatus(context.report));
+        vo.setFallback(matchFallback(context.report));
+        vo.setSchemaWarningCount(matchSchemaWarningCount(context.report));
         vo.setSummary(context.report.getSummary());
         vo.setGaps(jsonTexts(context.report.getGapsJson(), 5));
         vo.setInterviewTopics(firstNonEmpty(jsonTexts(context.report.getRecommendedInterviewTopicsJson(), 5),
@@ -890,13 +1071,14 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         }
         vo.setTopics(topics);
         LinkedHashMap<String, Object> params = new LinkedHashMap<>();
+        Long trustedMatchReportId = matchSuccess(context.report) ? packageVO.getMatchReportId() : null;
         params.put("targetJobId", packageVO.getTargetJobId());
-        params.put("matchReportId", packageVO.getMatchReportId());
+        params.put("matchReportId", trustedMatchReportId);
         params.put("resumeVersionId", packageVO.getRecommendedResumeVersionId());
         params.put("projectEvidenceIds", packageVO.getProjectEvidenceIds());
         vo.setCreateParams(params);
         String query = "targetJobId=" + nullSafe(packageVO.getTargetJobId())
-                + "&matchReportId=" + nullSafe(packageVO.getMatchReportId())
+                + "&matchReportId=" + nullSafe(trustedMatchReportId)
                 + "&resumeVersionId=" + nullSafe(packageVO.getRecommendedResumeVersionId());
         vo.setEntryUrl("/interviews/create?" + query);
         return vo;
@@ -973,7 +1155,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                     "补齐项目职责、技术难点、解决方案、结果指标和复盘字段。",
                     "HIGH", projectEvidenceUrl(vo.getTargetJobId()), "APPLICATION_PACKAGE", vo.getId(), projectEvidenceSourceIds(context)));
         }
-        if (scoreBelow(context.report == null ? null : context.report.getOverallScore(), 85)) {
+        if (matchSuccess(context.report) && scoreBelow(context.report == null ? null : context.report.getOverallScore(), 85)) {
             actions.add(action("practice-interview", "PRACTICE_INTERVIEW", "带岗位上下文练一场模拟面试",
                     "围绕匹配报告缺口和项目证据进行文本模拟面试。",
                     "MEDIUM", vo.getInterviewPreparation().getEntryUrl(), "APPLICATION_PACKAGE", vo.getId(), List.of("jd", "match")));
@@ -1026,8 +1208,22 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 + ", resumeVersionId=" + nullSafe(vo.getRecommendedResumeVersionId())
                 + ", matchReportId=" + nullSafe(vo.getMatchReportId())
                 + ", projectEvidenceCount=" + context.projectEvidence.size());
-        trace.setOutputSummary("MVP 使用现有数据做规则聚合，未调用 AI、未写入投递包持久化表。");
+        trace.setOutputSummary(traceOutputSummary(vo));
         return trace;
+    }
+
+    private String traceOutputSummary(JobApplicationPackageVO vo) {
+        Integer snapshotVersion = vo == null ? null : vo.getSnapshotVersion();
+        if (snapshotVersion != null && snapshotVersion > 0) {
+            return "MVP 使用现有数据做规则聚合，未调用 AI；当前结果为已持久化投递包快照。";
+        }
+        return "MVP 使用现有数据做规则聚合，未调用 AI；当前结果仅为预览，未写入投递包持久化表。";
+    }
+
+    private void refreshTraceOutputSummary(JobApplicationPackageVO vo) {
+        if (vo != null && vo.getTrace() != null) {
+            vo.getTrace().setOutputSummary(traceOutputSummary(vo));
+        }
     }
 
     private void applyReadiness(JobApplicationPackageVO vo, PreviewContext context) {
@@ -1169,6 +1365,14 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 + nullSafe(context.report == null ? context.matchReportId : context.report.getId());
     }
 
+    private String escapeLikeKeyword(String keyword) {
+        return keyword.trim()
+                .replace("!", "!!")
+                .replace("\\", "!\\")
+                .replace("%", "!%")
+                .replace("_", "!_");
+    }
+
     private List<String> suggestedProjectFields(List<ProjectEvidence> evidence) {
         Set<String> fields = new LinkedHashSet<>();
         if (evidence == null || evidence.isEmpty()) {
@@ -1210,7 +1414,55 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     }
 
     private boolean matchSuccess(ResumeJobMatchReport report) {
-        return report != null && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus());
+        return report != null
+                && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())
+                && !matchFallback(report);
+    }
+
+    private boolean matchFallback(ResumeJobMatchReport report) {
+        JsonNode raw = rawMatchResult(report);
+        return report == null
+                || raw.path("fallback").asBoolean(false)
+                || TRUST_FALLBACK.equals(matchRawTrustStatus(raw))
+                || matchSchemaWarningCount(report) > 0;
+    }
+
+    private String matchTrustStatus(ResumeJobMatchReport report) {
+        if (report == null || !ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())) {
+            return TRUST_FALLBACK;
+        }
+        JsonNode raw = rawMatchResult(report);
+        if (raw.path("fallback").asBoolean(false) || TRUST_FALLBACK.equals(matchRawTrustStatus(raw))) {
+            return TRUST_FALLBACK;
+        }
+        if (matchSchemaWarningCount(report) > 0) {
+            return TRUST_PARTIAL;
+        }
+        return TRUST_VERIFIED;
+    }
+
+    private String matchRawTrustStatus(JsonNode raw) {
+        if (raw == null || raw.isMissingNode() || raw.isNull()) {
+            return null;
+        }
+        String value = raw.path("trustStatus").asText(null);
+        return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : null;
+    }
+
+    private int matchSchemaWarningCount(ResumeJobMatchReport report) {
+        JsonNode warnings = rawMatchResult(report).path("schemaWarnings");
+        return warnings.isArray() ? warnings.size() : 0;
+    }
+
+    private JsonNode rawMatchResult(ResumeJobMatchReport report) {
+        if (report == null || !StringUtils.hasText(report.getRawResultJson())) {
+            return objectMapper.getNodeFactory().missingNode();
+        }
+        try {
+            return objectMapper.readTree(report.getRawResultJson());
+        } catch (Exception ignored) {
+            return objectMapper.getNodeFactory().missingNode();
+        }
     }
 
     private boolean scoreAtLeast(Integer score, int threshold) {
@@ -1563,5 +1815,31 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         private String fallbackReason;
         private Integer snapshotVersion;
         private LocalDateTime refreshedAt;
+        private LocalDateTime createdAt;
+        private LocalDateTime updatedAt;
+    }
+
+    private static class PackageVersionInfo {
+        private Integer contextPackageCount = 0;
+        private Integer contextVersionNo;
+        private Long latestContextPackageId;
+        private String latestContextPackageNo;
+        private Boolean latestContextPackage = Boolean.FALSE;
+
+        private static PackageVersionInfo empty() {
+            return new PackageVersionInfo();
+        }
+    }
+
+    private static class PackageVersionCandidate {
+        private Long id;
+        private String packageNo;
+        private Long targetJobId;
+        private Long resumeVersionId;
+        private Long matchReportId;
+        private LocalDateTime createdAt;
+    }
+
+    private record PackageContextKey(Long targetJobId, Long resumeVersionId, Long matchReportId) {
     }
 }

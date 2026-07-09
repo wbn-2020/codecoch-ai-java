@@ -2062,6 +2062,20 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
+    public PageResult<PromptRegressionCaseVO> pagePromptCases(String promptType, Integer enabled,
+                                                              Long pageNo, Long pageSize) {
+        long actualPageNo = pageNo(pageNo);
+        long actualPageSize = pageSize(pageSize);
+        Page<PromptRegressionCase> page = promptRegressionCaseMapper.selectPage(Page.of(actualPageNo, actualPageSize),
+                new LambdaQueryWrapper<PromptRegressionCase>()
+                        .eq(StringUtils.hasText(promptType), PromptRegressionCase::getPromptType, promptType)
+                        .eq(enabled != null, PromptRegressionCase::getEnabled, enabled)
+                        .orderByDesc(PromptRegressionCase::getUpdatedAt));
+        return PageResult.of(page.getRecords().stream().map(this::toPromptCaseVO).toList(),
+                page.getTotal(), actualPageNo, actualPageSize);
+    }
+
+    @Override
     public PromptRegressionCaseVO savePromptCase(PromptRegressionCaseSaveDTO dto) {
         if (dto == null || !StringUtils.hasText(dto.getCaseName()) || !StringUtils.hasText(dto.getPromptType())
                 || !StringUtils.hasText(dto.getInputJson())) {
@@ -2150,12 +2164,15 @@ public class AgentV4OpsServiceImpl implements AgentV4OpsService {
     }
 
     @Override
-    public List<PromptRegressionResultVO> listPromptResults(Long caseId) {
-        return promptRegressionResultMapper.selectList(new LambdaQueryWrapper<PromptRegressionResult>()
+    public PageResult<PromptRegressionResultVO> pagePromptResults(Long caseId, Long pageNo, Long pageSize) {
+        long actualPageNo = pageNo(pageNo);
+        long actualPageSize = pageSize(pageSize);
+        Page<PromptRegressionResult> page = promptRegressionResultMapper.selectPage(Page.of(actualPageNo, actualPageSize),
+                new LambdaQueryWrapper<PromptRegressionResult>()
                         .eq(caseId != null, PromptRegressionResult::getCaseId, caseId)
-                        .orderByDesc(PromptRegressionResult::getCreatedAt)
-                        .last("LIMIT 50"))
-                .stream().map(this::toPromptResultVO).toList();
+                        .orderByDesc(PromptRegressionResult::getCreatedAt));
+        return PageResult.of(page.getRecords().stream().map(this::toPromptResultVO).toList(),
+                page.getTotal(), actualPageNo, actualPageSize);
     }
 
     private AnalyticsJobLog startJob(String code, String name, LocalDate statDate) {

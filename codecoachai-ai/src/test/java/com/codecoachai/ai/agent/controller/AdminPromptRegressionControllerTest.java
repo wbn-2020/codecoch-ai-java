@@ -160,9 +160,9 @@ class AdminPromptRegressionControllerTest {
         doThrow(new BusinessException(ErrorCode.FORBIDDEN))
                 .when(permissionGuard).require("admin:agent:prompt-regression:list");
 
-        assertThrows(BusinessException.class, () -> controller.results(5L));
+        assertThrows(BusinessException.class, () -> controller.results(5L, 1L, 20L));
 
-        verify(agentV4OpsService, never()).listPromptResults(any());
+        verify(agentV4OpsService, never()).pagePromptResults(any(), any(), any());
     }
 
     private static PromptRegressionCaseSaveDTO caseDto() {

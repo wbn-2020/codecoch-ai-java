@@ -30,6 +30,11 @@ public class JobApplicationPackageVO {
     private Boolean fallback;
     private String fallbackReason;
     private Integer snapshotVersion;
+    private Integer contextPackageCount;
+    private Integer contextVersionNo;
+    private Long latestContextPackageId;
+    private String latestContextPackageNo;
+    private Boolean latestContextPackage;
     private LocalDateTime refreshedAt;
     private LocalDateTime generatedAt;
     private RecommendedResumeVO recommendedResume;
@@ -61,6 +66,9 @@ public class JobApplicationPackageVO {
         private Integer businessFitScore;
         private Integer communicationScore;
         private String status;
+        private String trustStatus;
+        private Boolean fallback;
+        private Integer schemaWarningCount;
         private String summary;
         private List<String> gaps = new ArrayList<>();
         private List<String> interviewTopics = new ArrayList<>();

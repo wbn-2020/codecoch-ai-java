@@ -258,36 +258,38 @@ public class ProviderAiCaller {
                 throw new AiProviderException(AiFailureType.HTTP_ERROR,
                         "Provider " + providerName + " stream HTTP " + response.statusCode(), response.statusCode(), null);
             }
-            Iterator<String> lines = response.body().iterator();
-            while (lines.hasNext()) {
-                String line = lines.next();
-                if (line == null || line.isBlank() || !line.startsWith("data:")) {
-                    continue;
-                }
-                String payload = line.substring("data:".length()).trim();
-                if ("[DONE]".equals(payload)) {
-                    break;
-                }
-                try {
-                    JsonNode node = objectMapper.readTree(payload);
-                    JsonNode delta = node.path("choices").path(0).path("delta").path("content");
-                    if (delta.isTextual() && !delta.asText().isEmpty()) {
-                        String piece = delta.asText();
-                        fullContent.append(piece);
-                        if (onDelta != null) {
-                            onDelta.accept(piece);
+            try (Stream<String> bodyLines = response.body()) {
+                Iterator<String> lines = bodyLines.iterator();
+                while (lines.hasNext()) {
+                    String line = lines.next();
+                    if (line == null || line.isBlank() || !line.startsWith("data:")) {
+                        continue;
+                    }
+                    String payload = line.substring("data:".length()).trim();
+                    if ("[DONE]".equals(payload)) {
+                        break;
+                    }
+                    try {
+                        JsonNode node = objectMapper.readTree(payload);
+                        JsonNode delta = node.path("choices").path(0).path("delta").path("content");
+                        if (delta.isTextual() && !delta.asText().isEmpty()) {
+                            String piece = delta.asText();
+                            fullContent.append(piece);
+                            if (onDelta != null) {
+                                onDelta.accept(piece);
+                            }
                         }
+                        JsonNode usageNode = node.path("usage");
+                        if (usageNode.isObject()) {
+                            usage[0] = intOrZero(usageNode.path("prompt_tokens"));
+                            usage[1] = intOrZero(usageNode.path("completion_tokens"));
+                            usage[2] = intOrZero(usageNode.path("total_tokens"));
+                        }
+                    } catch (AiProviderException ex) {
+                        throw ex;
+                    } catch (Exception ignore) {
+                        // 单帧解析失败不致命，跳过
                     }
-                    JsonNode usageNode = node.path("usage");
-                    if (usageNode.isObject()) {
-                        usage[0] = intOrZero(usageNode.path("prompt_tokens"));
-                        usage[1] = intOrZero(usageNode.path("completion_tokens"));
-                        usage[2] = intOrZero(usageNode.path("total_tokens"));
-                    }
-                } catch (AiProviderException ex) {
-                    throw ex;
-                } catch (Exception ignore) {
-                    // 单帧解析失败不致命，跳过
                 }
             }
             if (fullContent.length() == 0) {

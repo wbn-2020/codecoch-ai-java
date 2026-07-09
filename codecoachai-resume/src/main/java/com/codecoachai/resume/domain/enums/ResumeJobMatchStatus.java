@@ -5,6 +5,7 @@ import java.util.Arrays;
 public enum ResumeJobMatchStatus {
 
     PROCESSING("Processing"),
+    RUNNING("Running"),
     SUCCESS("Generated successfully"),
     FAILED("Generation failed");
 
