@@ -24,6 +24,7 @@ spring:
           uri: lb://codecoachai-user
           predicates:
             - Path=/admin/users,/admin/users/**
+        # Order is intentional: the system role-menu route must precede the broad user /admin/roles/** route.
         - id: codecoachai-system-admin-role-menus
           uri: lb://codecoachai-system
           predicates:
@@ -56,10 +57,11 @@ spring:
           uri: lb://codecoachai-question
           predicates:
             - Path=/admin/question-relations,/admin/question-relations/**
+        # Order is intentional: question-owned /admin/ai/questions/** must precede the broad AI /admin/ai/** route.
         - id: codecoachai-question-admin-ai-generate
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/ai/questions/generate
+            - Path=/admin/ai/questions/generate,/admin/ai/questions/**
         - id: codecoachai-question-admin-sse
           uri: lb://codecoachai-question
           predicates:
@@ -71,11 +73,11 @@ spring:
         - id: codecoachai-question-admin-categories
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-categories,/admin/question-categories/**
+            - Path=/admin/question-categories,/admin/question-categories/**,/categories,/categories/**
         - id: codecoachai-question-admin-tags
           uri: lb://codecoachai-question
           predicates:
-            - Path=/admin/question-tags,/admin/question-tags/**
+            - Path=/admin/question-tags,/admin/question-tags/**,/tags,/tags/**
         - id: codecoachai-question-admin-groups
           uri: lb://codecoachai-question
           predicates:
@@ -83,7 +85,7 @@ spring:
         - id: codecoachai-resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/resume-versions,/resume-versions/**,/applications,/applications/**,/application-packages,/application-packages/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/resume-claim-audits,/resume-claim-audits/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
         - id: codecoachai-resume-job-targets
           uri: lb://codecoachai-resume
           predicates:
@@ -103,7 +105,7 @@ spring:
         - id: codecoachai-interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**
+            - Path=/interviews,/interviews/**,/interview-comparisons,/interview-comparisons/**,/interview-scenarios,/interview-scenarios/**,/interview-remediations,/interview-remediations/**,/interview-tts,/interview-tts/**,/interview-streaming-asr,/interview-streaming-asr/**,/admin/interviews,/admin/interviews/**,/admin/interview-definition,/admin/interview-definition/**,/ai/sse/interviews/**
         - id: codecoachai-interview-industry-templates
           uri: lb://codecoachai-interview
           predicates:
@@ -157,11 +159,41 @@ spring:
           predicates:
             - Path=/admin/configs,/admin/configs/**,/admin/config,/admin/config/**,/admin/menus,/admin/menus/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/logs,/admin/logs/**,/admin/audit,/admin/audit/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
+      globalcors:
+        cors-configurations:
+          '[/**]':
+            allowedOriginPatterns:
+              - "http://localhost:5173"
+              - "http://127.0.0.1:5173"
+              - "http://localhost:3000"
+              - "http://127.0.0.1:3000"
+              - "http://nqx.githubpage.com:30080"
+            allowedMethods:
+              - GET
+              - POST
+              - PUT
+              - PATCH
+              - DELETE
+              - OPTIONS
+            allowedHeaders:
+              - Authorization
+              - Content-Type
+              - Accept
+              - Origin
+              - X-Requested-With
+              - X-Request-Id
+              - X-Trace-Id
+            allowCredentials: true
+            maxAge: 3600
+
+      default-filters:
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
+
 codecoachai:
   gateway:
     # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
-      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080"
       allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
       allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
     trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"

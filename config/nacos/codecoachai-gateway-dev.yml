@@ -27,6 +27,7 @@ spring:
                 key-resolver: "#{@ipKeyResolver}"
 
         # ========== 用户 ==========
+        # Order is intentional: the system role-menu route must precede the broad user /admin/roles/** route.
         - id: system-role-menus
           uri: lb://codecoachai-system
           predicates:
@@ -38,22 +39,23 @@ spring:
             - Path=/users,/users/**,/admin/users,/admin/users/**,/admin/roles,/admin/roles/**,/dashboard,/dashboard/**
 
         # ========== 题库 ==========
+        # Order is intentional: question-owned /admin/ai/questions/** must precede the broad AI /admin/ai/** route.
         - id: question
           uri: lb://codecoachai-question
           predicates:
-            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-relations,/admin/question-relations/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/question-duplicate-eval,/admin/question-duplicate-eval/**,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
+            - Path=/questions,/questions/**,/admin/questions,/admin/questions/**,/admin/question-relations,/admin/question-relations/**,/admin/question-categories,/admin/question-categories/**,/admin/question-tags,/admin/question-tags/**,/admin/question-groups,/admin/question-groups/**,/admin/question-reviews,/admin/question-reviews/**,/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/question-duplicate-eval,/admin/question-duplicate-eval/**,/admin/ai/questions/generate,/admin/ai/questions/**,/categories,/categories/**,/tags,/tags/**,/practice,/practice/**,/question-recommendations,/question-recommendations/**,/ai/sse/admin/questions/**
 
         # ========== 简历 ==========
         - id: resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/applications,/applications/**,/application-packages,/application-packages/**,/resume-versions,/resume-versions/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/resume-claim-audits,/resume-claim-audits/**,/applications,/applications/**,/application-packages,/application-packages/**,/resume-versions,/resume-versions/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
 
         # ========== 面试 ==========
         - id: interview
           uri: lb://codecoachai-interview
           predicates:
-            - Path=/interviews,/interviews/**,/admin/interviews,/admin/interviews/**,/admin/interview-reports,/admin/interview-reports/**,/admin/industry-templates,/admin/industry-templates/**,/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/daily-tasks,/daily-tasks/**,/industry-templates,/industry-templates/**,/ai/sse/interviews/**,/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
+            - Path=/interviews,/interviews/**,/interview-comparisons,/interview-comparisons/**,/interview-scenarios,/interview-scenarios/**,/interview-remediations,/interview-remediations/**,/interview-tts,/interview-tts/**,/interview-streaming-asr,/interview-streaming-asr/**,/admin/interviews,/admin/interviews/**,/admin/interview-reports,/admin/interview-reports/**,/admin/interview-definition,/admin/interview-definition/**,/admin/industry-templates,/admin/industry-templates/**,/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/daily-tasks,/daily-tasks/**,/industry-templates,/industry-templates/**,/ai/sse/interviews/**,/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
 
         # ========== AI ==========
         - id: ai
@@ -101,6 +103,7 @@ spring:
               - "http://127.0.0.1:5173"
               - "http://localhost:3000"
               - "http://127.0.0.1:3000"
+              - "http://nqx.githubpage.com:30080"
             allowedMethods:
               - GET
               - POST
@@ -140,7 +143,7 @@ codecoachai:
   gateway:
     # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
-      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000"
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080"
       allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
       allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
     trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"
