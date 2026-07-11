@@ -39,7 +39,8 @@ public class PromptRenderServiceImpl implements PromptRenderService {
         String content = source == null ? fallbackContent : source.content();
         String finalTemplate = firstText(prefix, "") + firstText(content, fallbackContent) + firstText(suffix, "");
         Map<String, String> safeVariables = safeVariables(variables);
-        String rendered = renderTemplate(finalTemplate, safeVariables);
+        String rendered = PromptTemplateVariableValidator.render(finalTemplate,
+                source == null ? null : source.variablesJson(), safeVariables);
         return PromptRenderResult.builder()
                 .scene(scene)
                 .renderedPrompt(rendered)
@@ -94,15 +95,7 @@ public class PromptRenderServiceImpl implements PromptRenderService {
         }
         Long templateId = template == null ? version.getTemplateId() : template.getId();
         return new PromptSource(templateId, version.getId(), version.getVersionCode(), version.getContent(),
-                version.getModelParamsJson());
-    }
-
-    private String renderTemplate(String template, Map<String, String> variables) {
-        String prompt = firstText(template, "");
-        for (Map.Entry<String, String> entry : variables.entrySet()) {
-            prompt = prompt.replace("{{" + entry.getKey() + "}}", entry.getValue() == null ? "" : entry.getValue());
-        }
-        return prompt;
+                version.getVariablesJson(), version.getModelParamsJson());
     }
 
     private Map<String, String> safeVariables(Map<String, String> variables) {
@@ -136,6 +129,6 @@ public class PromptRenderServiceImpl implements PromptRenderService {
     }
 
     private record PromptSource(Long templateId, Long versionId, String versionCode, String content,
-                                String modelParamsJson) {
+                                String variablesJson, String modelParamsJson) {
     }
 }

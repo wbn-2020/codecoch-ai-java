@@ -289,15 +289,36 @@ public class AiSseController {
         return emitter;
     }
 
-    private void submitSseTask(SseEmitter emitter, AtomicBoolean active, String requestId,
-                               String workflow, Object rejectionErrorEvent, Runnable task) {
+    CompletableFuture<Void> submitSseTask(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                          String workflow, Object rejectionErrorEvent, Runnable task) {
         try {
-            CompletableFuture.runAsync(task, resumeSseStreamExecutor);
+            CompletableFuture<Void> future = CompletableFuture.runAsync(task, resumeSseStreamExecutor);
+            bindCancellation(emitter, active, future);
+            return future;
         } catch (RejectedExecutionException ex) {
             log.warn("{} SSE task rejected, requestId={}", workflow, requestId, ex);
             send(emitter, active, "error", rejectionErrorEvent);
             complete(emitter, active);
+            return null;
         }
+    }
+
+    private void bindCancellation(SseEmitter emitter, AtomicBoolean active, CompletableFuture<?> task) {
+        if (task == null) {
+            return;
+        }
+        Runnable cancel = () -> cancelStream(active, task);
+        emitter.onCompletion(cancel);
+        emitter.onTimeout(cancel);
+        emitter.onError(ex -> cancel.run());
+        if (!active.get()) {
+            cancel.run();
+        }
+    }
+
+    private void cancelStream(AtomicBoolean active, CompletableFuture<?> task) {
+        active.set(false);
+        task.cancel(true);
     }
 
     private boolean sendStageProgress(SseEmitter emitter, AtomicBoolean active, String requestId,

@@ -20,6 +20,7 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -116,6 +117,11 @@ public class InnerInterviewReportController {
                     sessionId, report.getId(), dto.getReportId());
             return Result.success();
         }
+        if (report != null && !ReportStatusEnum.GENERATING.name().equals(report.getStatus())) {
+            log.info("Ignore duplicate interview report callback, sessionId={}, reportId={}, currentStatus={}",
+                    sessionId, report.getId(), report.getStatus());
+            return Result.success();
+        }
         if (report == null) {
             report = new InterviewReport();
             report.setSessionId(sessionId);
@@ -136,7 +142,21 @@ public class InnerInterviewReportController {
         if (report.getId() == null) {
             reportMapper.insert(report);
         } else {
-            reportMapper.updateById(report);
+            LambdaUpdateWrapper<InterviewReport> reportUpdate = new LambdaUpdateWrapper<InterviewReport>()
+                    .eq(InterviewReport::getId, report.getId())
+                    .eq(InterviewReport::getSessionId, sessionId)
+                    .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATING.name())
+                    .eq(InterviewReport::getDeleted, CommonConstants.NO);
+            if (StringUtils.hasText(dto.getGenerationToken())) {
+                reportUpdate.eq(InterviewReport::getGenerationToken, dto.getGenerationToken());
+            } else {
+                reportUpdate.isNull(InterviewReport::getGenerationToken);
+            }
+            if (reportMapper.update(report, reportUpdate) != 1) {
+                log.info("Ignore stale interview report callback CAS, sessionId={}, reportId={}",
+                        sessionId, report.getId());
+                return Result.success();
+            }
         }
 
         log.info("Interview report completed sessionId={} reportId={} status={}",
@@ -175,6 +195,9 @@ public class InnerInterviewReportController {
         if (report == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report evidence not found");
         }
+        if (!InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report evidence is not trusted");
+        }
         InterviewSession session = sessionMapper.selectById(report.getSessionId());
         if (session == null || !userId.equals(session.getUserId())
                 || Integer.valueOf(CommonConstants.YES).equals(session.getDeleted())) {
@@ -201,15 +224,17 @@ public class InnerInterviewReportController {
                 .eq(InterviewSession::getUserId, userId)
                 .eq(InterviewSession::getDeleted, CommonConstants.NO)
                 .ge(InterviewSession::getCreatedAt, startTime));
-        Long reportCount = reportMapper.selectCount(summaryReportQuery(userId, startTime));
         List<InterviewReport> reports = reportMapper.selectList(summaryReportQuery(userId, startTime)
                 .orderByDesc(InterviewReport::getGeneratedAt)
-                .orderByDesc(InterviewReport::getId));
+                .orderByDesc(InterviewReport::getId))
+                .stream()
+                .filter(InterviewReportTrustPolicy::isTrustedForFormalAction)
+                .toList();
 
         InterviewWeaknessSummaryVO vo = new InterviewWeaknessSummaryVO();
         vo.setRangeDays(rangeDays);
         vo.setInterviewCount(safeCount(interviewCount));
-        vo.setReportCount(safeCount(reportCount));
+        vo.setReportCount((long) reports.size());
         vo.setTopWeaknesses(buildTopWeaknesses(reports));
         return Result.success(vo);
     }
@@ -356,7 +381,7 @@ public class InnerInterviewReportController {
     }
 
     private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
-        if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (session == null || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             return;
         }
         agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),

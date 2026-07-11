@@ -90,9 +90,9 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
         validateExtension(normalizedBizType, fileExt);
-        validateSize(file);
+        validateSize(file, normalizedBizType);
         // 先做文件头/内容校验，再上传 OSS，避免伪装扩展名的文件进入对象存储。
-        FileUploadValidator.validateContent(file, fileExt);
+        FileUploadValidator.validateContent(file, normalizedBizType, fileExt);
 
         // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
         String storedFilename = UUID.randomUUID().toString().replace("-", "") + "." + fileExt;
@@ -153,9 +153,9 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     public void deleteUserFile(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
         String key = storageKey(fileInfo);
+        deleteOssRequired(key);
         fileInfoMapper.deleteById(fileInfo.getId());
-        deleteOssQuietly(key, new AtomicBoolean(false), "inner-delete");
-        log.info("OSS file compensation deleted fileId={} userId={} bizType={} keyMeta={}",
+        log.info("OSS file physically deleted fileId={} userId={} bizType={} keyMeta={}",
                 fileId, userId, fileInfo.getBizType(), safeKeyMeta(key));
     }
 
@@ -332,8 +332,11 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         }
     }
 
-    private void validateSize(MultipartFile file) {
-        long maxBytes = properties.getMaxSizeMb() * 1024L * 1024L;
+    private void validateSize(MultipartFile file, String bizType) {
+        long maxSizeMb = FileBizTypes.isInterviewVoice(bizType)
+                ? properties.getMaxInterviewVoiceSizeMb()
+                : properties.getMaxSizeMb();
+        long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
         }
@@ -485,6 +488,17 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             log.warn("OSS upload compensation deleted orphan object reason={} keyMeta={}", reason, safeKeyMeta(ossKey));
         } catch (RuntimeException cleanupEx) {
             log.warn("OSS upload compensation failed reason={} keyMeta={}", reason, safeKeyMeta(ossKey), cleanupEx);
+        }
+    }
+
+    private void deleteOssRequired(String ossKey) {
+        if (!StringUtils.hasText(ossKey)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        try {
+            ossFileService.delete(ossKey);
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Physical file deletion failed.");
         }
     }
 

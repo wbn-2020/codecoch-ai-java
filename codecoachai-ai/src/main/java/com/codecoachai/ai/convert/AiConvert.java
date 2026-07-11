@@ -183,7 +183,16 @@ public final class AiConvert {
                 || responseBody.contains("degraded")) {
             return AiResultSourceEnum.FALLBACK;
         }
-        return AiResultSourceEnum.LLM;
+        if (modelName.contains("rule")
+                || routeTrace.contains("rule")
+                || requestBody.contains("\"resultsource\":\"rule\"")
+                || responseBody.contains("\"resultsource\":\"rule\"")) {
+            return AiResultSourceEnum.RULE;
+        }
+        if (hasText(modelName) || hasText(routeTrace)) {
+            return AiResultSourceEnum.LLM;
+        }
+        return AiResultSourceEnum.UNKNOWN;
     }
 
     private static String lower(String value) {

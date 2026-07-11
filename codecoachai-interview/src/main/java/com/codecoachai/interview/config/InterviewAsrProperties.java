@@ -22,6 +22,7 @@ public class InterviewAsrProperties {
     private RequestMode requestMode = RequestMode.MULTIPART;
     private Duration connectTimeout = Duration.ofSeconds(5);
     private Duration readTimeout = Duration.ofSeconds(60);
+    private Duration maxAudioDuration = Duration.ofMinutes(2);
     private long maxAudioBytes = 10 * 1024 * 1024L;
     private Map<String, String> headers = new LinkedHashMap<>();
     private Multipart multipart = new Multipart();
@@ -44,6 +45,7 @@ public class InterviewAsrProperties {
 
     @Data
     public static class Json {
+        private long maxAudioBytes = 2 * 1024 * 1024L;
         private String audioField = "audioBase64";
         private String mimeTypeField = "mimeType";
         private String languageField = "language";

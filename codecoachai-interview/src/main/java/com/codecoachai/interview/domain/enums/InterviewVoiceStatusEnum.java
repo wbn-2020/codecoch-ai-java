@@ -6,5 +6,6 @@ public enum InterviewVoiceStatusEnum {
     TRANSCRIBED,
     TRANSCRIBE_FAILED,
     CONFIRMED,
-    DISCARDED
+    DISCARDED,
+    STALE
 }

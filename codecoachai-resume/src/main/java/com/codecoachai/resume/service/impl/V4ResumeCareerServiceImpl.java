@@ -6,6 +6,8 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.resume.domain.dto.ApplicationStatsAggregate;
+import com.codecoachai.resume.domain.dto.ApplicationStatusCount;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
@@ -42,6 +44,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -58,6 +61,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -71,7 +75,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final List<String> SNAPSHOT_FIELDS = List.of(
             "title", "realName", "email", "phone", "targetPosition", "skillStack",
-            "workExperience", "educationExperience", "summary");
+            "workExperience", "educationExperience", "summary", "projects");
+    private static final int VERSION_INSERT_MAX_ATTEMPTS = 5;
     private static final List<String> AGENT_APPLICATION_ACTIVE_STATUSES = List.of(
             "SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER");
     private static final String AGENT_APPLICATION_ORDER_LIMIT_SQL =
@@ -87,47 +92,42 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final NotificationBusinessResolver notificationBusinessResolver;
+    private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
     private final ObjectMapper objectMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO createVersion(Long resumeId, ResumeVersionCreateDTO dto) {
         Resume resume = ownedResume(resumeId);
-        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
-        ResumeVersion version = new ResumeVersion();
-        version.setUserId(resume.getUserId());
-        version.setResumeId(resumeId);
-        version.setVersionNo(nextNo);
-        version.setVersionName(StringUtils.hasText(dto == null ? null : dto.getVersionName()) ? dto.getVersionName() : "V" + nextNo);
-        version.setSourceType(StringUtils.hasText(dto == null ? null : dto.getSourceType()) ? dto.getSourceType() : "MANUAL");
-        version.setSourceId(dto == null ? null : dto.getSourceId());
-        version.setSnapshotJson(writeJson(snapshot(resume)));
-        version.setCurrentFlag(1);
-        clearCurrentVersions(resumeId, resume.getUserId());
-        resumeVersionMapper.insert(version);
+        lockResume(resume);
+        ResumeVersion version = insertVersionWithRetry(
+                resume,
+                dto == null ? null : dto.getVersionName(),
+                StringUtils.hasText(dto == null ? null : dto.getSourceType()) ? dto.getSourceType() : "MANUAL",
+                dto == null ? null : dto.getSourceId(),
+                writeJson(snapshot(resume)),
+                true);
         return toVersionVO(version);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO copyVersion(Long resumeId, Long versionId, ResumeVersionCopyDTO dto) {
         Resume resume = ownedResume(resumeId);
+        lockResume(resume);
         ResumeVersion source = ownedVersion(versionId);
         ensureVersionBelongsToResume(resumeId, source);
 
-        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
         String sourceName = StringUtils.hasText(source.getVersionName()) ? source.getVersionName() : "V" + source.getVersionNo();
-        ResumeVersion copy = new ResumeVersion();
-        copy.setUserId(resume.getUserId());
-        copy.setResumeId(resumeId);
-        copy.setVersionNo(nextNo);
-        copy.setVersionName(StringUtils.hasText(dto == null ? null : dto.getVersionName())
-                ? dto.getVersionName()
-                : "Copy of " + sourceName);
-        copy.setSourceType("COPY");
-        copy.setSourceId(source.getId());
-        copy.setSnapshotJson(StringUtils.hasText(source.getSnapshotJson()) ? source.getSnapshotJson() : writeJson(snapshot(resume)));
-        copy.setCurrentFlag(0);
-        resumeVersionMapper.insert(copy);
+        ResumeVersion copy = insertVersionWithRetry(
+                resume,
+                StringUtils.hasText(dto == null ? null : dto.getVersionName())
+                        ? dto.getVersionName()
+                        : "Copy of " + sourceName,
+                "COPY",
+                source.getId(),
+                StringUtils.hasText(source.getSnapshotJson()) ? source.getSnapshotJson() : writeJson(snapshot(resume)),
+                false);
         return toVersionVO(copy);
     }
 
@@ -171,13 +171,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO rollbackVersion(Long resumeId, Long versionId) {
         Resume resume = ownedResume(resumeId);
+        lockResume(resume);
         ResumeVersion version = ownedVersion(versionId);
         ensureVersionBelongsToResume(resumeId, version);
-        applySnapshot(resume, readMap(version.getSnapshotJson()));
+        Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
+        applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
+        resumeSearchSyncOutboxService.enqueue(resume.getId(), resume.getUserId(),
+                ResumeSearchSyncOutboxService.OP_UPSERT);
         return toVersionVO(version);
     }
 
@@ -186,8 +191,11 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     public ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto) {
         ResumeVersion version = ownedVersion(versionId);
         Resume resume = ownedResume(version.getResumeId());
-        applySnapshot(resume, readMap(version.getSnapshotJson()));
+        lockResume(resume);
+        Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
+        applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -203,17 +211,40 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         adoption.setStatus(StringUtils.hasText(dto == null ? null : dto.getStatus()) ? dto.getStatus() : "ADOPTED");
         adoption.setNote(dto == null ? null : dto.getNote());
         resumeSuggestionAdoptionMapper.insert(adoption);
+        resumeSearchSyncOutboxService.enqueue(resume.getId(), resume.getUserId(),
+                ResumeSearchSyncOutboxService.OP_UPSERT);
         return toSuggestionAdoptionVO(adoption);
     }
 
     @Override
     public List<JobApplicationVO> listApplications(String status) {
+        return listApplications(status, null, null, null);
+    }
+
+    @Override
+    public List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword) {
         Long userId = currentUserId();
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                        .eq(JobApplication::getUserId, userId)
-                        .eq(JobApplication::getDeleted, CommonConstants.NO)
-                        .eq(StringUtils.hasText(status), JobApplication::getStatus, status)
-                        .orderByDesc(JobApplication::getUpdatedAt));
+        LambdaQueryWrapper<JobApplication> query = new LambdaQueryWrapper<JobApplication>()
+                .eq(JobApplication::getUserId, userId)
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .eq(StringUtils.hasText(status), JobApplication::getStatus, normalizeApplicationStatus(status))
+                .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                        .like(JobApplication::getCompanyName, keyword)
+                        .or()
+                        .like(JobApplication::getJobTitle, keyword)
+                        .or()
+                        .like(JobApplication::getSource, keyword)
+                        .or()
+                        .like(JobApplication::getNote, keyword))
+                .orderByDesc(JobApplication::getUpdatedAt)
+                .orderByDesc(JobApplication::getId);
+        if (page != null || size != null) {
+            int effectivePage = page == null || page < 1 ? 1 : page;
+            int effectiveSize = size == null || size < 1 ? 20 : Math.min(size, 100);
+            long offset = (long) (effectivePage - 1) * effectiveSize;
+            query.last("LIMIT " + effectiveSize + " OFFSET " + offset);
+        }
+        List<JobApplication> applications = jobApplicationMapper.selectList(query);
         return toApplicationVOList(applications);
     }
 
@@ -221,10 +252,20 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     public JobApplicationStatsVO getApplicationStats(LocalDateTime now) {
         Long userId = currentUserId();
         LocalDateTime generatedAt = now == null ? LocalDateTime.now() : now;
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO));
-        return buildApplicationStats(applications, generatedAt);
+        ApplicationStatsAggregate aggregate = jobApplicationMapper.selectStats(
+                userId,
+                generatedAt,
+                generatedAt.toLocalDate().atStartOfDay(),
+                generatedAt.toLocalDate().plusDays(1).atStartOfDay(),
+                generatedAt.minusDays(14));
+        List<ApplicationStatusCount> statusCounts = jobApplicationMapper.selectStatusCounts(userId);
+        if (aggregate == null) {
+            List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO));
+            return buildApplicationStats(applications, generatedAt);
+        }
+        return toApplicationStats(aggregate, statusCounts, generatedAt);
     }
 
     @Override
@@ -250,10 +291,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         LocalDate reminderDate = date == null ? effectiveNow.toLocalDate() : date;
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO)
-                .isNotNull(JobApplication::getNextFollowUpAt));
+        List<JobApplication> applications = jobApplicationMapper.selectReminderCandidates(
+                userId,
+                effectiveNow,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5);
+        if (applications == null) {
+            applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .isNotNull(JobApplication::getNextFollowUpAt));
+        }
         if (applications == null || applications.isEmpty()) {
             return List.of();
         }
@@ -369,15 +418,21 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
 
         LocalDateTime startAt = generatedAt.toLocalDate().minusDays(rangeDays - 1L).atStartOfDay();
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO)
-                .orderByDesc(JobApplication::getAppliedAt)
-                .orderByDesc(JobApplication::getCreatedAt)
-                .orderByDesc(JobApplication::getUpdatedAt));
-        List<JobApplication> scopedApplications = (applications == null ? List.<JobApplication>of() : applications).stream()
-                .filter(app -> isApplicationInInsightRange(app, startAt, generatedAt))
-                .toList();
+        List<JobApplication> applications = jobApplicationMapper.selectInsightRange(userId, startAt, generatedAt);
+        List<JobApplication> scopedApplications;
+        if (applications == null) {
+            List<JobApplication> fallback = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .orderByDesc(JobApplication::getAppliedAt)
+                    .orderByDesc(JobApplication::getCreatedAt)
+                    .orderByDesc(JobApplication::getUpdatedAt));
+            scopedApplications = (fallback == null ? List.<JobApplication>of() : fallback).stream()
+                    .filter(app -> isApplicationInInsightRange(app, startAt, generatedAt))
+                    .toList();
+        } else {
+            scopedApplications = applications;
+        }
         if (scopedApplications.isEmpty()) {
             summary.setQuality(buildApplicationQuality(summary, Map.of(), generatedAt));
             summary.setResumeVersionEffect(buildResumeVersionEffect(scopedApplications, Map.of(), Map.of()));
@@ -474,6 +529,35 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
         vo.setStatusCounts(statusCounts);
         return vo;
+    }
+
+    private JobApplicationStatsVO toApplicationStats(ApplicationStatsAggregate aggregate,
+                                                      List<ApplicationStatusCount> statusCounts,
+                                                      LocalDateTime generatedAt) {
+        JobApplicationStatsVO vo = new JobApplicationStatsVO();
+        vo.setGeneratedAt(generatedAt);
+        vo.setTotal(zeroIfNull(aggregate.getTotal()));
+        vo.setActiveCount(zeroIfNull(aggregate.getActiveCount()));
+        vo.setOverdueFollowUpCount(zeroIfNull(aggregate.getOverdueFollowUpCount()));
+        vo.setDueTodayFollowUpCount(zeroIfNull(aggregate.getDueTodayFollowUpCount()));
+        vo.setNoFollowUpCount(zeroIfNull(aggregate.getNoFollowUpCount()));
+        vo.setStaleActiveCount(zeroIfNull(aggregate.getStaleActiveCount()));
+        vo.setInterviewCount(zeroIfNull(aggregate.getInterviewCount()));
+        vo.setOfferCount(zeroIfNull(aggregate.getOfferCount()));
+        vo.setRejectedCount(zeroIfNull(aggregate.getRejectedCount()));
+        vo.setClosedCount(zeroIfNull(aggregate.getClosedCount()));
+        Map<String, Long> counts = new LinkedHashMap<>();
+        if (statusCounts != null) {
+            statusCounts.stream()
+                    .filter(item -> item != null && StringUtils.hasText(item.getStatus()))
+                    .forEach(item -> counts.put(item.getStatus(), zeroIfNull(item.getCount())));
+        }
+        vo.setStatusCounts(counts);
+        return vo;
+    }
+
+    private long zeroIfNull(Long value) {
+        return value == null ? 0L : value;
     }
 
     private ApplicationQualityVO buildApplicationQuality(ApplicationCareerInsightSummaryVO summary,
@@ -1089,6 +1173,42 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .set(ResumeVersion::getCurrentFlag, 0));
     }
 
+    private ResumeVersion insertVersionWithRetry(Resume resume, String requestedVersionName, String sourceType,
+                                                 Long sourceId, String snapshotJson, boolean current) {
+        DuplicateKeyException lastConflict = null;
+        for (int attempt = 1; attempt <= VERSION_INSERT_MAX_ATTEMPTS; attempt++) {
+            Integer nextNo = nextVersionNo(resume.getId(), resume.getUserId());
+            ResumeVersion version = new ResumeVersion();
+            version.setUserId(resume.getUserId());
+            version.setResumeId(resume.getId());
+            version.setVersionNo(nextNo);
+            version.setVersionName(StringUtils.hasText(requestedVersionName) ? requestedVersionName : "V" + nextNo);
+            version.setSourceType(sourceType);
+            version.setSourceId(sourceId);
+            version.setSnapshotJson(snapshotJson);
+            version.setCurrentFlag(current ? 1 : 0);
+            try {
+                if (current) {
+                    clearCurrentVersions(resume.getId(), resume.getUserId());
+                }
+                resumeVersionMapper.insert(version);
+                return version;
+            } catch (DuplicateKeyException conflict) {
+                lastConflict = conflict;
+            }
+        }
+        if (lastConflict != null) {
+            throw lastConflict;
+        }
+        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Failed to allocate a unique resume version number");
+    }
+
+    private void lockResume(Resume resume) {
+        if (resume != null && resume.getId() != null && resume.getUserId() != null) {
+            resumeMapper.lockOwnedResume(resume.getId(), resume.getUserId());
+        }
+    }
+
     private Integer nextVersionNo(Long resumeId, Long userId) {
         ResumeVersion latest = resumeVersionMapper.selectOne(new LambdaQueryWrapper<ResumeVersion>()
                 .eq(ResumeVersion::getUserId, userId)
@@ -1144,6 +1264,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("optimizationResults", project.getOptimizationResults());
         map.put("description", project.getDescription());
         map.put("highlights", project.getHighlights());
+        map.put("sort", project.getSort());
+        map.put("sortOrder", project.getSortOrder());
         return map;
     }
 
@@ -1157,6 +1279,39 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         resume.setWorkExperience(text(map.get("workExperience")));
         resume.setEducationExperience(text(map.get("educationExperience")));
         resume.setSummary(text(map.get("summary")));
+    }
+
+    private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {
+        if (resumeId == null || snapshot == null || !snapshot.containsKey("projects")) {
+            return;
+        }
+        resumeProjectMapper.delete(new LambdaQueryWrapper<ResumeProject>()
+                .eq(ResumeProject::getResumeId, resumeId));
+        Object rawProjects = snapshot.get("projects");
+        if (!(rawProjects instanceof List<?> projects)) {
+            return;
+        }
+        for (Object rawProject : projects) {
+            if (!(rawProject instanceof Map<?, ?> projectSnapshot)) {
+                continue;
+            }
+            ResumeProject project = new ResumeProject();
+            project.setResumeId(resumeId);
+            project.setProjectName(text(projectSnapshot.get("projectName")));
+            project.setProjectPeriod(text(projectSnapshot.get("projectPeriod")));
+            project.setProjectBackground(text(projectSnapshot.get("projectBackground")));
+            project.setRole(text(projectSnapshot.get("role")));
+            project.setTechStack(text(projectSnapshot.get("techStack")));
+            project.setResponsibility(text(projectSnapshot.get("responsibility")));
+            project.setCoreFeatures(text(projectSnapshot.get("coreFeatures")));
+            project.setTechnicalDifficulties(text(projectSnapshot.get("technicalDifficulties")));
+            project.setOptimizationResults(text(projectSnapshot.get("optimizationResults")));
+            project.setDescription(text(projectSnapshot.get("description")));
+            project.setHighlights(text(projectSnapshot.get("highlights")));
+            project.setSort(integer(projectSnapshot.get("sort"), 0));
+            project.setSortOrder(integer(projectSnapshot.get("sortOrder"), project.getSort()));
+            resumeProjectMapper.insert(project);
+        }
     }
 
     private void fillApplication(JobApplication app, JobApplicationSaveDTO dto) {
@@ -1545,5 +1700,19 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private String text(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Integer integer(Object value, Integer fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.valueOf(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 }

@@ -17,6 +17,7 @@ import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.Resource;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.http.MediaType;
@@ -50,6 +51,14 @@ public class FileUserController {
     public Result<InnerFileUploadVO> upload(@RequestPart("file") MultipartFile file,
                                             @RequestParam(defaultValue = "RESUME") String bizType) {
         return Result.success(fileStorageService.upload(file, normalizeBizType(bizType), requireUserId()));
+    }
+
+    @Operation(summary = "删除我的文件")
+    @DeleteMapping("/{id}")
+    public Result<Void> delete(@PathVariable Long id,
+                               @RequestParam String bizType) {
+        fileStorageService.deleteUserFile(id, requireUserId(), normalizeBizType(bizType));
+        return Result.success();
     }
 
     @Operation(summary = "获取 OSS 直传临时凭证",

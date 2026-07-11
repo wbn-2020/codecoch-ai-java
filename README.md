@@ -272,9 +272,12 @@ sql/migration/
 开发或联调前请确认：
 
 1. 当前 Nacos 数据源配置中的数据库名称。
-2. `sql/init.sql` 是否已导入。
-3. `sql/migration` 下 V2/V3/V4 迁移脚本是否已按顺序执行。
-4. Flyway 或 Docker 初始化方式是否与当前环境一致。
+2. 新库是否通过 `docker compose up mysql flyway-migrate` 导入 `sql/init.sql`。
+3. Flyway 是否已从 baseline `2.999` 执行全部 V3/V4 migration。
+4. 业务服务启动前，一次性 migration job 是否已成功退出。
+
+不要在导入 `sql/init.sql` 后再次执行 V2 migration；`init.sql` 已作为 V2
+基线。业务微服务默认不自行执行 Flyway，避免多服务并发迁移。
 
 Windows 下执行 SQL 示例。运行期/人工确认，静态审查勿执行：
 

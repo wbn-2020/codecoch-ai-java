@@ -43,6 +43,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -83,6 +84,8 @@ class V4ResumeCareerServiceImplTest {
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
     @Mock
     private NotificationBusinessResolver notificationBusinessResolver;
+    @Mock
+    private ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
 
     private V4ResumeCareerServiceImpl service;
 
@@ -119,6 +122,7 @@ class V4ResumeCareerServiceImplTest {
                 targetJobMapper,
                 agentBusinessActionNotifier,
                 notificationBusinessResolver,
+                resumeSearchSyncOutboxService,
                 new ObjectMapper());
     }
 
@@ -582,7 +586,7 @@ class V4ResumeCareerServiceImplTest {
         noEventStaleWithoutVersion.setStatus("APPLIED");
         noEventStaleWithoutVersion.setAppliedAt(now.minusDays(20));
         noEventStaleWithoutVersion.setUpdatedAt(now.minusDays(10));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now))).thenReturn(List.of(
                 appliedWithFollowUpEvent, interviewByStatus, offerByEvent,
                 rejectedByEventWithoutVersion, noEventStaleWithoutVersion));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
@@ -634,7 +638,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication previousDayApplication = application(432L, USER_ID);
         previousDayApplication.setAppliedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
         previousDayApplication.setUpdatedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(boundaryDayApplication, previousDayApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(boundaryDayApplication));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
 
         ApplicationCareerInsightSummaryVO summary =
@@ -651,7 +656,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication onlyApplication = application(411L, USER_ID);
         onlyApplication.setResumeVersionId(77L);
         onlyApplication.setAppliedAt(now.minusDays(1));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(onlyApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(onlyApplication));
         ResumeVersion version = resumeVersion(77L, USER_ID, 1L);
         when(resumeVersionMapper.selectList(any())).thenReturn(List.of(version));
 
@@ -679,7 +685,7 @@ class V4ResumeCareerServiceImplTest {
         JobApplication oldWithOffer = application(424L, USER_ID);
         oldWithOffer.setResumeVersionId(78L);
         JobApplication withoutVersion = application(425L, USER_ID);
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now))).thenReturn(List.of(
                 firstCurrent, secondCurrent, thirdCurrent, oldWithOffer, withoutVersion));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
                 event(811L, 421L, "INTERVIEW_COMPLETED", now.minusDays(5)),
@@ -719,7 +725,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication olderVersionApplication = application(426L, USER_ID);
         olderVersionApplication.setResumeVersionId(78L);
         olderVersionApplication.setAppliedAt(now.minusDays(2));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(olderVersionApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(olderVersionApplication));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
         ResumeVersion currentVersion = resumeVersion(77L, USER_ID, 1L);
         currentVersion.setVersionNo(3);
@@ -783,9 +790,12 @@ class V4ResumeCareerServiceImplTest {
         JobApplication extraDueToday3 = application(309L, USER_ID);
         extraDueToday3.setStatus("APPLIED");
         extraDueToday3.setNextFollowUpAt(now.plusHours(5));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
-                dueToday, rejected, overdueLate, future, closed, extraDueToday3,
-                extraDueToday2, overdueEarly, extraDueToday));
+        when(jobApplicationMapper.selectReminderCandidates(
+                USER_ID,
+                now,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5)).thenReturn(List.of(overdueEarly, overdueLate, dueToday, extraDueToday, extraDueToday2));
 
         List<ApplicationReminderCandidateVO> result =
                 service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
@@ -803,17 +813,12 @@ class V4ResumeCareerServiceImplTest {
         assertEquals(reminderDate, result.get(0).getPlanDate());
         assertTrue(result.get(0).getContent().contains("Alpha"));
 
-        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(jobApplicationMapper).selectList(queryCaptor.capture());
-        String sql = (queryCaptor.getValue().getSqlSegment() + " " + queryCaptor.getValue().getTargetSql())
-                .replaceAll("\\s+", " ")
-                .toLowerCase();
-        assertTrue(sql.contains("user_id"), sql);
-        assertTrue(sql.contains("deleted"), sql);
-        assertFalse(sql.contains("status in"), sql);
-        assertTrue(sql.contains("next_follow_up_at is not null"), sql);
-        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("REJECTED"));
-        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("CLOSED"));
+        verify(jobApplicationMapper).selectReminderCandidates(
+                USER_ID,
+                now,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5);
     }
 
     private void assertAgentContextQuery(LambdaQueryWrapper<JobApplication> query, boolean expectTargetJobFilter) {

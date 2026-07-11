@@ -22,6 +22,7 @@ public class InterviewTranscriptVO {
     private Boolean fallback;
     private String fallbackReason;
     private String traceId;
+    private String answerSource;
     private LocalDateTime confirmedAt;
     private Long submittedAnswerMessageId;
     private LocalDateTime submittedAt;

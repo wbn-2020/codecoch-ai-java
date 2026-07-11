@@ -10,7 +10,9 @@ import static org.mockito.Mockito.when;
 
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.PromptTemplateSaveDTO;
+import com.codecoachai.ai.domain.dto.PromptTemplateVersionCreateDTO;
 import com.codecoachai.ai.domain.entity.PromptTemplate;
+import com.codecoachai.ai.domain.entity.PromptTemplateVersion;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.PromptTemplateMapper;
 import com.codecoachai.ai.mapper.PromptTemplateVersionMapper;
@@ -65,5 +67,42 @@ class PromptTemplateServiceImplTest {
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
         assertTrue(exception.getMessage().contains("version management"));
         verify(promptTemplateMapper, never()).updateById(any(PromptTemplate.class));
+    }
+
+    @Test
+    void createVersionRejectsVariableDeclarationMismatchBeforeInsert() {
+        PromptTemplate template = new PromptTemplate();
+        template.setId(102L);
+        template.setScene("INTERVIEW_ANSWER_EVALUATE");
+        when(promptTemplateMapper.selectById(102L)).thenReturn(template);
+        when(promptTemplateVersionMapper.selectCount(any())).thenReturn(0L);
+
+        PromptTemplateVersionCreateDTO dto = new PromptTemplateVersionCreateDTO();
+        dto.setVersionCode("v-next");
+        dto.setContent("Question={{questionContent}}");
+        dto.setVariablesJson("questionContent,userAnswer");
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.createVersion(102L, dto));
+
+        assertTrue(exception.getMessage().contains("unused=[userAnswer]"));
+        verify(promptTemplateVersionMapper, never()).insert(any(PromptTemplateVersion.class));
+    }
+
+    @Test
+    void activateVersionRejectsVariableDeclarationMismatchBeforePublishing() {
+        PromptTemplateVersion version = new PromptTemplateVersion();
+        version.setId(201L);
+        version.setTemplateId(102L);
+        version.setStatus("DRAFT");
+        version.setContent("Question={{questionContent}}");
+        version.setVariablesJson("questionContent,userAnswer");
+        when(promptTemplateVersionMapper.selectById(201L)).thenReturn(version);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.activateVersion(201L, null));
+
+        assertTrue(exception.getMessage().contains("unused=[userAnswer]"));
+        verify(promptTemplateMapper, never()).selectById(102L);
     }
 }

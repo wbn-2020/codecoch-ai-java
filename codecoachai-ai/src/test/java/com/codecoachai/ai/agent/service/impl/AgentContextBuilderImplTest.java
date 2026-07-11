@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -77,7 +78,7 @@ class AgentContextBuilderImplTest {
         when(resumeFeignClient.getAnalysis(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(null));
         when(agentMemoryMapper.selectList(any())).thenReturn(List.of());
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
-        when(personalKnowledgeDocumentMapper.selectList(any())).thenReturn(List.of());
+        lenient().when(personalKnowledgeDocumentMapper.selectList(any())).thenReturn(List.of());
         when(personalKnowledgeChunkMapper.selectList(any())).thenReturn(List.of());
     }
 

@@ -48,6 +48,7 @@ import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationPackageVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerProjectEvidenceTrainingContextVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
@@ -65,6 +66,7 @@ import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.service.InterviewVoiceService;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -77,11 +79,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -131,8 +136,15 @@ public class InterviewServiceImpl implements InterviewService {
     public CreateInterviewVO create(CreateInterviewDTO dto) {
         CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
-        validateApplicationBinding(userId, request);
-        validateSuccessfulMatchReportContext(userId, request);
+        Long applicationPackageId = parseApplicationPackageId(request.getApplicationPackageId());
+        InnerJobApplicationPackageVO applicationPackage =
+                validateApplicationPackageBinding(userId, applicationPackageId, request);
+        InnerJobApplicationSummaryVO application = validateApplicationBinding(userId, request);
+        validateSkillProfileContext(userId, request);
+        InnerResumeJobMatchReportVO matchReport = validateSuccessfulMatchReportContext(userId, request);
+        validateApplicationContextMatches(application, request);
+        validateApplicationPackageContextMatches(applicationPackage, request);
+        validateAnchoredVersionContext(applicationPackage, application, matchReport, request);
         String mode = normalizeMode(StringUtils.hasText(request.getInterviewMode()) ? request.getInterviewMode() : request.getMode());
         InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
         resolveDefaultResumeIfNeeded(mode, request);
@@ -145,7 +157,7 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
         session.setApplicationId(request.getApplicationId());
-        session.setApplicationPackageId(parseLongOrNull(request.getApplicationPackageId()));
+        session.setApplicationPackageId(applicationPackageId);
         session.setResumeId(request.getResumeId());
         session.setResumeVersionId(request.getResumeVersionId());
         session.setTargetJobId(request.getTargetJobId());
@@ -224,7 +236,10 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewSession session = context.session();
         InterviewStage stage = context.stage();
 
-        CurrentQuestionVO question = generateNextQuestion(session, stage, null, false, 0);
+        CurrentQuestionVO question = currentQuestion(session);
+        if (question == null) {
+            question = generateNextQuestion(session, stage, null, false, 0);
+        }
         StartInterviewVO vo = new StartInterviewVO();
         vo.setId(session.getId());
         vo.setStatus(session.getStatus());
@@ -236,17 +251,51 @@ public class InterviewServiceImpl implements InterviewService {
     private StartContext prepareStart(Long id) {
         InterviewSession session = getOwnedSession(id);
         if (!InterviewStatusEnum.NOT_STARTED.name().equals(session.getStatus())) {
+            if (InterviewStatusEnum.WAITING_ANSWER.name().equals(session.getStatus())
+                    || InterviewStatusEnum.IN_PROGRESS.name().equals(session.getStatus())
+                    || InterviewStatusEnum.AI_EVALUATING.name().equals(session.getStatus())) {
+                InterviewStage currentStage = session.getCurrentStageId() == null
+                        ? firstStage(session.getId())
+                        : stageMapper.selectById(session.getCurrentStageId());
+                if (currentStage == null) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview stage missing");
+                }
+                return new StartContext(session, currentStage);
+            }
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview has already started");
         }
         InterviewStage stage = firstStage(session.getId());
+        LocalDateTime startTime = LocalDateTime.now();
+        int updated = sessionMapper.update(null, new LambdaUpdateWrapper<InterviewSession>()
+                .eq(InterviewSession::getId, session.getId())
+                .eq(InterviewSession::getUserId, session.getUserId())
+                .eq(InterviewSession::getStatus, InterviewStatusEnum.NOT_STARTED.name())
+                .set(InterviewSession::getStatus, InterviewStatusEnum.WAITING_ANSWER.name())
+                .set(InterviewSession::getStartTime, startTime)
+                .set(InterviewSession::getCurrentStageId, stage.getId())
+                .set(InterviewSession::getCurrentFollowUpCount, 0));
+        if (updated != 1) {
+            InterviewSession latest = getOwnedSession(id);
+            if (InterviewStatusEnum.WAITING_ANSWER.name().equals(latest.getStatus())
+                    || InterviewStatusEnum.IN_PROGRESS.name().equals(latest.getStatus())
+                    || InterviewStatusEnum.AI_EVALUATING.name().equals(latest.getStatus())) {
+                InterviewStage currentStage = latest.getCurrentStageId() == null
+                        ? stage
+                        : stageMapper.selectById(latest.getCurrentStageId());
+                return new StartContext(latest, currentStage == null ? stage : currentStage);
+            }
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview has already started");
+        }
+        stageMapper.update(null, new LambdaUpdateWrapper<InterviewStage>()
+                .eq(InterviewStage::getId, stage.getId())
+                .eq(InterviewStage::getSessionId, session.getId())
+                .eq(InterviewStage::getStatus, InterviewStatusEnum.NOT_STARTED.name())
+                .set(InterviewStage::getStatus, InterviewStatusEnum.IN_PROGRESS.name()));
         stage.setStatus(InterviewStatusEnum.IN_PROGRESS.name());
-        stageMapper.updateById(stage);
-
         session.setStatus(InterviewStatusEnum.WAITING_ANSWER.name());
-        session.setStartTime(LocalDateTime.now());
+        session.setStartTime(startTime);
         session.setCurrentStageId(stage.getId());
         session.setCurrentFollowUpCount(0);
-        sessionMapper.updateById(session);
         return new StartContext(session, stage);
     }
 
@@ -274,7 +323,6 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public CurrentQuestionVO currentQuestion(Long id) {
         InterviewSession session = getOwnedSession(id);
         CurrentQuestionVO question = currentQuestion(session);
@@ -297,11 +345,28 @@ public class InterviewServiceImpl implements InterviewService {
         if (stage == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Interview stage missing");
         }
+        InterviewStage currentStage = stage;
+        transactionTemplate.executeWithoutResult(status -> {
+            stageMapper.update(null, new LambdaUpdateWrapper<InterviewStage>()
+                    .eq(InterviewStage::getId, currentStage.getId())
+                    .eq(InterviewStage::getSessionId, session.getId())
+                    .in(InterviewStage::getStatus, List.of(
+                            InterviewStatusEnum.NOT_STARTED.name(),
+                            InterviewStatusEnum.IN_PROGRESS.name()))
+                    .set(InterviewStage::getStatus, InterviewStatusEnum.IN_PROGRESS.name()));
+            sessionMapper.update(null, new LambdaUpdateWrapper<InterviewSession>()
+                    .eq(InterviewSession::getId, session.getId())
+                    .eq(InterviewSession::getUserId, session.getUserId())
+                    .notIn(InterviewSession::getStatus, List.of(
+                            InterviewStatusEnum.COMPLETED.name(),
+                            InterviewStatusEnum.CANCELED.name(),
+                            InterviewStatusEnum.REPORT_GENERATING.name()))
+                    .set(InterviewSession::getCurrentStageId, currentStage.getId())
+                    .set(InterviewSession::getStatus, InterviewStatusEnum.WAITING_ANSWER.name()));
+        });
         stage.setStatus(InterviewStatusEnum.IN_PROGRESS.name());
-        stageMapper.updateById(stage);
         session.setCurrentStageId(stage.getId());
         session.setStatus(InterviewStatusEnum.WAITING_ANSWER.name());
-        sessionMapper.updateById(session);
         return generateNextQuestion(session, stage, null, false, 0);
     }
 
@@ -589,8 +654,10 @@ public class InterviewServiceImpl implements InterviewService {
             return buildExistingReportResponse(session, existing);
         }
         PreparedReportGeneration prepared = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
-                prepared.report(), prepared.response());
+        if (prepared.dispatchRequired()) {
+            submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
+                    prepared.report(), prepared.response());
+        }
         return prepared.response();
     }
 
@@ -606,8 +673,10 @@ public class InterviewServiceImpl implements InterviewService {
             return buildExistingReportResponse(session, existing);
         }
         PreparedReportGeneration prepared = prepareReportGeneration(session);
-        submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
-                prepared.report(), prepared.response());
+        if (prepared.dispatchRequired()) {
+            submitReportGenerationAfterCommit(session.getId(), session.getUserId(),
+                    prepared.report(), prepared.response());
+        }
         return prepared.response();
     }
 
@@ -741,11 +810,16 @@ public class InterviewServiceImpl implements InterviewService {
             report.setSessionId(session.getId());
             report.setUserId(session.getUserId());
         }
+        String previousReportStatus = report.getStatus();
+        String previousGenerationToken = report.getGenerationToken();
         String generationToken = nextGenerationToken();
         report.setStatus(ReportStatusEnum.GENERATING.name());
         report.setFailureReason(null);
         report.setGenerationToken(generationToken);
-        saveReport(report);
+        if (!claimReportAttempt(report, previousReportStatus, previousGenerationToken)) {
+            InterviewReport latest = currentReport(session.getId());
+            return buildReportGenerateResult(session, null, latest == null ? report : latest);
+        }
 
         Long aiCallLogId = null;
         try {
@@ -753,7 +827,7 @@ public class InterviewServiceImpl implements InterviewService {
             List<InterviewMessage> messages = messageEntities(session.getId());
             if (!hasScorableAnswers(messages)) {
                 progress(progressConsumer, "SAVE_REPORT");
-                markReportSampleInsufficient(session, report);
+                markReportSampleInsufficient(session, report, generationToken);
                 return buildReportGenerateResult(session, null, report);
             }
             progress(progressConsumer, "BUILD_PROMPT");
@@ -772,7 +846,10 @@ public class InterviewServiceImpl implements InterviewService {
             progress(progressConsumer, "SAVE_REPORT");
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport, messages);
-            saveReport(report);
+            if (!updateCurrentReportAttempt(report, generationToken)) {
+                InterviewReport latest = currentReport(session.getId());
+                return buildReportGenerateResult(session, aiCallLogId, latest == null ? report : latest);
+            }
 
             if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
                 session.setStatus(InterviewStatusEnum.COMPLETED.name());
@@ -806,7 +883,10 @@ public class InterviewServiceImpl implements InterviewService {
             report.setStatus(ReportStatusEnum.FAILED.name());
             report.setTotalScore(null);
             report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
-            saveReport(report);
+            if (!updateCurrentReportAttempt(report, generationToken)) {
+                InterviewReport latest = currentReport(session.getId());
+                return buildReportGenerateResult(session, aiCallLogId, latest == null ? report : latest);
+            }
 
             if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
                 session.setStatus(InterviewStatusEnum.FAILED.name());
@@ -1125,11 +1205,37 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private PreparedReportGeneration prepareReportGeneration(InterviewSession session) {
+        LocalDateTime endTime = LocalDateTime.now();
+        int claimed = sessionMapper.update(null, new LambdaUpdateWrapper<InterviewSession>()
+                .eq(InterviewSession::getId, session.getId())
+                .eq(InterviewSession::getUserId, session.getUserId())
+                .and(wrapper -> wrapper
+                        .in(InterviewSession::getReportStatus, List.of(
+                                ReportStatusEnum.NOT_GENERATED.name(),
+                                ReportStatusEnum.FAILED.name()))
+                        .or()
+                        .isNull(InterviewSession::getReportStatus))
+                .set(InterviewSession::getReportStatus, ReportStatusEnum.GENERATING.name())
+                .set(InterviewSession::getStatus, InterviewStatusEnum.REPORT_GENERATING.name())
+                .set(InterviewSession::getEndTime, endTime)
+                .set(InterviewSession::getFailureReason, null));
+        if (claimed != 1) {
+            InterviewReport latest = currentReport(session.getId());
+            InterviewSession latestSession = sessionMapper.selectById(session.getId());
+            InterviewSession responseSession = latestSession == null ? session : latestSession;
+            if (latest == null) {
+                latest = new InterviewReport();
+                latest.setSessionId(session.getId());
+                latest.setUserId(session.getUserId());
+                latest.setStatus(ReportStatusEnum.GENERATING.name());
+            }
+            return new PreparedReportGeneration(
+                    latest, buildExistingReportResponse(responseSession, latest), false);
+        }
         session.setReportStatus(ReportStatusEnum.GENERATING.name());
         session.setStatus(InterviewStatusEnum.REPORT_GENERATING.name());
-        session.setEndTime(LocalDateTime.now());
+        session.setEndTime(endTime);
         session.setFailureReason(null);
-        sessionMapper.updateById(session);
 
         InterviewReport report = currentReport(session.getId());
         if (report == null) {
@@ -1141,14 +1247,26 @@ public class InterviewServiceImpl implements InterviewService {
         report.setStatus(ReportStatusEnum.GENERATING.name());
         report.setFailureReason(null);
         report.setGenerationToken(nextGenerationToken());
-        saveReport(report);
+        try {
+            if (!saveReport(report)) {
+                InterviewReport latest = currentReport(session.getId());
+                InterviewReport responseReport = latest == null ? report : latest;
+                return new PreparedReportGeneration(
+                        responseReport, buildExistingReportResponse(session, responseReport), false);
+            }
+        } catch (DuplicateKeyException ex) {
+            InterviewReport latest = currentReport(session.getId());
+            InterviewReport responseReport = latest == null ? report : latest;
+            return new PreparedReportGeneration(
+                    responseReport, buildExistingReportResponse(session, responseReport), false);
+        }
 
         FinishInterviewVO vo = new FinishInterviewVO();
         vo.setId(session.getId());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setReport(toReportVO(report, session));
-        return new PreparedReportGeneration(report, vo);
+        return new PreparedReportGeneration(report, vo, true);
     }
 
     private FinishInterviewVO prepareInsufficientReport(InterviewSession session) {
@@ -1376,18 +1494,61 @@ public class InterviewServiceImpl implements InterviewService {
         if (!StringUtils.hasText(questionContent)) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI question generation returned empty content");
         }
-        return transactionTemplate.execute(status -> saveGeneratedQuestion(session, stage, question,
-                questionContent, parentMessageId, followUp, followUpCount));
+        String generationKey = questionGenerationKey(session, parentMessageId, followUp);
+        try {
+            return transactionTemplate.execute(status -> saveGeneratedQuestion(session, stage, question,
+                    questionContent, parentMessageId, followUp, followUpCount, generationKey));
+        } catch (DuplicateKeyException ex) {
+            if (!StringUtils.hasText(generationKey)) {
+                throw ex;
+            }
+            InterviewMessage existing = messageMapper.selectOne(new LambdaQueryWrapper<InterviewMessage>()
+                    .eq(InterviewMessage::getSessionId, session.getId())
+                    .eq(InterviewMessage::getGenerationKey, generationKey)
+                    .eq(InterviewMessage::getDeleted, CommonConstants.NO)
+                    .last("limit 1"));
+            if (existing == null) {
+                throw ex;
+            }
+            InterviewStage existingStage = existing.getStageId() == null
+                    ? stage
+                    : stageMapper.selectById(existing.getStageId());
+            return toCurrentQuestionVO(session, existingStage == null ? stage : existingStage, existing);
+        }
     }
 
     private CurrentQuestionVO saveGeneratedQuestion(InterviewSession session, InterviewStage stage, InnerQuestionVO question,
                                                     String questionContent, Long parentMessageId,
-                                                    boolean followUp, int followUpCount) {
-        session.setCurrentQuestionId(question.getId());
+                                                    boolean followUp, int followUpCount,
+                                                    String generationKey) {
+        session.setCurrentQuestionId(question == null ? null : question.getId());
         session.setCurrentQuestionGroupId(question == null ? null : question.getGroupId());
         InterviewMessage message = saveMessage(session, stage, question, "AI", followUp ? "FOLLOW_UP" : "QUESTION",
-                questionContent, null, null, parentMessageId, followUp, followUpCount, null, null);
+                questionContent, null, null, parentMessageId, followUp, followUpCount, null, null, generationKey);
+        sessionMapper.update(null, new LambdaUpdateWrapper<InterviewSession>()
+                .eq(InterviewSession::getId, session.getId())
+                .eq(InterviewSession::getUserId, session.getUserId())
+                .notIn(InterviewSession::getStatus, List.of(
+                        InterviewStatusEnum.COMPLETED.name(),
+                        InterviewStatusEnum.CANCELED.name(),
+                        InterviewStatusEnum.REPORT_GENERATING.name()))
+                .set(InterviewSession::getCurrentStageId, stage == null ? null : stage.getId())
+                .set(InterviewSession::getCurrentQuestionId, session.getCurrentQuestionId())
+                .set(InterviewSession::getCurrentQuestionGroupId, session.getCurrentQuestionGroupId())
+                .set(InterviewSession::getStatus, InterviewStatusEnum.WAITING_ANSWER.name()));
+        session.setStatus(InterviewStatusEnum.WAITING_ANSWER.name());
         return toCurrentQuestionVO(session, stage, message);
+    }
+
+    private String questionGenerationKey(
+            InterviewSession session, Long parentMessageId, boolean followUp) {
+        if (session == null
+                || parentMessageId != null
+                || followUp
+                || safeInt(session.getAnsweredQuestionCount()) > 0) {
+            return null;
+        }
+        return "FIRST_QUESTION";
     }
 
     private NextActionEnum decideNextAction(InterviewSession session, InterviewStage stage, EvaluateAnswerVO evaluation) {
@@ -1503,12 +1664,21 @@ public class InterviewServiceImpl implements InterviewService {
                                          String role, String type, String content, Integer score, String comment,
                                          Long parentMessageId, Boolean isFollowUp, Integer followUpCount,
                                          String followUpReason, String knowledgePoints) {
+        return saveMessage(session, stage, question, role, type, content, score, comment,
+                parentMessageId, isFollowUp, followUpCount, followUpReason, knowledgePoints, null);
+    }
+
+    private InterviewMessage saveMessage(InterviewSession session, InterviewStage stage, InnerQuestionVO question,
+                                         String role, String type, String content, Integer score, String comment,
+                                         Long parentMessageId, Boolean isFollowUp, Integer followUpCount,
+                                         String followUpReason, String knowledgePoints, String generationKey) {
         InterviewMessage message = new InterviewMessage();
         message.setSessionId(session.getId());
         message.setStageId(stage == null ? null : stage.getId());
         message.setQuestionId(question == null ? null : question.getId());
         message.setQuestionGroupId(question == null ? null : question.getGroupId());
         message.setParentMessageId(parentMessageId);
+        message.setGenerationKey(generationKey);
         message.setRole(role);
         message.setMessageType(type);
         message.setContent(content);
@@ -1993,6 +2163,11 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private InterviewReport markReportSampleInsufficient(InterviewSession session, InterviewReport report) {
+        return markReportSampleInsufficient(session, report, null);
+    }
+
+    private InterviewReport markReportSampleInsufficient(
+            InterviewSession session, InterviewReport report, String generationToken) {
         report.setUserId(session.getUserId());
         report.setStatus(ReportStatusEnum.FAILED.name());
         report.setTotalScore(null);
@@ -2010,7 +2185,12 @@ public class InterviewServiceImpl implements InterviewService {
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
         report.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
-        saveReport(report);
+        boolean saved = StringUtils.hasText(generationToken)
+                ? updateCurrentReportAttempt(report, generationToken)
+                : saveReport(report);
+        if (!saved) {
+            return report;
+        }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
         session.setReportStatus(ReportStatusEnum.FAILED.name());
@@ -2035,16 +2215,62 @@ public class InterviewServiceImpl implements InterviewService {
                         && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent())));
     }
 
-    private void saveReport(InterviewReport report) {
+    private boolean saveReport(InterviewReport report) {
         if (report.getId() == null) {
-            reportMapper.insert(report);
+            return reportMapper.insert(report) == 1;
         } else {
-            reportMapper.updateById(report);
+            return reportMapper.updateById(report) == 1;
         }
     }
 
+    private boolean claimReportAttempt(
+            InterviewReport report, String previousStatus, String previousGenerationToken) {
+        if (report == null) {
+            return false;
+        }
+        if (report.getId() == null) {
+            try {
+                return reportMapper.insert(report) == 1;
+            } catch (DuplicateKeyException ex) {
+                return false;
+            }
+        }
+        LambdaUpdateWrapper<InterviewReport> wrapper = new LambdaUpdateWrapper<InterviewReport>()
+                .eq(InterviewReport::getId, report.getId())
+                .eq(InterviewReport::getSessionId, report.getSessionId())
+                .eq(InterviewReport::getDeleted, CommonConstants.NO);
+        if (StringUtils.hasText(previousStatus)) {
+            wrapper.eq(InterviewReport::getStatus, previousStatus);
+        } else {
+            wrapper.isNull(InterviewReport::getStatus);
+        }
+        if (StringUtils.hasText(previousGenerationToken)) {
+            wrapper.eq(InterviewReport::getGenerationToken, previousGenerationToken);
+        } else {
+            wrapper.isNull(InterviewReport::getGenerationToken);
+        }
+        return reportMapper.update(report, wrapper) == 1;
+    }
+
+    private boolean updateCurrentReportAttempt(InterviewReport report, String generationToken) {
+        if (report == null || report.getId() == null || report.getSessionId() == null) {
+            return false;
+        }
+        LambdaUpdateWrapper<InterviewReport> wrapper = new LambdaUpdateWrapper<InterviewReport>()
+                .eq(InterviewReport::getId, report.getId())
+                .eq(InterviewReport::getSessionId, report.getSessionId())
+                .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATING.name())
+                .eq(InterviewReport::getDeleted, CommonConstants.NO);
+        if (StringUtils.hasText(generationToken)) {
+            wrapper.eq(InterviewReport::getGenerationToken, generationToken);
+        } else {
+            wrapper.isNull(InterviewReport::getGenerationToken);
+        }
+        return reportMapper.update(report, wrapper) == 1;
+    }
+
     private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
-        if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (session == null || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             return;
         }
         agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),
@@ -2052,8 +2278,8 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private void syncApplicationInterviewEvent(InterviewSession session, InterviewReport report) {
-        if (session == null || report == null || session.getApplicationId() == null
-                || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (session == null || session.getApplicationId() == null
+                || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             return;
         }
         JobApplicationEventSaveDTO dto = new JobApplicationEventSaveDTO();
@@ -2342,51 +2568,80 @@ public class InterviewServiceImpl implements InterviewService {
         }
     }
 
-    private void validateSuccessfulMatchReportContext(Long userId, CreateInterviewDTO request) {
+    private InnerJobApplicationPackageVO validateApplicationPackageBinding(
+            Long userId, Long applicationPackageId, CreateInterviewDTO request) {
+        if (applicationPackageId == null) {
+            return null;
+        }
+        InnerJobApplicationPackageVO applicationPackage;
+        try {
+            applicationPackage = FeignResultUtils.unwrap(
+                    resumeFeignClient.getApplicationPackage(applicationPackageId));
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "求职申请包暂时无法校验，不能创建面试");
+        }
+        Long returnedPackageId = parseApplicationPackageId(
+                applicationPackage == null ? null : applicationPackage.getId());
+        if (applicationPackage == null
+                || !applicationPackageId.equals(returnedPackageId)
+                || !userId.equals(applicationPackage.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "求职申请包不存在或无权使用");
+        }
+        if (Boolean.TRUE.equals(applicationPackage.getFallback())
+                || !"REAL".equalsIgnoreCase(String.valueOf(applicationPackage.getResultSource()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "求职申请包来源不可信，不能创建正式模拟面试");
+        }
+        bindContext(request.getApplicationId(), applicationPackage.getJobApplicationId(),
+                request::setApplicationId, "投递记录与求职申请包不一致");
+        bindContext(request.getTargetJobId(), applicationPackage.getTargetJobId(),
+                request::setTargetJobId, "目标岗位与求职申请包不一致");
+        bindContext(request.getJdAnalysisId(), applicationPackage.getJdAnalysisId(),
+                request::setJdAnalysisId, "JD 分析与求职申请包不一致");
+        bindContext(request.getResumeVersionId(), applicationPackage.getRecommendedResumeVersionId(),
+                request::setResumeVersionId, "简历版本与求职申请包不一致");
+        bindContext(request.getMatchReportId(), applicationPackage.getMatchReportId(),
+                request::setMatchReportId, "匹配报告与求职申请包不一致");
+        bindProjectEvidenceContext(request, applicationPackage.getProjectEvidenceIds(),
+                "项目素材与求职申请包不一致");
+        request.setApplicationPackageId(String.valueOf(applicationPackageId));
+        return applicationPackage;
+    }
+
+    private InnerResumeJobMatchReportVO validateSuccessfulMatchReportContext(
+            Long userId, CreateInterviewDTO request) {
         if (request == null || request.getMatchReportId() == null) {
-            return;
+            return null;
         }
         InnerResumeJobMatchReportVO report = FeignResultUtils.unwrap(
                 resumeFeignClient.getSuccessResumeJobMatchReport(request.getMatchReportId()));
-        if (report == null || !userId.equals(report.getUserId())) {
+        if (report == null
+                || !request.getMatchReportId().equals(report.getReportId())
+                || !userId.equals(report.getUserId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告不存在，不能作为面试依据");
         }
         if (!"SUCCESS".equalsIgnoreCase(String.valueOf(report.getStatus()))) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告未成功，不能作为面试依据");
         }
-        if (request.getResumeId() != null && report.getResumeId() != null
-                && !request.getResumeId().equals(report.getResumeId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试简历与匹配报告不一致");
+        if (report.getResumeId() == null
+                || report.getTargetJobId() == null
+                || report.getResumeVersionId() == null
+                || report.getJdAnalysisId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "匹配报告上下文不完整，不能作为面试依据");
         }
-        if (request.getTargetJobId() != null && report.getTargetJobId() != null
-                && !request.getTargetJobId().equals(report.getTargetJobId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "目标岗位与匹配报告不一致");
-        }
-        if (request.getResumeVersionId() != null && report.getResumeVersionId() != null
-                && !request.getResumeVersionId().equals(report.getResumeVersionId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume version does not match report");
-        }
-        if (request.getJdAnalysisId() != null && report.getJdAnalysisId() != null
-                && !request.getJdAnalysisId().equals(report.getJdAnalysisId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "JD analysis does not match report");
-        }
-        if (request.getResumeId() == null) {
-            request.setResumeId(report.getResumeId());
-        }
-        if (request.getTargetJobId() == null) {
-            request.setTargetJobId(report.getTargetJobId());
-        }
-        if (request.getResumeVersionId() == null) {
-            request.setResumeVersionId(report.getResumeVersionId());
-        }
-        if (request.getJdAnalysisId() == null) {
-            request.setJdAnalysisId(report.getJdAnalysisId());
-        }
+        bindContext(request.getResumeId(), report.getResumeId(),
+                request::setResumeId, "面试简历与匹配报告不一致");
+        bindContext(request.getTargetJobId(), report.getTargetJobId(),
+                request::setTargetJobId, "目标岗位与匹配报告不一致");
+        bindContext(request.getResumeVersionId(), report.getResumeVersionId(),
+                request::setResumeVersionId, "简历版本与匹配报告不一致");
+        bindContext(request.getJdAnalysisId(), report.getJdAnalysisId(),
+                request::setJdAnalysisId, "JD 分析与匹配报告不一致");
+        return report;
     }
 
-    private void validateApplicationBinding(Long userId, CreateInterviewDTO request) {
+    private InnerJobApplicationSummaryVO validateApplicationBinding(Long userId, CreateInterviewDTO request) {
         if (request == null || request.getApplicationId() == null) {
-            return;
+            return null;
         }
         InnerJobApplicationSummaryVO application;
         try {
@@ -2398,26 +2653,137 @@ public class InterviewServiceImpl implements InterviewService {
         if (application == null || application.getId() == null || !userId.equals(application.getUserId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "投递记录不存在，不能绑定面试");
         }
-        if (request.getTargetJobId() != null && application.getTargetJobId() != null
-                && !request.getTargetJobId().equals(application.getTargetJobId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试岗位与投递记录不一致");
+        if (!request.getApplicationId().equals(application.getId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "投递记录不存在，不能绑定面试");
         }
-        if (request.getMatchReportId() != null && application.getMatchReportId() != null
-                && !request.getMatchReportId().equals(application.getMatchReportId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试匹配报告与投递记录不一致");
+        bindContext(request.getTargetJobId(), application.getTargetJobId(),
+                request::setTargetJobId, "面试岗位与投递记录不一致");
+        bindContext(request.getMatchReportId(), application.getMatchReportId(),
+                request::setMatchReportId, "面试匹配报告与投递记录不一致");
+        bindContext(request.getResumeVersionId(), application.getResumeVersionId(),
+                request::setResumeVersionId, "简历版本与投递记录不一致");
+        return application;
+    }
+
+    private InnerSkillProfileVO validateSkillProfileContext(Long userId, CreateInterviewDTO request) {
+        if (request == null || request.getSkillProfileId() == null) {
+            return null;
         }
-        if (request.getResumeVersionId() != null && application.getResumeVersionId() != null
-                && !request.getResumeVersionId().equals(application.getResumeVersionId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume version does not match application");
+        InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                resumeFeignClient.getSkillProfile(request.getSkillProfileId()));
+        if (profile == null
+                || !request.getSkillProfileId().equals(profile.getProfileId())
+                || !userId.equals(profile.getUserId())
+                || !"SUCCESS".equalsIgnoreCase(profile.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像不存在或暂时不可用");
         }
-        if (request.getTargetJobId() == null) {
-            request.setTargetJobId(application.getTargetJobId());
+        if ("INTERVIEW_REPORT".equalsIgnoreCase(profile.getSourceType())) {
+            InterviewReport sourceReport = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
+                    .eq(InterviewReport::getSessionId, profile.getSourceBizId())
+                    .eq(InterviewReport::getUserId, userId)
+                    .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                    .orderByDesc(InterviewReport::getId)
+                    .last("limit 1"));
+            if (!InterviewReportTrustPolicy.isTrustedForFormalAction(sourceReport)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源报告可信度不足");
+            }
+        } else if (!"RESUME_JOB_MATCH".equalsIgnoreCase(profile.getSourceType())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源不可信");
         }
-        if (request.getMatchReportId() == null) {
-            request.setMatchReportId(application.getMatchReportId());
+        if (profile.getTargetJobId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像缺少目标岗位上下文");
         }
-        if (request.getResumeVersionId() == null) {
-            request.setResumeVersionId(application.getResumeVersionId());
+        bindContext(request.getTargetJobId(), profile.getTargetJobId(),
+                request::setTargetJobId, "目标岗位与能力画像不一致");
+        if (profile.getMatchReportId() != null) {
+            bindContext(request.getMatchReportId(), profile.getMatchReportId(),
+                    request::setMatchReportId, "匹配报告与能力画像不一致");
+        }
+        return profile;
+    }
+
+    private void validateApplicationContextMatches(
+            InnerJobApplicationSummaryVO application, CreateInterviewDTO request) {
+        if (application == null) {
+            return;
+        }
+        requireSameContext(request.getTargetJobId(), application.getTargetJobId(),
+                "面试岗位与投递记录不一致");
+        requireSameContext(request.getMatchReportId(), application.getMatchReportId(),
+                "面试匹配报告与投递记录不一致");
+        requireSameContext(request.getResumeVersionId(), application.getResumeVersionId(),
+                "简历版本与投递记录不一致");
+    }
+
+    private void validateApplicationPackageContextMatches(
+            InnerJobApplicationPackageVO applicationPackage, CreateInterviewDTO request) {
+        if (applicationPackage == null) {
+            return;
+        }
+        requireSameContext(request.getApplicationId(), applicationPackage.getJobApplicationId(),
+                "投递记录与求职申请包不一致");
+        requireSameContext(request.getTargetJobId(), applicationPackage.getTargetJobId(),
+                "目标岗位与求职申请包不一致");
+        requireSameContext(request.getJdAnalysisId(), applicationPackage.getJdAnalysisId(),
+                "JD 分析与求职申请包不一致");
+        requireSameContext(request.getResumeVersionId(), applicationPackage.getRecommendedResumeVersionId(),
+                "简历版本与求职申请包不一致");
+        requireSameContext(request.getMatchReportId(), applicationPackage.getMatchReportId(),
+                "匹配报告与求职申请包不一致");
+        Set<Long> requestedEvidence = Set.copyOf(sanitizeLongs(request.getProjectEvidenceIds()));
+        Set<Long> packageEvidence = Set.copyOf(sanitizeLongs(applicationPackage.getProjectEvidenceIds()));
+        if (!requestedEvidence.equals(packageEvidence)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "项目素材与求职申请包不一致");
+        }
+    }
+
+    private void validateAnchoredVersionContext(
+            InnerJobApplicationPackageVO applicationPackage,
+            InnerJobApplicationSummaryVO application,
+            InnerResumeJobMatchReportVO matchReport,
+            CreateInterviewDTO request) {
+        if (request.getResumeVersionId() != null
+                && applicationPackage == null
+                && application == null
+                && matchReport == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历版本缺少可验证的业务上下文");
+        }
+        if (request.getJdAnalysisId() != null
+                && applicationPackage == null
+                && matchReport == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "JD 分析缺少可验证的业务上下文");
+        }
+    }
+
+    private void bindProjectEvidenceContext(
+            CreateInterviewDTO request, List<Long> authoritativeIds, String errorMessage) {
+        List<Long> requestedIds = sanitizeLongs(request.getProjectEvidenceIds());
+        List<Long> sourceIds = sanitizeLongs(authoritativeIds);
+        if (request.getProjectEvidenceIds() != null
+                && request.getProjectEvidenceIds().stream().anyMatch(id -> id == null || id <= 0)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "项目素材 ID 必须为正整数");
+        }
+        if (!requestedIds.isEmpty() && !Set.copyOf(requestedIds).equals(Set.copyOf(sourceIds))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, errorMessage);
+        }
+        if (requestedIds.isEmpty() && !sourceIds.isEmpty()) {
+            request.setProjectEvidenceIds(sourceIds);
+        }
+    }
+
+    private void bindContext(
+            Long requested, Long authoritative, Consumer<Long> setter, String errorMessage) {
+        if (requested != null && !Objects.equals(requested, authoritative)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, errorMessage);
+        }
+        if (requested == null && authoritative != null) {
+            setter.accept(authoritative);
+        }
+    }
+
+    private void requireSameContext(Long actual, Long expected, String errorMessage) {
+        if (actual != null && !Objects.equals(actual, expected)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, errorMessage);
         }
     }
 
@@ -2509,15 +2875,19 @@ public class InterviewServiceImpl implements InterviewService {
         return StringUtils.hasText(value) ? value.trim() : null;
     }
 
-    private Long parseLongOrNull(String value) {
+    private Long parseApplicationPackageId(String value) {
         String normalized = normalizeText(value);
         if (normalized == null) {
             return null;
         }
         try {
-            return Long.valueOf(normalized);
-        } catch (NumberFormatException ignored) {
-            return null;
+            Long parsed = Long.valueOf(normalized);
+            if (parsed <= 0) {
+                throw new NumberFormatException("non-positive");
+            }
+            return parsed;
+        } catch (NumberFormatException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "applicationPackageId 必须为正整数");
         }
     }
 
@@ -2743,7 +3113,20 @@ public class InterviewServiceImpl implements InterviewService {
         try {
             List<InnerProjectEvidenceTrainingContextVO> result = FeignResultUtils.unwrap(
                     resumeFeignClient.listProjectEvidenceTrainingContext(userId, projectEvidenceIds));
-            return result == null ? List.of() : result;
+            List<InnerProjectEvidenceTrainingContextVO> contexts = result == null
+                    ? List.of()
+                    : result.stream()
+                    .filter(Objects::nonNull)
+                    .filter(item -> item.getProjectEvidenceId() != null)
+                    .toList();
+            Set<Long> requestedIds = Set.copyOf(projectEvidenceIds);
+            Set<Long> returnedIds = contexts.stream()
+                    .map(InnerProjectEvidenceTrainingContextVO::getProjectEvidenceId)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!requestedIds.equals(returnedIds)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "项目素材不存在、无权使用或与当前上下文不一致");
+            }
+            return contexts;
         } catch (BusinessException ex) {
             throw ex;
         } catch (RuntimeException ex) {
@@ -2864,7 +3247,8 @@ public class InterviewServiceImpl implements InterviewService {
                                      CurrentQuestionVO nextQuestion, InterviewStage questionGenerationStage) {
     }
 
-    private record PreparedReportGeneration(InterviewReport report, FinishInterviewVO response) {
+    private record PreparedReportGeneration(
+            InterviewReport report, FinishInterviewVO response, boolean dispatchRequired) {
     }
 
     private int normalizeQuestionCount(Integer value) {

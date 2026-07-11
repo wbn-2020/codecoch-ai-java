@@ -1,6 +1,7 @@
 package com.codecoachai.interview.service.impl;
 
 import com.codecoachai.common.feign.util.FeignResultUtils;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.interview.config.InterviewAsrProperties;
 import com.codecoachai.interview.domain.dto.AsrRequest;
 import com.codecoachai.interview.domain.vo.AsrResult;
@@ -10,6 +11,7 @@ import com.codecoachai.interview.service.AsrService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.math.BigDecimal;
@@ -22,7 +24,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.web.client.RestTemplateBuilder;
-import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -43,6 +45,7 @@ public class HttpAsrService implements AsrService {
 
     private static final String ERROR_CODE_UNCONFIGURED = "ASR_PROVIDER_UNCONFIGURED";
     private static final String ERROR_CODE_DOWNLOAD_FAILED = "ASR_AUDIO_DOWNLOAD_FAILED";
+    private static final String ERROR_CODE_AUDIO_INVALID = "ASR_AUDIO_INVALID";
     private static final String ERROR_CODE_AUDIO_TOO_LARGE = "ASR_AUDIO_TOO_LARGE";
     private static final String ERROR_CODE_PROVIDER_FAILED = "ASR_PROVIDER_FAILED";
     private static final String ERROR_CODE_EMPTY_TRANSCRIPT = "ASR_EMPTY_TRANSCRIPT";
@@ -64,10 +67,11 @@ public class HttpAsrService implements AsrService {
                     "ASR request misses audio file identity; manual transcript confirmation is required.", null);
         }
 
-        try {
-            AudioPayload audio = loadAudio(request);
+        try (AudioPayload audio = loadAudio(request)) {
             ResponseEntity<String> response = callProvider(request, audio);
             return parseProviderResponse(response);
+        } catch (BusinessException ex) {
+            return failed(ERROR_CODE_AUDIO_INVALID, ex.getMessage(), null);
         } catch (AudioDownloadException ex) {
             log.warn("HTTP ASR audio download failed fileId={} traceId={} reason={}",
                     request.getFileId(), request.getTraceId(), safeReason(ex.getMessage(), "audio download failed"));
@@ -82,7 +86,7 @@ public class HttpAsrService implements AsrService {
         }
     }
 
-    private AudioPayload loadAudio(AsrRequest request) throws IOException {
+    private AudioPayload loadAudio(AsrRequest request) {
         InnerFileInfoVO file;
         try {
             file = FeignResultUtils.unwrap(fileFeignClient.detail(
@@ -93,10 +97,13 @@ public class HttpAsrService implements AsrService {
         if (file == null) {
             throw new AudioDownloadException("Audio file is unavailable; manual transcript confirmation is required.");
         }
-        long maxAudioBytes = Math.max(1L, properties.getMaxAudioBytes());
+        InterviewVoiceAudioValidator.validateDuration(request.getAudioDurationMs(), properties.getMaxAudioDuration());
+        long maxAudioBytes = effectiveMaxAudioBytes();
         if (file.getFileSize() != null && file.getFileSize() > maxAudioBytes) {
-            throw new AudioTooLargeException("Audio file exceeds ASR size limit; manual transcript confirmation is required.");
+            throw new AudioTooLargeException(
+                    "Audio file exceeds ASR size limit; manual transcript confirmation is required.");
         }
+        String mimeType = InterviewVoiceAudioValidator.validateFile(file, request.getMimeType(), maxAudioBytes);
 
         ResponseEntity<Resource> response;
         try {
@@ -107,19 +114,12 @@ public class HttpAsrService implements AsrService {
         if (response == null || !response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
             throw new AudioDownloadException("Audio file download failed; manual transcript confirmation is required.");
         }
-        byte[] bytes;
-        try (InputStream inputStream = response.getBody().getInputStream()) {
-            bytes = readLimited(inputStream, maxAudioBytes);
+        try {
+            InputStream inputStream = response.getBody().getInputStream();
+            return streamPayload(inputStream, file, request, mimeType, maxAudioBytes);
         } catch (IOException ex) {
             throw new AudioDownloadException("Audio file read failed; manual transcript confirmation is required.", ex);
         }
-        if (bytes.length == 0) {
-            throw new AudioDownloadException("Audio file is empty; manual transcript confirmation is required.");
-        }
-        return new AudioPayload(
-                bytes,
-                firstText(file.getOriginalFilename(), file.getStoredFilename(), "interview-audio-" + request.getFileId()),
-                firstText(file.getMimeType(), request.getMimeType(), MediaType.APPLICATION_OCTET_STREAM_VALUE));
     }
 
     private ResponseEntity<String> callProvider(AsrRequest request, AudioPayload audio) {
@@ -133,8 +133,8 @@ public class HttpAsrService implements AsrService {
             entity = new HttpEntity<>(multipartBody(request, audio), headers);
         }
         RestTemplate restTemplate = restTemplateBuilder
-                .setConnectTimeout(normalizeTimeout(properties.getConnectTimeout(), Duration.ofSeconds(5)))
-                .setReadTimeout(normalizeTimeout(properties.getReadTimeout(), Duration.ofSeconds(60)))
+                .connectTimeout(normalizeTimeout(properties.getConnectTimeout(), Duration.ofSeconds(5)))
+                .readTimeout(normalizeTimeout(properties.getReadTimeout(), Duration.ofSeconds(60)))
                 .build();
         return restTemplate.exchange(URI.create(properties.getEndpoint()), HttpMethod.POST, entity, String.class);
     }
@@ -161,7 +161,7 @@ public class HttpAsrService implements AsrService {
     private MultiValueMap<String, Object> multipartBody(AsrRequest request, AudioPayload audio) {
         InterviewAsrProperties.Multipart multipart = properties.getMultipart();
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        body.add(nonBlank(multipart.getFileField(), "file"), audioResource(audio));
+        body.add(nonBlank(multipart.getFileField(), "file"), audio.resource());
         addIfPresent(body, multipart.getLanguageField(), request.getLanguage());
         addIfPresent(body, multipart.getSceneField(), request.getScene());
         addIfPresent(body, multipart.getRequestIdField(), request.getRequestId());
@@ -173,7 +173,14 @@ public class HttpAsrService implements AsrService {
     private Map<String, Object> jsonBody(AsrRequest request, AudioPayload audio) {
         InterviewAsrProperties.Json json = properties.getJson();
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put(nonBlank(json.getAudioField(), "audioBase64"), Base64.getEncoder().encodeToString(audio.bytes()));
+        byte[] bytes;
+        try {
+            bytes = readLimited(audio.resource().getInputStream(), effectiveJsonMaxAudioBytes());
+        } catch (IOException ex) {
+            throw new AudioDownloadException(
+                    "Audio file read failed; manual transcript confirmation is required.", ex);
+        }
+        body.put(nonBlank(json.getAudioField(), "audioBase64"), Base64.getEncoder().encodeToString(bytes));
         putIfPresent(body, json.getMimeTypeField(), audio.mimeType());
         putIfPresent(body, json.getLanguageField(), request.getLanguage());
         putIfPresent(body, json.getSceneField(), request.getScene());
@@ -181,15 +188,6 @@ public class HttpAsrService implements AsrService {
         putIfPresent(body, json.getTraceIdField(), request.getTraceId());
         putIfPresent(body, json.getModelField(), properties.getModel());
         return body;
-    }
-
-    private ByteArrayResource audioResource(AudioPayload audio) {
-        return new ByteArrayResource(audio.bytes()) {
-            @Override
-            public String getFilename() {
-                return audio.filename();
-            }
-        };
     }
 
     private AsrResult parseProviderResponse(ResponseEntity<String> response) throws IOException {
@@ -276,6 +274,36 @@ public class HttpAsrService implements AsrService {
         return output.toByteArray();
     }
 
+    private AudioPayload streamPayload(InputStream inputStream,
+                                       InnerFileInfoVO file,
+                                       AsrRequest request,
+                                       String mimeType,
+                                       long maxAudioBytes) {
+        String filename = firstText(
+                file.getOriginalFilename(),
+                file.getStoredFilename(),
+                "interview-audio-" + request.getFileId());
+        long contentLength = file.getFileSize() == null ? -1L : file.getFileSize();
+        LimitedInputStream limitedInputStream = new LimitedInputStream(inputStream, maxAudioBytes);
+        Resource resource = new StreamingAudioResource(limitedInputStream, filename, contentLength);
+        return new AudioPayload(resource, limitedInputStream, filename, mimeType);
+    }
+
+    private long effectiveMaxAudioBytes() {
+        if (InterviewAsrProperties.RequestMode.JSON.equals(properties.getRequestMode())) {
+            return effectiveJsonMaxAudioBytes();
+        }
+        return Math.max(1L, properties.getMaxAudioBytes());
+    }
+
+    private long effectiveJsonMaxAudioBytes() {
+        long globalMax = Math.max(1L, properties.getMaxAudioBytes());
+        long jsonMax = properties.getJson() == null
+                ? globalMax
+                : Math.max(1L, properties.getJson().getMaxAudioBytes());
+        return Math.min(globalMax, jsonMax);
+    }
+
     private static Duration normalizeTimeout(Duration value, Duration fallback) {
         return value == null || value.isNegative() || value.isZero() ? fallback : value;
     }
@@ -349,7 +377,74 @@ public class HttpAsrService implements AsrService {
         return reason.length() > 240 ? reason.substring(0, 240) : reason;
     }
 
-    private record AudioPayload(byte[] bytes, String filename, String mimeType) {
+    private record AudioPayload(Resource resource,
+                                InputStream inputStream,
+                                String filename,
+                                String mimeType) implements AutoCloseable {
+
+        @Override
+        public void close() throws IOException {
+            inputStream.close();
+        }
+    }
+
+    private static class StreamingAudioResource extends InputStreamResource {
+
+        private final String filename;
+        private final long contentLength;
+
+        StreamingAudioResource(InputStream inputStream, String filename, long contentLength) {
+            super(inputStream);
+            this.filename = filename;
+            this.contentLength = contentLength;
+        }
+
+        @Override
+        public String getFilename() {
+            return filename;
+        }
+
+        @Override
+        public long contentLength() {
+            return contentLength;
+        }
+    }
+
+    private static class LimitedInputStream extends FilterInputStream {
+
+        private final long maxBytes;
+        private long bytesRead;
+
+        LimitedInputStream(InputStream inputStream, long maxBytes) {
+            super(inputStream);
+            this.maxBytes = Math.max(1L, maxBytes);
+        }
+
+        @Override
+        public int read() throws IOException {
+            int value = super.read();
+            if (value >= 0) {
+                count(1);
+            }
+            return value;
+        }
+
+        @Override
+        public int read(byte[] bytes, int offset, int length) throws IOException {
+            int read = super.read(bytes, offset, length);
+            if (read > 0) {
+                count(read);
+            }
+            return read;
+        }
+
+        private void count(int read) {
+            bytesRead += read;
+            if (bytesRead > maxBytes) {
+                throw new AudioTooLargeException(
+                        "Audio file exceeds ASR size limit; manual transcript confirmation is required.");
+            }
+        }
     }
 
     private static class AudioTooLargeException extends RuntimeException {

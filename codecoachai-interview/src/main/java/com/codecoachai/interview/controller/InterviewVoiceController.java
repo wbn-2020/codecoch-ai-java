@@ -2,6 +2,7 @@ package com.codecoachai.interview.controller;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.interview.domain.dto.InterviewTranscriptConfirmDTO;
+import com.codecoachai.interview.domain.dto.InterviewVoiceDiscardDTO;
 import com.codecoachai.interview.domain.dto.InterviewVoiceSubmissionCreateDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.InterviewTranscriptVO;
@@ -53,8 +54,9 @@ public class InterviewVoiceController {
 
     @PostMapping("/submissions/{submissionId}/discard")
     public Result<Void> discardSubmission(@PathVariable Long id,
-                                          @PathVariable Long submissionId) {
-        interviewVoiceService.discardSubmission(id, submissionId);
+                                          @PathVariable Long submissionId,
+                                          @Valid @RequestBody(required = false) InterviewVoiceDiscardDTO dto) {
+        interviewVoiceService.discardSubmission(id, submissionId, dto);
         return Result.success();
     }
 

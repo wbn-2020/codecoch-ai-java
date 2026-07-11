@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.4</version>
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
 
@@ -37,8 +37,8 @@
         <java.version>17</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <spring-cloud.version>2023.0.1</spring-cloud.version>
-        <spring-cloud-alibaba.version>2023.0.1.0</spring-cloud-alibaba.version>
+        <spring-cloud.version>2025.0.3</spring-cloud.version>
+        <spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <sa-token.version>1.44.0</sa-token.version>
         <knife4j.version>4.5.0</knife4j.version>
@@ -48,11 +48,17 @@
         <rocketmq-spring.version>2.3.0</rocketmq-spring.version>
         <redisson.version>3.27.2</redisson.version>
         <easyexcel.version>4.0.3</easyexcel.version>
-        <poi.version>5.2.5</poi.version>
+        <poi.version>5.4.1</poi.version>
         <pdfbox.version>3.0.3</pdfbox.version>
         <flyway.version>10.10.0</flyway.version>
         <flyway.url>jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&amp;characterEncoding=utf-8&amp;useSSL=false&amp;serverTimezone=Asia/Shanghai&amp;allowPublicKeyRetrieval=true</flyway.url>
         <elasticsearch-client.version>8.14.3</elasticsearch-client.version>
+        <!-- Security patch overrides retained within the current Boot 3 / Java 17 compatibility line. -->
+        <tomcat.version>10.1.56</tomcat.version>
+        <spring-security.version>6.5.11</spring-security.version>
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <netty.version>4.1.135.Final</netty.version>
+        <commons-fileupload.version>1.6.0</commons-fileupload.version>
     </properties>
 
     <dependencyManagement>
@@ -121,6 +127,16 @@
                 <groupId>org.apache.poi</groupId>
                 <artifactId>poi-ooxml</artifactId>
                 <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-scratchpad</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-fileupload</groupId>
+                <artifactId>commons-fileupload</artifactId>
+                <version>${commons-fileupload.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.pdfbox</groupId>

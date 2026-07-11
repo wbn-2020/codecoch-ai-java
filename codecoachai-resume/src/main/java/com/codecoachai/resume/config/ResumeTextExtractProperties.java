@@ -16,7 +16,10 @@ public class ResumeTextExtractProperties {
     private int maxPdfPages = 10;
 
     public long maxSourceFileBytes() {
-        int effectiveMb = maxSourceFileSizeMb <= 0 ? 10 : maxSourceFileSizeMb;
-        return effectiveMb * 1024L * 1024L;
+        return effectiveMaxSourceFileSizeMb() * 1024L * 1024L;
+    }
+
+    public int effectiveMaxSourceFileSizeMb() {
+        return maxSourceFileSizeMb <= 0 ? 10 : maxSourceFileSizeMb;
     }
 }

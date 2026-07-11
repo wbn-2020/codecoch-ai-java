@@ -51,6 +51,7 @@ import com.codecoachai.interview.mapper.StudyPlanSkillRelationMapper;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.mq.StudyPlanMqDispatcher;
 import com.codecoachai.interview.service.StudyPlanService;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -134,6 +135,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (profile == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "当前匹配报告还没有可用的能力画像，请先生成能力画像");
+        }
+        if (!dto.getMatchReportId().equals(profile.getMatchReportId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像与匹配报告不一致");
         }
         StudyPlanGenerateFromGapDTO gapDTO = new StudyPlanGenerateFromGapDTO();
         gapDTO.setProfileId(profile.getProfileId());
@@ -658,9 +662,35 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (!"SUCCESS".equals(profile.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像暂时不可用");
         }
+        validateSkillProfileSource(profile, userId);
         if (profile.getGapItems() == null || profile.getGapItems().isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像还没有可用短板项");
         }
+    }
+
+    private void validateSkillProfileSource(InnerSkillProfileVO profile, Long userId) {
+        String sourceType = profile == null ? null : profile.getSourceType();
+        if ("RESUME_JOB_MATCH".equalsIgnoreCase(sourceType)) {
+            if (profile.getMatchReportId() == null
+                    || (profile.getSourceBizId() != null
+                    && !profile.getMatchReportId().equals(profile.getSourceBizId()))) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源与匹配报告不一致");
+            }
+            return;
+        }
+        if ("INTERVIEW_REPORT".equalsIgnoreCase(sourceType)) {
+            InterviewReport sourceReport = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
+                    .eq(InterviewReport::getSessionId, profile.getSourceBizId())
+                    .eq(InterviewReport::getUserId, userId)
+                    .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                    .orderByDesc(InterviewReport::getId)
+                    .last("limit 1"));
+            if (!InterviewReportTrustPolicy.isTrustedForFormalAction(sourceReport)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源报告可信度不足，不能生成学习计划");
+            }
+            return;
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源不可信，不能生成学习计划");
     }
 
     private List<InnerSkillGapItemVO> resolveSelectedGaps(InnerSkillProfileVO profile, List<Long> gapItemIds) {
@@ -891,6 +921,10 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
         if (!ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "面试报告尚未生成完成");
+        }
+        if (!InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "面试报告可信度不足，不能生成正式学习计划，请补充回答后重新生成报告");
         }
         return report;
     }

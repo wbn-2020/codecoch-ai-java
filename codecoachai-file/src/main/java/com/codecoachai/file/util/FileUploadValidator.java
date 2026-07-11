@@ -1,5 +1,7 @@
 package com.codecoachai.file.util;
 
+import static java.util.Map.entry;
+
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import java.io.IOException;
@@ -8,7 +10,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import static java.util.Map.entry;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -40,14 +41,17 @@ public final class FileUploadValidator {
     private FileUploadValidator() {
     }
 
-    public static void validateContent(MultipartFile file, String fileExt) {
+    public static void validateContent(MultipartFile file, String bizType, String fileExt) {
         String ext = normalizeExt(fileExt);
-        validateMimeType(file.getContentType(), ext);
+        validateMimeType(file.getContentType(), ext, FileBizTypes.isInterviewVoice(bizType));
         validateFileHeader(file, ext);
     }
 
-    private static void validateMimeType(String contentType, String fileExt) {
+    private static void validateMimeType(String contentType, String fileExt, boolean explicitMimeRequired) {
         if (!StringUtils.hasText(contentType)) {
+            if (explicitMimeRequired) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice audio MIME type is required.");
+            }
             return;
         }
         String normalized = contentType.toLowerCase(Locale.ROOT);
@@ -56,11 +60,14 @@ public final class FileUploadValidator {
             normalized = normalized.substring(0, semicolon).trim();
         }
         if (GENERIC_MIME_TYPES.contains(normalized)) {
+            if (explicitMimeRequired) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice audio MIME type must be explicit.");
+            }
             return;
         }
         Set<String> allowed = ALLOWED_MIME_TYPES.get(fileExt);
         if (allowed != null && !allowed.contains(normalized)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件类型不支持，请上传 PDF、Word 或文本文件。");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File MIME type does not match its extension.");
         }
     }
 
@@ -69,10 +76,10 @@ public final class FileUploadValidator {
         try (InputStream inputStream = file.getInputStream()) {
             header = inputStream.readNBytes(PROBE_BYTES);
         } catch (IOException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容读取失败，请重新选择文件后再试。");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File content could not be read.");
         }
         if (header.length == 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件为空，请上传有效文件。");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File content is empty.");
         }
 
         boolean valid = switch (fileExt) {
@@ -92,7 +99,7 @@ public final class FileUploadValidator {
             default -> false;
         };
         if (!valid) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件内容与扩展名不匹配，请确认文件格式后重新上传。");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File content does not match its extension.");
         }
     }
 
@@ -111,10 +118,7 @@ public final class FileUploadValidator {
     private static boolean looksLikeText(byte[] bytes) {
         for (byte value : bytes) {
             int unsigned = value & 0xFF;
-            if (unsigned == 0) {
-                return false;
-            }
-            if (unsigned < 0x09) {
+            if (unsigned == 0 || unsigned < 0x09) {
                 return false;
             }
         }
@@ -137,7 +141,7 @@ public final class FileUploadValidator {
 
     private static String normalizeExt(String fileExt) {
         if (!StringUtils.hasText(fileExt)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件扩展名不能为空。");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File extension is required.");
         }
         return fileExt.toLowerCase(Locale.ROOT);
     }

@@ -7,6 +7,7 @@ import com.codecoachai.interview.feign.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.interview.feign.vo.InnerProjectEvidenceTrainingContextVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
+import com.codecoachai.interview.feign.vo.InnerJobApplicationPackageVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
 import com.codecoachai.interview.feign.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
@@ -26,6 +27,9 @@ public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/default")
     Result<InnerResumeDetailVO> getDefaultResume();
+
+    @GetMapping("/application-packages/{id}")
+    Result<InnerJobApplicationPackageVO> getApplicationPackage(@PathVariable("id") Long id);
 
     @GetMapping("/inner/applications/users/{userId}/applications/{applicationId}/summary")
     Result<InnerJobApplicationSummaryVO> getApplicationSummary(@PathVariable("userId") Long userId,

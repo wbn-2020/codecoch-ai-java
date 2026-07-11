@@ -1,7 +1,7 @@
 package com.codecoachai.ai.agent.config;
 
-import java.util.concurrent.ThreadPoolExecutor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Component;
 
@@ -16,16 +16,10 @@ public class KnowledgeIndexExecutor {
 
     private final ThreadPoolTaskExecutor executor;
 
-    public KnowledgeIndexExecutor() {
-        this.executor = new ThreadPoolTaskExecutor();
-        this.executor.setCorePoolSize(2);
-        this.executor.setMaxPoolSize(4);
-        this.executor.setQueueCapacity(256);
-        this.executor.setThreadNamePrefix("knowledge-index-");
-        this.executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        this.executor.setWaitForTasksToCompleteOnShutdown(true);
-        this.executor.setAwaitTerminationSeconds(30);
-        this.executor.initialize();
+    public KnowledgeIndexExecutor(
+            @Qualifier(KnowledgeIndexExecutorConfig.KNOWLEDGE_INDEX_TASK_EXECUTOR)
+            ThreadPoolTaskExecutor executor) {
+        this.executor = executor;
     }
 
     /**

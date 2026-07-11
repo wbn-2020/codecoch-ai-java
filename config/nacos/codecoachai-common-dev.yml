@@ -27,10 +27,10 @@ spring:
           max-active: 16
           max-idle: 8
           min-idle: 2
-  # Flyway（默认关闭，由专门服务执行迁移；也可在 system 服务里开启）
+  # Flyway（业务服务保持关闭，由 Docker 一次性 migration job 或部署流水线统一执行，避免多服务并发迁移）
   flyway:
     enabled: false
-    locations: classpath:db/migration
+    locations: filesystem:sql/migration
     baseline-on-migrate: true
     baseline-version: 2.999
     table: flyway_schema_history

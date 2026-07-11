@@ -19,6 +19,7 @@ import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
+import com.codecoachai.resume.config.ResumeTextExtractProperties;
 import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
@@ -27,6 +28,7 @@ import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeMqDispatcher;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -73,6 +75,8 @@ class ResumeServiceImplTest {
     private ResumeMqDispatcher resumeMqDispatcher;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock
+    private ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
 
     private ResumeServiceImpl service;
 
@@ -105,7 +109,9 @@ class ResumeServiceImplTest {
                 new ObjectMapper(),
                 transactionTemplate,
                 Optional.of(resumeMqDispatcher),
-                agentBusinessActionNotifier);
+                agentBusinessActionNotifier,
+                new ResumeTextExtractProperties(),
+                resumeSearchSyncOutboxService);
     }
 
     @Test

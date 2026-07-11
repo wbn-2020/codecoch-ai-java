@@ -199,6 +199,35 @@ class StudyPlanServiceImplTest {
         assertTrue(relationSqlSegment.contains("deleted"));
     }
 
+    @Test
+    void generateRejectsFallbackOrSampleInsufficientReport() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InterviewReport report = generatedReport();
+        report.setRubricScores("[{\"sampleInsufficient\":true}]");
+        when(reportMapper.selectOne(any())).thenReturn(report);
+
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+
+        assertThrows(BusinessException.class, () -> service.generate(dto));
+    }
+
+    @Test
+    void generateRejectsReportWithUntrustedEvidenceSource() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InterviewReport report = generatedReport();
+        report.setAdviceEvidence("""
+                [{"title":"unsafe","sampleInsufficient":false,
+                  "evidenceSources":[{"sourceType":"CLIENT","sourceId":1,"sourceSummary":"client payload"}]}]
+                """);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+
+        assertThrows(BusinessException.class, () -> service.generate(dto));
+    }
+
     private StudyPlan activePlan() {
         StudyPlan plan = new StudyPlan();
         plan.setId(PLAN_ID);
@@ -234,6 +263,10 @@ class StudyPlanServiceImplTest {
         report.setUserId(USER_ID);
         report.setSessionId(4001L);
         report.setStatus(ReportStatusEnum.GENERATED.name());
+        report.setTotalScore(80);
+        report.setSummary("Trusted interview report");
+        report.setReportContent("Structured trusted report content");
+        report.setGeneratedAt(UPDATED_AT);
         return report;
     }
 }

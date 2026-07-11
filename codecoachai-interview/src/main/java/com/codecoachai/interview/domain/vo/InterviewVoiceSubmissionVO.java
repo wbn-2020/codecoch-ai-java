@@ -17,6 +17,10 @@ public class InterviewVoiceSubmissionVO {
     private String traceId;
     private Boolean fallback;
     private String fallbackReason;
+    private String fileDeleteStatus;
+    private String fileDeleteReason;
+    private LocalDateTime fileDeleteRequestedAt;
+    private LocalDateTime fileDeletedAt;
     private InterviewTranscriptVO transcript;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

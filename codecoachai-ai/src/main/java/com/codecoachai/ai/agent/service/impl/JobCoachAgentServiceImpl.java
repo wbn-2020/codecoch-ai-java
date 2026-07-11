@@ -1810,7 +1810,10 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         if (normalized == AiResultSourceEnum.FALLBACK || normalized == AiResultSourceEnum.DEGRADED) {
             return REVIEW_SOURCE_FALLBACK_LABEL;
         }
-        return REVIEW_SOURCE_RULE_LABEL;
+        if (normalized == AiResultSourceEnum.RULE) {
+            return REVIEW_SOURCE_RULE_LABEL;
+        }
+        return normalized.getLabel();
     }
 
     private boolean isFallbackOrDegradedSource(String source) {

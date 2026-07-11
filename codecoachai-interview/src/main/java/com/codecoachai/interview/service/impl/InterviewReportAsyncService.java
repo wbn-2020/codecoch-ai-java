@@ -1,6 +1,7 @@
 package com.codecoachai.interview.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
@@ -22,6 +23,7 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -91,7 +93,7 @@ public class InterviewReportAsyncService {
                             sessionId, reportId);
                     return;
                 }
-                markReportSampleInsufficient(session, current);
+                markReportSampleInsufficient(session, current, generationToken);
                 return;
             }
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(buildReportDTO(session, messages)));
@@ -114,10 +116,14 @@ public class InterviewReportAsyncService {
         }
         report.setStatus(ReportStatusEnum.GENERATED.name());
         applyReportContent(report, aiReport, messages);
-        if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             applyLearningFeedback(report, messages);
         }
-        saveReport(report);
+        if (!updateCurrentReportAttempt(report, generationToken)) {
+            log.info("Skip stale async report success CAS, sessionId={}, reportId={}",
+                    session.getId(), reportId);
+            return;
+        }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
         if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
@@ -148,7 +154,11 @@ public class InterviewReportAsyncService {
             report.setStatus(ReportStatusEnum.FAILED.name());
             report.setTotalScore(null);
             report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
-            saveReport(report);
+            if (!updateCurrentReportAttempt(report, generationToken)) {
+                log.info("Skip stale async report failure CAS, sessionId={}, reportId={}",
+                        session.getId(), reportId);
+                return;
+            }
             session.setStatus(InterviewStatusEnum.FAILED.name());
             session.setReportStatus(ReportStatusEnum.FAILED.name());
             session.setTotalScore(null);
@@ -941,7 +951,8 @@ public class InterviewReportAsyncService {
         report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
     }
 
-    private void markReportSampleInsufficient(InterviewSession session, InterviewReport report) {
+    private void markReportSampleInsufficient(
+            InterviewSession session, InterviewReport report, String generationToken) {
         report.setUserId(session.getUserId());
         report.setStatus(ReportStatusEnum.FAILED.name());
         report.setTotalScore(null);
@@ -959,7 +970,9 @@ public class InterviewReportAsyncService {
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
         report.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
-        saveReport(report);
+        if (!updateCurrentReportAttempt(report, generationToken)) {
+            return;
+        }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
         session.setReportStatus(ReportStatusEnum.FAILED.name());
@@ -987,8 +1000,25 @@ public class InterviewReportAsyncService {
         }
     }
 
+    private boolean updateCurrentReportAttempt(InterviewReport report, String generationToken) {
+        if (report == null || report.getId() == null || report.getSessionId() == null) {
+            return false;
+        }
+        LambdaUpdateWrapper<InterviewReport> wrapper = new LambdaUpdateWrapper<InterviewReport>()
+                .eq(InterviewReport::getId, report.getId())
+                .eq(InterviewReport::getSessionId, report.getSessionId())
+                .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATING.name())
+                .eq(InterviewReport::getDeleted, CommonConstants.NO);
+        if (StringUtils.hasText(generationToken)) {
+            wrapper.eq(InterviewReport::getGenerationToken, generationToken);
+        } else {
+            wrapper.isNull(InterviewReport::getGenerationToken);
+        }
+        return reportMapper.update(report, wrapper) == 1;
+    }
+
     private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
-        if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (session == null || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             return;
         }
         agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),

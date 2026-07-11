@@ -11,10 +11,12 @@ import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -45,6 +47,7 @@ import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
+import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
 import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
@@ -150,6 +153,8 @@ class InterviewServiceImplTest {
                 new ObjectMapper(),
                 new TransactionTemplate(new FlaggingTransactionManager()));
         service = transactionalProxy(target);
+        lenient().when(sessionMapper.update(any(), any(Wrapper.class))).thenReturn(1);
+        lenient().when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
         LoginUserContext.setLoginUser(LoginUser.builder()
                 .userId(10L)
                 .username("tester")
@@ -172,6 +177,10 @@ class InterviewServiceImplTest {
         when(resumeFeignClient.getApplicationSummary(10L, 501L)).thenReturn(Result.success(application));
         when(resumeFeignClient.getSuccessResumeJobMatchReport(800L)).thenReturn(Result.success(matchReport()));
         when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(targetJob()));
+        InnerResumeDetailVO resume = new InnerResumeDetailVO();
+        resume.setId(100L);
+        resume.setUserId(10L);
+        when(resumeFeignClient.getResume(100L)).thenReturn(Result.success(resume));
         when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
             InterviewSession session = invocation.getArgument(0);
             session.setId(1L);
@@ -433,7 +442,7 @@ class InterviewServiceImplTest {
         AtomicReference<InterviewReport> latest = new AtomicReference<>(existing);
         when(sessionMapper.selectById(1L)).thenReturn(session);
         when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
-        when(reportMapper.updateById(any(InterviewReport.class))).thenAnswer(invocation -> {
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenAnswer(invocation -> {
             latest.set(invocation.getArgument(0));
             return 1;
         });
@@ -446,8 +455,10 @@ class InterviewServiceImplTest {
 
         assertEquals(88L, result.getReportId());
         verify(reportMapper, never()).insert(any(InterviewReport.class));
-        verify(reportMapper, org.mockito.Mockito.atLeastOnce()).updateById(org.mockito.ArgumentMatchers.<InterviewReport>argThat(report -> report.getId().equals(88L)
-                && ReportStatusEnum.GENERATED.name().equals(report.getStatus())));
+        verify(reportMapper, org.mockito.Mockito.atLeastOnce()).update(
+                org.mockito.ArgumentMatchers.<InterviewReport>argThat(report -> report.getId().equals(88L)
+                        && ReportStatusEnum.GENERATED.name().equals(report.getStatus())),
+                any(Wrapper.class));
     }
 
     @Test
@@ -548,6 +559,7 @@ class InterviewServiceImplTest {
         summary.setUserId(userId);
         summary.setTargetJobId(300L);
         summary.setMatchReportId(800L);
+        summary.setResumeVersionId(200L);
         return summary;
     }
 
@@ -563,7 +575,10 @@ class InterviewServiceImplTest {
         InnerResumeJobMatchReportVO report = new InnerResumeJobMatchReportVO();
         report.setReportId(800L);
         report.setUserId(10L);
+        report.setResumeId(100L);
+        report.setResumeVersionId(200L);
         report.setTargetJobId(300L);
+        report.setJdAnalysisId(400L);
         report.setStatus("SUCCESS");
         return report;
     }
@@ -713,6 +728,13 @@ class InterviewServiceImplTest {
         vo.setSuggestions("[\"Review cache consistency\"]");
         vo.setReviewSuggestions("[\"Practice one follow-up\"]");
         vo.setQaReview("[{\"questionContent\":\"How do you keep Redis and MySQL consistent?\",\"userAnswer\":\"Use delayed double delete\"}]");
+        vo.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]");
+        vo.setAdviceEvidence("""
+                [{"title":"Practice cache consistency","evidenceSources":[
+                  {"sourceType":"INTERVIEW_REPORT","sourceId":88,"sourceSummary":"Report evidence"}
+                ]}]
+                """);
+        vo.setAbilityProfileUpdates("[]");
         return vo;
     }
 

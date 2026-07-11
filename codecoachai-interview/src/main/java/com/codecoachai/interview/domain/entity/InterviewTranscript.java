@@ -25,6 +25,7 @@ public class InterviewTranscript extends BaseEntity {
     private Boolean fallback;
     private String fallbackReason;
     private String traceId;
+    private String answerSource;
     private LocalDateTime confirmedAt;
     private Long submittedAnswerMessageId;
     private LocalDateTime submittedAt;

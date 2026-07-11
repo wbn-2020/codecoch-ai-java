@@ -15,6 +15,7 @@ public class InterviewMessage extends BaseEntity {
     private Long questionId;
     private Long questionGroupId;
     private Long parentMessageId;
+    private String generationKey;
     private String role;
     private String messageType;
     private String content;

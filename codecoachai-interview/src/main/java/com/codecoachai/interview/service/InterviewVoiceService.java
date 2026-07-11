@@ -1,6 +1,7 @@
 package com.codecoachai.interview.service;
 
 import com.codecoachai.interview.domain.dto.InterviewTranscriptConfirmDTO;
+import com.codecoachai.interview.domain.dto.InterviewVoiceDiscardDTO;
 import com.codecoachai.interview.domain.dto.InterviewVoiceSubmissionCreateDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.vo.InterviewTranscriptVO;
@@ -18,7 +19,7 @@ public interface InterviewVoiceService {
 
     InterviewTranscriptVO confirmTranscript(Long sessionId, Long transcriptId, InterviewTranscriptConfirmDTO dto);
 
-    void discardSubmission(Long sessionId, Long submissionId);
+    void discardSubmission(Long sessionId, Long submissionId, InterviewVoiceDiscardDTO dto);
 
     SubmitInterviewAnswerDTO buildSubmitAnswerDTO(Long sessionId, Long transcriptId);
 

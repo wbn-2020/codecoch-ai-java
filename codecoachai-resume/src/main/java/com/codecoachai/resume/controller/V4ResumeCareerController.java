@@ -117,9 +117,12 @@ public class V4ResumeCareerController {
     }
 
     @GetMapping("/applications")
-    public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status) {
+    public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status,
+                                                           @RequestParam(required = false) Integer page,
+                                                           @RequestParam(required = false) Integer size,
+                                                           @RequestParam(required = false) String keyword) {
         SecurityAssert.requireLoginUserId();
-        return Result.success(v4ResumeCareerService.listApplications(status));
+        return Result.success(v4ResumeCareerService.listApplications(status, page, size, keyword));
     }
 
     @GetMapping("/applications/stats")

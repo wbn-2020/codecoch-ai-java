@@ -99,7 +99,7 @@ class InterviewConvertTest {
     }
 
     @Test
-    void generatedReportBuildsEvidenceBackedNextActionsFromAdviceEvidence() {
+    void sampleInsufficientAdviceDoesNotDriveFormalNextActions() {
         InterviewReport report = generatedReport();
         report.setAdviceEvidence("""
                 [
@@ -109,10 +109,22 @@ class InterviewConvertTest {
 
         List<InterviewReportNextActionVO> actions = InterviewConvert.toReportVO(report).getNextActions();
 
-        assertTrue(actions.stream().anyMatch(action -> "AI_ADVICE".equals(action.getActionType())
-                && "补充项目量化结果".equals(action.getTitle())
-                && "INTERVIEW_REPORT".equals(action.getRelatedBizType())
-                && action.getEvidence().contains("可落地性 2/5")));
+        assertTrue(actions.isEmpty());
+    }
+
+    @Test
+    void untrustedAdviceSourceDoesNotDriveFormalNextActions() {
+        InterviewReport report = generatedReport();
+        report.setAdviceEvidence("""
+                [
+                  {"title":"客户端直接指定行动","sampleInsufficient":false,"evidenceSources":[{"sourceType":"CLIENT","sourceId":88,"sourceSummary":"客户端输入"}]}
+                ]
+                """);
+
+        InterviewReportVO vo = InterviewConvert.toReportVO(report);
+
+        assertTrue(vo.getNextActions().isEmpty());
+        assertEquals("PARTIAL", vo.getTrustStatus());
     }
 
     private static InterviewReport generatedReport() {

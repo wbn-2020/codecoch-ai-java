@@ -17,13 +17,17 @@ import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
+import com.codecoachai.resume.domain.vo.ResumeSearchReindexVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import java.util.List;
+import java.util.Map;
 import org.springframework.web.multipart.MultipartFile;
 
 public interface ResumeService {
 
     List<ResumeListVO> listResumes();
+
+    List<ResumeListVO> listResumes(Integer page, Integer size, String keyword);
 
     ResumeDetailVO createResume(ResumeSaveDTO dto);
 
@@ -72,4 +76,8 @@ public interface ResumeService {
     InnerResumeOptimizeRecordVO getInnerOptimizeRecord(Long recordId);
 
     ResumeOptimizeRecordAgentEvidenceVO getOptimizeRecordEvidence(Long userId, Long recordId);
+
+    Map<String, Object> getSearchDocument(Long id);
+
+    ResumeSearchReindexVO reindexSearchDocuments(Long afterId, Integer batchSize);
 }

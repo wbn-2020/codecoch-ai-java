@@ -8,8 +8,10 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.interview.config.InterviewAsrProperties;
 import com.codecoachai.interview.domain.dto.AsrRequest;
 import com.codecoachai.interview.domain.dto.InterviewTranscriptConfirmDTO;
+import com.codecoachai.interview.domain.dto.InterviewVoiceDiscardDTO;
 import com.codecoachai.interview.domain.dto.InterviewVoiceSubmissionCreateDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
@@ -17,6 +19,7 @@ import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.InterviewTranscript;
 import com.codecoachai.interview.domain.entity.InterviewVoiceSubmission;
 import com.codecoachai.interview.domain.enums.InterviewTranscriptStatusEnum;
+import com.codecoachai.interview.domain.enums.InterviewStatusEnum;
 import com.codecoachai.interview.domain.enums.InterviewVoiceStatusEnum;
 import com.codecoachai.interview.domain.vo.AsrResult;
 import com.codecoachai.interview.domain.vo.InterviewTranscriptVO;
@@ -49,6 +52,12 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     private static final String BIZ_TYPE_INTERVIEW_VOICE = "INTERVIEW_VOICE";
     private static final String ANSWER_SOURCE_VOICE = "VOICE_TRANSCRIPT";
     private static final String ANSWER_SOURCE_MANUAL_TRANSCRIPT = "MANUAL_TRANSCRIPT";
+    private static final String ANSWER_SOURCE_VOICE_WITH_TEXT = "VOICE_TRANSCRIPT_WITH_TEXT";
+    private static final String ANSWER_SOURCE_MANUAL_TRANSCRIPT_WITH_TEXT = "MANUAL_TRANSCRIPT_WITH_TEXT";
+    private static final String FILE_DELETE_STATUS_RETAINED = "RETAINED";
+    private static final String FILE_DELETE_STATUS_PENDING = "DELETE_PENDING";
+    private static final String FILE_DELETE_STATUS_DELETED = "DELETED";
+    private static final String FILE_DELETE_STATUS_FAILED = "DELETE_FAILED";
     private static final BigDecimal LOW_CONFIDENCE_THRESHOLD = new BigDecimal("0.75");
     private static final int MAX_CONFIRMED_TEXT_LENGTH = 5000;
     private static final int TRANSCRIBING_RECLAIM_MINUTES = 15;
@@ -59,6 +68,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     private final InterviewTranscriptMapper transcriptMapper;
     private final FileFeignClient fileFeignClient;
     private final AsrService asrService;
+    private final InterviewAsrProperties asrProperties;
     private final TransactionTemplate transactionTemplate;
 
     @Override
@@ -68,9 +78,9 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         InterviewSession session = requireOwnedSession(sessionId, userId);
         InterviewMessage questionMessage = requireCurrentQuestionMessage(session, dto.getQuestionMessageId(), dto.getQuestionId());
         InnerFileInfoVO file = FeignResultUtils.unwrap(fileFeignClient.detail(dto.getFileId(), userId, BIZ_TYPE_INTERVIEW_VOICE));
-        if (file == null || !BIZ_TYPE_INTERVIEW_VOICE.equalsIgnoreCase(file.getBizType())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice audio file is unavailable");
-        }
+        InterviewVoiceAudioValidator.validateDuration(dto.getAudioDurationMs(), asrProperties.getMaxAudioDuration());
+        String serverMimeType = InterviewVoiceAudioValidator.validateFile(
+                file, dto.getMimeType(), asrProperties.getMaxAudioBytes());
 
         InterviewVoiceSubmission submission = new InterviewVoiceSubmission();
         submission.setUserId(userId);
@@ -78,11 +88,12 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         submission.setQuestionMessageId(questionMessage.getId());
         submission.setQuestionId(questionMessage.getQuestionId());
         submission.setFileId(file.getId());
-        submission.setAudioDurationMs(normalizePositive(dto.getAudioDurationMs()));
-        submission.setMimeType(firstText(dto.getMimeType(), file.getMimeType()));
+        submission.setAudioDurationMs(dto.getAudioDurationMs());
+        submission.setMimeType(serverMimeType);
         submission.setVoiceStatus(InterviewVoiceStatusEnum.UPLOADED.name());
         submission.setTraceId(StringUtils.hasText(dto.getTraceId()) ? dto.getTraceId().trim() : newTraceId());
         submission.setFallback(Boolean.FALSE);
+        submission.setFileDeleteStatus(FILE_DELETE_STATUS_RETAINED);
         voiceSubmissionMapper.insert(submission);
         log.info("Interview voice submission created sessionId={} submissionId={} fileId={} traceId={}",
                 session.getId(), submission.getId(), file.getId(), submission.getTraceId());
@@ -202,9 +213,11 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     @Transactional(rollbackFor = Exception.class)
     public InterviewTranscriptVO confirmTranscript(Long sessionId, Long transcriptId, InterviewTranscriptConfirmDTO dto) {
         Long userId = requireUserId();
+        InterviewSession session = requireOwnedSession(sessionId, userId);
         InterviewTranscript transcript = requireOwnedTranscript(sessionId, transcriptId, userId);
         InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, transcript.getVoiceSubmissionId(), userId);
-        if (InterviewVoiceStatusEnum.DISCARDED.name().equals(submission.getVoiceStatus())) {
+        requireConfirmableCurrentQuestion(session, transcript, submission);
+        if (isDiscarded(submission)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission has been discarded");
         }
         if (transcript.getSubmittedAnswerMessageId() != null) {
@@ -224,6 +237,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         }
 
         transcript.setConfirmedText(confirmedText);
+        transcript.setAnswerSource(null);
         transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
         transcript.setConfirmedAt(LocalDateTime.now());
         transcriptMapper.updateById(transcript);
@@ -236,22 +250,14 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public void discardSubmission(Long sessionId, Long submissionId) {
+    public void discardSubmission(Long sessionId, Long submissionId, InterviewVoiceDiscardDTO dto) {
         Long userId = requireUserId();
-        InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, submissionId, userId);
-        if (InterviewVoiceStatusEnum.CONFIRMED.name().equals(submission.getVoiceStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Confirmed voice submission cannot be discarded");
+        InterviewVoiceSubmission submission = transactionTemplate.execute(
+                status -> markDiscarded(sessionId, submissionId, userId, dto));
+        if (submission == null || FILE_DELETE_STATUS_DELETED.equals(submission.getFileDeleteStatus())) {
+            return;
         }
-        submission.setVoiceStatus(InterviewVoiceStatusEnum.DISCARDED.name());
-        voiceSubmissionMapper.updateById(submission);
-        transcriptMapper.update(null, new LambdaUpdateWrapper<InterviewTranscript>()
-                .eq(InterviewTranscript::getVoiceSubmissionId, submission.getId())
-                .eq(InterviewTranscript::getUserId, userId)
-                .eq(InterviewTranscript::getDeleted, CommonConstants.NO)
-                .ne(InterviewTranscript::getTranscriptStatus, InterviewTranscriptStatusEnum.CONFIRMED.name())
-                .set(InterviewTranscript::getTranscriptStatus, InterviewTranscriptStatusEnum.REJECTED.name()));
-        log.info("Interview voice submission discarded sessionId={} submissionId={}", sessionId, submissionId);
+        deleteDiscardedFile(submission, userId);
     }
 
     @Override
@@ -293,14 +299,21 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         if (dto.getQuestionId() != null && transcript.getQuestionId() != null && !dto.getQuestionId().equals(transcript.getQuestionId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Transcript does not match current question");
         }
-        String answerText = dto.getAnswerContent() == null ? "" : dto.getAnswerContent().trim();
-        if (!answerText.equals(transcript.getConfirmedText().trim())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice transcript must be confirmed again after editing");
+        String answerText = normalizeAnswerText(dto.getAnswerContent());
+        String confirmedText = normalizeAnswerText(transcript.getConfirmedText());
+        if (!containsConfirmedTranscript(answerText, confirmedText)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Answer must keep the complete confirmed voice transcript");
         }
         InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, transcript.getVoiceSubmissionId(), userId);
         if (!InterviewVoiceStatusEnum.CONFIRMED.name().equals(submission.getVoiceStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission is not confirmed");
         }
+        boolean combinedWithText = !answerText.equals(confirmedText);
+        String answerSource = resolveAnswerSource(Boolean.TRUE.equals(transcript.getFallback()), combinedWithText);
+        dto.setAnswerSource(answerSource);
+        transcript.setAnswerSource(answerSource);
+        transcriptMapper.updateById(transcript);
         return toTranscriptVO(transcript);
     }
 
@@ -332,7 +345,8 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
                 .eq(InterviewTranscript::getDeleted, CommonConstants.NO)
                 .eq(InterviewTranscript::getSubmittedAnswerMessageId, answerMessageId)
                 .set(InterviewTranscript::getSubmittedAnswerMessageId, null)
-                .set(InterviewTranscript::getSubmittedAt, null));
+                .set(InterviewTranscript::getSubmittedAt, null)
+                .set(InterviewTranscript::getAnswerSource, null));
     }
 
     @Override
@@ -365,14 +379,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     }
 
     private InterviewMessage requireCurrentQuestionMessage(InterviewSession session, Long messageId, Long questionId) {
-        InterviewMessage current = messageMapper.selectOne(new LambdaQueryWrapper<InterviewMessage>()
-                .eq(InterviewMessage::getSessionId, session.getId())
-                .eq(InterviewMessage::getRole, "AI")
-                .in(InterviewMessage::getMessageType, List.of("QUESTION", "FOLLOW_UP"))
-                .eq(InterviewMessage::getDeleted, CommonConstants.NO)
-                .orderByDesc(InterviewMessage::getCreatedAt)
-                .orderByDesc(InterviewMessage::getId)
-                .last("limit 1"));
+        InterviewMessage current = currentQuestionMessage(session.getId());
         if (current == null || messageId == null || !messageId.equals(current.getId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission must target the current question");
         }
@@ -380,6 +387,144 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission question mismatch");
         }
         return current;
+    }
+
+    private InterviewMessage currentQuestionMessage(Long sessionId) {
+        return messageMapper.selectOne(new LambdaQueryWrapper<InterviewMessage>()
+                .eq(InterviewMessage::getSessionId, sessionId)
+                .eq(InterviewMessage::getRole, "AI")
+                .in(InterviewMessage::getMessageType, List.of("QUESTION", "FOLLOW_UP"))
+                .eq(InterviewMessage::getDeleted, CommonConstants.NO)
+                .orderByDesc(InterviewMessage::getCreatedAt)
+                .orderByDesc(InterviewMessage::getId)
+                .last("limit 1"));
+    }
+
+    private void requireConfirmableCurrentQuestion(InterviewSession session,
+                                                   InterviewTranscript transcript,
+                                                   InterviewVoiceSubmission submission) {
+        if (!InterviewStatusEnum.WAITING_ANSWER.name().equals(session.getStatus())
+                && !InterviewStatusEnum.IN_PROGRESS.name().equals(session.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Interview is not waiting for the current answer");
+        }
+        InterviewMessage current = requireCurrentQuestionMessage(
+                session, transcript.getQuestionMessageId(), transcript.getQuestionId());
+        if (!current.getId().equals(submission.getQuestionMessageId())
+                || (submission.getQuestionId() != null
+                && current.getQuestionId() != null
+                && !submission.getQuestionId().equals(current.getQuestionId()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice transcript does not match the current question");
+        }
+        Long answerCount = messageMapper.selectCount(new LambdaQueryWrapper<InterviewMessage>()
+                .eq(InterviewMessage::getSessionId, session.getId())
+                .eq(InterviewMessage::getParentMessageId, current.getId())
+                .eq(InterviewMessage::getRole, "USER")
+                .eq(InterviewMessage::getMessageType, "ANSWER")
+                .eq(InterviewMessage::getDeleted, CommonConstants.NO));
+        if (answerCount != null && answerCount > 0L) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Current question has already been answered");
+        }
+        if (!List.of(
+                InterviewVoiceStatusEnum.TRANSCRIBED.name(),
+                InterviewVoiceStatusEnum.TRANSCRIBE_FAILED.name(),
+                InterviewVoiceStatusEnum.CONFIRMED.name()).contains(submission.getVoiceStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission is not ready for confirmation");
+        }
+    }
+
+    private InterviewVoiceSubmission markDiscarded(Long sessionId,
+                                                    Long submissionId,
+                                                    Long userId,
+                                                    InterviewVoiceDiscardDTO dto) {
+        InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, submissionId, userId);
+        if (FILE_DELETE_STATUS_DELETED.equals(submission.getFileDeleteStatus())) {
+            return submission;
+        }
+        List<InterviewTranscript> transcripts = transcriptMapper.selectList(
+                new LambdaQueryWrapper<InterviewTranscript>()
+                        .eq(InterviewTranscript::getVoiceSubmissionId, submission.getId())
+                        .eq(InterviewTranscript::getUserId, userId)
+                        .eq(InterviewTranscript::getDeleted, CommonConstants.NO)
+                        .orderByAsc(InterviewTranscript::getId));
+        if (transcripts.stream().anyMatch(item -> item.getSubmittedAnswerMessageId() != null)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Submitted voice answer cannot be discarded");
+        }
+
+        InterviewSession session = requireOwnedSession(sessionId, userId);
+        String reason = discardReason(dto);
+        boolean stale = isStaleSubmission(session, submission)
+                || "STALE".equals(reason)
+                || "QUESTION_CHANGED".equals(reason);
+        for (InterviewTranscript transcript : transcripts) {
+            transcript.setDraftText(null);
+            transcript.setConfirmedText(null);
+            transcript.setConfidence(null);
+            transcript.setAnswerSource(null);
+            transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.REJECTED.name());
+            transcript.setConfirmedAt(null);
+            transcriptMapper.updateById(transcript);
+        }
+
+        submission.setVoiceStatus(stale
+                ? InterviewVoiceStatusEnum.STALE.name()
+                : InterviewVoiceStatusEnum.DISCARDED.name());
+        submission.setFileDeleteStatus(FILE_DELETE_STATUS_PENDING);
+        submission.setFileDeleteReason(reason);
+        submission.setFileDeleteRequestedAt(LocalDateTime.now());
+        submission.setFileDeletedAt(null);
+        submission.setFileDeleteError(null);
+        voiceSubmissionMapper.updateById(submission);
+        log.info("Interview voice submission cleanup prepared sessionId={} submissionId={} status={} reason={}",
+                sessionId, submissionId, submission.getVoiceStatus(), reason);
+        return submission;
+    }
+
+    private void deleteDiscardedFile(InterviewVoiceSubmission submission, Long userId) {
+        try {
+            FeignResultUtils.unwrap(fileFeignClient.delete(
+                    submission.getFileId(), userId, BIZ_TYPE_INTERVIEW_VOICE));
+            transactionTemplate.executeWithoutResult(status -> recordFileDeletion(
+                    submission, FILE_DELETE_STATUS_DELETED, null));
+            log.info("Interview voice physical file deleted sessionId={} submissionId={} fileId={}",
+                    submission.getSessionId(), submission.getId(), submission.getFileId());
+        } catch (RuntimeException ex) {
+            String failure = safeReason(ex.getMessage(), "physical file deletion failed");
+            transactionTemplate.executeWithoutResult(status -> recordFileDeletion(
+                    submission, FILE_DELETE_STATUS_FAILED, failure));
+            log.warn("Interview voice physical file deletion failed sessionId={} submissionId={} fileId={} failureType={} reason={}",
+                    submission.getSessionId(), submission.getId(), submission.getFileId(),
+                    ex.getClass().getSimpleName(), failure);
+        }
+    }
+
+    private void recordFileDeletion(InterviewVoiceSubmission submission, String deleteStatus, String error) {
+        LambdaUpdateWrapper<InterviewVoiceSubmission> update = new LambdaUpdateWrapper<InterviewVoiceSubmission>()
+                .eq(InterviewVoiceSubmission::getId, submission.getId())
+                .eq(InterviewVoiceSubmission::getSessionId, submission.getSessionId())
+                .eq(InterviewVoiceSubmission::getUserId, submission.getUserId())
+                .eq(InterviewVoiceSubmission::getDeleted, CommonConstants.NO)
+                .set(InterviewVoiceSubmission::getFileDeleteStatus, deleteStatus)
+                .set(InterviewVoiceSubmission::getFileDeleteError, error);
+        if (FILE_DELETE_STATUS_DELETED.equals(deleteStatus)) {
+            update.set(InterviewVoiceSubmission::getFileDeletedAt, LocalDateTime.now());
+        }
+        voiceSubmissionMapper.update(null, update);
+    }
+
+    private boolean isStaleSubmission(InterviewSession session, InterviewVoiceSubmission submission) {
+        if (!InterviewStatusEnum.WAITING_ANSWER.name().equals(session.getStatus())
+                && !InterviewStatusEnum.IN_PROGRESS.name().equals(session.getStatus())) {
+            return true;
+        }
+        InterviewMessage current = currentQuestionMessage(session.getId());
+        return current == null || !current.getId().equals(submission.getQuestionMessageId());
+    }
+
+    private String discardReason(InterviewVoiceDiscardDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getReason())) {
+            return "USER_CANCELLED";
+        }
+        return dto.getReason().trim().toUpperCase();
     }
 
     private InterviewVoiceSubmission requireOwnedSubmission(Long sessionId, Long submissionId, Long userId) {
@@ -411,7 +556,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     private InterviewVoiceSubmission claimTranscribing(Long sessionId, Long submissionId, Long userId) {
         InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, submissionId, userId);
         if (InterviewVoiceStatusEnum.CONFIRMED.name().equals(submission.getVoiceStatus())
-                || InterviewVoiceStatusEnum.DISCARDED.name().equals(submission.getVoiceStatus())) {
+                || isDiscarded(submission)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission cannot be transcribed in current status");
         }
         LocalDateTime reclaimBefore = LocalDateTime.now().minusMinutes(TRANSCRIBING_RECLAIM_MINUTES);
@@ -466,6 +611,30 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         }
     }
 
+    private boolean isDiscarded(InterviewVoiceSubmission submission) {
+        return submission != null && (InterviewVoiceStatusEnum.DISCARDED.name().equals(submission.getVoiceStatus())
+                || InterviewVoiceStatusEnum.STALE.name().equals(submission.getVoiceStatus()));
+    }
+
+    private String normalizeAnswerText(String value) {
+        return value == null ? "" : value.trim().replace("\r\n", "\n");
+    }
+
+    private boolean containsConfirmedTranscript(String answerText, String confirmedText) {
+        return StringUtils.hasText(answerText)
+                && StringUtils.hasText(confirmedText)
+                && answerText.contains(confirmedText);
+    }
+
+    private String resolveAnswerSource(boolean manualFallback, boolean combinedWithText) {
+        if (manualFallback) {
+            return combinedWithText
+                    ? ANSWER_SOURCE_MANUAL_TRANSCRIPT_WITH_TEXT
+                    : ANSWER_SOURCE_MANUAL_TRANSCRIPT;
+        }
+        return combinedWithText ? ANSWER_SOURCE_VOICE_WITH_TEXT : ANSWER_SOURCE_VOICE;
+    }
+
     private InterviewTranscript latestTranscript(Long submissionId) {
         if (submissionId == null) {
             return null;
@@ -490,6 +659,10 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         vo.setTraceId(submission.getTraceId());
         vo.setFallback(Boolean.TRUE.equals(submission.getFallback()));
         vo.setFallbackReason(submission.getFallbackReason());
+        vo.setFileDeleteStatus(submission.getFileDeleteStatus());
+        vo.setFileDeleteReason(submission.getFileDeleteReason());
+        vo.setFileDeleteRequestedAt(submission.getFileDeleteRequestedAt());
+        vo.setFileDeletedAt(submission.getFileDeletedAt());
         vo.setTranscript(toTranscriptVO(transcript));
         vo.setCreatedAt(submission.getCreatedAt());
         vo.setUpdatedAt(submission.getUpdatedAt());
@@ -516,6 +689,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         vo.setFallback(Boolean.TRUE.equals(transcript.getFallback()));
         vo.setFallbackReason(transcript.getFallbackReason());
         vo.setTraceId(transcript.getTraceId());
+        vo.setAnswerSource(transcript.getAnswerSource());
         vo.setConfirmedAt(transcript.getConfirmedAt());
         vo.setSubmittedAnswerMessageId(transcript.getSubmittedAnswerMessageId());
         vo.setSubmittedAt(transcript.getSubmittedAt());
@@ -531,7 +705,11 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         vo.setAnswerMessageId(transcript.getSubmittedAnswerMessageId());
         vo.setQuestionMessageId(transcript.getQuestionMessageId());
         vo.setQuestionId(transcript.getQuestionId());
-        vo.setAnswerSource(Boolean.TRUE.equals(transcript.getFallback()) ? ANSWER_SOURCE_MANUAL_TRANSCRIPT : ANSWER_SOURCE_VOICE);
+        vo.setAnswerSource(firstText(
+                transcript.getAnswerSource(),
+                Boolean.TRUE.equals(transcript.getFallback())
+                        ? ANSWER_SOURCE_MANUAL_TRANSCRIPT
+                        : ANSWER_SOURCE_VOICE));
         vo.setTranscriptStatus(transcript.getTranscriptStatus());
         vo.setConfidence(transcript.getConfidence());
         vo.setLowConfidence(isLowConfidence(transcript.getConfidence(), transcript.getTranscriptStatus()));
@@ -553,10 +731,6 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
 
     private String newTraceId() {
         return "interview-voice-" + UUID.randomUUID().toString().replace("-", "");
-    }
-
-    private Long normalizePositive(Long value) {
-        return value == null || value <= 0 ? null : value;
     }
 
     private BigDecimal normalizeConfidence(BigDecimal value) {

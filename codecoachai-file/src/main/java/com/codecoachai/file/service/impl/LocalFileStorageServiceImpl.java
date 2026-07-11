@@ -78,8 +78,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
         validateExtension(normalizedBizType, fileExt);
-        validateSize(file);
-        FileUploadValidator.validateContent(file, fileExt);
+        validateSize(file, normalizedBizType);
+        FileUploadValidator.validateContent(file, normalizedBizType, fileExt);
 
         Path root = normalizeRoot();
         String storedFilename = UUID.randomUUID() + "." + fileExt;
@@ -111,9 +111,9 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteUserFile(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        deleteRequired(resolveStoragePath(fileInfo.getStoragePath()));
         fileInfoMapper.deleteById(fileInfo.getId());
-        deleteQuietly(resolveStoragePath(fileInfo.getStoragePath()));
-        log.info("Local file compensation deleted fileId={} userId={} bizType={}",
+        log.info("Local file physically deleted fileId={} userId={} bizType={}",
                 fileId, userId, fileInfo.getBizType());
     }
 
@@ -251,8 +251,11 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         }
     }
 
-    private void validateSize(MultipartFile file) {
-        long maxBytes = properties.getMaxSizeMb() * 1024L * 1024L;
+    private void validateSize(MultipartFile file, String bizType) {
+        long maxSizeMb = FileBizTypes.isInterviewVoice(bizType)
+                ? properties.getMaxInterviewVoiceSizeMb()
+                : properties.getMaxSizeMb();
+        long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
         }
@@ -453,6 +456,14 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             }
         } catch (IOException ignored) {
             // Best-effort cleanup after metadata persistence failure.
+        }
+    }
+
+    private void deleteRequired(Path target) {
+        try {
+            Files.deleteIfExists(target);
+        } catch (IOException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Physical file deletion failed.");
         }
     }
 

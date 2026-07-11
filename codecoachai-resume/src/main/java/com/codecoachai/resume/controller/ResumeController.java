@@ -30,6 +30,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestPart;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -41,8 +42,10 @@ public class ResumeController {
     private final ResumeService resumeService;
 
     @GetMapping
-    public Result<List<ResumeListVO>> listResumes() {
-        return Result.success(resumeService.listResumes());
+    public Result<List<ResumeListVO>> listResumes(@RequestParam(required = false) Integer page,
+                                                  @RequestParam(required = false) Integer size,
+                                                  @RequestParam(required = false) String keyword) {
+        return Result.success(resumeService.listResumes(page, size, keyword));
     }
 
     @OperationLog(module = "resume", action = "CREATE_RESUME", description = "Create resume", logResponse = false)

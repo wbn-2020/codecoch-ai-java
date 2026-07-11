@@ -2,6 +2,7 @@ package com.codecoachai.interview.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -21,4 +22,9 @@ public class InterviewVoiceSubmission extends BaseEntity {
     private String traceId;
     private Boolean fallback;
     private String fallbackReason;
+    private String fileDeleteStatus;
+    private String fileDeleteReason;
+    private LocalDateTime fileDeleteRequestedAt;
+    private LocalDateTime fileDeletedAt;
+    private String fileDeleteError;
 }

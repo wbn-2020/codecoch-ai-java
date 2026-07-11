@@ -42,16 +42,20 @@ public final class FileBizTypes {
     public static boolean isExtensionAllowed(String bizType, String fileExt, List<String> configuredExtensions) {
         String normalizedBizType = requireAllowed(bizType);
         String ext = StringUtils.hasText(fileExt) ? fileExt.trim().toLowerCase(Locale.ROOT) : "";
+        if ("INTERVIEW_VOICE".equals(normalizedBizType)) {
+            return INTERVIEW_VOICE_EXTENSIONS.contains(ext);
+        }
+        if (INTERVIEW_VOICE_EXTENSIONS.contains(ext)) {
+            return false;
+        }
         boolean configuredAllowed = configuredExtensions != null && configuredExtensions.stream()
                 .filter(StringUtils::hasText)
                 .map(item -> item.toLowerCase(Locale.ROOT))
                 .anyMatch(ext::equals);
-        if (INTERVIEW_VOICE_EXTENSIONS.contains(ext)) {
-            return "INTERVIEW_VOICE".equals(normalizedBizType);
-        }
-        if (configuredAllowed) {
-            return true;
-        }
-        return false;
+        return configuredAllowed;
+    }
+
+    public static boolean isInterviewVoice(String bizType) {
+        return "INTERVIEW_VOICE".equals(requireAllowed(bizType));
     }
 }
