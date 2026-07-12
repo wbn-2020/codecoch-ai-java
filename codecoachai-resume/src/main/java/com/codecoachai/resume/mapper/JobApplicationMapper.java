@@ -86,4 +86,29 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
     List<JobApplication> selectInsightRange(@Param("userId") Long userId,
                                             @Param("startAt") LocalDateTime startAt,
                                             @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT *
+              FROM job_application
+             WHERE user_id = #{userId}
+               AND deleted = 0
+               AND (applied_at BETWEEN #{startAt} AND #{endAt} OR applied_at IS NULL)
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1001
+            """)
+    List<JobApplication> selectCareerImportCandidatesInDateWindow(
+            @Param("userId") Long userId,
+            @Param("startAt") LocalDateTime startAt,
+            @Param("endAt") LocalDateTime endAt);
+
+    @Select("""
+            SELECT *
+              FROM job_application
+             WHERE user_id = #{userId}
+               AND deleted = 0
+             ORDER BY updated_at DESC, id DESC
+             LIMIT 1001
+            """)
+    List<JobApplication> selectCareerImportCandidatesForUndated(
+            @Param("userId") Long userId);
 }

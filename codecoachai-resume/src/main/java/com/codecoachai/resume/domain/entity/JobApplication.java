@@ -21,4 +21,5 @@ public class JobApplication extends BaseEntity {
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
     private String note;
+    private String importFingerprint;
 }
