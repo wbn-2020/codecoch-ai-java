@@ -61,6 +61,13 @@ public final class InterviewReportTrustPolicy {
                 || containsTrueFlag(report.getAdviceEvidence(), "fallback");
     }
 
+    public static boolean isSampleInsufficient(InterviewReport report) {
+        return report == null
+                || containsTrueFlag(report.getRubricScores(), "sampleInsufficient")
+                || containsTrueFlag(report.getAdviceEvidence(), "sampleInsufficient")
+                || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient");
+    }
+
     public static boolean isTrustedAdvice(Map<String, Object> item, Long reportId) {
         if (item == null
                 || Boolean.TRUE.equals(asBoolean(item.get("fallback")))

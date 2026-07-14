@@ -14,6 +14,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -440,6 +441,17 @@ class CareerImportServiceImplTest {
         assertEquals(801L, result.getRows().get(0).getCalendarEventId());
         verify(calendarEventMapper).selectActiveByExternalUidBinaryForUpdate(
                 10L, "case-sensitive-UID");
+    }
+
+    @Test
+    void exportingErrorsForMissingBatchUsesResourceNotFoundContract() {
+        when(batchMapper.selectById(404L)).thenReturn(null);
+
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> service.exportErrorRowsCsv(404L));
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND.getCode(), error.getCode());
     }
 
     @Test

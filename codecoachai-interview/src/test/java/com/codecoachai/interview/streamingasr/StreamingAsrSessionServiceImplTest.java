@@ -101,9 +101,9 @@ class StreamingAsrSessionServiceImplTest {
     @Test
     void scheduledCleanupRemovesExpiredSessionWithoutAnotherOpenRequest() throws Exception {
         StreamingAsrSessionCreateDTO dto = new StreamingAsrSessionCreateDTO();
-        dto.setTimeoutMs(1L);
+        dto.setTimeoutMs(50L);
         StreamingAsrSessionVO opened = service.open(dto);
-        Thread.sleep(10L);
+        Thread.sleep(75L);
 
         service.cleanupExpiredSessions();
         StreamingAsrSessionVO removed = service.get(opened.getSessionId());

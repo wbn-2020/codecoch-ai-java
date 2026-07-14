@@ -15,6 +15,7 @@ import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.entity.IndustryTemplate;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
+import com.codecoachai.interview.domain.entity.InterviewRemediation;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.InterviewStage;
@@ -31,6 +32,7 @@ import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewReportMissingSkillVO;
+import com.codecoachai.interview.domain.vo.InterviewReportNextActionVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.InterviewTranscriptVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
@@ -59,14 +61,25 @@ import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
+import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.scenario.InterviewScenarioBinding;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
+import com.codecoachai.interview.scenario.ScenarioBindingCreateDTO;
+import com.codecoachai.interview.scenario.ScenarioBindingVO;
+import com.codecoachai.interview.scenario.ScenarioRubricService;
+import com.codecoachai.interview.scenario.ScenarioVersionVO;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.service.InterviewVoiceService;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryService;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewReportComparabilityPolicy;
+import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -120,6 +133,7 @@ public class InterviewServiceImpl implements InterviewService {
     private final InterviewStageMapper stageMapper;
     private final InterviewMessageMapper messageMapper;
     private final InterviewReportMapper reportMapper;
+    private final InterviewRemediationMapper remediationMapper;
     private final QuestionFeignClient questionFeignClient;
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
@@ -128,8 +142,12 @@ public class InterviewServiceImpl implements InterviewService {
     private final InterviewMqDispatcher interviewMqDispatcher;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final InterviewVoiceService interviewVoiceService;
+    private final VoiceDeliverySummaryService voiceDeliverySummaryService;
+    private final ScenarioRubricService scenarioRubricService;
+    private final InterviewScenarioBindingMapper scenarioBindingMapper;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final InterviewReportComparabilityPolicy comparabilityPolicy;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -150,6 +168,9 @@ public class InterviewServiceImpl implements InterviewService {
         resolveDefaultResumeIfNeeded(mode, request);
         validateResumeOwnership(userId, mode, request);
         IndustryTemplateSnapshot industrySnapshot = withRecommendationContext(resolveIndustrySnapshot(request), request);
+        ScenarioVersionVO scenario = request.getScenarioVersionId() == null
+                ? null
+                : scenarioRubricService.getPublishedScenarioVersion(request.getScenarioVersionId());
         List<String> targetSkillCodes = sanitizeStrings(request.getTargetSkillCodes());
         List<Long> projectEvidenceIds = sanitizeLongs(request.getProjectEvidenceIds());
         String trainingContextSummary = buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds);
@@ -184,12 +205,13 @@ public class InterviewServiceImpl implements InterviewService {
         session.setStatus(InterviewStatusEnum.NOT_STARTED.name());
         session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
         session.setAnsweredQuestionCount(0);
-        session.setMaxQuestionCount(normalizeQuestionCount(request.getMaxQuestionCount()));
+        session.setMaxQuestionCount(scenarioQuestionCount(scenario, request.getMaxQuestionCount()));
         session.setCurrentFollowUpCount(0);
         session.setTotalScore(0);
         sessionMapper.insert(session);
 
-        List<InterviewStage> stages = createStages(session);
+        ScenarioBindingVO scenarioBinding = bindScenario(session, scenario);
+        List<InterviewStage> stages = createStages(session, scenario);
         int totalQuestionCount = totalExpectedQuestionCount(stages);
         if (!Integer.valueOf(totalQuestionCount).equals(session.getMaxQuestionCount())) {
             session.setMaxQuestionCount(totalQuestionCount);
@@ -213,6 +235,11 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setIndustryContext(session.getIndustryContext());
         vo.setDifficulty(session.getDifficulty());
         vo.setInterviewerStyle(session.getInterviewerStyle());
+        if (scenarioBinding != null) {
+            vo.setScenarioVersionId(scenarioBinding.getScenarioVersionId());
+            vo.setRubricVersionId(scenarioBinding.getRubricVersionId());
+            vo.setScenarioCode(scenario.getScenarioCode());
+        }
         vo.setBasedOnResume(session.getBasedOnResume());
         vo.setTrainingScene(session.getTrainingScene());
         vo.setTargetSkillDomain(session.getTargetSkillDomain());
@@ -686,19 +713,48 @@ public class InterviewServiceImpl implements InterviewService {
         long actualPageNo = pageNo == null || pageNo < 1 ? 1L : pageNo;
         long actualPageSize = pageSize == null || pageSize < 1 ? 10L : Math.min(pageSize, 100L);
         String trimmedKeyword = StringUtils.hasText(keyword) ? keyword.trim() : null;
+        Long userId = requireCurrentUserId();
         Page<InterviewSession> page = sessionMapper.selectPage(Page.of(actualPageNo, actualPageSize),
                 new LambdaQueryWrapper<InterviewSession>()
-                        .eq(InterviewSession::getUserId, requireCurrentUserId())
+                        .eq(InterviewSession::getUserId, userId)
                         .eq(StringUtils.hasText(status), InterviewSession::getStatus, status)
                         .eq(StringUtils.hasText(reportStatus), InterviewSession::getReportStatus, reportStatus)
                         .and(StringUtils.hasText(trimmedKeyword), wrapper -> wrapper
                                 .like(InterviewSession::getTitle, trimmedKeyword)
                                 .or().like(InterviewSession::getTargetPosition, trimmedKeyword)
                                 .or().like(InterviewSession::getIndustryDirection, trimmedKeyword)
-                                .or().like(InterviewSession::getDifficulty, trimmedKeyword))
+                        .or().like(InterviewSession::getDifficulty, trimmedKeyword))
                         .orderByDesc(InterviewSession::getUpdatedAt));
-        return PageResult.of(page.getRecords().stream().map(InterviewConvert::toListVO).toList(),
+        List<Long> sessionIds = page.getRecords().stream().map(InterviewSession::getId).toList();
+        Map<Long, VoiceDeliverySummaryVO> deliverySummaries =
+                voiceDeliverySummaryService.summaries(userId, sessionIds);
+        Map<Long, InterviewReport> currentReports = currentReports(userId, sessionIds);
+        List<InterviewListVO> records = page.getRecords().stream().map(session -> {
+            InterviewListVO vo = InterviewConvert.toListVO(session);
+            vo.setVoiceDeliverySummary(deliverySummaries.get(session.getId()));
+            InterviewReport report = currentReports.get(session.getId());
+            InterviewReportComparabilityPolicy.Result evaluation = comparabilityPolicy.evaluate(report, session);
+            vo.setReportId(report == null ? null : report.getId());
+            vo.setComparisonAvailable(evaluation.comparable());
+            vo.setComparisonUnavailableReason(evaluation.reasonCode());
+            return vo;
+        }).toList();
+        return PageResult.of(records,
                 page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    private Map<Long, InterviewReport> currentReports(Long userId, List<Long> sessionIds) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, InterviewReport> reports = new LinkedHashMap<>();
+        reportMapper.selectList(new LambdaQueryWrapper<InterviewReport>()
+                        .eq(InterviewReport::getUserId, userId)
+                        .in(InterviewReport::getSessionId, sessionIds)
+                        .eq(InterviewReport::getDeleted, CommonConstants.NO)
+                        .orderByDesc(InterviewReport::getId))
+                .forEach(report -> reports.putIfAbsent(report.getSessionId(), report));
+        return reports;
     }
 
     @Override
@@ -729,6 +785,10 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setTargetLevel(session.getTargetLevel());
         vo.setProjectEvidenceIds(readLongList(session.getProjectEvidenceIds()));
         vo.setFollowUpIntensity(session.getFollowUpIntensity());
+        vo.setSourceReportId(session.getSourceReportId());
+        vo.setSourceRequirementIds(readLongList(session.getSourceRequirementIds()));
+        vo.setPracticePurpose(session.getPracticePurpose());
+        vo.setRemediationStrength(session.getRemediationStrength());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setStages(stages(session.getId()).stream().map(InterviewConvert::toStageVO).toList());
@@ -755,7 +815,7 @@ public class InterviewServiceImpl implements InterviewService {
                 generating.setSummary("面试报告正在生成中，请稍后刷新。");
                 return toReportVO(generating, session);
             }
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Report not generated");
+            throw new BusinessException(ErrorCode.SEMANTIC_VALIDATION_ERROR, "Report not generated");
         }
         List<InterviewMessage> messages = messageEntities(session.getId());
         if (!hasScorableAnswers(messages)) {
@@ -981,6 +1041,57 @@ public class InterviewServiceImpl implements InterviewService {
         InterviewReportVO vo = enrichReportWithJdContext(InterviewConvert.toReportVO(report), session);
         if (vo != null && session != null) {
             vo.setVoiceTraces(interviewVoiceService.listSubmittedVoiceTraces(session.getId(), session.getUserId()));
+            vo.setVoiceDeliverySummary(voiceDeliverySummaryService.summary(session.getUserId(), session.getId()));
+        }
+        applyComparisonAvailability(vo, report, session);
+        return enrichReportWithRemediation(vo, session);
+    }
+
+    private void applyComparisonAvailability(
+            InterviewReportVO vo, InterviewReport report, InterviewSession session) {
+        if (vo == null) {
+            return;
+        }
+        InterviewReportComparabilityPolicy.Result evaluation = comparabilityPolicy.evaluate(report, session);
+        vo.setComparisonAvailable(evaluation.comparable());
+        vo.setComparisonUnavailableReason(evaluation.reasonCode());
+    }
+
+    private InterviewReportVO enrichReportWithRemediation(InterviewReportVO vo, InterviewSession session) {
+        if (vo == null || session == null || vo.getId() == null || session.getUserId() == null) {
+            return vo;
+        }
+        InterviewRemediation remediation = remediationMapper.selectOne(
+                new LambdaQueryWrapper<InterviewRemediation>()
+                        .eq(InterviewRemediation::getUserId, session.getUserId())
+                        .eq(InterviewRemediation::getSourceReportId, vo.getId())
+                        .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
+                        .orderByDesc(InterviewRemediation::getCreatedAt)
+                        .orderByDesc(InterviewRemediation::getId)
+                        .last("limit 1"));
+        if (remediation == null) {
+            vo.setRemediationCreated(false);
+            return vo;
+        }
+        vo.setRemediationId(remediation.getId());
+        vo.setRemediationTargetSessionId(remediation.getTargetSessionId());
+        vo.setRemediationStatus(remediation.getStatus());
+        boolean created = "CREATED".equalsIgnoreCase(remediation.getStatus())
+                && remediation.getTargetSessionId() != null;
+        vo.setRemediationCreated(created);
+        if (created && vo.getNextActions() != null) {
+            for (InterviewReportNextActionVO action : vo.getNextActions()) {
+                if (!"INTERVIEW".equals(action.getActionType())) {
+                    continue;
+                }
+                action.setTitle("复练已创建");
+                action.setDescription("已根据本轮报告创建复练场次，可直接进入继续训练。");
+                action.setActionUrl("/interviews/room/" + remediation.getTargetSessionId());
+                action.setRelatedBizType("INTERVIEW_SESSION");
+                action.setRelatedBizId(remediation.getTargetSessionId());
+                action.setEvidence("remediationId=" + remediation.getId()
+                        + ", sourceReportId=" + remediation.getSourceReportId());
+            }
         }
         return vo;
     }
@@ -996,7 +1107,10 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setTargetJobTitle(session.getTargetPosition());
         vo.setJdEvidenceSummary(jdEvidenceSummary(session));
         vo.setMissingSkills(List.of());
-
+        vo.setSourceReportId(session.getSourceReportId());
+        vo.setSourceRequirementIds(readLongList(session.getSourceRequirementIds()));
+        vo.setPracticePurpose(session.getPracticePurpose());
+        vo.setRemediationStrength(session.getRemediationStrength());
         InnerSkillProfileVO profile = resolveReportSkillProfile(session);
         if (profile != null) {
             if (vo.getTargetJobId() == null) {
@@ -1577,7 +1691,40 @@ public class InterviewServiceImpl implements InterviewService {
                 .eq(InterviewMessage::getMessageType, "QUESTION"));
     }
 
-    private List<InterviewStage> createStages(InterviewSession session) {
+    private ScenarioBindingVO bindScenario(InterviewSession session, ScenarioVersionVO scenario) {
+        if (scenario == null) {
+            return null;
+        }
+        ScenarioBindingCreateDTO binding = new ScenarioBindingCreateDTO();
+        binding.setScenarioVersionId(scenario.getScenarioVersionId());
+        binding.setBindingSource("INTERVIEW_CREATE");
+        return scenarioRubricService.bindScenario(session.getId(), binding);
+    }
+
+    private int scenarioQuestionCount(ScenarioVersionVO scenario, Integer requestedCount) {
+        if (scenario == null || scenario.getScript() == null) {
+            return normalizeQuestionCount(requestedCount);
+        }
+        JsonNode script = scenario.getScript();
+        int explicitBudget = script.path("questionBudget").asInt(0);
+        if (explicitBudget > 0) {
+            return Math.min(20, explicitBudget);
+        }
+        int stageBudget = 0;
+        JsonNode stages = script.path("stages");
+        if (stages.isArray()) {
+            for (JsonNode stage : stages) {
+                stageBudget += Math.max(1,
+                        firstPositiveInt(stage, "expectedQuestionCount", "questionCount", "questionBudget"));
+            }
+        }
+        return stageBudget > 0 ? Math.min(20, stageBudget) : normalizeQuestionCount(requestedCount);
+    }
+
+    private List<InterviewStage> createStages(InterviewSession session, ScenarioVersionVO scenario) {
+        if (scenario != null) {
+            return createScenarioStages(session, scenario);
+        }
         List<InterviewStage> stages = new ArrayList<>();
         if (InterviewModeEnum.TECHNICAL_BASIC.name().equals(session.getMode())) {
             addStage(stages, session, "JAVA_BASIC", "Java 基础", 1, "Java 基础语法、面向对象、常见集合");
@@ -1609,6 +1756,98 @@ public class InterviewServiceImpl implements InterviewService {
             stageMapper.insert(stage);
         }
         return stages;
+    }
+
+    private List<InterviewStage> createScenarioStages(InterviewSession session, ScenarioVersionVO scenario) {
+        JsonNode stageDefinitions = scenario.getScript() == null ? null : scenario.getScript().path("stages");
+        if (stageDefinitions == null || !stageDefinitions.isArray() || stageDefinitions.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Published scenario does not contain usable stages");
+        }
+        List<InterviewStage> stages = new ArrayList<>();
+        int order = 1;
+        for (JsonNode definition : stageDefinitions) {
+            if (order > 12) {
+                break;
+            }
+            String stageType = scenarioStageCode(definition, order);
+            String stageName = firstText(
+                    jsonText(definition, "stageName"),
+                    jsonText(definition, "name"),
+                    stageType);
+            InterviewStage stage = newStage(session, stageType, stageName, order,
+                    scenarioFocusPoints(definition));
+            stage.setExpectedQuestionCount(Math.max(1,
+                    firstPositiveInt(definition, "expectedQuestionCount", "questionCount", "questionBudget")));
+            stage.setBasedOnResume(definition.has("basedOnResume")
+                    ? definition.path("basedOnResume").asBoolean()
+                    : Boolean.TRUE.equals(session.getBasedOnResume()));
+            stage.setAllowFollowUp(!definition.has("allowFollowUp")
+                    || definition.path("allowFollowUp").asBoolean());
+            int followUpBudget = firstPositiveInt(definition, "maxFollowUpCount", "followUpBudget");
+            stage.setMaxFollowUpCount(stage.getAllowFollowUp()
+                    ? Math.min(5, followUpBudget > 0 ? followUpBudget : MAX_FOLLOW_UP_COUNT)
+                    : 0);
+            stages.add(stage);
+            order++;
+        }
+        if (stages.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Published scenario does not contain usable stages");
+        }
+        for (InterviewStage stage : stages) {
+            stageMapper.insert(stage);
+        }
+        return stages;
+    }
+
+    private String scenarioStageCode(JsonNode definition, int order) {
+        String raw = firstText(
+                jsonText(definition, "stageType"),
+                jsonText(definition, "code"),
+                "SCENARIO_STAGE_" + order);
+        String normalized = raw.trim().toUpperCase().replaceAll("[^A-Z0-9_]+", "_");
+        return StringUtils.hasText(normalized) ? normalized.substring(0, Math.min(64, normalized.length()))
+                : "SCENARIO_STAGE_" + order;
+    }
+
+    private String scenarioFocusPoints(JsonNode definition) {
+        JsonNode value = definition.get("focusPoints");
+        if (value == null || value.isNull()) {
+            value = definition.get("focus");
+        }
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (value.isArray()) {
+            List<String> items = new ArrayList<>();
+            value.forEach(item -> {
+                if (item.isTextual() && StringUtils.hasText(item.asText())) {
+                    items.add(item.asText().trim());
+                }
+            });
+            return items.isEmpty() ? null : String.join("、", items);
+        }
+        return value.isTextual() ? normalizeText(value.asText()) : normalizeText(value.toString());
+    }
+
+    private int firstPositiveInt(JsonNode source, String... fields) {
+        if (source == null) {
+            return 0;
+        }
+        for (String field : fields) {
+            JsonNode value = source.get(field);
+            if (value != null && value.canConvertToInt() && value.asInt() > 0) {
+                return value.asInt();
+            }
+        }
+        return 0;
+    }
+
+    private String jsonText(JsonNode source, String field) {
+        if (source == null) {
+            return null;
+        }
+        JsonNode value = source.get(field);
+        return value != null && value.isTextual() ? normalizeText(value.asText()) : null;
     }
 
     private void rebalanceExpectedQuestionCounts(List<InterviewStage> stages, int totalQuestionCount) {
@@ -1812,7 +2051,7 @@ public class InterviewServiceImpl implements InterviewService {
     private InterviewSession getOwnedSession(Long id) {
         InterviewSession session = sessionMapper.selectById(id);
         if (session == null || !requireCurrentUserId().equals(session.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试记录不存在或已不可用");
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "面试记录不存在或已不可用");
         }
         return session;
     }
@@ -1870,6 +2109,21 @@ public class InterviewServiceImpl implements InterviewService {
                 .last("limit 1"));
     }
 
+    private String reportRubricVersion(Long sessionId) {
+        if (sessionId == null) {
+            return InterviewRubricVersion.CURRENT;
+        }
+        InterviewScenarioBinding binding = scenarioBindingMapper.selectOne(
+                new LambdaQueryWrapper<InterviewScenarioBinding>()
+                        .eq(InterviewScenarioBinding::getSessionId, sessionId)
+                        .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (binding == null) {
+            return InterviewRubricVersion.CURRENT;
+        }
+        return "scenario:" + binding.getScenarioVersionId() + ":rubric:" + binding.getRubricVersionId();
+    }
+
     private boolean isCurrentReportAttempt(Long sessionId, Long reportId, String generationToken) {
         if (sessionId == null || reportId == null || !StringUtils.hasText(generationToken)) {
             return false;
@@ -1905,6 +2159,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
         report.setRubricScores(firstText(aiReport.getRubricScores(), buildFallbackRubricScores(messages, answerCount)));
+        report.setRubricVersion(reportRubricVersion(report.getSessionId()));
         report.setFollowUpTree(firstText(aiReport.getFollowUpTree(), buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport.getAdviceEvidence(), buildFallbackAdviceEvidence(report, messages, answerCount)));
         report.setAbilityProfileUpdates(firstText(aiReport.getAbilityProfileUpdates(), buildFallbackAbilityProfileUpdates(messages, answerCount)));
@@ -1938,6 +2193,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setQaReview(buildFallbackQaReview(messages));
         report.setRubricScores(firstText(aiReport == null ? null : aiReport.getRubricScores(),
                 buildFallbackRubricScores(messages, answerCount)));
+        report.setRubricVersion(reportRubricVersion(report.getSessionId()));
         report.setFollowUpTree(firstText(aiReport == null ? null : aiReport.getFollowUpTree(),
                 buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport == null ? null : aiReport.getAdviceEvidence(),

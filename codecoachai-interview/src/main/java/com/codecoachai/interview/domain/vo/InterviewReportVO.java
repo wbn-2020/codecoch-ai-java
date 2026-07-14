@@ -4,6 +4,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import lombok.Data;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
 
 @Data
 public class InterviewReportVO {
@@ -36,7 +37,9 @@ public class InterviewReportVO {
     private List<Map<String, Object>> followUpTree;
     private List<Map<String, Object>> adviceEvidence;
     private List<Map<String, Object>> abilityProfileUpdates;
+    private String rubricVersion;
     private List<InterviewVoiceTraceVO> voiceTraces;
+    private VoiceDeliverySummaryVO voiceDeliverySummary;
     private String reportContent;
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;
@@ -46,4 +49,17 @@ public class InterviewReportVO {
     private String trustStatus;
     private String evidenceSummary;
     private Boolean fallback;
+    private Boolean remediationAvailable;
+    private Boolean strongRemediationAvailable;
+    private String strongRemediationUnavailableReason;
+    private Boolean comparisonAvailable;
+    private String comparisonUnavailableReason;
+    private Long sourceReportId;
+    private List<Long> sourceRequirementIds;
+    private String practicePurpose;
+    private String remediationStrength;
+    private Boolean remediationCreated;
+    private Long remediationId;
+    private Long remediationTargetSessionId;
+    private String remediationStatus;
 }

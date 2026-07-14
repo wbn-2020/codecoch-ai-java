@@ -23,6 +23,9 @@ public class CreateInterviewVO {
     private String industryContext;
     private String difficulty;
     private String interviewerStyle;
+    private Long scenarioVersionId;
+    private Long rubricVersionId;
+    private String scenarioCode;
     private Boolean basedOnResume;
     private String trainingScene;
     private String targetSkillDomain;

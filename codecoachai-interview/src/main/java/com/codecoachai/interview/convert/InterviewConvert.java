@@ -136,6 +136,7 @@ public final class InterviewConvert {
         vo.setFollowUpTree(parseObjectList(report.getFollowUpTree()));
         vo.setAdviceEvidence(parseObjectList(report.getAdviceEvidence()));
         vo.setAbilityProfileUpdates(parseObjectList(report.getAbilityProfileUpdates()));
+        vo.setRubricVersion(report.getRubricVersion());
         vo.setReportContent(report.getReportContent());
         vo.setGeneratedAt(report.getGeneratedAt());
         vo.setCreatedAt(report.getCreatedAt());
@@ -145,6 +146,15 @@ public final class InterviewConvert {
         vo.setTrustStatus(reportTrustStatus(report));
         vo.setEvidenceSummary(reportEvidenceSummary(report));
         vo.setFallback(reportFallback(report));
+        boolean generated = "GENERATED".equalsIgnoreCase(report.getStatus());
+        boolean strongRemediationAvailable = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+        vo.setRemediationAvailable(generated);
+        vo.setStrongRemediationAvailable(strongRemediationAvailable);
+        vo.setStrongRemediationUnavailableReason(strongRemediationAvailable
+                ? null
+                : InterviewReportTrustPolicy.isSampleInsufficient(report)
+                ? "SAMPLE_INSUFFICIENT"
+                : "REPORT_UNTRUSTED");
         return vo;
     }
 

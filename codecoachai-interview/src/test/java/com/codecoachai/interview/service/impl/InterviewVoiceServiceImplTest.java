@@ -3,7 +3,9 @@ package com.codecoachai.interview.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -33,6 +35,8 @@ import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewTranscriptMapper;
 import com.codecoachai.interview.mapper.InterviewVoiceSubmissionMapper;
 import com.codecoachai.interview.service.AsrService;
+import com.codecoachai.interview.voicedelivery.VoiceDeliveryAnalysis;
+import com.codecoachai.interview.voicedelivery.VoiceDeliveryAnalysisMapper;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
@@ -40,6 +44,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -63,6 +68,8 @@ class InterviewVoiceServiceImplTest {
     @Mock
     private InterviewTranscriptMapper transcriptMapper;
     @Mock
+    private VoiceDeliveryAnalysisMapper deliveryAnalysisMapper;
+    @Mock
     private FileFeignClient fileFeignClient;
     @Mock
     private AsrService asrService;
@@ -74,6 +81,7 @@ class InterviewVoiceServiceImplTest {
     static void initMybatisPlusTableInfo() {
         initTableInfo(InterviewVoiceSubmission.class);
         initTableInfo(InterviewTranscript.class);
+        initTableInfo(VoiceDeliveryAnalysis.class);
     }
 
     private static void initTableInfo(Class<?> entityClass) {
@@ -91,6 +99,7 @@ class InterviewVoiceServiceImplTest {
                 messageMapper,
                 voiceSubmissionMapper,
                 transcriptMapper,
+                deliveryAnalysisMapper,
                 fileFeignClient,
                 asrService,
                 properties,
@@ -134,6 +143,136 @@ class InterviewVoiceServiceImplTest {
         assertThrows(BusinessException.class,
                 () -> service.confirmTranscript(SESSION_ID, 31L, dto));
         verify(transcriptMapper, never()).updateById(any(InterviewTranscript.class));
+    }
+
+    @Test
+    void repeatedConfirmationWithSameNormalizedTextIsIdempotent() {
+        InterviewTranscript transcript = transcript(31L, 41L, "voice\ntext");
+        transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
+        transcript.setConfirmedAt(java.time.LocalDateTime.of(2026, 7, 14, 9, 0));
+        InterviewVoiceSubmission submission = submission(41L, 11L);
+        submission.setVoiceStatus(InterviewVoiceStatusEnum.CONFIRMED.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(transcript);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission);
+        lenient().when(transcriptMapper.selectList(any())).thenReturn(List.of(transcript));
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("  voice\r\ntext  ");
+
+        service.confirmTranscript(SESSION_ID, 31L, dto);
+
+        assertEquals("voice\ntext", transcript.getConfirmedText());
+        assertEquals(java.time.LocalDateTime.of(2026, 7, 14, 9, 0), transcript.getConfirmedAt());
+        verify(transcriptMapper, never()).updateById(any(InterviewTranscript.class));
+        verify(voiceSubmissionMapper, never()).updateById(any(InterviewVoiceSubmission.class));
+    }
+
+    @Test
+    void rejectsSecondConfirmedTranscriptForSameSubmission() {
+        InterviewTranscript target = transcript(31L, 41L, null);
+        target.setTranscriptStatus(InterviewTranscriptStatusEnum.DRAFT.name());
+        InterviewTranscript existing = transcript(32L, 41L, "existing evidence");
+        existing.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
+        InterviewVoiceSubmission submission = submission(41L, 11L);
+        submission.setVoiceStatus(InterviewVoiceStatusEnum.CONFIRMED.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(target);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission);
+        lenient().when(transcriptMapper.selectList(any())).thenReturn(List.of(existing));
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("replacement evidence");
+
+        assertThrows(BusinessException.class,
+                () -> service.confirmTranscript(SESSION_ID, 31L, dto));
+
+        verify(transcriptMapper, never()).updateById(any(InterviewTranscript.class));
+        verify(voiceSubmissionMapper, never()).updateById(any(InterviewVoiceSubmission.class));
+    }
+
+    @Test
+    void rejectsDifferentConfirmedTextAfterDeliveryAnalysisExists() {
+        InterviewTranscript transcript = transcript(31L, 41L, "original evidence");
+        transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
+        InterviewVoiceSubmission submission = submission(41L, 11L);
+        submission.setVoiceStatus(InterviewVoiceStatusEnum.CONFIRMED.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(transcript);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission);
+        when(transcriptMapper.selectList(any())).thenReturn(List.of(transcript));
+        when(deliveryAnalysisMapper.selectCount(any())).thenReturn(1L);
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("replacement evidence");
+
+        assertThrows(BusinessException.class,
+                () -> service.confirmTranscript(SESSION_ID, 31L, dto));
+
+        assertEquals("original evidence", transcript.getConfirmedText());
+        verify(transcriptMapper, never()).updateById(any(InterviewTranscript.class));
+        verify(voiceSubmissionMapper, never()).updateById(any(InterviewVoiceSubmission.class));
+    }
+
+    @Test
+    void rejectsNewConfirmationWhenDeliveryAnalysisAlreadyReferencesSubmission() {
+        InterviewTranscript transcript = transcript(31L, 41L, null);
+        transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.DRAFT.name());
+        InterviewVoiceSubmission submission = submission(41L, 11L);
+        submission.setVoiceStatus(InterviewVoiceStatusEnum.CONFIRMED.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(transcript);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission);
+        when(transcriptMapper.selectList(any())).thenReturn(List.of());
+        when(deliveryAnalysisMapper.selectCount(any())).thenReturn(1L);
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("new evidence");
+
+        assertThrows(BusinessException.class,
+                () -> service.confirmTranscript(SESSION_ID, 31L, dto));
+
+        verify(transcriptMapper, never()).updateById(any(InterviewTranscript.class));
+        verify(voiceSubmissionMapper, never()).updateById(any(InterviewVoiceSubmission.class));
+    }
+
+    @Test
+    void allowsDifferentConfirmedTextBeforeDeliveryAnalysisExists() {
+        InterviewTranscript transcript = transcript(31L, 41L, "original evidence");
+        transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
+        InterviewVoiceSubmission submission = submission(41L, 11L);
+        submission.setVoiceStatus(InterviewVoiceStatusEnum.CONFIRMED.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(transcript);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission);
+        when(messageMapper.selectOne(any())).thenReturn(question(11L, 21L));
+        when(transcriptMapper.selectList(any())).thenReturn(List.of(transcript));
+        when(deliveryAnalysisMapper.selectCount(any())).thenReturn(0L);
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("replacement evidence");
+
+        service.confirmTranscript(SESSION_ID, 31L, dto);
+
+        assertEquals("replacement evidence", transcript.getConfirmedText());
+        verify(transcriptMapper).updateById(transcript);
+        verify(voiceSubmissionMapper).updateById(submission);
+    }
+
+    @Test
+    void confirmationLocksOwnedSubmission() {
+        InterviewTranscript transcript = transcript(31L, 41L, null);
+        transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.DRAFT.name());
+        when(sessionMapper.selectOne(any())).thenReturn(session("WAITING_ANSWER"));
+        when(transcriptMapper.selectOne(any())).thenReturn(transcript);
+        when(voiceSubmissionMapper.selectOne(any())).thenReturn(submission(41L, 11L));
+        when(messageMapper.selectOne(any())).thenReturn(question(11L, 21L));
+        lenient().when(transcriptMapper.selectList(any())).thenReturn(List.of());
+        InterviewTranscriptConfirmDTO dto = new InterviewTranscriptConfirmDTO();
+        dto.setConfirmedText("locked evidence");
+
+        service.confirmTranscript(SESSION_ID, 31L, dto);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<InterviewVoiceSubmission>> wrapperCaptor =
+                ArgumentCaptor.forClass(Wrapper.class);
+        verify(voiceSubmissionMapper).selectOne(wrapperCaptor.capture());
+        assertTrue(wrapperCaptor.getValue().getCustomSqlSegment().toUpperCase().contains("FOR UPDATE"));
     }
 
     @Test

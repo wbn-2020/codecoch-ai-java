@@ -36,6 +36,7 @@ import com.codecoachai.resume.domain.vo.ResumeVersionEffectVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
+import com.codecoachai.resume.experimentv2.ExperimentV2ApplicationAutoAssignmentService;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -61,6 +62,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,6 +72,7 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
@@ -93,6 +96,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final NotificationBusinessResolver notificationBusinessResolver;
     private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    private final ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -331,6 +335,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         app.setUserId(userId);
         fillApplication(app, request);
         jobApplicationMapper.insert(app);
+        autoAssignExperimentAfterCommit(app);
         return toApplicationVOWithDetails(app);
     }
 
@@ -481,6 +486,29 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         agentBusinessActionNotifier.completeApplicationFollowUp(userId, applicationId, eventId);
         notificationBusinessResolver.resolveApplicationFollowUp(userId, applicationId,
                 "JOB_APPLICATION_EVENT:" + eventId);
+    }
+
+    private void autoAssignExperimentAfterCommit(JobApplication application) {
+        Runnable action = () -> {
+            try {
+                experimentAutoAssignmentService.autoAssign(application);
+            } catch (Exception exception) {
+                log.error("Experiment auto-assignment failed after application creation: applicationId={}, userId={}",
+                        application == null ? null : application.getId(),
+                        application == null ? null : application.getUserId(),
+                        exception);
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 
     private JobApplicationStatsVO buildApplicationStats(List<JobApplication> applications, LocalDateTime now) {
@@ -1233,7 +1261,13 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("workExperience", resume.getWorkExperience());
         map.put("educationExperience", resume.getEducationExperience());
         map.put("summary", resume.getSummary());
-        map.put("projects", projectsForSnapshot(resume.getId()).stream().map(this::projectSnapshot).toList());
+        map.put("projects", projectsForSnapshot(resume.getId()).stream()
+                .map(this::projectSnapshot)
+                .sorted(Comparator
+                        .comparingInt((Map<String, Object> project) -> integer(project.get("sortOrder"), 0))
+                        .thenComparingInt(project -> integer(project.get("sort"), 0))
+                        .thenComparing(this::writeJson))
+                .toList());
         map.put("projectSnapshotSource", "RESUME_VERSION");
         return map;
     }
@@ -1246,8 +1280,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .eq(ResumeProject::getResumeId, resumeId)
                 .eq(ResumeProject::getDeleted, CommonConstants.NO)
                 .orderByAsc(ResumeProject::getSortOrder)
-                .orderByAsc(ResumeProject::getSort)
-                .orderByDesc(ResumeProject::getUpdatedAt));
+                .orderByAsc(ResumeProject::getSort));
         return projects == null ? List.of() : projects;
     }
 
@@ -1264,8 +1297,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("optimizationResults", project.getOptimizationResults());
         map.put("description", project.getDescription());
         map.put("highlights", project.getHighlights());
-        map.put("sort", project.getSort());
-        map.put("sortOrder", project.getSortOrder());
+        map.put("sort", project.getSort() == null ? 0 : project.getSort());
+        map.put("sortOrder", project.getSortOrder() == null ? 0 : project.getSortOrder());
         return map;
     }
 

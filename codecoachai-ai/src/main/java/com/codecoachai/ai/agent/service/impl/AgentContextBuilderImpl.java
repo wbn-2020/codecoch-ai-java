@@ -6,11 +6,14 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimen
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MemoryReference;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.PersonalKnowledgeReference;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -69,6 +72,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setTargetJobId(targetJob.getId());
         context.setPlanDate(planDate);
         context.setTargetJob(toSnapshot(targetJob, resolveAnalysis(userId, targetJob.getId())));
+        context.setRequirementReadiness(resolveRequirementReadiness(userId, targetJob.getId(), context));
         context.setApplications(resolveApplications(userId, targetJob.getId(), context));
         context.setProjectEvidences(resolveProjectEvidences(userId, context));
         context.setJobExperiments(resolveJobExperiments(userId, targetJob.getId(), context));
@@ -170,6 +174,74 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
             context.getContextWarnings().add("Project evidence context is temporarily unavailable; skipped project evidence tasks.");
             return List.of();
         }
+    }
+
+    private RequirementReadinessSnapshot resolveRequirementReadiness(Long userId, Long targetJobId,
+                                                                     JobCoachAgentContext context) {
+        try {
+            RequirementReadinessAgentContextVO source = FeignResultUtils.unwrap(
+                    resumeFeignClient.requirementReadinessContext(userId, targetJobId));
+            if (source == null) {
+                context.getContextWarnings().add("Requirement readiness context is unavailable.");
+                return null;
+            }
+            RequirementReadinessSnapshot snapshot = toRequirementReadinessSnapshot(source);
+            if (Boolean.TRUE.equals(snapshot.getFallback())
+                    || !Boolean.TRUE.equals(snapshot.getMatrixCurrent())
+                    || !Boolean.TRUE.equals(snapshot.getSampleSufficient())
+                    || "LOW".equalsIgnoreCase(snapshot.getConfidenceLevel())) {
+                context.getContextWarnings().add(
+                        "Requirement-driven tasks are gated because readiness evidence is degraded.");
+            }
+            return snapshot;
+        } catch (RuntimeException ex) {
+            log.info("Requirement readiness context unavailable userId={}, targetJobId={}, reason={}",
+                    userId, targetJobId, ex.getMessage());
+            context.getContextWarnings().add(
+                    "Requirement readiness context is temporarily unavailable; skipped requirement-driven tasks.");
+            return null;
+        }
+    }
+
+    private RequirementReadinessSnapshot toRequirementReadinessSnapshot(
+            RequirementReadinessAgentContextVO source) {
+        RequirementReadinessSnapshot snapshot = new RequirementReadinessSnapshot();
+        snapshot.setTargetJobId(source.getTargetJobId());
+        snapshot.setJdAnalysisId(source.getJdAnalysisId());
+        snapshot.setSnapshotId(source.getSnapshotId());
+        snapshot.setSnapshotHash(source.getSnapshotHash());
+        snapshot.setPolicyVersion(source.getPolicyVersion());
+        snapshot.setGeneratedAt(source.getGeneratedAt());
+        snapshot.setReadinessScore(source.getReadinessScore());
+        snapshot.setReadinessLevel(source.getReadinessLevel());
+        snapshot.setConfidenceLevel(source.getConfidenceLevel());
+        snapshot.setFallback(source.getFallback());
+        snapshot.setMatrixCurrent(source.getMatrixCurrent());
+        snapshot.setSampleSufficient(source.getSampleSufficient());
+        snapshot.setRequirementCount(source.getRequirementCount());
+        snapshot.setWarnings(source.getWarnings() == null ? List.of() : source.getWarnings());
+        snapshot.setMissingRequirements(source.getMissingRequirements() == null ? List.of()
+                : source.getMissingRequirements().stream()
+                .filter(Objects::nonNull)
+                .map(this::toMissingRequirementSnapshot)
+                .toList());
+        return snapshot;
+    }
+
+    private MissingRequirementSnapshot toMissingRequirementSnapshot(
+            RequirementReadinessAgentContextVO.RequirementItemVO source) {
+        MissingRequirementSnapshot snapshot = new MissingRequirementSnapshot();
+        snapshot.setRequirementId(source.getRequirementId());
+        snapshot.setRequirementKey(source.getRequirementKey());
+        snapshot.setRequirementType(source.getRequirementType());
+        snapshot.setRequirementName(source.getRequirementName());
+        snapshot.setPriority(source.getPriority());
+        snapshot.setCoverageLevel(source.getCoverageLevel());
+        snapshot.setConfidenceLevel(source.getConfidenceLevel());
+        snapshot.setFallback(source.getFallback());
+        snapshot.setProjectEvidenceIds(source.getProjectEvidenceIds() == null
+                ? List.of() : source.getProjectEvidenceIds());
+        return snapshot;
     }
 
     private ProjectEvidenceSnapshot toProjectEvidenceSnapshot(ProjectEvidenceAgentContextVO project) {

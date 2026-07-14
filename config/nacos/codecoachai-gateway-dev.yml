@@ -119,6 +119,8 @@ spring:
               - X-Requested-With
               - X-Request-Id
               - X-Trace-Id
+            exposedHeaders:
+              - X-Trace-Id
             allowCredentials: true
             maxAge: 3600
 
@@ -146,4 +148,5 @@ codecoachai:
       allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080"
       allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
       allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
+      exposed-headers: "X-Trace-Id"
     trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"

@@ -1,7 +1,11 @@
 package com.codecoachai.resume.careerimport;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.codecoachai.resume.careerimport.entity.CareerImportRow;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
 import com.codecoachai.resume.mapper.careerimport.CareerImportDedupeGuardMapper;
@@ -12,6 +16,16 @@ import org.apache.ibatis.annotations.Select;
 import org.junit.jupiter.api.Test;
 
 class CareerImportMapperContractTest {
+
+    @Test
+    void importRowEscapesMysqlReservedRowNumberColumn() throws Exception {
+        TableField mapping = CareerImportRow.class
+                .getDeclaredField("rowNumber")
+                .getAnnotation(TableField.class);
+
+        assertNotNull(mapping);
+        assertEquals("`row_number`", mapping.value());
+    }
 
     @Test
     void guardUsesInsertIgnoreAndRowLock() throws Exception {

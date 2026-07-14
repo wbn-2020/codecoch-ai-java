@@ -37,6 +37,7 @@ public class JobApplicationPackageVO {
     private Boolean latestContextPackage;
     private LocalDateTime refreshedAt;
     private LocalDateTime generatedAt;
+    private RequirementReadinessSourceVO requirementReadinessSource;
     private RecommendedResumeVO recommendedResume;
     private MatchSummaryVO matchSummary;
     private ProjectEvidenceCoverageVO projectEvidenceCoverage;
@@ -80,6 +81,44 @@ public class JobApplicationPackageVO {
         private List<String> insufficientRequirements = new ArrayList<>();
         private List<String> suggestedFields = new ArrayList<>();
         private List<ProjectEvidenceSummaryVO> selectedEvidence = new ArrayList<>();
+    }
+
+    @Data
+    public static class RequirementReadinessSourceVO {
+        private Long snapshotId;
+        private String snapshotHash;
+        private String policyVersion;
+        private LocalDateTime generatedAt;
+        private Long targetJobId;
+        private Long jdAnalysisId;
+        private Integer readinessScore;
+        private String readinessLevel;
+        private String confidenceLevel;
+        private Boolean fallback;
+        private Boolean matrixCurrent;
+        private Boolean sampleSufficient;
+        private Integer requirementCount;
+        private Integer strongCount;
+        private Integer weakCount;
+        private Integer missingCount;
+        private Integer mustRequirementCount;
+        private Integer mustMissingCount;
+        private List<String> warnings = new ArrayList<>();
+        private List<RequirementCoverageSummaryVO> requirements = new ArrayList<>();
+    }
+
+    @Data
+    public static class RequirementCoverageSummaryVO {
+        private Long requirementId;
+        private String requirementKey;
+        private String requirementType;
+        private String requirementName;
+        private String priority;
+        private String coverageLevel;
+        private String confidenceLevel;
+        private Boolean fallback;
+        private Integer evidenceCount;
+        private List<Long> projectEvidenceIds = new ArrayList<>();
     }
 
     @Data

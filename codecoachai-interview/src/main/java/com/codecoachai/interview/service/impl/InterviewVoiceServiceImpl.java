@@ -33,9 +33,12 @@ import com.codecoachai.interview.mapper.InterviewTranscriptMapper;
 import com.codecoachai.interview.mapper.InterviewVoiceSubmissionMapper;
 import com.codecoachai.interview.service.AsrService;
 import com.codecoachai.interview.service.InterviewVoiceService;
+import com.codecoachai.interview.voicedelivery.VoiceDeliveryAnalysis;
+import com.codecoachai.interview.voicedelivery.VoiceDeliveryAnalysisMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -66,6 +69,7 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     private final InterviewMessageMapper messageMapper;
     private final InterviewVoiceSubmissionMapper voiceSubmissionMapper;
     private final InterviewTranscriptMapper transcriptMapper;
+    private final VoiceDeliveryAnalysisMapper deliveryAnalysisMapper;
     private final FileFeignClient fileFeignClient;
     private final AsrService asrService;
     private final InterviewAsrProperties asrProperties;
@@ -215,7 +219,37 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
         Long userId = requireUserId();
         InterviewSession session = requireOwnedSession(sessionId, userId);
         InterviewTranscript transcript = requireOwnedTranscript(sessionId, transcriptId, userId);
-        InterviewVoiceSubmission submission = requireOwnedSubmission(sessionId, transcript.getVoiceSubmissionId(), userId);
+        InterviewVoiceSubmission submission =
+                requireOwnedSubmissionForUpdate(sessionId, transcript.getVoiceSubmissionId(), userId);
+        String confirmedText = normalizeAnswerText(dto == null ? null : dto.getConfirmedText());
+        if (!StringUtils.hasText(confirmedText)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Confirmed transcript cannot be empty");
+        }
+        if (confirmedText.length() > MAX_CONFIRMED_TEXT_LENGTH) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Confirmed transcript is too long");
+        }
+
+        List<InterviewTranscript> confirmedTranscripts =
+                confirmedTranscripts(submission.getId(), sessionId, userId);
+        if (confirmedTranscripts.size() > 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Voice submission has multiple confirmed transcripts");
+        }
+        if (confirmedTranscripts.size() == 1) {
+            InterviewTranscript existing = confirmedTranscripts.get(0);
+            if (!Objects.equals(existing.getId(), transcript.getId())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Voice submission already has a confirmed transcript");
+            }
+            if (confirmedText.equals(normalizeAnswerText(existing.getConfirmedText()))) {
+                return toTranscriptVO(existing);
+            }
+        }
+        if (hasDeliveryAnalysis(submission.getId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Confirmed transcript is immutable after voice delivery analysis");
+        }
+
         requireConfirmableCurrentQuestion(session, transcript, submission);
         if (isDiscarded(submission)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission has been discarded");
@@ -224,18 +258,9 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Transcript has already been submitted");
         }
         if (InterviewTranscriptStatusEnum.LOW_CONFIDENCE.name().equals(transcript.getTranscriptStatus())
-                && !Boolean.TRUE.equals(dto.getLowConfidenceAcknowledged())) {
+                && !Boolean.TRUE.equals(dto == null ? null : dto.getLowConfidenceAcknowledged())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Low-confidence transcript must be acknowledged before confirmation");
         }
-
-        String confirmedText = dto.getConfirmedText() == null ? "" : dto.getConfirmedText().trim();
-        if (!StringUtils.hasText(confirmedText)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Confirmed transcript cannot be empty");
-        }
-        if (confirmedText.length() > MAX_CONFIRMED_TEXT_LENGTH) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Confirmed transcript is too long");
-        }
-
         transcript.setConfirmedText(confirmedText);
         transcript.setAnswerSource(null);
         transcript.setTranscriptStatus(InterviewTranscriptStatusEnum.CONFIRMED.name());
@@ -528,16 +553,46 @@ public class InterviewVoiceServiceImpl implements InterviewVoiceService {
     }
 
     private InterviewVoiceSubmission requireOwnedSubmission(Long sessionId, Long submissionId, Long userId) {
-        InterviewVoiceSubmission submission = voiceSubmissionMapper.selectOne(new LambdaQueryWrapper<InterviewVoiceSubmission>()
+        return requireOwnedSubmission(sessionId, submissionId, userId, false);
+    }
+
+    private InterviewVoiceSubmission requireOwnedSubmissionForUpdate(
+            Long sessionId, Long submissionId, Long userId) {
+        return requireOwnedSubmission(sessionId, submissionId, userId, true);
+    }
+
+    private InterviewVoiceSubmission requireOwnedSubmission(
+            Long sessionId, Long submissionId, Long userId, boolean forUpdate) {
+        LambdaQueryWrapper<InterviewVoiceSubmission> query =
+                new LambdaQueryWrapper<InterviewVoiceSubmission>()
                 .eq(InterviewVoiceSubmission::getId, submissionId)
                 .eq(InterviewVoiceSubmission::getSessionId, sessionId)
                 .eq(InterviewVoiceSubmission::getUserId, userId)
-                .eq(InterviewVoiceSubmission::getDeleted, CommonConstants.NO)
-                .last("limit 1"));
+                .eq(InterviewVoiceSubmission::getDeleted, CommonConstants.NO);
+        query.last(forUpdate ? "limit 1 for update" : "limit 1");
+        InterviewVoiceSubmission submission = voiceSubmissionMapper.selectOne(query);
         if (submission == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Voice submission does not exist or is unavailable");
         }
         return submission;
+    }
+
+    private List<InterviewTranscript> confirmedTranscripts(
+            Long submissionId, Long sessionId, Long userId) {
+        return transcriptMapper.selectList(new LambdaQueryWrapper<InterviewTranscript>()
+                .eq(InterviewTranscript::getVoiceSubmissionId, submissionId)
+                .eq(InterviewTranscript::getSessionId, sessionId)
+                .eq(InterviewTranscript::getUserId, userId)
+                .eq(InterviewTranscript::getTranscriptStatus, InterviewTranscriptStatusEnum.CONFIRMED.name())
+                .eq(InterviewTranscript::getDeleted, CommonConstants.NO)
+                .orderByAsc(InterviewTranscript::getId));
+    }
+
+    private boolean hasDeliveryAnalysis(Long submissionId) {
+        Long count = deliveryAnalysisMapper.selectCount(new LambdaQueryWrapper<VoiceDeliveryAnalysis>()
+                .eq(VoiceDeliveryAnalysis::getVoiceSubmissionId, submissionId)
+                .eq(VoiceDeliveryAnalysis::getDeleted, CommonConstants.NO));
+        return count != null && count > 0L;
     }
 
     private InterviewTranscript requireOwnedTranscript(Long sessionId, Long transcriptId, Long userId) {

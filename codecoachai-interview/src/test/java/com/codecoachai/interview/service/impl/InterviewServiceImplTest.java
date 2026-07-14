@@ -3,6 +3,7 @@ package com.codecoachai.interview.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -18,7 +19,9 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
@@ -26,6 +29,7 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.interview.domain.dto.CreateInterviewDTO;
 import com.codecoachai.interview.domain.dto.SubmitInterviewAnswerDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
+import com.codecoachai.interview.domain.entity.InterviewRemediation;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.InterviewStage;
@@ -35,6 +39,7 @@ import com.codecoachai.interview.domain.enums.InterviewStatusEnum;
 import com.codecoachai.interview.domain.vo.FinishInterviewVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
+import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.StartInterviewVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.QuestionFeignClient;
@@ -53,13 +58,21 @@ import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.feign.vo.InnerTargetJobVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
+import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
+import com.codecoachai.interview.scenario.ScenarioBindingVO;
+import com.codecoachai.interview.scenario.ScenarioRubricService;
+import com.codecoachai.interview.scenario.ScenarioVersionVO;
 import com.codecoachai.interview.service.IndustryTemplateService;
 import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.service.InterviewVoiceService;
+import com.codecoachai.interview.support.InterviewReportComparabilityPolicy;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryService;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import feign.Request;
 import feign.Response;
@@ -103,6 +116,8 @@ class InterviewServiceImplTest {
     @Mock
     private InterviewReportMapper reportMapper;
     @Mock
+    private InterviewRemediationMapper remediationMapper;
+    @Mock
     private QuestionFeignClient questionFeignClient;
     @Mock
     private ResumeFeignClient resumeFeignClient;
@@ -118,8 +133,15 @@ class InterviewServiceImplTest {
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
     @Mock
     private InterviewVoiceService interviewVoiceService;
+    @Mock
+    private VoiceDeliverySummaryService voiceDeliverySummaryService;
+    @Mock
+    private ScenarioRubricService scenarioRubricService;
+    @Mock
+    private InterviewScenarioBindingMapper scenarioBindingMapper;
 
     private InterviewService service;
+    private InterviewServiceImpl target;
 
     @BeforeAll
     static void initMybatisPlusTableInfo() {
@@ -137,11 +159,12 @@ class InterviewServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        InterviewServiceImpl target = new InterviewServiceImpl(
+        target = new InterviewServiceImpl(
                 sessionMapper,
                 stageMapper,
                 messageMapper,
                 reportMapper,
+                remediationMapper,
                 questionFeignClient,
                 resumeFeignClient,
                 aiFeignClient,
@@ -150,8 +173,12 @@ class InterviewServiceImplTest {
                 interviewMqDispatcher,
                 agentBusinessActionNotifier,
                 interviewVoiceService,
+                voiceDeliverySummaryService,
+                scenarioRubricService,
+                scenarioBindingMapper,
                 new ObjectMapper(),
-                new TransactionTemplate(new FlaggingTransactionManager()));
+                new TransactionTemplate(new FlaggingTransactionManager()),
+                new InterviewReportComparabilityPolicy(new ObjectMapper()));
         service = transactionalProxy(target);
         lenient().when(sessionMapper.update(any(), any(Wrapper.class))).thenReturn(1);
         lenient().when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
@@ -194,6 +221,49 @@ class InterviewServiceImplTest {
         ArgumentCaptor<InterviewSession> sessionCaptor = ArgumentCaptor.forClass(InterviewSession.class);
         verify(sessionMapper).insert(sessionCaptor.capture());
         assertEquals(501L, sessionCaptor.getValue().getApplicationId());
+    }
+
+    @Test
+    void createBindsPublishedScenarioAndMaterializesItsStages() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setInterviewMode(InterviewModeEnum.COMPREHENSIVE.name());
+        dto.setScenarioVersionId(71L);
+
+        ScenarioVersionVO scenario = new ScenarioVersionVO();
+        scenario.setScenarioVersionId(71L);
+        scenario.setRubricVersionId(81L);
+        scenario.setScenarioCode("SYSTEM_DESIGN");
+        scenario.setVersionStatus("PUBLISHED");
+        scenario.setScript(new ObjectMapper().readTree("""
+                {"questionBudget":3,"stages":[
+                  {"code":"REQUIREMENTS","name":"需求澄清","questionCount":1,"allowFollowUp":false},
+                  {"code":"ARCHITECTURE","name":"总体架构","questionCount":2,"focusPoints":["边界","取舍"]}
+                ]}
+                """));
+        when(resumeFeignClient.getCurrentTargetJob(10L)).thenReturn(Result.success(null));
+        when(scenarioRubricService.getPublishedScenarioVersion(71L)).thenReturn(scenario);
+        when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
+            InterviewSession session = invocation.getArgument(0);
+            session.setId(1L);
+            return 1;
+        });
+        ScenarioBindingVO binding = new ScenarioBindingVO();
+        binding.setSessionId(1L);
+        binding.setScenarioVersionId(71L);
+        binding.setRubricVersionId(81L);
+        when(scenarioRubricService.bindScenario(eq(1L), any())).thenReturn(binding);
+
+        var result = service.create(dto);
+
+        assertEquals(71L, result.getScenarioVersionId());
+        assertEquals(81L, result.getRubricVersionId());
+        assertEquals("SYSTEM_DESIGN", result.getScenarioCode());
+        assertEquals(3, result.getTotalQuestionCount());
+        ArgumentCaptor<InterviewStage> stageCaptor = ArgumentCaptor.forClass(InterviewStage.class);
+        verify(stageMapper, org.mockito.Mockito.times(2)).insert(stageCaptor.capture());
+        assertEquals(List.of("REQUIREMENTS", "ARCHITECTURE"),
+                stageCaptor.getAllValues().stream().map(InterviewStage::getStageType).toList());
+        assertFalse(stageCaptor.getAllValues().get(0).getAllowFollowUp());
     }
 
     @Test
@@ -353,6 +423,12 @@ class InterviewServiceImplTest {
         when(reportMapper.selectOne(any())).thenReturn(report);
         when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
         when(resumeFeignClient.getSkillProfile(700L)).thenReturn(Result.success(profile));
+        VoiceDeliverySummaryVO delivery = new VoiceDeliverySummaryVO();
+        delivery.setSessionId(1L);
+        delivery.setAvailable(Boolean.TRUE);
+        delivery.setStatus("SUCCEEDED");
+        delivery.setSpeakingRatePerMinute(new java.math.BigDecimal("155.00"));
+        when(voiceDeliverySummaryService.summary(10L, 1L)).thenReturn(delivery);
 
         InterviewReportVO result = service.report(1L);
 
@@ -370,6 +446,161 @@ class InterviewServiceImplTest {
         assertEquals("HIGH", readProperty(gap, "getSeverity"));
         assertEquals("JD expects high-concurrency cache consistency evidence", readProperty(gap, "getGapDescription"));
         assertEquals(List.of("Practice one cache consistency follow-up"), readListProperty(gap, "getRecommendedActions"));
+        assertEquals("SUCCEEDED", readProperty(readProperty(result, "getVoiceDeliverySummary"), "getStatus"));
+        assertEquals(new java.math.BigDecimal("155.00"),
+                readProperty(readProperty(result, "getVoiceDeliverySummary"), "getSpeakingRatePerMinute"));
+    }
+
+    @Test
+    void missingOwnedSessionUsesResourceNotFoundContract() {
+        when(sessionMapper.selectById(999L)).thenReturn(null);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.detail(999L));
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND.getCode(), error.getCode());
+    }
+
+    @Test
+    void reportThatHasNotBeenGeneratedUsesSemanticValidationContract() {
+        InterviewSession session = new InterviewSession();
+        session.setId(1L);
+        session.setUserId(10L);
+        session.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenReturn(null);
+
+        BusinessException error = assertThrows(BusinessException.class, () -> service.report(1L));
+
+        assertEquals(ErrorCode.SEMANTIC_VALIDATION_ERROR.getCode(), error.getCode());
+    }
+
+    @Test
+    void listAttachesCurrentUserVoiceDeliverySummariesToHistoryRows() {
+        InterviewSession first = completedJdSession();
+        first.setId(1L);
+        InterviewSession second = completedJdSession();
+        second.setId(2L);
+        Page<InterviewSession> page = Page.of(1, 10);
+        page.setRecords(List.of(first, second));
+        page.setTotal(2);
+        when(sessionMapper.selectPage(any(), any())).thenReturn(page);
+
+        VoiceDeliverySummaryVO summary = new VoiceDeliverySummaryVO();
+        summary.setSessionId(1L);
+        summary.setAnalysisId(91L);
+        summary.setAvailable(Boolean.TRUE);
+        summary.setStatus("SUCCEEDED");
+        when(voiceDeliverySummaryService.summaries(10L, List.of(1L, 2L)))
+                .thenReturn(Map.of(1L, summary));
+
+        var result = service.list(1L, 10L, null, null, null);
+        List<InterviewListVO> records = result.getRecords();
+
+        assertEquals(2, records.size());
+        assertEquals(91L, records.get(0).getVoiceDeliverySummary().getAnalysisId());
+        assertNull(records.get(1).getVoiceDeliverySummary());
+        verify(voiceDeliverySummaryService).summaries(10L, List.of(1L, 2L));
+    }
+
+    @Test
+    void listUsesComparabilityPolicyForCurrentReports() throws Exception {
+        InterviewSession first = completedJdSession();
+        first.setId(1L);
+        InterviewSession second = completedJdSession();
+        second.setId(2L);
+        Page<InterviewSession> page = Page.of(1, 10);
+        page.setRecords(List.of(first, second));
+        page.setTotal(2);
+        when(sessionMapper.selectPage(any(), any())).thenReturn(page);
+        when(voiceDeliverySummaryService.summaries(10L, List.of(1L, 2L))).thenReturn(Map.of());
+        InterviewReport comparable = comparableReport();
+        InterviewReport older = comparableReport();
+        older.setId(87L);
+        InterviewReport missingTotal = comparableReport();
+        missingTotal.setId(89L);
+        missingTotal.setSessionId(2L);
+        missingTotal.setTotalScore(null);
+        lenient().when(reportMapper.selectList(any())).thenReturn(List.of(comparable, older, missingTotal));
+
+        List<InterviewListVO> records = service.list(1L, 10L, null, null, null).getRecords();
+
+        assertEquals(88L, readProperty(records.get(0), "getReportId"));
+        assertEquals(true, readProperty(records.get(0), "getComparisonAvailable"));
+        assertNull(readProperty(records.get(0), "getComparisonUnavailableReason"));
+        assertEquals(89L, readProperty(records.get(1), "getReportId"));
+        assertEquals(false, readProperty(records.get(1), "getComparisonAvailable"));
+        assertEquals("TOTAL_SCORE_MISSING",
+                readProperty(records.get(1), "getComparisonUnavailableReason"));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<InterviewReport>> reportQuery = ArgumentCaptor.forClass(Wrapper.class);
+        verify(reportMapper).selectList(reportQuery.capture());
+        String sql = reportQuery.getValue().getSqlSegment().toLowerCase();
+        List<Object> values = queryValues(reportQuery.getValue());
+        assertTrue(sql.contains("user_id"));
+        assertTrue(sql.contains("session_id") && sql.contains(" in "));
+        assertTrue(sql.contains("deleted"));
+        assertTrue(sql.contains("order by") && sql.contains("id") && sql.contains("desc"));
+        assertTrue(values.containsAll(List.of(10L, 1L, 2L, 0)));
+    }
+
+    @Test
+    void reportComparisonAvailabilityRejectsMissingTotalScore() throws Exception {
+        InterviewReport report = comparableReport();
+        report.setTotalScore(null);
+
+        InterviewReportVO result = invokeToReportVO(report, completedJdSession());
+
+        assertFalse(result.getComparisonAvailable());
+        assertEquals("TOTAL_SCORE_MISSING", result.getComparisonUnavailableReason());
+    }
+
+    @Test
+    void reportComparisonAvailabilityRejectsEmptyOrMalformedRubricData() throws Exception {
+        InterviewReport empty = comparableReport();
+        empty.setRubricScores("[]");
+        InterviewReport malformed = comparableReport();
+        malformed.setRubricScores("{not-json");
+
+        InterviewReportVO emptyResult = invokeToReportVO(empty, completedJdSession());
+        InterviewReportVO malformedResult = invokeToReportVO(malformed, completedJdSession());
+
+        assertFalse(emptyResult.getComparisonAvailable());
+        assertEquals("RUBRIC_DATA_MISSING", emptyResult.getComparisonUnavailableReason());
+        assertFalse(malformedResult.getComparisonAvailable());
+        assertEquals("RUBRIC_DATA_MALFORMED", malformedResult.getComparisonUnavailableReason());
+    }
+
+    @Test
+    void reportComparisonAvailabilityAcceptsCompleteComparableReport() throws Exception {
+        InterviewReportVO result = invokeToReportVO(comparableReport(), completedJdSession());
+
+        assertTrue(result.getComparisonAvailable());
+        assertNull(result.getComparisonUnavailableReason());
+    }
+
+    @Test
+    void reportMarksCreatedRemediationAndLinksNextInterviewAction() {
+        InterviewSession session = completedJdSession();
+        InterviewReport report = generatedReportForSession();
+        InterviewRemediation remediation = new InterviewRemediation();
+        remediation.setId(500L);
+        remediation.setSourceReportId(88L);
+        remediation.setTargetSessionId(200L);
+        remediation.setStatus("CREATED");
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(remediationMapper.selectOne(any())).thenReturn(remediation);
+
+        InterviewReportVO result = service.report(1L);
+
+        assertEquals(true, result.getRemediationCreated());
+        assertEquals(500L, result.getRemediationId());
+        assertEquals(200L, result.getRemediationTargetSessionId());
+        assertTrue(result.getNextActions().stream().anyMatch(action ->
+                "INTERVIEW".equals(action.getActionType())
+                        && "复练已创建".equals(action.getTitle())
+                        && "/interviews/room/200".equals(action.getActionUrl())));
     }
 
     @Test
@@ -705,6 +936,20 @@ class InterviewServiceImplTest {
         return report;
     }
 
+    private InterviewReport comparableReport() {
+        InterviewReport report = generatedReportForSession();
+        report.setRubricVersion("INTERVIEW_RUBRIC_V1");
+        report.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]");
+        return report;
+    }
+
+    private InterviewReportVO invokeToReportVO(InterviewReport report, InterviewSession session) throws Exception {
+        Method method = InterviewServiceImpl.class.getDeclaredMethod(
+                "toReportVO", InterviewReport.class, InterviewSession.class);
+        method.setAccessible(true);
+        return (InterviewReportVO) method.invoke(target, report, session);
+    }
+
     private InterviewMessage scorableAnswer() {
         InterviewMessage message = new InterviewMessage();
         message.setId(2001L);
@@ -759,6 +1004,14 @@ class InterviewServiceImplTest {
 
     private Object readProperty(Object target, String getterName) throws Exception {
         return target.getClass().getMethod(getterName).invoke(target);
+    }
+
+    private List<Object> queryValues(Object wrapper) {
+        if (wrapper instanceof com.baomidou.mybatisplus.core.conditions.AbstractWrapper<?, ?, ?> query) {
+            query.getSqlSegment();
+            return new ArrayList<>(query.getParamNameValuePairs().values());
+        }
+        return List.of();
     }
 
     private List<?> readListProperty(Object target, String getterName) throws Exception {

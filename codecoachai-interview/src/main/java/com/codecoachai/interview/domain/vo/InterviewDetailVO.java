@@ -30,6 +30,10 @@ public class InterviewDetailVO {
     private String targetLevel;
     private List<Long> projectEvidenceIds;
     private String followUpIntensity;
+    private Long sourceReportId;
+    private List<Long> sourceRequirementIds;
+    private String practicePurpose;
+    private String remediationStrength;
     private String status;
     private String reportStatus;
     private List<InterviewStageVO> stages;

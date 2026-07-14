@@ -63,7 +63,7 @@ UPDATE question_recommendation_item
 SET match_status = CASE WHEN question_id IS NULL THEN 'UNMATCHED_DRAFT' ELSE 'MATCHED' END,
     practice_status = CASE
       WHEN question_id IS NULL THEN 'NOT_PRACTICABLE'
-      WHEN practice_status IS NULL OR practice_status = ''NOT_PRACTICABLE'' THEN 'UNPRACTICED'
+      WHEN practice_status IS NULL OR practice_status = 'NOT_PRACTICABLE' THEN 'UNPRACTICED'
       ELSE practice_status
     END
 WHERE deleted = 0

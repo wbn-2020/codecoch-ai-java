@@ -1,5 +1,6 @@
 package com.codecoachai.resume.careerimport.entity;
 
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
 import lombok.Data;
@@ -11,6 +12,7 @@ import lombok.EqualsAndHashCode;
 public class CareerImportRow extends BaseEntity {
     private Long userId;
     private Long batchId;
+    @TableField("`row_number`")
     private Integer rowNumber;
     private String disposition;
     private String rawDataJson;

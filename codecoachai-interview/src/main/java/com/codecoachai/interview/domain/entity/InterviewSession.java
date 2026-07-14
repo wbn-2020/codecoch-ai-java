@@ -37,6 +37,10 @@ public class InterviewSession extends BaseEntity {
     private String projectEvidenceIds;
     private String followUpIntensity;
     private String trainingContextSummary;
+    private Long sourceReportId;
+    private String sourceRequirementIds;
+    private String practicePurpose;
+    private String remediationStrength;
     private String status;
     private String reportStatus;
     private Long currentStageId;

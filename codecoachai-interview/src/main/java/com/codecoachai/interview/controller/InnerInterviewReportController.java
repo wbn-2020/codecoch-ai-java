@@ -21,6 +21,7 @@ import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -490,6 +491,7 @@ public class InnerInterviewReportController {
         report.setRecommendedQuestions(payload.getRecommendedQuestions());
         report.setQaReview(payload.getQaReview());
         report.setRubricScores(payload.getRubricScores());
+        report.setRubricVersion(InterviewRubricVersion.CURRENT);
         report.setFollowUpTree(payload.getFollowUpTree());
         report.setAdviceEvidence(payload.getAdviceEvidence());
         report.setAbilityProfileUpdates(payload.getAbilityProfileUpdates());
@@ -509,6 +511,7 @@ public class InnerInterviewReportController {
         report.setRecommendedQuestions(null);
         report.setQaReview(null);
         report.setRubricScores(null);
+        report.setRubricVersion(null);
         report.setFollowUpTree(null);
         report.setAdviceEvidence(null);
         report.setAbilityProfileUpdates(null);

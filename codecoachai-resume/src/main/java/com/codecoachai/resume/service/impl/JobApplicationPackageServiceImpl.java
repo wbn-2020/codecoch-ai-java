@@ -22,6 +22,8 @@ import com.codecoachai.resume.domain.vo.ApplicationPackageActionExecuteVO;
 import com.codecoachai.resume.domain.vo.JobApplicationPackageListItemVO;
 import com.codecoachai.resume.domain.vo.JobApplicationPackageVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
+import com.codecoachai.resume.domain.vo.JobReadinessSnapshotVO;
+import com.codecoachai.resume.domain.vo.JobRequirementMatrixVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.ProjectEvidenceMapper;
 import com.codecoachai.resume.mapper.ResumeJobMatchDetailMapper;
@@ -29,6 +31,8 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.JobApplicationPackageService;
+import com.codecoachai.resume.service.JobReadinessService;
+import com.codecoachai.resume.service.JobRequirementService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -62,6 +66,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private static final int MATCH_READY_SCORE = 75;
     private static final int MATCH_MIN_SCORE = 60;
     private static final int PROJECT_READY_SCORE = 60;
+    private static final int MIN_REQUIREMENT_SAMPLE = 2;
     private static final Set<String> PACKAGE_STATUSES = Set.of("DRAFT", "READY", "APPLIED", "ARCHIVED");
     private static final String INVALID_PACKAGE_STATUS_FILTER = "__INVALID_STATUS__";
     private static final String TRUST_VERIFIED = "VERIFIED";
@@ -74,6 +79,8 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private final ResumeJobMatchReportMapper resumeJobMatchReportMapper;
     private final ResumeJobMatchDetailMapper resumeJobMatchDetailMapper;
     private final ProjectEvidenceMapper projectEvidenceMapper;
+    private final JobRequirementService jobRequirementService;
+    private final JobReadinessService jobReadinessService;
     private final V4ResumeCareerService v4ResumeCareerService;
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
@@ -100,11 +107,10 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 context.targetJob == null ? null : context.targetJob.getJobTitle(),
                 context.analysis == null ? null : context.analysis.getJobTitle(),
                 "目标岗位"));
-        vo.setResultSource("MVP_RULE_BASED_PREVIEW");
-        vo.setFallback(Boolean.FALSE);
-        vo.setFallbackReason(null);
+        vo.setResultSource("REQUIREMENT_READINESS_PREVIEW");
         vo.setSnapshotVersion(0);
         vo.setGeneratedAt(LocalDateTime.now());
+        vo.setRequirementReadinessSource(buildRequirementReadinessSource(context));
         vo.setEvidenceSources(buildEvidenceSources(context));
         vo.setRecommendedResume(buildRecommendedResume(context));
         vo.setMatchSummary(buildMatchSummary(context));
@@ -116,6 +122,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setSuggestions(buildSuggestions(context, vo));
         vo.setTrace(buildTrace(context, vo));
         applyReadiness(vo, context);
+        vo.setReadinessScore(readinessScore(vo));
         return vo;
     }
 
@@ -150,8 +157,6 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         snapshot.setPackageStatus(firstText(normalizePackageStatusValue(request.getPackageStatus()), defaultPackageStatus(snapshot)));
         snapshot.setReadinessScore(readinessScore(snapshot));
         snapshot.setResultSource("REAL");
-        snapshot.setFallback(Boolean.FALSE);
-        snapshot.setFallbackReason(null);
         snapshot.setSnapshotVersion(1);
         refreshTraceOutputSummary(snapshot);
         snapshot.setRefreshedAt(LocalDateTime.now());
@@ -227,8 +232,6 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         snapshot.setPackageStatus(firstText(normalizePackageStatusValue(row.packageStatus), defaultPackageStatus(snapshot)));
         snapshot.setReadinessScore(readinessScore(snapshot));
         snapshot.setResultSource("REAL");
-        snapshot.setFallback(Boolean.FALSE);
-        snapshot.setFallbackReason(null);
         snapshot.setSnapshotVersion((row.snapshotVersion == null ? 0 : row.snapshotVersion) + 1);
         refreshTraceOutputSummary(snapshot);
         snapshot.setRefreshedAt(LocalDateTime.now());
@@ -835,6 +838,21 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         context.projectEvidence = listProjectEvidence(userId,
                 context.targetJob == null ? context.targetJobId : context.targetJob.getId(),
                 projectEvidenceIds);
+        Long resolvedTargetJobId = context.targetJob == null ? context.targetJobId : context.targetJob.getId();
+        if (resolvedTargetJobId != null) {
+            try {
+                context.requirementMatrix = jobRequirementService.getMatrix(resolvedTargetJobId);
+            } catch (RuntimeException ex) {
+                context.sourceWarnings.add("REQUIREMENT_MATRIX_UNAVAILABLE");
+            }
+            try {
+                context.readinessSnapshot = jobReadinessService.latest(resolvedTargetJobId);
+            } catch (RuntimeException ex) {
+                context.sourceWarnings.add("READINESS_SNAPSHOT_UNAVAILABLE");
+            }
+        } else {
+            context.sourceWarnings.add("TARGET_JOB_MISSING");
+        }
         return context;
     }
 
@@ -965,6 +983,106 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         return evidence == null ? List.of() : evidence;
     }
 
+    private JobApplicationPackageVO.RequirementReadinessSourceVO buildRequirementReadinessSource(
+            PreviewContext context) {
+        JobApplicationPackageVO.RequirementReadinessSourceVO source =
+                new JobApplicationPackageVO.RequirementReadinessSourceVO();
+        JobRequirementMatrixVO matrix = context.requirementMatrix;
+        JobReadinessSnapshotVO snapshot = context.readinessSnapshot;
+        Long targetJobId = context.targetJob == null ? context.targetJobId : context.targetJob.getId();
+        source.setTargetJobId(targetJobId);
+        source.setJdAnalysisId(matrix == null ? null : matrix.getJdAnalysisId());
+        source.setRequirementCount(matrix == null ? 0 : value(matrix.getRequirementCount()));
+        source.setStrongCount(matrix == null ? 0 : value(matrix.getStrongCount()));
+        source.setWeakCount(matrix == null ? 0 : value(matrix.getWeakCount()));
+        source.setMissingCount(matrix == null ? 0 : value(matrix.getMissingCount()));
+        source.setSampleSufficient(requirementCount(matrix) >= MIN_REQUIREMENT_SAMPLE);
+        if (snapshot != null) {
+            source.setSnapshotId(snapshot.getId());
+            source.setSnapshotHash(snapshot.getSnapshotHash());
+            source.setPolicyVersion(snapshot.getPolicyVersion());
+            source.setGeneratedAt(snapshot.getGeneratedAt());
+            source.setReadinessScore(snapshot.getReadinessScore());
+            source.setReadinessLevel(snapshot.getReadinessLevel());
+            source.setConfidenceLevel(snapshot.getConfidenceLevel());
+            source.setMustRequirementCount(snapshot.getMustRequirementCount());
+            source.setMustMissingCount(snapshot.getMustMissingCount());
+        }
+
+        LinkedHashSet<String> warnings = new LinkedHashSet<>(context.sourceWarnings);
+        boolean matrixCurrent = snapshot != null && matrix != null
+                && Objects.equals(targetJobId, snapshot.getTargetJobId())
+                && Objects.equals(matrix.getJdAnalysisId(), snapshot.getJdAnalysisId())
+                && snapshot.getMatrix() != null
+                && snapshot.getMatrix().equals(objectMapper.valueToTree(matrix));
+        source.setMatrixCurrent(matrixCurrent);
+        if (matrix == null) {
+            warnings.add("REQUIREMENT_MATRIX_MISSING");
+        }
+        if (snapshot == null) {
+            warnings.add("READINESS_SNAPSHOT_MISSING");
+        } else if (!matrixCurrent) {
+            warnings.add("READINESS_SNAPSHOT_STALE");
+        }
+        if (snapshot != null && Boolean.TRUE.equals(snapshot.getFallback())) {
+            warnings.add("READINESS_SNAPSHOT_FALLBACK");
+        }
+        if (snapshot != null && "LOW".equalsIgnoreCase(snapshot.getConfidenceLevel())) {
+            warnings.add("READINESS_LOW_CONFIDENCE");
+        }
+        if (!Boolean.TRUE.equals(source.getSampleSufficient())) {
+            warnings.add("REQUIREMENT_SAMPLE_INSUFFICIENT");
+        }
+        if (matrix != null && matrix.getRequirements() != null) {
+            for (JobRequirementMatrixVO.RequirementItem item : matrix.getRequirements()) {
+                if (item == null) {
+                    continue;
+                }
+                source.getRequirements().add(toRequirementCoverageSummary(item));
+                if (Boolean.TRUE.equals(item.getRequirementFallback())) {
+                    warnings.add("REQUIREMENT_FALLBACK");
+                }
+                if ("LOW".equalsIgnoreCase(item.getRequirementConfidence())) {
+                    warnings.add("REQUIREMENT_LOW_CONFIDENCE");
+                }
+            }
+        }
+        boolean fallback = snapshot == null
+                || Boolean.TRUE.equals(snapshot.getFallback())
+                || !matrixCurrent
+                || !Boolean.TRUE.equals(source.getSampleSufficient())
+                || warnings.contains("REQUIREMENT_FALLBACK")
+                || warnings.contains("REQUIREMENT_LOW_CONFIDENCE");
+        source.setFallback(fallback);
+        source.setWarnings(new ArrayList<>(warnings));
+        context.sourceWarnings = source.getWarnings();
+        return source;
+    }
+
+    private JobApplicationPackageVO.RequirementCoverageSummaryVO toRequirementCoverageSummary(
+            JobRequirementMatrixVO.RequirementItem item) {
+        JobApplicationPackageVO.RequirementCoverageSummaryVO summary =
+                new JobApplicationPackageVO.RequirementCoverageSummaryVO();
+        summary.setRequirementId(item.getRequirementId());
+        summary.setRequirementKey(item.getRequirementKey());
+        summary.setRequirementType(item.getRequirementType());
+        summary.setRequirementName(item.getRequirementName());
+        summary.setPriority(item.getPriority());
+        summary.setCoverageLevel(item.getCoverageLevel());
+        summary.setConfidenceLevel(item.getRequirementConfidence());
+        summary.setFallback(item.getRequirementFallback());
+        List<JobRequirementMatrixVO.EvidenceItem> evidences =
+                item.getEvidences() == null ? List.of() : item.getEvidences();
+        summary.setEvidenceCount(evidences.size());
+        summary.setProjectEvidenceIds(evidences.stream()
+                .filter(Objects::nonNull)
+                .map(JobRequirementMatrixVO.EvidenceItem::getProjectEvidenceId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList());
+        return summary;
+    }
+
     private List<JobApplicationPackageVO.EvidenceSourceVO> buildEvidenceSources(PreviewContext context) {
         List<JobApplicationPackageVO.EvidenceSourceVO> sources = new ArrayList<>();
         if (context.targetJob != null || context.analysis != null) {
@@ -985,6 +1103,23 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             sources.add(evidenceSource("match", "RESUME_JOB_MATCH_REPORT", String.valueOf(context.report.getId()),
                     "简历/JD 匹配报告",
                     firstText(context.report.getSummary(), "匹配报告用于判断简历适配度和风险"), "HIGH"));
+        }
+        if (context.requirementMatrix != null) {
+            sources.add(evidenceSource("requirements", "JOB_REQUIREMENT_MATRIX",
+                    String.valueOf(context.requirementMatrix.getTargetJobId()),
+                    "Current requirement matrix",
+                    "Requirement coverage is sourced from materialized requirements and confirmed evidence.",
+                    matrixHasLowTrust(context.requirementMatrix) ? "LOW" : "HIGH"));
+        }
+        if (context.readinessSnapshot != null) {
+            sources.add(evidenceSource("readiness", "JOB_READINESS_SNAPSHOT",
+                    String.valueOf(context.readinessSnapshot.getId()),
+                    "Latest readiness snapshot",
+                    "policy=" + nullSafe(context.readinessSnapshot.getPolicyVersion())
+                            + ", generatedAt=" + nullSafe(context.readinessSnapshot.getGeneratedAt()),
+                    Boolean.TRUE.equals(context.readinessSnapshot.getFallback())
+                            || "LOW".equalsIgnoreCase(context.readinessSnapshot.getConfidenceLevel())
+                            ? "LOW" : "HIGH"));
         }
         for (ProjectEvidence evidence : context.projectEvidence) {
             sources.add(evidenceSource("project:" + evidence.getId(), "PROJECT_EVIDENCE",
@@ -1036,24 +1171,22 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
 
     private JobApplicationPackageVO.ProjectEvidenceCoverageVO buildProjectCoverage(PreviewContext context) {
         JobApplicationPackageVO.ProjectEvidenceCoverageVO vo = new JobApplicationPackageVO.ProjectEvidenceCoverageVO();
-        for (ResumeJobMatchDetail detail : context.matchDetails) {
-            String requirement = firstText(detail.getSkillName(), detail.getDimension(), "岗位要求");
-            if (detailEvidenceReady(detail)) {
-                addUnique(vo.getCoveredRequirements(), requirement);
-            } else if (StringUtils.hasText(detail.getGapDescription()) || scoreBelow(detail.getScore(), MATCH_READY_SCORE)) {
-                addUnique(vo.getInsufficientRequirements(), requirement);
+        Set<Long> selectedProjectIds = selectedProjectIds(context);
+        if (context.requirementMatrix != null && context.requirementMatrix.getRequirements() != null) {
+            for (JobRequirementMatrixVO.RequirementItem item : context.requirementMatrix.getRequirements()) {
+                if (item == null) {
+                    continue;
+                }
+                String requirement = firstText(item.getRequirementName(), item.getRequirementKey(), "Job requirement");
+                if (trustedStrongRequirement(item, selectedProjectIds)) {
+                    addUnique(vo.getCoveredRequirements(), requirement);
+                } else {
+                    addUnique(vo.getInsufficientRequirements(), requirement);
+                }
             }
         }
-        if (vo.getCoveredRequirements().isEmpty() && context.analysis != null) {
-            List<String> requirements = jsonTexts(context.analysis.getRequiredSkillsJson(), 5);
-            if (hasReadyProjectEvidence(context.projectEvidence)) {
-                requirements.stream().limit(3).forEach(item -> addUnique(vo.getCoveredRequirements(), item));
-            } else {
-                requirements.stream().limit(3).forEach(item -> addUnique(vo.getInsufficientRequirements(), item));
-            }
-        }
-        if (vo.getInsufficientRequirements().isEmpty() && !hasReadyProjectEvidence(context.projectEvidence)) {
-            addUnique(vo.getInsufficientRequirements(), "至少一段可用于面试深挖的项目证据");
+        if (context.requirementMatrix == null) {
+            addUnique(vo.getInsufficientRequirements(), "Requirement matrix is unavailable; coverage is not asserted.");
         }
         vo.setSuggestedFields(suggestedProjectFields(context.projectEvidence));
         vo.setSelectedEvidence(context.projectEvidence.stream().map(this::toProjectEvidenceSummary).toList());
@@ -1107,10 +1240,12 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         items.add(check("SKILL_EVIDENCE_COVERED", "核心技能要求有证据支撑", skillEvidence,
                 skillEvidence ? "已有要求可被匹配报告或项目证据支撑。" : "核心技能证据不足，建议补充项目证据。",
                 "WARN", "ADD_PROJECT_EVIDENCE", projectEvidenceUrl(vo.getTargetJobId()), List.of("match")));
-        boolean projectReady = hasReadyProjectEvidence(context.projectEvidence);
+        boolean projectReady = hasTrustedStrongRequirement(context);
         items.add(check("PROJECT_EVIDENCE_READY", "至少一段项目证据可用于面试深挖", projectReady,
-                projectReady ? "已找到可用项目证据。" : "项目证据不足，建议补充职责、难点、方案和结果。",
-                "WARN", "ADD_PROJECT_EVIDENCE", projectEvidenceUrl(vo.getTargetJobId()), projectEvidenceSourceIds(context)));
+                projectReady ? "At least one requirement has trusted, confirmed project evidence."
+                        : "Project completeness alone is not coverage; add confirmed evidence for a missing requirement.",
+                "WARN", "ADD_PROJECT_EVIDENCE", projectEvidenceUrl(vo.getTargetJobId()),
+                List.of("requirements", "readiness")));
         boolean interviewReady = vo.getInterviewPreparation() != null && !vo.getInterviewPreparation().getTopics().isEmpty();
         items.add(check("INTERVIEW_PREPARATION_READY", "已生成面试准备方向", interviewReady,
                 interviewReady ? "已生成可带上下文进入模拟面试的准备方向。" : "建议先生成面试准备方向。",
@@ -1132,8 +1267,16 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         } else if (scoreBelow(context.report.getOverallScore(), MATCH_READY_SCORE)) {
             risks.add(risk("MATCH_SCORE_LOW", "MEDIUM", "简历匹配仍有缺口", "当前匹配分未达到 READY 阈值，建议先优化简历或补证据。", List.of("match")));
         }
-        if (!hasReadyProjectEvidence(context.projectEvidence)) {
-            risks.add(risk("PROJECT_EVIDENCE_WEAK", "MEDIUM", "项目证据不足", "缺少完整项目证据时，不应把投递建议包装成强结论。", projectEvidenceSourceIds(context)));
+        if (!hasTrustedStrongRequirement(context)) {
+            risks.add(risk("PROJECT_EVIDENCE_WEAK", "MEDIUM", "项目证据不足",
+                    "No trusted strong requirement evidence is available; project completeness does not satisfy this gate.",
+                    List.of("requirements", "readiness")));
+        }
+        if (vo.getRequirementReadinessSource() == null
+                || Boolean.TRUE.equals(vo.getRequirementReadinessSource().getFallback())) {
+            risks.add(risk("READINESS_SOURCE_DEGRADED", "HIGH", "Readiness source is degraded",
+                    "The latest readiness source is missing, stale, fallback, low-confidence, or sample-insufficient.",
+                    List.of("requirements", "readiness")));
         }
         if (!Boolean.TRUE.equals(findChecklist(vo, "FOLLOW_UP_PLAN_READY"))) {
             risks.add(risk("FOLLOW_UP_NOT_SET", "LOW", "跟进计划未设置", "创建投递记录时需要设置下一次跟进，避免投递后断链。", List.of()));
@@ -1150,10 +1293,11 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                     "先让简历版本和当前 JD 形成可信匹配报告，再决定是否投递。",
                     "HIGH", matchUrl(vo.getMatchReportId()), "APPLICATION_PACKAGE", vo.getId(), List.of("resume", "match")));
         }
-        if (!hasReadyProjectEvidence(context.projectEvidence)) {
+        if (hasRequirementGaps(context)) {
             actions.add(action("add-project-evidence", "ADD_PROJECT_EVIDENCE", "补充项目证据",
-                    "补齐项目职责、技术难点、解决方案、结果指标和复盘字段。",
-                    "HIGH", projectEvidenceUrl(vo.getTargetJobId()), "APPLICATION_PACKAGE", vo.getId(), projectEvidenceSourceIds(context)));
+                    "Add confirmed project evidence for the missing or weak job requirements.",
+                    "HIGH", projectEvidenceUrl(vo.getTargetJobId()), "APPLICATION_PACKAGE", vo.getId(),
+                    List.of("requirements", "readiness")));
         }
         if (matchSuccess(context.report) && scoreBelow(context.report == null ? null : context.report.getOverallScore(), 85)) {
             actions.add(action("practice-interview", "PRACTICE_INTERVIEW", "带岗位上下文练一场模拟面试",
@@ -1178,16 +1322,16 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                     context.report == null ? "缺少匹配报告时，这只是可用版本建议，不是强适配结论。" : "推荐基于匹配报告和简历版本绑定关系。",
                     List.of("resume", "match")));
         }
-        if (hasReadyProjectEvidence(context.projectEvidence)) {
+        if (hasTrustedStrongRequirement(context)) {
             suggestions.add(suggestion("project-evidence", "PROJECT_EVIDENCE", "优先使用已选项目证据",
-                    "这些项目证据完整度较高，可作为面试深挖和 JD 支撑材料。",
-                    "MEDIUM", "MVP 仅按目标岗位绑定和完整度做轻量判断，P1 再做 JD 要求级聚合。",
-                    projectEvidenceSourceIds(context)));
+                    "Selected evidence has trusted strong links to at least one materialized job requirement.",
+                    "HIGH", "Coverage is asserted only from confirmed, non-fallback requirement evidence.",
+                    List.of("requirements", "readiness")));
         } else {
             suggestions.add(suggestion("project-evidence-gap", "PROJECT_EVIDENCE", "先补项目证据再评估投递准备度",
-                    "当前证据不足，系统只生成补证据行动，不输出直接投递结论。",
-                    "LOW", "低证据建议必须降级为补资料或补证据行动。",
-                    projectEvidenceSourceIds(context)));
+                    "Current requirement evidence is missing, weak, fallback, or low-confidence.",
+                    "LOW", "Degraded evidence only produces remediation actions, never a READY conclusion.",
+                    List.of("requirements", "readiness")));
         }
         suggestions.add(suggestion("application-boundary", "APPLICATION_RECORD", "创建的是投递记录，不是自动投递",
                 "投递包只帮助准备、记录和跟进，真实投递仍需用户自行完成。",
@@ -1200,14 +1344,19 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         JobApplicationPackageVO.SuggestionTraceVO trace = new JobApplicationPackageVO.SuggestionTraceVO();
         trace.setTraceId("application-package-preview:" + vo.getUserId() + ":" + nullSafe(vo.getTargetJobId())
                 + ":" + nullSafe(vo.getRecommendedResumeVersionId()) + ":" + nullSafe(vo.getMatchReportId()));
-        trace.setFallback(false);
-        trace.setDegraded(true);
+        trace.setFallback(vo.getRequirementReadinessSource() == null
+                || Boolean.TRUE.equals(vo.getRequirementReadinessSource().getFallback()));
+        trace.setDegraded(Boolean.TRUE.equals(trace.getFallback())
+                || !"READY".equalsIgnoreCase(vo.getReadinessLevel()));
         trace.setMock(false);
         trace.setInputSummary("targetJobId=" + nullSafe(vo.getTargetJobId())
                 + ", jdAnalysisId=" + nullSafe(vo.getJdAnalysisId())
                 + ", resumeVersionId=" + nullSafe(vo.getRecommendedResumeVersionId())
                 + ", matchReportId=" + nullSafe(vo.getMatchReportId())
-                + ", projectEvidenceCount=" + context.projectEvidence.size());
+                + ", projectEvidenceCount=" + context.projectEvidence.size()
+                + ", requirementCount=" + requirementCount(context.requirementMatrix)
+                + ", readinessSnapshotId="
+                + nullSafe(context.readinessSnapshot == null ? null : context.readinessSnapshot.getId()));
         trace.setOutputSummary(traceOutputSummary(vo));
         return trace;
     }
@@ -1227,33 +1376,40 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     }
 
     private void applyReadiness(JobApplicationPackageVO vo, PreviewContext context) {
+        JobApplicationPackageVO.RequirementReadinessSourceVO source = vo.getRequirementReadinessSource();
+        boolean fallback = source == null || Boolean.TRUE.equals(source.getFallback());
+        vo.setFallback(fallback);
+        vo.setFallbackReason(source == null || source.getWarnings() == null || source.getWarnings().isEmpty()
+                ? null : String.join(",", source.getWarnings()));
         if (context.analysis == null) {
             vo.setReadinessLevel("BLOCKED");
             vo.setReadinessReason("缺少已解析 JD，无法生成可信投递包。");
-            return;
-        }
-        if (context.resumeVersion == null) {
+        } else if (context.resumeVersion == null) {
             vo.setReadinessLevel("NEEDS_RESUME");
             vo.setReadinessReason("缺少可用简历版本。");
-            return;
-        }
-        if (!matchSuccess(context.report) || scoreBelow(context.report.getOverallScore(), MATCH_MIN_SCORE)) {
-            vo.setReadinessLevel("NEEDS_RESUME");
-            vo.setReadinessReason("缺少成功匹配报告或匹配分过低，建议先优化简历/重新匹配。");
-            return;
-        }
-        if (!hasReadyProjectEvidence(context.projectEvidence)) {
+        } else if (source == null || source.getSnapshotId() == null) {
             vo.setReadinessLevel("NEEDS_EVIDENCE");
-            vo.setReadinessReason("项目证据不足，建议先补充可用于面试深挖的项目材料。");
-            return;
-        }
-        if (scoreBelow(context.report.getOverallScore(), MATCH_READY_SCORE)) {
+            vo.setReadinessReason("No readiness snapshot is available; READY is conservatively blocked.");
+        } else if (fallback) {
+            vo.setReadinessLevel("NEEDS_EVIDENCE");
+            vo.setReadinessReason("Readiness evidence is stale, fallback, low-confidence, or sample-insufficient.");
+        } else if (hasBlockingRequirementGaps(context)) {
+            vo.setReadinessLevel("NEEDS_EVIDENCE");
+            vo.setReadinessReason("A MUST requirement lacks trusted strong evidence in the selected package evidence.");
+        } else if ("NEAR_READY".equalsIgnoreCase(source.getReadinessLevel())) {
             vo.setReadinessLevel("NEEDS_TRAINING");
-            vo.setReadinessReason("基础材料可用，但匹配分未达到 READY 阈值，建议先做一次岗位上下文模拟面试。");
-            return;
+            vo.setReadinessReason("The latest trusted readiness snapshot is NEAR_READY; complete targeted practice first.");
+        } else if ("READY".equalsIgnoreCase(source.getReadinessLevel())) {
+            vo.setReadinessLevel("READY");
+            vo.setReadinessReason("READY is inherited from the latest trusted, current requirement readiness snapshot.");
+        } else {
+            vo.setReadinessLevel("NEEDS_EVIDENCE");
+            vo.setReadinessReason("The latest trusted readiness snapshot still reports missing requirement evidence.");
         }
-        vo.setReadinessLevel("READY");
-        vo.setReadinessReason("JD、简历版本、匹配报告和项目证据均达到 MVP 投递前检查要求。");
+        if (vo.getTrace() != null) {
+            vo.getTrace().setFallback(fallback);
+            vo.getTrace().setDegraded(fallback || !"READY".equalsIgnoreCase(vo.getReadinessLevel()));
+        }
     }
 
     private String applicationNote(ApplicationPackageCreateApplicationDTO request, JobApplicationPackageVO preview) {
@@ -1393,6 +1549,98 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 && !scoreBelow(detail.getScore(), MATCH_MIN_SCORE)
                 && StringUtils.hasText(detail.getEvidence())
                 && !StringUtils.hasText(detail.getGapDescription());
+    }
+
+    private boolean hasRequirementGaps(PreviewContext context) {
+        if (context == null || context.requirementMatrix == null
+                || CollectionUtils.isEmpty(context.requirementMatrix.getRequirements())) {
+            return true;
+        }
+        Set<Long> selectedProjectIds = selectedProjectIds(context);
+        return context.requirementMatrix.getRequirements().stream()
+                .filter(Objects::nonNull)
+                .anyMatch(item -> !trustedStrongRequirement(item, selectedProjectIds));
+    }
+
+    private boolean hasBlockingRequirementGaps(PreviewContext context) {
+        if (context == null || context.requirementMatrix == null
+                || CollectionUtils.isEmpty(context.requirementMatrix.getRequirements())) {
+            return true;
+        }
+        Set<Long> selectedProjectIds = selectedProjectIds(context);
+        List<JobRequirementMatrixVO.RequirementItem> mustRequirements =
+                context.requirementMatrix.getRequirements().stream()
+                        .filter(Objects::nonNull)
+                        .filter(item -> "MUST".equalsIgnoreCase(item.getPriority()))
+                        .toList();
+        if (mustRequirements.isEmpty()) {
+            return !hasTrustedStrongRequirement(context);
+        }
+        return mustRequirements.stream().anyMatch(item -> !trustedStrongRequirement(item, selectedProjectIds));
+    }
+
+    private boolean hasTrustedStrongRequirement(PreviewContext context) {
+        if (context == null || context.requirementMatrix == null
+                || CollectionUtils.isEmpty(context.requirementMatrix.getRequirements())) {
+            return false;
+        }
+        Set<Long> selectedProjectIds = selectedProjectIds(context);
+        return context.requirementMatrix.getRequirements().stream()
+                .filter(Objects::nonNull)
+                .anyMatch(item -> trustedStrongRequirement(item, selectedProjectIds));
+    }
+
+    private boolean trustedStrongRequirement(JobRequirementMatrixVO.RequirementItem item,
+                                             Set<Long> selectedProjectIds) {
+        return item != null
+                && "STRONG".equalsIgnoreCase(item.getCoverageLevel())
+                && !Boolean.TRUE.equals(item.getRequirementFallback())
+                && !"LOW".equalsIgnoreCase(item.getRequirementConfidence())
+                && item.getEvidences() != null
+                && item.getEvidences().stream()
+                .anyMatch(evidence -> trustedEvidence(evidence, selectedProjectIds));
+    }
+
+    private boolean trustedEvidence(JobRequirementMatrixVO.EvidenceItem evidence, Set<Long> selectedProjectIds) {
+        return evidence != null
+                && evidence.getProjectEvidenceId() != null
+                && selectedProjectIds.contains(evidence.getProjectEvidenceId())
+                && "STRONG".equalsIgnoreCase(evidence.getCoverageLevel())
+                && Boolean.TRUE.equals(evidence.getConfirmed())
+                && !Boolean.TRUE.equals(evidence.getFallback())
+                && !"LOW".equalsIgnoreCase(evidence.getConfidenceLevel());
+    }
+
+    private Set<Long> selectedProjectIds(PreviewContext context) {
+        if (context == null || CollectionUtils.isEmpty(context.projectEvidence)) {
+            return Set.of();
+        }
+        return context.projectEvidence.stream()
+                .filter(Objects::nonNull)
+                .map(ProjectEvidence::getId)
+                .filter(Objects::nonNull)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private boolean matrixHasLowTrust(JobRequirementMatrixVO matrix) {
+        return matrix == null || CollectionUtils.isEmpty(matrix.getRequirements())
+                || matrix.getRequirements().stream()
+                .filter(Objects::nonNull)
+                .anyMatch(item -> Boolean.TRUE.equals(item.getRequirementFallback())
+                        || "LOW".equalsIgnoreCase(item.getRequirementConfidence()));
+    }
+
+    private int requirementCount(JobRequirementMatrixVO matrix) {
+        if (matrix == null) {
+            return 0;
+        }
+        return matrix.getRequirementCount() == null
+                ? (matrix.getRequirements() == null ? 0 : matrix.getRequirements().size())
+                : matrix.getRequirementCount();
+    }
+
+    private int value(Integer number) {
+        return number == null ? 0 : number;
     }
 
     private boolean hasReadyProjectEvidence(List<ProjectEvidence> evidence) {
@@ -1631,6 +1879,11 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         if (snapshot == null) {
             return 0;
         }
+        if (snapshot.getRequirementReadinessSource() != null
+                && snapshot.getRequirementReadinessSource().getReadinessScore() != null) {
+            return Math.max(0, Math.min(100,
+                    snapshot.getRequirementReadinessSource().getReadinessScore()));
+        }
         Integer matchScore = snapshot.getMatchSummary() == null ? null : snapshot.getMatchSummary().getOverallScore();
         int score = matchScore == null ? 0 : Math.max(0, Math.min(100, matchScore));
         if ("READY".equalsIgnoreCase(snapshot.getReadinessLevel())) {
@@ -1788,6 +2041,9 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         private ResumeJobMatchReport report;
         private List<ResumeJobMatchDetail> matchDetails = List.of();
         private List<ProjectEvidence> projectEvidence = List.of();
+        private JobRequirementMatrixVO requirementMatrix;
+        private JobReadinessSnapshotVO readinessSnapshot;
+        private List<String> sourceWarnings = new ArrayList<>();
     }
 
     private static class PackageRow {

@@ -29,6 +29,7 @@ public class InterviewReport extends BaseEntity {
     private String followUpTree;
     private String adviceEvidence;
     private String abilityProfileUpdates;
+    private String rubricVersion;
     private String reportContent;
     private LocalDateTime generatedAt;
     private String suggestions;

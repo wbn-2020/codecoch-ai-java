@@ -4,6 +4,7 @@ import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.util.TextFingerprintUtils;
@@ -50,6 +51,20 @@ public class ResumeAgentContextFeignClientFallbackFactory
             @Override
             public Result<List<ProjectEvidenceAgentContextVO>> listProjectEvidenceAgentContext(Long userId) {
                 return Result.success(Collections.emptyList());
+            }
+
+            @Override
+            public Result<RequirementReadinessAgentContextVO> requirementReadinessContext(
+                    Long userId, Long targetJobId) {
+                RequirementReadinessAgentContextVO context = new RequirementReadinessAgentContextVO();
+                context.setTargetJobId(targetJobId);
+                context.setConfidenceLevel("LOW");
+                context.setFallback(true);
+                context.setMatrixCurrent(false);
+                context.setSampleSufficient(false);
+                context.setRequirementCount(0);
+                context.setWarnings(List.of("RESUME_REQUIREMENT_CONTEXT_FALLBACK"));
+                return Result.success(context);
             }
 
             @Override

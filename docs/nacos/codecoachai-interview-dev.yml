@@ -21,3 +21,9 @@ codecoachai:
     max-follow-up-count: 2
     questions-per-stage: 2
     report-timeout-seconds: 30
+    voice:
+      tts:
+        provider: ""
+      streaming-asr:
+        provider: ""
+        cleanup-fixed-delay-ms: 30000

@@ -23,7 +23,10 @@ import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.scenario.InterviewScenarioBinding;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,6 +68,7 @@ public class InterviewReportAsyncService {
     private final InterviewSessionMapper sessionMapper;
     private final InterviewReportMapper reportMapper;
     private final InterviewMessageMapper messageMapper;
+    private final InterviewScenarioBindingMapper scenarioBindingMapper;
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
     private final QuestionFeignClient questionFeignClient;
@@ -305,6 +309,21 @@ public class InterviewReportAsyncService {
         return latest;
     }
 
+    private String reportRubricVersion(Long sessionId) {
+        if (sessionId == null) {
+            return InterviewRubricVersion.CURRENT;
+        }
+        InterviewScenarioBinding binding = scenarioBindingMapper.selectOne(
+                new LambdaQueryWrapper<InterviewScenarioBinding>()
+                        .eq(InterviewScenarioBinding::getSessionId, sessionId)
+                        .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (binding == null) {
+            return InterviewRubricVersion.CURRENT;
+        }
+        return "scenario:" + binding.getScenarioVersionId() + ":rubric:" + binding.getRubricVersionId();
+    }
+
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
         int answerCount = countScorableAnswers(messages);
         if (aiReportMissingDisplayContent(aiReport) || !hasExpectedQaReviews(aiReport, answerCount)) {
@@ -323,6 +342,7 @@ public class InterviewReportAsyncService {
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
         report.setRubricScores(firstText(aiReport.getRubricScores(), buildFallbackRubricScores(messages, answerCount)));
+        report.setRubricVersion(reportRubricVersion(report.getSessionId()));
         report.setFollowUpTree(firstText(aiReport.getFollowUpTree(), buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport.getAdviceEvidence(), buildFallbackAdviceEvidence(report, messages, answerCount)));
         report.setAbilityProfileUpdates(firstText(aiReport.getAbilityProfileUpdates(), buildFallbackAbilityProfileUpdates(messages, answerCount)));
@@ -355,6 +375,7 @@ public class InterviewReportAsyncService {
         report.setQaReview(buildFallbackQaReview(messages));
         report.setRubricScores(firstText(aiReport == null ? null : aiReport.getRubricScores(),
                 buildFallbackRubricScores(messages, answerCount)));
+        report.setRubricVersion(reportRubricVersion(report.getSessionId()));
         report.setFollowUpTree(firstText(aiReport == null ? null : aiReport.getFollowUpTree(),
                 buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport == null ? null : aiReport.getAdviceEvidence(),

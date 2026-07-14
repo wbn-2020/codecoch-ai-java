@@ -16,6 +16,7 @@ public class JobCoachAgentContext {
     private TargetJobSnapshot targetJob;
     private List<ApplicationSnapshot> applications = new ArrayList<>();
     private List<ProjectEvidenceSnapshot> projectEvidences = new ArrayList<>();
+    private RequirementReadinessSnapshot requirementReadiness;
     private List<JobExperimentSnapshot> jobExperiments = new ArrayList<>();
     private List<String> recentMemories = new ArrayList<>();
     private List<MemoryReference> recentMemoryReferences = new ArrayList<>();
@@ -75,6 +76,38 @@ public class JobCoachAgentContext {
         private List<String> topSkillNames;
         private Long targetJobId;
         private String suggestedActionPath;
+    }
+
+    @Data
+    public static class RequirementReadinessSnapshot {
+        private Long targetJobId;
+        private Long jdAnalysisId;
+        private Long snapshotId;
+        private String snapshotHash;
+        private String policyVersion;
+        private LocalDateTime generatedAt;
+        private Integer readinessScore;
+        private String readinessLevel;
+        private String confidenceLevel;
+        private Boolean fallback;
+        private Boolean matrixCurrent;
+        private Boolean sampleSufficient;
+        private Integer requirementCount;
+        private List<String> warnings = new ArrayList<>();
+        private List<MissingRequirementSnapshot> missingRequirements = new ArrayList<>();
+    }
+
+    @Data
+    public static class MissingRequirementSnapshot {
+        private Long requirementId;
+        private String requirementKey;
+        private String requirementType;
+        private String requirementName;
+        private String priority;
+        private String coverageLevel;
+        private String confidenceLevel;
+        private Boolean fallback;
+        private List<Long> projectEvidenceIds = new ArrayList<>();
     }
 
     @Data

@@ -2,7 +2,7 @@
 
 DROP TEMPORARY TABLE IF EXISTS tmp_v4_054_prompt_definition;
 CREATE TEMPORARY TABLE tmp_v4_054_prompt_definition (
-  scene VARCHAR(64) NOT NULL,
+  scene VARCHAR(64) COLLATE utf8mb4_0900_ai_ci NOT NULL,
   version_name VARCHAR(128) NOT NULL,
   content LONGTEXT NOT NULL,
   variables_json LONGTEXT NOT NULL,
@@ -303,7 +303,7 @@ VALUES
 DROP TEMPORARY TABLE IF EXISTS tmp_v4_054_prompt_target;
 CREATE TEMPORARY TABLE tmp_v4_054_prompt_target (
   template_id BIGINT NOT NULL,
-  scene VARCHAR(64) NOT NULL,
+  scene VARCHAR(64) COLLATE utf8mb4_0900_ai_ci NOT NULL,
   version_name VARCHAR(128) NOT NULL,
   content LONGTEXT NOT NULL,
   variables_json LONGTEXT NOT NULL,

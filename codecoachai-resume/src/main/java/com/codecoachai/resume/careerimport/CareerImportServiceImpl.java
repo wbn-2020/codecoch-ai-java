@@ -192,7 +192,7 @@ public class CareerImportServiceImpl implements CareerImportService {
         Long userId = SecurityAssert.requireLoginUserId();
         CareerImportBatch batch = batchMapper.selectById(batchId);
         if (batch == null || !userId.equals(batch.getUserId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Import batch not found");
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Import batch not found");
         }
         List<CareerImportRow> rows = rowMapper.selectList(new LambdaQueryWrapper<CareerImportRow>()
                 .eq(CareerImportRow::getUserId, userId)

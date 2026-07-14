@@ -39,6 +39,7 @@ import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeSearchReindexVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
+import com.codecoachai.resume.export.ResumeUploadAdmissionGuard;
 import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
@@ -70,6 +71,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -110,6 +112,7 @@ public class ResumeServiceImpl implements ResumeService {
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final ResumeTextExtractProperties textExtractProperties;
     private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    private final ResumeUploadAdmissionGuard uploadAdmissionGuard;
 
     @Override
     public List<ResumeListVO> listResumes() {
@@ -152,7 +155,18 @@ public class ResumeServiceImpl implements ResumeService {
     public ResumeUploadVO uploadResume(MultipartFile file) {
         Long userId = requireCurrentUserId();
         validateUploadFile(file);
-        InnerFileUploadVO uploadedFile = FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId));
+        long size = file.getSize();
+        long startedAt = System.nanoTime();
+        InnerFileUploadVO uploadedFile;
+        try {
+            uploadedFile = uploadAdmissionGuard.execute(size,
+                    () -> FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId)));
+            log.debug("Resume upload completed userId={} fileSize={} durationMs={}",
+                    userId, size, elapsedMillis(startedAt));
+        } catch (RuntimeException ex) {
+            logUploadFailure("Resume upload failed", userId, size, startedAt, ex);
+            throw ex;
+        }
         if (uploadedFile == null || uploadedFile.getFileId() == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历文件上传失败，请稍后重试");
         }
@@ -267,6 +281,22 @@ public class ResumeServiceImpl implements ResumeService {
             log.error("Resume uploaded file cleanup failed fileId={} userId={} reason={} failureType={}",
                     uploadedFile.getFileId(), userId, reason, ex.getClass().getSimpleName());
         }
+    }
+
+    private void logUploadFailure(String event, Long userId, long size, long startedAt, RuntimeException ex) {
+        long durationMs = elapsedMillis(startedAt);
+        if (ex instanceof BusinessException businessException
+                && Objects.equals(businessException.getCode(), ErrorCode.RESUME_UPLOAD_BUSY.getCode())) {
+            log.debug("{} userId={} fileSize={} durationMs={} exceptionType={}",
+                    event, userId, size, durationMs, ex.getClass().getSimpleName());
+            return;
+        }
+        log.warn("{} userId={} fileSize={} durationMs={} exceptionType={}",
+                event, userId, size, durationMs, ex.getClass().getSimpleName());
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private MqDispatchReceipt dispatchResumeOptimize(ResumeOptimizeRecord record) {
@@ -511,7 +541,7 @@ public class ResumeServiceImpl implements ResumeService {
 
     @Override
     public ResumeDetailVO getResume(Long id) {
-        return toDetailVO(getOwnedResume(id));
+        return toDetailVO(getOwnedResumeForRead(id));
     }
 
     @Override
@@ -528,6 +558,7 @@ public class ResumeServiceImpl implements ResumeService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteResume(Long id) {
         Resume resume = getOwnedResume(id);
+        lockOwnedResume(resume);
         projectMapper.delete(new LambdaQueryWrapper<ResumeProject>().eq(ResumeProject::getResumeId, id));
         resumeMapper.deleteById(resume.getId());
         syncResumeSearchAfterCommit(resume.getId(), resume.getUserId(), false);
@@ -564,7 +595,8 @@ public class ResumeServiceImpl implements ResumeService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeProjectVO createProject(Long resumeId, ResumeProjectSaveDTO dto) {
         Long userId = requireCurrentUserId();
-        getOwnedResume(resumeId, userId);
+        Resume resume = getOwnedResume(resumeId, userId);
+        lockOwnedResume(resume);
         ResumeProject project = new ResumeProject();
         project.setResumeId(resumeId);
         applyProject(project, dto);
@@ -577,7 +609,8 @@ public class ResumeServiceImpl implements ResumeService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeProjectVO updateProject(Long resumeId, Long projectId, ResumeProjectSaveDTO dto) {
         Long userId = requireCurrentUserId();
-        getOwnedResume(resumeId, userId);
+        Resume resume = getOwnedResume(resumeId, userId);
+        lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
@@ -598,7 +631,8 @@ public class ResumeServiceImpl implements ResumeService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteProject(Long resumeId, Long projectId) {
-        getOwnedResume(resumeId);
+        Resume resume = getOwnedResume(resumeId);
+        lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         projectMapper.deleteById(project.getId());
         syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
@@ -1738,14 +1772,32 @@ public class ResumeServiceImpl implements ResumeService {
         return getOwnedResume(id, requireCurrentUserId());
     }
 
+    private Resume getOwnedResumeForRead(Long id) {
+        return requireOwnedResume(id, requireCurrentUserId(), ErrorCode.RESOURCE_NOT_FOUND);
+    }
+
     private Resume getOwnedResume(Long id, Long userId) {
+        return requireOwnedResume(id, userId, ErrorCode.PARAM_ERROR);
+    }
+
+    private void lockOwnedResume(Resume resume) {
+        Long lockedId = resumeMapper.lockOwnedResume(resume.getId(), resume.getUserId());
+        if (!Objects.equals(resume.getId(), lockedId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
+        }
+    }
+
+    private Resume requireOwnedResume(Long id, Long userId, ErrorCode missingErrorCode) {
+        if (id == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume id is required");
+        }
         Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
                 .eq(Resume::getId, id)
                 .eq(Resume::getUserId, userId)
                 .eq(Resume::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
+            throw new BusinessException(missingErrorCode, "简历不存在或已不可用");
         }
         return resume;
     }
@@ -1776,7 +1828,8 @@ public class ResumeServiceImpl implements ResumeService {
         if (project == null || CommonConstants.YES.equals(project.getDeleted())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历项目经历不存在或已不可用");
         }
-        getOwnedResume(project.getResumeId());
+        Resume resume = getOwnedResume(project.getResumeId());
+        lockOwnedResume(resume);
         return project;
     }
 

@@ -11,13 +11,19 @@ import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.ServletRequestBindingException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 @Slf4j
 @RestControllerAdvice
@@ -32,7 +38,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<Result<Void>> handleBusinessException(BusinessException ex) {
-        return response(withTrace(Result.fail(ex.getCode(), ex.getMessage())), httpStatusForCode(ex.getCode()));
+        return response(withTrace(Result.fail(ex.getCode(), ex.getMessage())), httpStatusFor(ex));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -63,6 +69,45 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Result<Void>> handleMissingParameter(MissingServletRequestParameterException ex) {
         return response(
                 withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), ex.getParameterName() + "不能为空")),
+                HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<Result<Void>> handleMethodNotSupported(HttpRequestMethodNotSupportedException ex) {
+        ResponseEntity.BodyBuilder response = ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED);
+        if (ex.getSupportedHttpMethods() != null) {
+            response.allow(ex.getSupportedHttpMethods().toArray(HttpMethod[]::new));
+        }
+        return response.body(withTrace(Result.fail(
+                ErrorCode.PARAM_ERROR.getCode(),
+                "HTTP method " + ex.getMethod() + " is not supported")));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Result<Void>> handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex) {
+        return response(
+                withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Request media type is not supported")),
+                HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Result<Void>> handleMethodArgumentTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        return response(
+                withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), ex.getName() + " has an invalid value")),
+                HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<Result<Void>> handleMessageNotReadable(HttpMessageNotReadableException ex) {
+        return response(
+                withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Request body is missing or malformed")),
+                HttpStatus.BAD_REQUEST);
+    }
+
+    @ExceptionHandler(ServletRequestBindingException.class)
+    public ResponseEntity<Result<Void>> handleRequestBinding(ServletRequestBindingException ex) {
+        return response(
+                withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Required request metadata is missing")),
                 HttpStatus.BAD_REQUEST);
     }
 
@@ -98,12 +143,20 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(result);
     }
 
-    private HttpStatus httpStatusForCode(Integer code) {
-        if (ErrorCode.UNAUTHORIZED.getCode() == code || ErrorCode.TOKEN_INVALID.getCode() == code) {
-            return HttpStatus.UNAUTHORIZED;
+    private HttpStatus httpStatusFor(BusinessException ex) {
+        if (ex.getHttpStatus() != null) {
+            HttpStatus status = HttpStatus.resolve(ex.getHttpStatus());
+            if (status != null) {
+                return status;
+            }
         }
-        if (ErrorCode.FORBIDDEN.getCode() == code) {
-            return HttpStatus.FORBIDDEN;
+        Integer code = ex.getCode();
+        HttpStatus domainStatus = ErrorCode.fromCode(code)
+                .map(ErrorCode::getHttpStatus)
+                .map(HttpStatus::resolve)
+                .orElse(null);
+        if (domainStatus != null) {
+            return domainStatus;
         }
         return HttpStatus.OK;
     }

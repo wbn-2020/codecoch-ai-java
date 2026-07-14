@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,6 +36,7 @@ import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionEffectItemVO;
+import com.codecoachai.resume.experimentv2.ExperimentV2ApplicationAutoAssignmentService;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -58,6 +60,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @ExtendWith(MockitoExtension.class)
 class V4ResumeCareerServiceImplTest {
@@ -86,6 +90,8 @@ class V4ResumeCareerServiceImplTest {
     private NotificationBusinessResolver notificationBusinessResolver;
     @Mock
     private ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    @Mock
+    private ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
 
     private V4ResumeCareerServiceImpl service;
 
@@ -123,6 +129,7 @@ class V4ResumeCareerServiceImplTest {
                 agentBusinessActionNotifier,
                 notificationBusinessResolver,
                 resumeSearchSyncOutboxService,
+                experimentAutoAssignmentService,
                 new ObjectMapper());
     }
 
@@ -172,6 +179,30 @@ class V4ResumeCareerServiceImplTest {
         assertEquals("测试科技", app.getCompanyName());
         assertEquals("Untitled Job", app.getJobTitle());
         assertEquals("SAVED", app.getStatus());
+    }
+
+    @Test
+    void createApplicationAutoAssignsOnlyAfterCommit() {
+        when(jobApplicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
+            JobApplication application = invocation.getArgument(0);
+            application.setId(41L);
+            return 1;
+        });
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.createApplication(new JobApplicationSaveDTO());
+
+            verify(experimentAutoAssignmentService, never()).autoAssign(any(JobApplication.class));
+            List<TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+
+            verify(experimentAutoAssignmentService).autoAssign(any(JobApplication.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
     }
 
     @Test
@@ -877,6 +908,36 @@ class V4ResumeCareerServiceImplTest {
         assertTrue(version.getSnapshotJson().contains("\"projects\""));
         assertTrue(version.getSnapshotJson().contains("智能求职项目"));
         assertTrue(version.getSnapshotJson().contains("\"projectSnapshotSource\":\"RESUME_VERSION\""));
+    }
+
+    @Test
+    void createVersionCanonicalizesSameSortProjectsIndependentOfDatabaseOrder() throws Exception {
+        ResumeProject alpha = project(11L);
+        alpha.setProjectName("Alpha project");
+        alpha.setSort(null);
+        alpha.setSortOrder(null);
+        ResumeProject zulu = project(12L);
+        zulu.setProjectName("Zulu project");
+        zulu.setSort(null);
+        zulu.setSortOrder(null);
+        when(resumeMapper.selectById(1L)).thenReturn(resume(1L, USER_ID));
+        when(resumeVersionMapper.selectOne(
+                org.mockito.ArgumentMatchers.<LambdaQueryWrapper<ResumeVersion>>any())).thenReturn(null);
+        when(resumeProjectMapper.selectList(any()))
+                .thenReturn(List.of(zulu, alpha), List.of(alpha, zulu));
+
+        service.createVersion(1L, null);
+        service.createVersion(1L, null);
+
+        ArgumentCaptor<ResumeVersion> versions = ArgumentCaptor.forClass(ResumeVersion.class);
+        verify(resumeVersionMapper, times(2)).insert(versions.capture());
+        String firstSnapshot = versions.getAllValues().get(0).getSnapshotJson();
+        String secondSnapshot = versions.getAllValues().get(1).getSnapshotJson();
+        assertEquals(firstSnapshot, secondSnapshot);
+        var projects = new ObjectMapper().readTree(firstSnapshot).path("projects");
+        assertEquals("Alpha project", projects.get(0).path("projectName").asText());
+        assertEquals(0, projects.get(0).path("sort").asInt());
+        assertEquals(0, projects.get(0).path("sortOrder").asInt());
     }
 
     private Resume resume(Long id, Long userId) {

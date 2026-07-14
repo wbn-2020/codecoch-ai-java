@@ -180,6 +180,13 @@ class GatewayRouteContractTest {
             assertTrue(
                     config.applicationCorsAllowedOriginPatterns().contains(DEV_ORIGIN),
                     () -> config.relativePath() + " codecoachai.gateway.cors must allow " + DEV_ORIGIN);
+            assertTrue(
+                    config.globalCorsExposedHeaders().contains("X-Trace-Id"),
+                    () -> config.relativePath() + " globalcors must expose X-Trace-Id");
+            assertTrue(
+                    config.applicationCorsExposedHeaders().contains("X-Trace-Id"),
+                    () -> config.relativePath()
+                            + " codecoachai.gateway.cors must expose X-Trace-Id");
         }
     }
 
@@ -378,6 +385,8 @@ class GatewayRouteContractTest {
             List<GatewayRoute> routes,
             Set<String> globalCorsAllowedOriginPatterns,
             Set<String> applicationCorsAllowedOriginPatterns,
+            Set<String> globalCorsExposedHeaders,
+            Set<String> applicationCorsExposedHeaders,
             List<String> defaultFilters) {
 
         private static GatewayConfig parse(String relativePath, String yamlText) {
@@ -400,6 +409,8 @@ class GatewayRouteContractTest {
             Map<String, Object> allPathsCors = mapValue(corsConfigurations, "[/**]");
             Set<String> globalOrigins =
                     new LinkedHashSet<>(stringListValue(allPathsCors, "allowedOriginPatterns"));
+            Set<String> globalExposedHeaders =
+                    new LinkedHashSet<>(optionalStringListValue(allPathsCors, "exposedHeaders"));
 
             Map<String, Object> applicationCors =
                     mapValue(mapValue(mapValue(root, "codecoachai"), "gateway"), "cors");
@@ -407,12 +418,19 @@ class GatewayRouteContractTest {
                             String.valueOf(applicationCors.get("allowed-origin-patterns")).split(","))
                     .map(String::trim)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
+            Set<String> applicationExposedHeaders = Arrays.stream(
+                            String.valueOf(applicationCors.getOrDefault("exposed-headers", "")).split(","))
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
 
             return new GatewayConfig(
                     relativePath,
                     routes,
                     Set.copyOf(globalOrigins),
                     Set.copyOf(applicationOrigins),
+                    Set.copyOf(globalExposedHeaders),
+                    Set.copyOf(applicationExposedHeaders),
                     List.copyOf(optionalStringListValue(gateway, "default-filters")));
         }
 

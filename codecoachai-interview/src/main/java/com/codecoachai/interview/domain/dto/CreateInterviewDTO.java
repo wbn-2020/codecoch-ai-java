@@ -26,6 +26,7 @@ public class CreateInterviewDTO {
     private String difficulty;
     private String interviewerStyle;
     private String practiceMode;
+    private Long scenarioVersionId;
     private String recommendationSource;
     private String recommendationReason;
     private Boolean basedOnResume;
