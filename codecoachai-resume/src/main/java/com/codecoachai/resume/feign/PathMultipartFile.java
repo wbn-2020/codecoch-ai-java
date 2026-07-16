@@ -1,7 +1,6 @@
 package com.codecoachai.resume.feign;
 
 import java.io.File;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -16,11 +15,13 @@ import org.springframework.web.multipart.MultipartFile;
 /**
  * Multipart view over a generated file with optional identity and size checks.
  *
- * <p>{@link #getBytes()} enforces the configured byte limit. The input stream
- * method prevents final-component symlink following but is not a complete
- * bounded or end-to-end streaming upload guarantee.
+ * <p>The resume file Feign client uses the common streaming multipart encoder
+ * and consumes {@link #getInputStream()} directly. {@link #getBytes()} remains
+ * for {@link MultipartFile} compatibility and uses one exact-size array.
  */
 public final class PathMultipartFile implements MultipartFile {
+
+    public static final long HARD_MAX_BYTES = 10L * 1024L * 1024L;
 
     private final Path path;
     private final String filename;
@@ -29,7 +30,7 @@ public final class PathMultipartFile implements MultipartFile {
     private final Object expectedFileKey;
 
     public PathMultipartFile(Path path, String filename, String contentType) {
-        this(path, filename, contentType, Long.MAX_VALUE, null);
+        this(path, filename, contentType, HARD_MAX_BYTES, null);
     }
 
     public PathMultipartFile(
@@ -41,8 +42,9 @@ public final class PathMultipartFile implements MultipartFile {
         this.path = Objects.requireNonNull(path, "path");
         this.filename = Objects.requireNonNull(filename, "filename");
         this.contentType = contentType;
-        if (maxBytes < 0) {
-            throw new IllegalArgumentException("maxBytes must not be negative");
+        if (maxBytes < 0 || maxBytes > HARD_MAX_BYTES) {
+            throw new IllegalArgumentException(
+                    "maxBytes must be between 0 and " + HARD_MAX_BYTES);
         }
         this.maxBytes = maxBytes;
         this.expectedFileKey = expectedFileKey;
@@ -80,26 +82,29 @@ public final class PathMultipartFile implements MultipartFile {
     @Override
     public byte[] getBytes() throws IOException {
         BasicFileAttributes attributes = validateSource();
+        int size = Math.toIntExact(attributes.size());
+        byte[] content = new byte[size];
         try (InputStream input = openInputStream()) {
-            if (maxBytes == Long.MAX_VALUE) {
-                return input.readAllBytes();
-            }
-            int initialCapacity = (int) Math.min(attributes.size(), 8192L);
-            ByteArrayOutputStream output = new ByteArrayOutputStream(initialCapacity);
-            byte[] buffer = new byte[8192];
-            long remaining = maxBytes + 1;
-            while (remaining > 0) {
-                int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+            int offset = 0;
+            while (offset < content.length) {
+                int read = input.read(content, offset, content.length - offset);
                 if (read < 0) {
-                    break;
+                    throw new IOException("Multipart source file ended before its declared size");
                 }
-                output.write(buffer, 0, read);
-                remaining -= read;
+                if (read == 0) {
+                    int single = input.read();
+                    if (single < 0) {
+                        throw new IOException("Multipart source file ended before its declared size");
+                    }
+                    content[offset++] = (byte) single;
+                    continue;
+                }
+                offset += read;
             }
-            if (output.size() > maxBytes) {
-                throw new IOException("Multipart source file exceeds the configured size limit");
+            if (input.read() != -1) {
+                throw new IOException("Multipart source file grew beyond its declared size");
             }
-            return output.toByteArray();
+            return content;
         }
     }
 

@@ -318,6 +318,59 @@ class ResumeUploadAdmissionGuardTest {
         assertEquals(limit, maximum.get());
     }
 
+    @Test
+    void rapidPdfDocxAndZipUploadsShareTheSameBoundedGate() throws Exception {
+        int limit = 2;
+        ResumeUploadAdmissionGuard guard = guard(limit, 2_000, 4);
+        List<Path> artifacts = List.of(
+                artifact("resume.pdf", 1),
+                artifact("resume.docx", 1),
+                artifact("application-package.zip", 1));
+        ExecutorService executor = Executors.newFixedThreadPool(9);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger active = new AtomicInteger();
+        AtomicInteger maximum = new AtomicInteger();
+        List<String> completed = java.util.Collections.synchronizedList(new ArrayList<>());
+        List<Future<String>> futures = new ArrayList<>();
+        try {
+            for (int index = 0; index < 9; index++) {
+                Path candidate = artifacts.get(index % artifacts.size());
+                futures.add(executor.submit(() -> {
+                    start.await();
+                    return guard.execute(candidate, () -> {
+                        int current = active.incrementAndGet();
+                        maximum.accumulateAndGet(current, Math::max);
+                        try {
+                            Thread.sleep(30);
+                            String name = candidate.getFileName().toString();
+                            completed.add(name);
+                            return name;
+                        } finally {
+                            active.decrementAndGet();
+                        }
+                    });
+                }));
+            }
+
+            start.countDown();
+            for (Future<String> future : futures) {
+                String uploaded = future.get(3, TimeUnit.SECONDS);
+                assertTrue(artifacts.stream()
+                        .map(path -> path.getFileName().toString())
+                        .anyMatch(uploaded::equals));
+            }
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+
+        assertEquals(limit, maximum.get());
+        assertEquals(3, completed.stream().filter("resume.pdf"::equals).count());
+        assertEquals(3, completed.stream().filter("resume.docx"::equals).count());
+        assertEquals(3, completed.stream().filter("application-package.zip"::equals).count());
+    }
+
     private void assertSaturationReturnsTooManyRequests(long timeoutMillis) throws Exception {
         ResumeUploadAdmissionGuard guard = guard(1, timeoutMillis, 4);
         Path artifact = artifact("saturated.bin", 1);

@@ -1,6 +1,7 @@
 package com.codecoachai.resume.careercalendar;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
@@ -26,6 +28,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -147,6 +150,45 @@ class CareerCalendarServiceImplTest {
     }
 
     @Test
+    void exportsExactlyFiveThousandEventsAndAllowsImmediateRepeat() {
+        List<CareerCalendarEvent> events = new ArrayList<>(5_000);
+        LocalDateTime base = LocalDateTime.of(2026, 7, 1, 0, 0);
+        for (int index = 0; index < 5_000; index++) {
+            CareerCalendarEvent event = new CareerCalendarEvent();
+            event.setId((long) index + 1);
+            event.setUserId(10L);
+            event.setTitle("Follow-up " + index);
+            event.setEventType("FOLLOW_UP");
+            event.setTimezone("Asia/Shanghai");
+            event.setStartsAtUtc(base.plusMinutes(index));
+            event.setEndsAtUtc(base.plusMinutes(index + 30L));
+            event.setStatus("CONFIRMED");
+            event.setSourceType("MANUAL");
+            events.add(event);
+        }
+        when(eventMapper.selectList(any())).thenAnswer(invocation -> {
+            Wrapper<CareerCalendarEvent> wrapper = invocation.getArgument(0);
+            assertTrue(wrapper.getCustomSqlSegment().contains("LIMIT 5001"));
+            return events;
+        });
+        Instant from = Instant.parse("2026-06-30T00:00:00Z");
+        Instant to = Instant.parse("2026-07-31T00:00:00Z");
+
+        byte[] firstCsv = service.exportCsv(from, to);
+        byte[] repeatedCsv = service.exportCsv(from, to);
+        byte[] ics = service.exportIcs(from, to, "Asia/Shanghai");
+        String csvText = new String(firstCsv, StandardCharsets.UTF_8);
+        String icsText = new String(ics, StandardCharsets.UTF_8);
+
+        assertArrayEquals(firstCsv, repeatedCsv);
+        assertEquals(5_001, occurrences(csvText, "\r\n"));
+        assertEquals(5_000, occurrences(icsText, "BEGIN:VEVENT\r\n"));
+        assertEquals(5_000, occurrences(icsText, "END:VEVENT\r\n"));
+        assertTrue(firstCsv.length < 10 * 1024 * 1024);
+        assertTrue(ics.length < 10 * 1024 * 1024);
+    }
+
+    @Test
     void createImportedDoesNotRollBackForDuplicateKeyException() throws Exception {
         Method method = CareerCalendarServiceImpl.class.getMethod(
                 "createImported", Long.class, ImportedEvent.class);
@@ -188,5 +230,15 @@ class CareerCalendarServiceImplTest {
 
         verify(transactionManager).commit(transactionStatus);
         verify(transactionManager, never()).rollback(transactionStatus);
+    }
+
+    private static int occurrences(String text, String token) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = text.indexOf(token, offset)) >= 0) {
+            count++;
+            offset += token.length();
+        }
+        return count;
     }
 }

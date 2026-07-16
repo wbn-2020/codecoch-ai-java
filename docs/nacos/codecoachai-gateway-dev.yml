@@ -85,7 +85,13 @@ spring:
         - id: codecoachai-resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/resume-claim-audits,/resume-claim-audits/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
+        # Kept separate from the large resume route because the current Gateway runtime
+        # does not reliably register this token when it is part of that aggregate predicate.
+        - id: codecoachai-resume-claim-audits
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/resume-claim-audits,/resume-claim-audits/**
         - id: codecoachai-resume-job-targets
           uri: lb://codecoachai-resume
           predicates:

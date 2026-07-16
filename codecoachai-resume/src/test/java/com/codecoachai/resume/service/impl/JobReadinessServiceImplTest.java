@@ -5,12 +5,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -24,6 +26,7 @@ import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.JobRequirementService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -31,6 +34,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.function.Executable;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -212,6 +216,62 @@ class JobReadinessServiceImplTest {
     }
 
     @Test
+    void pagesOwnedSnapshotHistoryWithStableOrderingAndMetadata() {
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob());
+        AtomicReference<Page<JobReadinessSnapshot>> pageRequest = new AtomicReference<>();
+        AtomicReference<Wrapper<JobReadinessSnapshot>> snapshotQuery = new AtomicReference<>();
+        when(jobReadinessSnapshotMapper.selectPage(any(Page.class), any())).thenAnswer(invocation -> {
+            Page<JobReadinessSnapshot> page = invocation.getArgument(0);
+            pageRequest.set(page);
+            snapshotQuery.set(invocation.getArgument(1));
+            page.setRecords(List.of(
+                    snapshot(905L, LocalDateTime.of(2026, 7, 15, 12, 0)),
+                    snapshot(904L, LocalDateTime.of(2026, 7, 15, 11, 0))));
+            page.setTotal(5L);
+            return page;
+        });
+
+        var result = service.page(11L, 2L, 2L);
+
+        assertEquals(2L, result.getPageNo());
+        assertEquals(2L, result.getPageSize());
+        assertEquals(5L, result.getTotal());
+        assertEquals(3L, result.getPages());
+        assertEquals(List.of(905L, 904L),
+                result.getRecords().stream().map(item -> item.getId()).toList());
+        assertEquals(2L, pageRequest.get().getCurrent());
+        assertEquals(2L, pageRequest.get().getSize());
+
+        String sql = snapshotQuery.get().getSqlSegment().toLowerCase().replace("`", "");
+        assertTrue(sql.contains("user_id"));
+        assertTrue(sql.contains("target_job_id"));
+        assertTrue(sql.contains("deleted"));
+        assertTrue(sql.matches("(?s).*order by\\s+generated_at\\s+desc\\s*,\\s*id\\s+desc.*"));
+        List<Object> values = queryValues(snapshotQuery.get());
+        assertTrue(values.contains(1001L));
+        assertTrue(values.contains(11L));
+        assertTrue(values.contains(CommonConstants.NO));
+    }
+
+    @Test
+    void rejectsInvalidSnapshotHistoryPaginationBeforeQuerying() {
+        List<Executable> invalidCalls = List.of(
+                () -> service.page(11L, null, 20L),
+                () -> service.page(11L, 0L, 20L),
+                () -> service.page(11L, 1L, null),
+                () -> service.page(11L, 1L, 0L),
+                () -> service.page(11L, 1L, 101L));
+
+        for (Executable invalidCall : invalidCalls) {
+            BusinessException exception = assertThrows(BusinessException.class, invalidCall);
+            assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        }
+
+        verify(targetJobMapper, never()).selectOne(any());
+        verify(jobReadinessSnapshotMapper, never()).selectPage(any(Page.class), any());
+    }
+
+    @Test
     void missingOrForeignTargetJobReturnsResourceNotFound() {
         when(targetJobMapper.selectOne(any())).thenReturn(null);
 
@@ -229,11 +289,14 @@ class JobReadinessServiceImplTest {
                 () -> service.createSnapshot(11L));
         BusinessException latestError = assertThrows(BusinessException.class,
                 () -> service.latest(11L));
+        BusinessException pageError = assertThrows(BusinessException.class,
+                () -> service.page(11L, 1L, 20L));
         BusinessException listError = assertThrows(BusinessException.class,
                 () -> service.list(11L, null));
 
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), createError.getCode());
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), latestError.getCode());
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), pageError.getCode());
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), listError.getCode());
     }
 
@@ -255,6 +318,20 @@ class JobReadinessServiceImplTest {
         targetJob.setUserId(1001L);
         targetJob.setDeleted(CommonConstants.NO);
         return targetJob;
+    }
+
+    private JobReadinessSnapshot snapshot(Long id, LocalDateTime generatedAt) {
+        JobReadinessSnapshot snapshot = new JobReadinessSnapshot();
+        snapshot.setId(id);
+        snapshot.setUserId(1001L);
+        snapshot.setTargetJobId(11L);
+        snapshot.setSnapshotHash("hash-" + id);
+        snapshot.setPolicyVersion(JobReadinessServiceImpl.POLICY_VERSION);
+        snapshot.setSummaryJson("{}");
+        snapshot.setMatrixJson("{}");
+        snapshot.setDimensionJson("[]");
+        snapshot.setGeneratedAt(generatedAt);
+        return snapshot;
     }
 
     private void assertOwnedReadQuery(Wrapper<?> wrapper, Long resourceId, Long userId) {

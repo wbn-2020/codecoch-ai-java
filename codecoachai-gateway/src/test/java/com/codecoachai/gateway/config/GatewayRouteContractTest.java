@@ -214,6 +214,23 @@ class GatewayRouteContractTest {
     }
 
     @Test
+    void resumeClaimAuditsUseTheirDedicatedGatewayRoute() throws IOException {
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            GatewayRoute route = config.routesMatching("/resume-claim-audits/contract-probe").get(0);
+            assertTrue(
+                    route.id().contains("claim-audit"),
+                    () -> config.relativePath()
+                            + " must keep resume claim audits on a dedicated route; actual route="
+                            + route.id());
+            assertEquals(
+                    List.of("/resume-claim-audits", "/resume-claim-audits/**"),
+                    route.pathPatterns(),
+                    () -> config.relativePath()
+                            + " must keep resume claim audits isolated from the aggregate resume route");
+        }
+    }
+
+    @Test
     void knownOverlapsKeepSpecificRoutesBeforeBroadRoutes() throws IOException {
         for (GatewayConfig config : readGatewayConfigs().values()) {
             for (KnownOverlap overlap : KNOWN_OVERLAPS) {

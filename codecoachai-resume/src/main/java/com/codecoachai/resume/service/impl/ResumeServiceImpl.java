@@ -1773,7 +1773,21 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private Resume getOwnedResumeForRead(Long id) {
-        return requireOwnedResume(id, requireCurrentUserId(), ErrorCode.RESOURCE_NOT_FOUND);
+        if (id == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume id is required");
+        }
+        Long userId = requireCurrentUserId();
+        Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
+                .eq(Resume::getId, id)
+                .eq(Resume::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (resume == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "简历不存在或已不可用");
+        }
+        if (!Objects.equals(resume.getUserId(), userId)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问该简历");
+        }
+        return resume;
     }
 
     private Resume getOwnedResume(Long id, Long userId) {

@@ -117,8 +117,37 @@ class InnerInterviewReportControllerTest {
         assertEquals("[\"review by topic\"]", persisted.getReviewSuggestions());
         assertEquals("[\"keep practicing\"]", persisted.getSuggestions());
         assertEquals("[{\"question\":\"Q1\"}]", persisted.getQaReview());
+        assertEquals("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]", persisted.getRubricScores());
         assertEquals("full report body", persisted.getReportContent());
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportFailsIncompleteScoringContractAndSkipsAgentTaskCompletion() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("{\"summary\":\"ok\",\"reportContent\":\"full report body\"}");
+        dto.setTotalScore(82);
+
+        controller.completeReport(1L, dto);
+
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals(ReportStatusEnum.FAILED.name(), persisted.getStatus());
+        assertEquals(null, persisted.getTotalScore());
+        assertTrue(persisted.getFailureReason().contains("RUBRIC_DATA_MISSING"));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
 
     @Test
@@ -303,6 +332,7 @@ class InnerInterviewReportControllerTest {
                 "reviewSuggestions", "[\"review by topic\"]",
                 "suggestions", "[\"keep practicing\"]",
                 "qaReview", "[{\"question\":\"Q1\"}]",
+                "rubricScores", "[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]",
                 "reportContent", "full report body");
     }
 }

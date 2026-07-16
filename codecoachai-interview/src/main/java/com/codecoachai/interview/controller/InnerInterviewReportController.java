@@ -20,6 +20,7 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
+import com.codecoachai.interview.support.InterviewReportScoringContract;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -106,6 +107,7 @@ public class InnerInterviewReportController {
 
         String status = StringUtils.hasText(dto.getReportStatus()) ? dto.getReportStatus() : "SUCCESS";
         boolean success = "SUCCESS".equalsIgnoreCase(status);
+        String completionFailureReason = dto.getErrorMessage();
         LocalDateTime now = LocalDateTime.now();
         InterviewReport report = currentReport(sessionId);
         if (report == null && (dto.getReportId() != null || StringUtils.hasText(dto.getGenerationToken()))) {
@@ -135,10 +137,24 @@ public class InnerInterviewReportController {
         }
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
+            InterviewReportScoringContract.Validation scoringContract =
+                    InterviewReportScoringContract.validate(
+                            objectMapper,
+                            report.getTotalScore(),
+                            report.getRubricVersion(),
+                            report.getRubricScores());
+            if (!scoringContract.valid()) {
+                success = false;
+                completionFailureReason = "Interview report scoring contract is incomplete: "
+                        + scoringContract.reasonCode();
+                report.setStatus(ReportStatusEnum.FAILED.name());
+                report.setTotalScore(null);
+                report.setFailureReason(completionFailureReason);
+            }
         }
         if (!success) {
             report.setTotalScore(null);
-            report.setFailureReason(dto.getErrorMessage());
+            report.setFailureReason(completionFailureReason);
         }
         if (report.getId() == null) {
             reportMapper.insert(report);
@@ -161,9 +177,9 @@ public class InnerInterviewReportController {
         }
 
         log.info("Interview report completed sessionId={} reportId={} status={}",
-                sessionId, report.getId(), status);
+                sessionId, report.getId(), report.getStatus());
 
-        Integer completedScore = success ? firstNonNull(dto.getTotalScore(), report.getTotalScore()) : null;
+        Integer completedScore = success ? report.getTotalScore() : null;
         sessionMapper.update(null,
                 new LambdaUpdateWrapper<InterviewSession>()
                         .eq(InterviewSession::getId, sessionId)
@@ -174,7 +190,7 @@ public class InnerInterviewReportController {
                         .set(success, InterviewSession::getTotalScore, completedScore)
                         .set(!success, InterviewSession::getTotalScore, null)
                         .set(success, InterviewSession::getFailureReason, null)
-                        .set(!success, InterviewSession::getFailureReason, dto.getErrorMessage())
+                        .set(!success, InterviewSession::getFailureReason, completionFailureReason)
                         .set(InterviewSession::getEndTime, now)
                         .set(InterviewSession::getUpdatedAt, now));
 

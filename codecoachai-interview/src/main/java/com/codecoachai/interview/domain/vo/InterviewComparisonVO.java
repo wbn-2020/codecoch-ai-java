@@ -8,6 +8,8 @@ import lombok.Data;
 public class InterviewComparisonVO {
 
     private Long id;
+    private String contractVersion;
+    private Boolean legacySnapshotNormalized;
     private Boolean comparable;
     private Long targetJobId;
     private String rubricVersion;

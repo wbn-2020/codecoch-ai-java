@@ -1,6 +1,7 @@
 package com.codecoachai.resume.feign;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
@@ -17,6 +18,21 @@ class PathMultipartFileTest {
 
     @TempDir
     Path tempDir;
+
+    @Test
+    void hardLimitIsTenMibAndCannotBeRaisedByCaller() throws Exception {
+        Path path = Files.write(tempDir.resolve("limit.bin"), new byte[]{1});
+
+        assertEquals(10L * 1024L * 1024L, PathMultipartFile.HARD_MAX_BYTES);
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new PathMultipartFile(
+                        path,
+                        "resume.bin",
+                        "application/octet-stream",
+                        PathMultipartFile.HARD_MAX_BYTES + 1,
+                        attributes(path).fileKey()));
+    }
 
     @Test
     void getBytesAllowsContentExactlyAtConfiguredLimit() throws Exception {

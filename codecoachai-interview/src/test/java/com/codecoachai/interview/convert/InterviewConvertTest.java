@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.codecoachai.interview.domain.entity.InterviewReport;
+import com.codecoachai.interview.domain.entity.InterviewSession;
+import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewReportNextActionVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import java.time.LocalDateTime;
@@ -13,6 +15,20 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class InterviewConvertTest {
+
+    @Test
+    void listVoUsesCurrentReportIdentityAndScore() {
+        InterviewSession session = new InterviewSession();
+        session.setId(66L);
+        session.setTotalScore(99);
+        InterviewReport report = generatedReport();
+        report.setTotalScore(65);
+
+        InterviewListVO vo = InterviewConvert.toListVO(session, report);
+
+        assertEquals(88L, vo.getReportId());
+        assertEquals(65, vo.getTotalScore());
+    }
 
     @Test
     void generatedReportBuildsDeterministicNextActionsFromReportData() {

@@ -875,6 +875,28 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void todayTasksWithoutTargetReadsLatestLocalRunWithoutBuildingRemoteContext() {
+        LocalDate dueDate = LocalDate.now();
+        AgentRun run = run(77L, USER_ID);
+        run.setTargetJobId(501L);
+        run.setPlanDate(dueDate);
+        run.setStatus(AgentRunStatusEnum.SUCCESS.name());
+        when(agentRunMapper.selectOne(any())).thenReturn(run);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+
+        service.todayTasks(USER_ID, null, dueDate, null);
+
+        verify(agentContextBuilder, never()).build(any(), any(), any());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AgentRun>> runQueryCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(agentRunMapper).selectOne(runQueryCaptor.capture());
+        String sqlSegment = runQueryCaptor.getValue().getSqlSegment();
+        assertFalse(sqlSegment.contains("target_job_id"));
+        assertTrue(sqlSegment.contains("plan_date"));
+        assertTrue(wrapperParams(runQueryCaptor.getValue()).containsValue(dueDate));
+    }
+
+    @Test
     void pageTasksFiltersLogicallyDeletedTasks() {
         com.baomidou.mybatisplus.extension.plugins.pagination.Page<AgentTask> emptyPage =
                 com.baomidou.mybatisplus.extension.plugins.pagination.Page.of(1, 10);
@@ -1075,6 +1097,92 @@ class JobCoachAgentServiceImplTest {
         assertFalse(run.getOutputJson().contains("zhangsan@example.com"));
         assertTrue(run.getOutputJson().contains("138****5678"));
         assertTrue(run.getOutputJson().contains("***@example.com"));
+    }
+
+    @Test
+    void executeDailyPlanDegradesValidatedOutputFailureIntoOneCandidateBoundTask() {
+        AgentRun run = run(77L, USER_ID);
+        run.setStatus(AgentRunStatusEnum.RUNNING.name());
+        run.setTargetJobId(501L);
+        run.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(run);
+        when(agentRunMapper.update(any(), any())).thenReturn(1);
+        when(agentTaskMapper.update(any(), any())).thenReturn(1);
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(null);
+        });
+
+        JobCoachAgentContext context = new JobCoachAgentContext();
+        context.setUserId(USER_ID);
+        context.setTargetJobId(501L);
+        context.setPlanDate(LocalDate.now());
+        when(agentContextBuilder.build(any(), any(), any())).thenReturn(context);
+        CandidateTask candidate = candidate("c1", "TARGET_JOB", 501L, "/questions/practice?mode=category");
+        when(candidateTaskBuilder.build(any(), any(Integer.class))).thenReturn(List.of(candidate));
+        when(agentPromptBuilder.buildDailyPlanPrompt(any(), any(), any(Integer.class), any(Integer.class)))
+                .thenReturn(PromptRenderResult.builder().renderedPrompt("prompt").build());
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("{\"summary\":\"模型返回的空计划\",\"tasks\":[]}");
+        routeResult.setResultSource("LLM");
+        routeResult.setTraceId("trace-degraded-1");
+        routeResult.setAiCallLogId(901L);
+        when(aiCallLogService.callAndLog(any())).thenReturn(routeResult);
+
+        DailyPlanResult invalidResult = new DailyPlanResult();
+        invalidResult.setSummary("模型返回的空计划");
+        invalidResult.setTasks(List.of());
+        when(agentOutputParser.parseDailyPlan(any())).thenReturn(invalidResult);
+        AgentOutputValidator actualValidator = new AgentOutputValidatorImpl();
+        Mockito.doAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<CandidateTask> validationCandidates = invocation.getArgument(1);
+            actualValidator.validateDailyPlan(
+                    invocation.getArgument(0, DailyPlanResult.class),
+                    validationCandidates,
+                    invocation.getArgument(2, Integer.class),
+                    invocation.getArgument(3, Integer.class));
+            return null;
+        }).when(agentOutputValidator).validateDailyPlan(any(), any(), any(Integer.class), any(Integer.class));
+
+        List<AgentTask> persistedTasks = new ArrayList<>();
+        when(agentTaskMapper.insert(any(AgentTask.class))).thenAnswer(invocation -> {
+            AgentTask saved = invocation.getArgument(0);
+            saved.setId(88L);
+            persistedTasks.add(saved);
+            return 1;
+        });
+        when(agentTaskMapper.selectList(any())).thenAnswer(invocation -> persistedTasks);
+
+        DailyPlanGenerateDTO dto = new DailyPlanGenerateDTO();
+        dto.setExecutionToken("run-token-1");
+        DailyPlanVO vo = service.executeDailyPlan(USER_ID, 77L, dto);
+
+        assertEquals(AgentRunStatusEnum.SUCCESS.name(), vo.getStatus());
+        assertEquals("DEGRADED", run.getResultSource());
+        assertTrue(vo.getFallback());
+        assertNull(vo.getErrorCode());
+        assertTrue(vo.getSummary().contains("模型输出未通过计划结构校验"));
+        assertEquals(1, vo.getTasks().size());
+        assertEquals(1, persistedTasks.size());
+        AgentTask saved = persistedTasks.get(0);
+        assertEquals(USER_ID, saved.getUserId());
+        assertEquals(77L, saved.getAgentRunId());
+        assertEquals(501L, saved.getTargetJobId());
+        assertEquals("c1", saved.getCandidateId());
+        assertEquals("TARGET_JOB", saved.getRelatedBizType());
+        assertEquals(501L, saved.getRelatedBizId());
+        assertEquals("/questions/practice?mode=category", saved.getActionUrl());
+        assertEquals("完成一项今日可执行任务", saved.getTitle());
+        assertTrue(run.getOutputJson().contains("模型输出未通过计划结构校验"));
+        verify(agentOutputValidator, Mockito.times(2))
+                .validateDailyPlan(any(), any(), any(Integer.class), any(Integer.class));
+
+        DailyPlanVO repeated = service.executeDailyPlan(USER_ID, 77L, dto);
+
+        assertEquals(AgentRunStatusEnum.SUCCESS.name(), repeated.getStatus());
+        verify(aiCallLogService, Mockito.times(1)).callAndLog(any());
+        verify(agentTaskMapper, Mockito.times(1)).insert(any(AgentTask.class));
     }
 
     @Test

@@ -83,6 +83,15 @@ public final class InterviewConvert {
         return vo;
     }
 
+    public static InterviewListVO toListVO(InterviewSession session, InterviewReport report) {
+        InterviewListVO vo = toListVO(session);
+        if (report != null) {
+            vo.setReportId(report.getId());
+            vo.setTotalScore(report.getTotalScore());
+        }
+        return vo;
+    }
+
     public static InterviewMessageVO toMessageVO(InterviewMessage message) {
         InterviewMessageVO vo = new InterviewMessageVO();
         vo.setId(message.getId());

@@ -302,7 +302,7 @@ public class ResumeClaimAuditServiceImpl implements ResumeClaimAuditService {
                 .eq(ResumeClaimAudit::getDeleted, CommonConstants.NO)
                 .last("LIMIT 1"));
         if (audit == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume claim audit does not exist");
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Resume claim audit does not exist");
         }
         return audit;
     }

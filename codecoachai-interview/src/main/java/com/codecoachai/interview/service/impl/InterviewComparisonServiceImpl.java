@@ -46,6 +46,7 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
 
     private static final String STATUS_COMPARABLE = "COMPARABLE";
     private static final String STATUS_NOT_COMPARABLE = "NOT_COMPARABLE";
+    private static final String CURRENT_CONTRACT_VERSION = "INTERVIEW_COMPARISON_V2";
 
     private final InterviewComparisonMapper comparisonMapper;
     private final InterviewReportMapper reportMapper;
@@ -107,7 +108,7 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
                         .orderByDesc(InterviewComparison::getId)
                         .last("limit " + normalizedLimit))
                 .stream()
-                .map(comparison -> readSnapshot(comparison, false))
+                .map(comparison -> readSnapshot(comparison, false, false))
                 .toList();
     }
 
@@ -125,7 +126,7 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
         if (comparison == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "比较记录不存在或不可用");
         }
-        return readSnapshot(comparison, false);
+        return readSnapshot(comparison, false, true);
     }
 
     private InterviewComparisonVO analyze(Long userId, List<Long> requestedIds, List<Long> normalizedIds) {
@@ -172,6 +173,8 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
                 .forEach(evaluation -> addReason(reasons, evaluation.reasonCode(), evaluation.message()));
         InterviewReportComparabilityPolicy.Result groupEvaluation = comparabilityPolicy.evaluateGroup(
                 evaluatedContexts.stream().map(EvaluatedReportContext::evaluation).toList());
+        groupEvaluation.normalizationWarnings().forEach(notice ->
+                addReason(result.getWarnings(), notice.code(), notice.message()));
         if (!groupEvaluation.comparable()) {
             addReason(reasons, groupEvaluation.reasonCode(), groupEvaluation.message());
         } else {
@@ -238,6 +241,8 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
 
     private InterviewComparisonVO emptyResult(List<Long> reportIds) {
         InterviewComparisonVO result = new InterviewComparisonVO();
+        result.setContractVersion(CURRENT_CONTRACT_VERSION);
+        result.setLegacySnapshotNormalized(false);
         result.setComparable(false);
         result.setReportIds(reportIds);
         result.setUnavailableReasons(new ArrayList<>());
@@ -250,16 +255,34 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
 
     private InterviewComparisonRoundVO toRound(EvaluatedReportContext evaluatedContext) {
         InterviewReport report = evaluatedContext.context().report();
+        InterviewReportComparabilityPolicy.Result evaluation = evaluatedContext.evaluation();
         InterviewComparisonRoundVO round = new InterviewComparisonRoundVO();
         round.setReportId(report.getId());
         round.setSessionId(report.getSessionId());
-        round.setTotalScore(report.getTotalScore());
+        round.setTotalScore(evaluation.totalScore());
         round.setGeneratedAt(report.getGeneratedAt());
         round.setSampleInsufficient(InterviewReportTrustPolicy.isSampleInsufficient(report));
-        round.setTrustStatus(InterviewReportTrustPolicy.isTrustedForFormalAction(report)
-                ? "VERIFIED" : InterviewReportTrustPolicy.isFallbackOrUntrusted(report) ? "FALLBACK" : "PARTIAL");
-        round.setRubricScores(evaluatedContext.evaluation().normalizedDimensions());
+        round.setTrustStatus(evaluation.comparable()
+                ? isNativeScoringContract(report, evaluation) ? "VERIFIED" : "NORMALIZED"
+                : InterviewReportTrustPolicy.isFallbackOrUntrusted(report) ? "FALLBACK" : "PARTIAL");
+        round.setRubricVersion(evaluation.rubricVersion());
+        round.setNormalizationSource(evaluation.normalizationSource());
+        round.setUnavailableReasons(evaluation.comparable()
+                ? List.of()
+                : List.of(new InterviewComparisonReasonVO(
+                        evaluation.reasonCode(), evaluation.message())));
+        round.setWarnings(evaluation.normalizationWarnings().stream()
+                .map(notice -> new InterviewComparisonReasonVO(notice.code(), notice.message()))
+                .toList());
+        round.setRubricScores(evaluation.normalizedDimensions());
         return round;
+    }
+
+    private boolean isNativeScoringContract(
+            InterviewReport report, InterviewReportComparabilityPolicy.Result evaluation) {
+        return report.getTotalScore() != null
+                && "REPORT_RUBRIC_SCORES".equals(evaluation.normalizationSource())
+                && Objects.equals(report.getRubricVersion(), evaluation.rubricVersion());
     }
 
     private void populateScoreComparison(InterviewComparisonVO result, List<InterviewComparisonRoundVO> rounds) {
@@ -328,15 +351,44 @@ public class InterviewComparisonServiceImpl implements InterviewComparisonServic
     }
 
     private InterviewComparisonVO replay(InterviewComparison comparison) {
-        return readSnapshot(comparison, true);
+        return readSnapshot(comparison, true, false);
     }
 
-    private InterviewComparisonVO readSnapshot(InterviewComparison comparison, boolean idempotentReplay) {
+    private InterviewComparisonVO readSnapshot(
+            InterviewComparison comparison,
+            boolean idempotentReplay,
+            boolean normalizeLegacySnapshot) {
         try {
             InterviewComparisonVO result = objectMapper.readValue(
                     comparison.getResultJson(), InterviewComparisonVO.class);
+            if (normalizeLegacySnapshot
+                    && !CURRENT_CONTRACT_VERSION.equals(result.getContractVersion())) {
+                List<Long> savedIds = readReportIds(comparison.getReportIds());
+                InterviewComparisonVO normalized = analyze(
+                        comparison.getUserId(), savedIds, savedIds.stream().distinct().toList());
+                normalized.setId(comparison.getId());
+                normalized.setIdempotentReplay(false);
+                normalized.setLegacySnapshotNormalized(true);
+                normalized.setCreatedAt(comparison.getCreatedAt());
+                return normalized;
+            }
             result.setId(comparison.getId());
             result.setIdempotentReplay(idempotentReplay);
+            if (result.getLegacySnapshotNormalized() == null) {
+                result.setLegacySnapshotNormalized(false);
+            }
+            if (result.getUnavailableReasons() == null) {
+                result.setUnavailableReasons(new ArrayList<>());
+            }
+            if (result.getWarnings() == null) {
+                result.setWarnings(new ArrayList<>());
+            }
+            if (result.getRounds() == null) {
+                result.setRounds(List.of());
+            }
+            if (result.getDimensions() == null) {
+                result.setDimensions(List.of());
+            }
             result.setCreatedAt(comparison.getCreatedAt());
             return result;
         } catch (Exception ex) {

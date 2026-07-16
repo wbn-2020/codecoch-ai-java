@@ -34,8 +34,12 @@ public class InterviewListVO {
     private String status;
     private String reportStatus;
     private Long reportId;
+    private Integer totalScore;
     private Boolean comparisonAvailable;
     private String comparisonUnavailableReason;
+    private String comparisonRubricVersion;
+    private String comparisonNormalizationSource;
+    private List<InterviewComparisonReasonVO> comparisonWarnings;
     private Integer answeredQuestionCount;
     private VoiceDeliverySummaryVO voiceDeliverySummary;
     private LocalDateTime updatedAt;

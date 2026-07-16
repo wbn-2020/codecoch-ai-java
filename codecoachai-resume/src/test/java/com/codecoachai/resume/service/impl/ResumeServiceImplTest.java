@@ -136,7 +136,7 @@ class ResumeServiceImplTest {
     }
 
     @Test
-    void getResumeReturnsResourceNotFoundForMissingOrForeignResume() {
+    void getResumeReturnsResourceNotFoundForMissingResume() {
         when(resumeMapper.selectOne(any())).thenReturn(null);
 
         BusinessException exception = assertThrows(BusinessException.class,
@@ -146,7 +146,27 @@ class ResumeServiceImplTest {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<Resume>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
         verify(resumeMapper).selectOne(wrapperCaptor.capture());
-        assertOwnedReadQuery(wrapperCaptor.getValue(), RESUME_ID, USER_ID);
+        assertReadQueryById(wrapperCaptor.getValue(), RESUME_ID);
+    }
+
+    @Test
+    void getResumeReturnsForbiddenForForeignResume() {
+        Resume foreignResume = ownedResume();
+        foreignResume.setUserId(USER_ID + 1);
+        when(resumeMapper.selectOne(any())).thenReturn(foreignResume);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.getResume(RESUME_ID));
+
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), exception.getCode());
+    }
+
+    @Test
+    void getResumeReturnsOwnedResume() {
+        Resume resume = ownedResume();
+        when(resumeMapper.selectOne(any())).thenReturn(resume);
+
+        assertEquals(RESUME_ID, service.getResume(RESUME_ID).getId());
     }
 
     @Test
@@ -326,16 +346,14 @@ class ResumeServiceImplTest {
         assertTrue(sqlSegment.contains("deleted"));
     }
 
-    private void assertOwnedReadQuery(Wrapper<?> wrapper, Long resourceId, Long userId) {
+    private void assertReadQueryById(Wrapper<?> wrapper, Long resourceId) {
         String sql = wrapper.getSqlSegment().toLowerCase();
         assertTrue(sql.contains("id"));
-        assertTrue(sql.contains("user_id"));
         assertTrue(sql.contains("deleted"));
         if (wrapper instanceof com.baomidou.mybatisplus.core.conditions.AbstractWrapper<?, ?, ?> query) {
             query.getSqlSegment();
             var values = query.getParamNameValuePairs().values();
             assertTrue(values.contains(resourceId));
-            assertTrue(values.contains(userId));
             assertTrue(values.contains(0));
         }
     }

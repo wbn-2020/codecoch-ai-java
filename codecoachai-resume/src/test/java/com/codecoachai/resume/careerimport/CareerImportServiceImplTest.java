@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -30,14 +31,24 @@ import com.codecoachai.resume.domain.entity.JobApplication;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
 import com.codecoachai.resume.mapper.careerimport.CareerImportBatchMapper;
+import com.codecoachai.resume.mapper.careerimport.CareerImportDedupeGuardMapper;
 import com.codecoachai.resume.mapper.careerimport.CareerImportRowMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Collections;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -603,6 +614,147 @@ class CareerImportServiceImplTest {
         assertThrows(BusinessException.class, () -> new IcsCodec().parse(ics, "Asia/Shanghai", 1));
     }
 
+    @Test
+    void createPolicyAcceptsFiveHundredRowsAndDoesNotMisreportUnrelatedInsertFailure() {
+        when(applicationMapper.selectList(any())).thenReturn(List.of());
+        prepareBatch(46L);
+        CareerImportDedupeGuardMapper guardMapper = mock(CareerImportDedupeGuardMapper.class);
+        CareerImportApplicationWriter realWriter = new CareerImportApplicationWriter(
+                guardMapper, applicationMapper, new CareerImportCanonicalSupport());
+        CareerImportRowTransaction rowTransaction = new CareerImportRowTransaction(
+                rowMapper, new ObjectMapper().findAndRegisterModules());
+        service = new CareerImportServiceImpl(
+                batchMapper, rowMapper, applicationMapper, realWriter,
+                new CareerImportCanonicalSupport(), calendarEventMapper, calendarService,
+                rowTransaction, new CsvCodec(), new IcsCodec());
+        AtomicLong applicationIds = new AtomicLong(2_000L);
+        List<JobApplication> attempted = new ArrayList<>();
+        when(applicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
+            JobApplication application = invocation.getArgument(0);
+            attempted.add(application);
+            if ("Backend Engineer 249".equals(application.getJobTitle())) {
+                throw mysqlDuplicate("uk_job_application_unrelated");
+            }
+            application.setId(applicationIds.incrementAndGet());
+            return 1;
+        });
+
+        ImportResult result = service.importCsv(
+                "applications-create-500.csv",
+                csvApplications(500),
+                "Asia/Shanghai",
+                "CREATE");
+
+        assertEquals("PARTIAL", result.getStatus());
+        assertEquals(500, result.getTotalCount());
+        assertEquals(499, result.getSuccessCount());
+        assertEquals(1, result.getErrorCount());
+        assertEquals(0, result.getDuplicateCount());
+        assertEquals(500, attempted.size());
+        assertTrue(attempted.stream().allMatch(item -> item.getImportFingerprint() == null));
+        CareerImportModels.ImportRowView failed = result.getRows().stream()
+                .filter(row -> "ERROR".equals(row.getDisposition()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("APPLICATION_INSERT_FAILED", failed.getErrorCode());
+        assertTrue(!"CONCURRENT_DUPLICATE".equals(failed.getErrorCode()));
+        verify(applicationMapper, times(500)).insert(any(JobApplication.class));
+        verify(guardMapper, never()).insertIgnore(any(), any());
+        verify(guardMapper, never()).selectForUpdate(any(), any());
+        verify(rowMapper, times(500)).insert(any(CareerImportRow.class));
+    }
+
+    @Test
+    void concurrentDuplicateSubmissionAtFiveHundredRowBoundaryCreatesEachApplicationOnce()
+            throws Exception {
+        when(applicationMapper.selectList(any())).thenReturn(List.of());
+        AtomicLong batchIds = new AtomicLong(100L);
+        when(batchMapper.insert(any(CareerImportBatch.class))).thenAnswer(invocation -> {
+            CareerImportBatch batch = invocation.getArgument(0);
+            batch.setId(batchIds.incrementAndGet());
+            return 1;
+        });
+        Set<String> insertedKeys = ConcurrentHashMap.newKeySet();
+        AtomicLong applicationIds = new AtomicLong(1_000L);
+        when(applicationWriter.writeSkip(any(JobApplication.class))).thenAnswer(invocation -> {
+            JobApplication application = invocation.getArgument(0);
+            String key = String.join(
+                    "|",
+                    String.valueOf(application.getCompanyName()),
+                    String.valueOf(application.getJobTitle()),
+                    String.valueOf(application.getAppliedAt()));
+            if (insertedKeys.add(key)) {
+                return inserted(application, applicationIds.incrementAndGet());
+            }
+            return WriteOutcome.concurrentDuplicate();
+        });
+        byte[] csv = csvApplications(500);
+        assertTrue(csv.length < 2 * 1024 * 1024);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<ImportResult> first = executor.submit(
+                    () -> importCsvAfterBarrier(csv, ready, start));
+            Future<ImportResult> second = executor.submit(
+                    () -> importCsvAfterBarrier(csv, ready, start));
+            assertTrue(ready.await(5, TimeUnit.SECONDS));
+            start.countDown();
+
+            List<ImportResult> results = List.of(
+                    first.get(30, TimeUnit.SECONDS),
+                    second.get(30, TimeUnit.SECONDS));
+            int successCount = results.stream().mapToInt(ImportResult::getSuccessCount).sum();
+            int duplicateCount = results.stream().mapToInt(ImportResult::getDuplicateCount).sum();
+            int errorCount = results.stream().mapToInt(ImportResult::getErrorCount).sum();
+
+            assertEquals(500, successCount);
+            assertEquals(500, duplicateCount);
+            assertEquals(0, errorCount);
+            assertEquals(500, insertedKeys.size());
+            assertTrue(results.stream().allMatch(result -> "COMPLETED".equals(result.getStatus())));
+            verify(applicationWriter, times(1_000)).writeSkip(any(JobApplication.class));
+            verify(rowMapper, times(1_000)).insert(any(CareerImportRow.class));
+            verify(batchMapper, times(2)).insert(any(CareerImportBatch.class));
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
+        }
+    }
+
+    private ImportResult importCsvAfterBarrier(
+            byte[] csv,
+            CountDownLatch ready,
+            CountDownLatch start) throws Exception {
+        LoginUserContext.setLoginUser(
+                LoginUser.builder().userId(10L).username("import-user").build());
+        try {
+            ready.countDown();
+            if (!start.await(5, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Timed out waiting for concurrent import start");
+            }
+            return service.importCsv(
+                    "applications-500.csv", csv, "Asia/Shanghai", "SKIP");
+        } finally {
+            LoginUserContext.clear();
+        }
+    }
+
+    private static byte[] csvApplications(int rows) {
+        StringBuilder csv = new StringBuilder(
+                "company_name,job_title,applied_at\n");
+        for (int index = 0; index < rows; index++) {
+            csv.append("Company-")
+                    .append(index)
+                    .append(",Backend Engineer ")
+                    .append(index)
+                    .append(",2026-07-03T09:00:00\n");
+        }
+        return csv.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
     private void prepareBatch(Long batchId) {
         when(batchMapper.insert(any(CareerImportBatch.class))).thenAnswer(invocation -> {
             CareerImportBatch batch = invocation.getArgument(0);
@@ -644,10 +796,14 @@ class CareerImportServiceImplTest {
     }
 
     private static DuplicateKeyException mysqlDuplicate() {
+        return mysqlDuplicate("uk_career_calendar_external_uid");
+    }
+
+    private static DuplicateKeyException mysqlDuplicate(String constraintName) {
         return new DuplicateKeyException(
                 "outer",
                 new SQLIntegrityConstraintViolationException(
-                        "Duplicate entry", "23000", 1062));
+                        "Duplicate entry for key '" + constraintName + "'", "23000", 1062));
     }
 
     private static WriteOutcome inserted(JobApplication application, Long id) {

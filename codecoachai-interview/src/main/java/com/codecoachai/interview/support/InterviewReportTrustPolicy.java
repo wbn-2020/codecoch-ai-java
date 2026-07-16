@@ -23,27 +23,65 @@ public final class InterviewReportTrustPolicy {
     private InterviewReportTrustPolicy() {
     }
 
+    public static boolean isAvailableForRemediation(InterviewReport report) {
+        return report != null && "GENERATED".equalsIgnoreCase(report.getStatus());
+    }
+
+    public static String remediationUnavailableReason(InterviewReport report) {
+        if (report == null) {
+            return "REPORT_NOT_FOUND";
+        }
+        return isAvailableForRemediation(report) ? null : "REPORT_NOT_GENERATED";
+    }
+
+    public static String strongRemediationUnavailableReason(InterviewReport report) {
+        if (report == null) {
+            return "REPORT_NOT_FOUND";
+        }
+        if (isTrustedForFormalAction(report)) {
+            return null;
+        }
+        return isSampleInsufficient(report) ? "SAMPLE_INSUFFICIENT" : "REPORT_UNTRUSTED";
+    }
+
     public static boolean isTrustedForFormalAction(InterviewReport report) {
+        return isTrustedForFormalAction(report, report == null ? null : report.getTotalScore());
+    }
+
+    public static boolean isTrustedForComparisonNormalization(
+            InterviewReport report, Integer normalizedTotalScore) {
         if (report == null
                 || !"GENERATED".equalsIgnoreCase(report.getStatus())
                 || report.getId() == null
                 || report.getSessionId() == null
                 || report.getUserId() == null
-                || report.getTotalScore() == null
-                || report.getTotalScore() <= 0
+                || normalizedTotalScore == null
+                || normalizedTotalScore <= 0
+                || (report.getGeneratedAt() == null && report.getCreatedAt() == null)
+                || !StringUtils.hasText(report.getSummary())
+                || !StringUtils.hasText(report.getReportContent())
+                || StringUtils.hasText(report.getFailureReason())
+                || containsFallbackOrInsufficientEvidence(report)) {
+            return false;
+        }
+        return hasOnlyTrustedAdviceEvidence(report.getAdviceEvidence(), report.getId());
+    }
+
+    private static boolean isTrustedForFormalAction(InterviewReport report, Integer totalScore) {
+        if (report == null
+                || !"GENERATED".equalsIgnoreCase(report.getStatus())
+                || report.getId() == null
+                || report.getSessionId() == null
+                || report.getUserId() == null
+                || totalScore == null
+                || totalScore <= 0
                 || report.getGeneratedAt() == null
                 || !StringUtils.hasText(report.getSummary())
                 || !StringUtils.hasText(report.getReportContent())
                 || StringUtils.hasText(report.getFailureReason())) {
             return false;
         }
-        if (containsTrueFlag(report.getQaReview(), "fallback")
-                || containsTrueFlag(report.getRubricScores(), "fallback")
-                || containsTrueFlag(report.getAdviceEvidence(), "fallback")
-                || containsTrueFlag(report.getAbilityProfileUpdates(), "fallback")
-                || containsTrueFlag(report.getRubricScores(), "sampleInsufficient")
-                || containsTrueFlag(report.getAdviceEvidence(), "sampleInsufficient")
-                || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient")) {
+        if (containsFallbackOrInsufficientEvidence(report)) {
             return false;
         }
         return hasOnlyTrustedAdviceEvidence(report.getAdviceEvidence(), report.getId());
@@ -57,12 +95,23 @@ public final class InterviewReportTrustPolicy {
         return "FAILED".equalsIgnoreCase(status)
                 || "UNSCORABLE".equalsIgnoreCase(status)
                 || StringUtils.hasText(report.getFailureReason())
-                || containsTrueFlag(report.getQaReview(), "fallback")
-                || containsTrueFlag(report.getAdviceEvidence(), "fallback");
+                || containsFallbackOrInsufficientEvidence(report);
     }
 
     public static boolean isSampleInsufficient(InterviewReport report) {
         return report == null
+                || containsTrueFlag(report.getQaReview(), "sampleInsufficient")
+                || containsTrueFlag(report.getRubricScores(), "sampleInsufficient")
+                || containsTrueFlag(report.getAdviceEvidence(), "sampleInsufficient")
+                || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient");
+    }
+
+    private static boolean containsFallbackOrInsufficientEvidence(InterviewReport report) {
+        return containsTrueFlag(report.getQaReview(), "fallback")
+                || containsTrueFlag(report.getRubricScores(), "fallback")
+                || containsTrueFlag(report.getAdviceEvidence(), "fallback")
+                || containsTrueFlag(report.getAbilityProfileUpdates(), "fallback")
+                || containsTrueFlag(report.getQaReview(), "sampleInsufficient")
                 || containsTrueFlag(report.getRubricScores(), "sampleInsufficient")
                 || containsTrueFlag(report.getAdviceEvidence(), "sampleInsufficient")
                 || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient");

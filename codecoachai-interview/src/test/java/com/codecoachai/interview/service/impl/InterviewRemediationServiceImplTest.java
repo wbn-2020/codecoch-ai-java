@@ -125,6 +125,30 @@ class InterviewRemediationServiceImplTest {
     }
 
     @Test
+    void normalRemediationAcceptsFallbackReport() {
+        InterviewReport report = report();
+        report.setFailureReason("fallback report");
+        when(reportMapper.selectById(88L)).thenReturn(report);
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
+            InterviewRemediation remediation = invocation.getArgument(0);
+            remediation.setId(502L);
+            return 1;
+        });
+        CreateInterviewVO interview = new CreateInterviewVO();
+        interview.setId(202L);
+        when(interviewService.create(any())).thenReturn(interview);
+        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
+        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+
+        var result = service.create(request(false, "normal-fallback"));
+
+        assertEquals(202L, result.getTargetSessionId());
+        assertEquals("NORMAL", result.getRemediationStrength());
+        verify(interviewService).create(any());
+    }
+
+    @Test
     void idempotentReplayDoesNotCreateAnotherInterview() {
         InterviewRemediation existing = remediation();
         when(remediationMapper.selectOne(any())).thenReturn(existing);
@@ -192,16 +216,71 @@ class InterviewRemediationServiceImplTest {
         assertTrue(result.getOptions().stream().anyMatch(option ->
                 "WEAK_POINT".equals(option.getReasonType())
                         && option.getPracticePurpose().contains("缓存一致性")));
+        assertEquals(true, result.getRemediationAvailable());
+        assertEquals(true, result.getStrongRemediationAvailable());
+        assertEquals(false, result.getRemediationCreated());
     }
 
     @Test
-    void remediationOptionsRejectUntrustedReport() {
+    void remediationOptionsAcceptFallbackReportForNormalRemediation() {
+        InterviewReport report = report();
+        report.setFailureReason("fallback report");
+        report.setWeakPoints("[\"缓存一致性边界不清\"]");
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+
+        var result = service.options(100L);
+
+        assertEquals("FALLBACK", result.getTrustStatus());
+        assertEquals(true, result.getRemediationAvailable());
+        assertEquals(false, result.getStrongRemediationAvailable());
+        assertEquals("REPORT_UNTRUSTED", result.getStrongRemediationUnavailableReason());
+        assertTrue(result.getOptions().stream().anyMatch(option ->
+                "WEAK_POINT".equals(option.getReasonType())
+                        && !option.getStrongRemediation()));
+    }
+
+    @Test
+    void remediationOptionsExposeCreatedFallbackRemediation() {
         InterviewReport report = report();
         report.setFailureReason("fallback report");
         when(reportMapper.selectOne(any())).thenReturn(report);
         when(sessionMapper.selectById(100L)).thenReturn(session());
+        when(remediationMapper.selectOne(any())).thenReturn(remediation());
+
+        var result = service.options(100L);
+
+        assertEquals(true, result.getRemediationCreated());
+        assertEquals(500L, result.getRemediationId());
+        assertEquals(200L, result.getRemediationTargetSessionId());
+        assertEquals("CREATED", result.getRemediationStatus());
+        assertEquals(true, result.getRemediationAvailable());
+    }
+
+    @Test
+    void remediationOptionsReturnStructuredUnavailableStateForUngeneratedReport() {
+        InterviewReport report = report();
+        report.setStatus("FAILED");
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+
+        var result = service.options(100L);
+
+        assertEquals(false, result.getRemediationAvailable());
+        assertEquals("REPORT_NOT_GENERATED", result.getRemediationUnavailableReason());
+        assertEquals(List.of(), result.getOptions());
+    }
+
+    @Test
+    void remediationOptionsDoNotReadReportsForAnotherUserSession() {
+        InterviewSession foreignSession = session();
+        foreignSession.setUserId(11L);
+        when(sessionMapper.selectById(100L)).thenReturn(foreignSession);
 
         assertThrows(BusinessException.class, () -> service.options(100L));
+
+        verify(reportMapper, never()).selectOne(any());
+        verify(remediationMapper, never()).selectOne(any());
     }
 
     @Test

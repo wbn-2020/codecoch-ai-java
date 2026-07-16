@@ -208,32 +208,38 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                     "Application package does not match the requested resume version");
         }
 
-        ResumeExportVO pdf = createExport(exportRequest(version.getId(), template, "PDF"));
-        ResumeExportVO docx = createExport(exportRequest(version.getId(), template, "DOCX"));
-        ResumeArtifact pdfArtifact = ownedArtifact(pdf.getArtifact().getId(), userId);
-        ResumeArtifact docxArtifact = ownedArtifact(docx.getArtifact().getId(), userId);
-
-        String sourceHash = ResumeArtifactHashes.sha256(version.getSnapshotJson());
-        ResumeArtifact zipArtifact = new ResumeArtifact();
-        zipArtifact.setUserId(userId);
-        zipArtifact.setArtifactType("APPLICATION_ZIP");
-        zipArtifact.setSourceResumeId(version.getResumeId());
-        zipArtifact.setSourceResumeVersionId(version.getId());
-        zipArtifact.setSourceApplicationPackageId(applicationPackage == null ? null : applicationPackage.getId());
-        zipArtifact.setSourceHash(sourceHash);
-        zipArtifact.setTemplateCode(template.getTemplateCode());
-        zipArtifact.setTemplateVersion(template.getTemplateVersion());
-        zipArtifact.setFileName("application-package-v" + version.getId() + ".zip");
-        zipArtifact.setMimeType("application/zip");
-        zipArtifact.setStatus(STATUS_GENERATING);
-        artifactMapper.insert(zipArtifact);
-
+        List<ResumeExportVO> generatedChildren = new ArrayList<>(2);
         List<Path> temps = new ArrayList<>();
+        ResumeArtifact zipArtifact = null;
+        Long uploadedZipFileId = null;
         try {
+            ResumeExportVO pdf = createExport(exportRequest(version.getId(), template, "PDF"));
+            generatedChildren.add(pdf);
+            ResumeExportVO docx = createExport(exportRequest(version.getId(), template, "DOCX"));
+            generatedChildren.add(docx);
+            ResumeArtifact pdfArtifact = ownedArtifact(pdf.getArtifact().getId(), userId);
+            ResumeArtifact docxArtifact = ownedArtifact(docx.getArtifact().getId(), userId);
+
+            String sourceHash = ResumeArtifactHashes.sha256(version.getSnapshotJson());
+            zipArtifact = new ResumeArtifact();
+            zipArtifact.setUserId(userId);
+            zipArtifact.setArtifactType("APPLICATION_ZIP");
+            zipArtifact.setSourceResumeId(version.getResumeId());
+            zipArtifact.setSourceResumeVersionId(version.getId());
+            zipArtifact.setSourceApplicationPackageId(applicationPackage.getId());
+            zipArtifact.setSourceHash(sourceHash);
+            zipArtifact.setTemplateCode(template.getTemplateCode());
+            zipArtifact.setTemplateVersion(template.getTemplateVersion());
+            zipArtifact.setFileName("application-package-v" + version.getId() + ".zip");
+            zipArtifact.setMimeType("application/zip");
+            zipArtifact.setStatus(STATUS_GENERATING);
+            requireWrite(artifactMapper.insert(zipArtifact), zipArtifact.getId(),
+                    "Application package artifact record was not created");
+
             List<ResumeZipBuilder.SourceEntry> entries = new ArrayList<>();
             entries.add(downloadToTemp(pdfArtifact, userId, temps));
             entries.add(downloadToTemp(docxArtifact, userId, temps));
-            String packageSnapshot = applicationPackage == null ? null : applicationPackage.getSnapshotJson();
+            String packageSnapshot = applicationPackage.getSnapshotJson();
             if (StringUtils.hasText(packageSnapshot)) {
                 Path packageFile = Files.createTempFile("application-package-", ".json");
                 temps.add(packageFile);
@@ -262,15 +268,45 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                  LimitedOutputStream limited = new LimitedOutputStream(fileOutput, properties.effectiveMaxArtifactBytes())) {
                 zipBuilder.write(limited, entries, zipManifest, properties.effectiveMaxZipEntries());
             }
-            zipArtifact.setFileSize(Files.size(zip));
-            zipArtifact.setSha256(ResumeArtifactHashes.sha256(zip));
+            long size = Files.size(zip);
+            String hash = ResumeArtifactHashes.sha256(zip);
+            InnerFileUploadVO uploaded;
+            long uploadStartedAt = System.nanoTime();
+            try {
+                Path uploadPath = zip;
+                String fileName = zipArtifact.getFileName();
+                String mimeType = zipArtifact.getMimeType();
+                uploaded = uploadAdmissionGuard.execute(uploadPath,
+                        validated -> FeignResultUtils.unwrap(fileFeignClient.upload(
+                                new PathMultipartFile(
+                                        uploadPath,
+                                        fileName,
+                                        mimeType,
+                                        validated.maxBytes(),
+                                        validated.fileKey()),
+                                BIZ_TYPE,
+                                userId)));
+                log.debug("Application package upload completed artifactId={} artifactSize={} durationMs={}",
+                        zipArtifact.getId(), size, elapsedMillis(uploadStartedAt));
+            } catch (Exception ex) {
+                logUploadFailure(zipArtifact.getId(), null, size, uploadStartedAt, ex);
+                throw ex;
+            }
+            if (uploaded == null || uploaded.getFileId() == null) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Generated application package upload failed");
+            }
+            uploadedZipFileId = uploaded.getFileId();
+            zipArtifact.setFileId(uploadedZipFileId);
+            zipArtifact.setFileSize(size);
+            zipArtifact.setSha256(hash);
             zipArtifact.setStatus(STATUS_READY);
-            artifactMapper.updateById(zipArtifact);
+            requireWrite(artifactMapper.updateById(zipArtifact), zipArtifact.getId(),
+                    "Application package artifact record was not finalized");
             return toArtifactVO(zipArtifact);
         } catch (Exception ex) {
-            zipArtifact.setStatus(STATUS_FAILED);
-            zipArtifact.setErrorMessage(safeError(ex));
-            artifactMapper.updateById(zipArtifact);
+            deleteUploadedFileQuietly(uploadedZipFileId, userId);
+            markPackageArtifactFailed(zipArtifact, ex);
+            compensatePackageChildren(generatedChildren, userId, ex);
             throw generationException(ex);
         } finally {
             temps.forEach(this::deleteQuietly);
@@ -303,7 +339,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             throw new BusinessException(ErrorCode.SEMANTIC_VALIDATION_ERROR, "Artifact is not ready");
         }
         DownloadPayload payload = "APPLICATION_ZIP".equals(artifact.getArtifactType())
-                ? rebuildZipPayload(artifact, userId)
+                ? applicationZipDownloadPayload(artifact, userId)
                 : fileDownloadPayload(artifact, userId);
         StreamingResponseBody body = output -> output.write(payload.bytes());
         return ResponseEntity.ok()
@@ -313,6 +349,12 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                 .contentLength(payload.bytes().length)
                 .header("X-Artifact-SHA256", payload.sha256())
                 .body(body);
+    }
+
+    private DownloadPayload applicationZipDownloadPayload(ResumeArtifact artifact, Long userId) {
+        return artifact.getFileId() == null
+                ? rebuildZipPayload(artifact, userId)
+                : fileDownloadPayload(artifact, userId);
     }
 
     private DownloadPayload fileDownloadPayload(ResumeArtifact artifact, Long userId) {
@@ -371,7 +413,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             byte[] bytes = Files.readAllBytes(zip);
             return new DownloadPayload(bytes, ResumeArtifactHashes.sha256(bytes));
         } catch (Exception ex) {
-            throw generationException(ex);
+            throw zipRebuildException(ex);
         } finally {
             temps.forEach(this::deleteQuietly);
         }
@@ -488,7 +530,12 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             throws IOException {
         Path temp = Files.createTempFile("resume-artifact-", extension(artifact.getFileName()));
         temps.add(temp);
-        ResponseEntity<Resource> response = fileFeignClient.download(artifact.getFileId(), userId, BIZ_TYPE);
+        ResponseEntity<Resource> response;
+        try {
+            response = fileFeignClient.download(artifact.getFileId(), userId, BIZ_TYPE);
+        } catch (RuntimeException ex) {
+            throw new IOException("Generated child artifact cannot be downloaded", ex);
+        }
         Resource resource = response == null ? null : response.getBody();
         if (resource == null) {
             throw new IOException("Generated child artifact cannot be downloaded");
@@ -805,6 +852,58 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         return artifact;
     }
 
+    private void markPackageArtifactFailed(ResumeArtifact artifact, Exception ex) {
+        if (artifact == null || artifact.getId() == null) {
+            return;
+        }
+        artifact.setStatus(STATUS_FAILED);
+        artifact.setErrorMessage(packageFailureMessage(ex));
+        try {
+            artifactMapper.updateById(artifact);
+        } catch (RuntimeException updateException) {
+            log.warn("Failed to persist application package failure artifactId={} exceptionType={}",
+                    artifact.getId(), updateException.getClass().getSimpleName());
+        }
+    }
+
+    private void compensatePackageChildren(
+            List<ResumeExportVO> generatedChildren,
+            Long userId,
+            Exception failure) {
+        String error = packageFailureMessage(failure);
+        for (ResumeExportVO generated : generatedChildren) {
+            Long artifactId = generated.getArtifact() == null ? null : generated.getArtifact().getId();
+            if (artifactId != null) {
+                try {
+                    ResumeArtifact child = ownedArtifact(artifactId, userId);
+                    deleteUploadedFileQuietly(child.getFileId(), userId);
+                    child.setStatus(STATUS_FAILED);
+                    child.setErrorMessage(error);
+                    artifactMapper.updateById(child);
+                } catch (RuntimeException compensationException) {
+                    log.warn("Failed to compensate application package child artifactId={} exceptionType={}",
+                            artifactId, compensationException.getClass().getSimpleName());
+                }
+            }
+            if (generated.getId() == null) {
+                continue;
+            }
+            try {
+                ResumeExport childExport = exportMapper.selectById(generated.getId());
+                if (childExport != null
+                        && userId.equals(childExport.getUserId())
+                        && Objects.equals(artifactId, childExport.getArtifactId())) {
+                    childExport.setStatus(STATUS_FAILED);
+                    childExport.setErrorMessage(error);
+                    exportMapper.updateById(childExport);
+                }
+            } catch (RuntimeException compensationException) {
+                log.warn("Failed to compensate application package child exportId={} exceptionType={}",
+                        generated.getId(), compensationException.getClass().getSimpleName());
+            }
+        }
+    }
+
     private void markFailed(ResumeArtifact artifact, ResumeExport export, Exception ex) {
         String error = safeError(ex);
         if (artifact.getId() != null) {
@@ -823,6 +922,11 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             } catch (RuntimeException ignored) {
             }
         }
+    }
+
+    private String packageFailureMessage(Exception ex) {
+        return "Application package generation failed; child artifact compensation was attempted: "
+                + safeError(ex);
     }
 
     private void deleteUploadedFileQuietly(Long fileId, Long userId) {
@@ -993,6 +1097,19 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         return ex instanceof BusinessException businessException
                 ? businessException
                 : new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume artifact generation failed");
+    }
+
+    private BusinessException zipRebuildException(Exception ex) {
+        if (ex instanceof BusinessException businessException) {
+            return businessException;
+        }
+        if (StringUtils.hasText(ex.getMessage())
+                && ex.getMessage().toLowerCase(Locale.ROOT).contains("child artifact")) {
+            return new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "Application ZIP child artifact is unavailable or invalid; regenerate the application package");
+        }
+        return generationException(ex);
     }
 
     private void logUploadFailure(

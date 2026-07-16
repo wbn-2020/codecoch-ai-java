@@ -503,17 +503,20 @@ class InterviewServiceImplTest {
     }
 
     @Test
-    void listUsesComparabilityPolicyForCurrentReports() throws Exception {
+    void listUsesCurrentOwnedReportsForScoreAndComparabilityInOneBatch() throws Exception {
         InterviewSession first = completedJdSession();
         first.setId(1L);
+        first.setTotalScore(99);
         InterviewSession second = completedJdSession();
         second.setId(2L);
+        second.setTotalScore(42);
         Page<InterviewSession> page = Page.of(1, 10);
         page.setRecords(List.of(first, second));
         page.setTotal(2);
         when(sessionMapper.selectPage(any(), any())).thenReturn(page);
         when(voiceDeliverySummaryService.summaries(10L, List.of(1L, 2L))).thenReturn(Map.of());
         InterviewReport comparable = comparableReport();
+        comparable.setTotalScore(65);
         InterviewReport older = comparableReport();
         older.setId(87L);
         InterviewReport missingTotal = comparableReport();
@@ -525,12 +528,17 @@ class InterviewServiceImplTest {
         List<InterviewListVO> records = service.list(1L, 10L, null, null, null).getRecords();
 
         assertEquals(88L, readProperty(records.get(0), "getReportId"));
+        assertEquals(65, records.get(0).getTotalScore());
         assertEquals(true, readProperty(records.get(0), "getComparisonAvailable"));
         assertNull(readProperty(records.get(0), "getComparisonUnavailableReason"));
         assertEquals(89L, readProperty(records.get(1), "getReportId"));
-        assertEquals(false, readProperty(records.get(1), "getComparisonAvailable"));
-        assertEquals("TOTAL_SCORE_MISSING",
-                readProperty(records.get(1), "getComparisonUnavailableReason"));
+        assertEquals(42, records.get(1).getTotalScore());
+        assertEquals(true, readProperty(records.get(1), "getComparisonAvailable"));
+        assertNull(readProperty(records.get(1), "getComparisonUnavailableReason"));
+        assertEquals("REPORT_RUBRIC_SCORES",
+                readProperty(records.get(1), "getComparisonNormalizationSource"));
+        assertTrue(records.get(1).getComparisonWarnings().stream().anyMatch(warning ->
+                "TOTAL_SCORE_RECOVERED_FROM_SESSION".equals(warning.getCode())));
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<InterviewReport>> reportQuery = ArgumentCaptor.forClass(Wrapper.class);
         verify(reportMapper).selectList(reportQuery.capture());
@@ -623,6 +631,38 @@ class InterviewServiceImplTest {
         });
 
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void generateReportForSseRejectsMissingRubricInsteadOfInventingDefaultDimensions() {
+        InterviewSession session = completedTargetJobSession();
+        AtomicReference<InterviewReport> latest = new AtomicReference<>();
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(reportMapper.selectOne(any())).thenAnswer(invocation -> latest.get());
+        when(reportMapper.insert(any(InterviewReport.class))).thenAnswer(invocation -> {
+            InterviewReport report = invocation.getArgument(0);
+            report.setId(88L);
+            latest.set(report);
+            return 1;
+        });
+        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        GenerateReportVO incomplete = generatedAiReport();
+        incomplete.setRubricScores(null);
+        when(aiFeignClient.report(any())).thenReturn(Result.success(incomplete));
+        when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
+
+        InterviewReportGenerateResultVO result =
+                service.generateReportForSse(1L, null, false, stage -> {
+                });
+
+        assertEquals(ReportStatusEnum.FAILED.name(), result.getResult().getStatus());
+        assertNull(result.getResult().getTotalScore());
+        assertTrue(result.getResult().getRubricScores().isEmpty());
+        assertNull(result.getResult().getRubricVersion());
+        assertFalse(result.getResult().getComparisonAvailable());
+        assertEquals("REPORT_NOT_GENERATED", result.getResult().getComparisonUnavailableReason());
+        assertTrue(result.getResult().getFailureReason().contains("RUBRIC_DATA_MISSING"));
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(anyLong(), anyLong(), anyLong());
     }
 
     @Test

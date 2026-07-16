@@ -1,7 +1,9 @@
 package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
@@ -154,21 +156,39 @@ public class JobReadinessServiceImpl implements JobReadinessService {
     }
 
     @Override
+    public PageResult<JobReadinessSnapshotVO> page(Long targetJobId, Long pageNo, Long pageSize) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        long currentPage = requirePageNo(pageNo);
+        long currentPageSize = requirePageSize(pageSize);
+        getOwnedTargetJob(targetJobId, userId);
+        Page<JobReadinessSnapshot> page = jobReadinessSnapshotMapper.selectPage(
+                new Page<>(currentPage, currentPageSize),
+                readinessHistoryQuery(targetJobId, userId));
+        List<JobReadinessSnapshotVO> records = page.getRecords().stream()
+                .map(this::toVO)
+                .toList();
+        return PageResult.of(records, page.getTotal(), currentPage, currentPageSize);
+    }
+
+    @Override
     public List<JobReadinessSnapshotVO> list(Long targetJobId, JobReadinessQueryDTO query) {
         Long userId = SecurityAssert.requireLoginUserId();
         getOwnedTargetJob(targetJobId, userId);
         int limit = sanitizeLimit(query == null ? null : query.getLimit());
         return jobReadinessSnapshotMapper.selectList(
-                        new LambdaQueryWrapper<JobReadinessSnapshot>()
-                                .eq(JobReadinessSnapshot::getUserId, userId)
-                                .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
-                                .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
-                                .orderByDesc(JobReadinessSnapshot::getGeneratedAt)
-                                .orderByDesc(JobReadinessSnapshot::getId)
-                                .last("limit " + limit))
+                        readinessHistoryQuery(targetJobId, userId).last("limit " + limit))
                 .stream()
                 .map(this::toVO)
                 .toList();
+    }
+
+    private LambdaQueryWrapper<JobReadinessSnapshot> readinessHistoryQuery(Long targetJobId, Long userId) {
+        return new LambdaQueryWrapper<JobReadinessSnapshot>()
+                .eq(JobReadinessSnapshot::getUserId, userId)
+                .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
+                .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
+                .orderByDesc(JobReadinessSnapshot::getGeneratedAt)
+                .orderByDesc(JobReadinessSnapshot::getId);
     }
 
     private SnapshotScore score(JobRequirementMatrixVO matrix,
@@ -421,6 +441,20 @@ public class JobReadinessServiceImpl implements JobReadinessService {
             return 20;
         }
         return Math.max(1, Math.min(value, 100));
+    }
+
+    private long requirePageNo(Long pageNo) {
+        if (pageNo == null || pageNo < 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "pageNo must be at least 1");
+        }
+        return pageNo;
+    }
+
+    private long requirePageSize(Long pageSize) {
+        if (pageSize == null || pageSize < 1 || pageSize > 100) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "pageSize must be between 1 and 100");
+        }
+        return pageSize;
     }
 
     private int value(Integer value) {

@@ -26,6 +26,7 @@ import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.scenario.InterviewScenarioBinding;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewReportScoringContract;
 import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -341,7 +342,7 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(firstText(aiReport.getReviewSuggestions(), aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
         report.setRecommendedQuestions(aiReport.getRecommendedQuestions());
         report.setQaReview(aiReport.getQaReview());
-        report.setRubricScores(firstText(aiReport.getRubricScores(), buildFallbackRubricScores(messages, answerCount)));
+        report.setRubricScores(aiReport.getRubricScores());
         report.setRubricVersion(reportRubricVersion(report.getSessionId()));
         report.setFollowUpTree(firstText(aiReport.getFollowUpTree(), buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport.getAdviceEvidence(), buildFallbackAdviceEvidence(report, messages, answerCount)));
@@ -358,8 +359,22 @@ public class InterviewReportAsyncService {
             markReportAiIncomplete(report);
             return;
         }
+        Integer totalScore = firstValidTotalScore(
+                aiReport == null ? null : aiReport.getTotalScore(),
+                averageAnswerScore(messages));
+        String rubricVersion = reportRubricVersion(report.getSessionId());
+        String rubricScores = aiReport == null ? null : aiReport.getRubricScores();
+        InterviewReportScoringContract.Validation scoringContract =
+                InterviewReportScoringContract.validate(
+                        objectMapper, totalScore, rubricVersion, rubricScores);
+        if (!scoringContract.valid()) {
+            markReportAiIncomplete(report);
+            report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
+                    + " [" + scoringContract.reasonCode() + "]");
+            return;
+        }
         report.setStatus(ReportStatusEnum.GENERATED.name());
-        report.setTotalScore(firstPositive(aiReport == null ? null : aiReport.getTotalScore(), averageAnswerScore(messages)));
+        report.setTotalScore(totalScore);
         report.setSummary(firstText(aiReport == null ? null : aiReport.getSummary(), DEFAULT_REPORT_SUMMARY));
         report.setStageScores(firstText(aiReport == null ? null : aiReport.getStageScores(), "{}"));
         report.setWeakPoints(firstText(aiReport == null ? null : aiReport.getWeakPoints(), "[]"));
@@ -373,9 +388,8 @@ public class InterviewReportAsyncService {
                 REPORT_AI_INCOMPLETE_SUGGESTIONS));
         report.setRecommendedQuestions(firstText(aiReport == null ? null : aiReport.getRecommendedQuestions(), "[]"));
         report.setQaReview(buildFallbackQaReview(messages));
-        report.setRubricScores(firstText(aiReport == null ? null : aiReport.getRubricScores(),
-                buildFallbackRubricScores(messages, answerCount)));
-        report.setRubricVersion(reportRubricVersion(report.getSessionId()));
+        report.setRubricScores(rubricScores);
+        report.setRubricVersion(rubricVersion);
         report.setFollowUpTree(firstText(aiReport == null ? null : aiReport.getFollowUpTree(),
                 buildFallbackFollowUpTree(messages)));
         report.setAdviceEvidence(firstText(aiReport == null ? null : aiReport.getAdviceEvidence(),
@@ -428,37 +442,6 @@ public class InterviewReportAsyncService {
             log.warn("Failed to build async fallback qaReview");
             return "[]";
         }
-    }
-
-    private String buildFallbackRubricScores(List<InterviewMessage> messages, int answerCount) {
-        int baseScore = normalizeFivePointScore(averageAnswerScore(messages));
-        boolean sampleInsufficient = answerCount < 2;
-        String warning = sampleInsufficient ? "Sample is insufficient; this is a weak signal from saved interview answers." : null;
-        List<Map<String, Object>> scores = new ArrayList<>();
-        scores.add(rubricItem("EXPRESSION_STRUCTURE", baseScore, firstAnswerEvidence(messages),
-                "Use STAR or context-action-result structure for each project answer.", sampleInsufficient, warning));
-        scores.add(rubricItem("TECHNICAL_DEPTH", Math.max(1, baseScore - 1), firstKnowledgeEvidence(messages),
-                "Add implementation details, trade-offs, and boundary conditions.", sampleInsufficient, warning));
-        scores.add(rubricItem("BUSINESS_UNDERSTANDING", baseScore, firstAnswerEvidence(messages),
-                "Connect technical choices to user impact and measurable results.", sampleInsufficient, warning));
-        scores.add(rubricItem("RISK_AWARENESS", Math.max(1, baseScore - 1), firstFollowUpEvidence(messages),
-                "Name failure modes, rollback strategy, monitoring, and data consistency risks.", sampleInsufficient, warning));
-        scores.add(rubricItem("IMPLEMENTABILITY", baseScore, firstAnswerEvidence(messages),
-                "Turn conclusions into steps, metrics, and verification methods.", sampleInsufficient, warning));
-        return jsonArray(scores);
-    }
-
-    private Map<String, Object> rubricItem(String dimension, int score, String evidenceSummary,
-                                           String improvementSuggestion, boolean sampleInsufficient, String warning) {
-        Map<String, Object> item = new LinkedHashMap<>();
-        item.put("dimension", dimension);
-        item.put("score", score);
-        item.put("comment", "Estimated from saved interview answers and AI comments.");
-        item.put("evidenceSummary", truncate(firstText(evidenceSummary, "No stable evidence yet."), 160));
-        item.put("improvementSuggestion", improvementSuggestion);
-        item.put("sampleInsufficient", sampleInsufficient);
-        item.put("sampleWarning", warning);
-        return item;
     }
 
     private String buildFallbackFollowUpTree(List<InterviewMessage> messages) {
@@ -689,6 +672,18 @@ public class InterviewReportAsyncService {
         return null;
     }
 
+    private Integer firstValidTotalScore(Integer... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Integer value : values) {
+            if (value != null && value >= 1 && value <= 100) {
+                return value;
+            }
+        }
+        return null;
+    }
+
     private boolean isUserAnswer(InterviewMessage message) {
         return message != null
                 && "USER".equalsIgnoreCase(message.getRole())
@@ -721,8 +716,11 @@ public class InterviewReportAsyncService {
 
     private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
         return aiReport == null
-                || aiReport.getTotalScore() == null
-                || aiReport.getTotalScore() <= 0
+                || !InterviewReportScoringContract.validate(
+                        objectMapper,
+                        aiReport.getTotalScore(),
+                        InterviewRubricVersion.CURRENT,
+                        aiReport.getRubricScores()).valid()
                 || !StringUtils.hasText(aiReport.getSummary())
                 || !StringUtils.hasText(aiReport.getReportContent());
     }
@@ -966,6 +964,11 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
         report.setQaReview("[]");
+        report.setRubricScores("[]");
+        report.setRubricVersion(null);
+        report.setFollowUpTree("[]");
+        report.setAdviceEvidence("[]");
+        report.setAbilityProfileUpdates("[]");
         report.setReportContent(REPORT_AI_INCOMPLETE_MESSAGE);
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
@@ -987,6 +990,11 @@ public class InterviewReportAsyncService {
         report.setReviewSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
         report.setQaReview("[]");
+        report.setRubricScores("[]");
+        report.setRubricVersion(null);
+        report.setFollowUpTree("[]");
+        report.setAdviceEvidence("[]");
+        report.setAbilityProfileUpdates("[]");
         report.setReportContent(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);

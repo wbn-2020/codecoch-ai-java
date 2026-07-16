@@ -22,6 +22,11 @@ spring:
         file-extension: yml
 codecoachai:
   resume:
+    career-import:
+      recovery:
+        stale-after-minutes: ${CAREER_IMPORT_RECOVERY_STALE_AFTER_MINUTES:30}
+        initial-delay: ${CAREER_IMPORT_RECOVERY_INITIAL_DELAY:15000}
+        fixed-delay: ${CAREER_IMPORT_RECOVERY_FIXED_DELAY:60000}
     export:
       max-source-text-bytes: ${RESUME_EXPORT_MAX_SOURCE_TEXT_BYTES:524288}
       max-artifact-bytes: ${RESUME_EXPORT_MAX_ARTIFACT_BYTES:10485760}

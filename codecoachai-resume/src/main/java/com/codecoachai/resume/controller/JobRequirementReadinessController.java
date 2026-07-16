@@ -1,7 +1,9 @@
 package com.codecoachai.resume.controller;
 
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.resume.domain.dto.JobReadinessPageQueryDTO;
 import com.codecoachai.resume.domain.dto.JobReadinessQueryDTO;
 import com.codecoachai.resume.domain.vo.JobReadinessSnapshotVO;
 import com.codecoachai.resume.domain.vo.JobRequirementMaterializationVO;
@@ -9,6 +11,7 @@ import com.codecoachai.resume.domain.vo.JobRequirementMatrixVO;
 import com.codecoachai.resume.domain.vo.JobRequirementVO;
 import com.codecoachai.resume.service.JobReadinessService;
 import com.codecoachai.resume.service.JobRequirementService;
+import jakarta.validation.Valid;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -60,6 +63,14 @@ public class JobRequirementReadinessController {
     public Result<JobReadinessSnapshotVO> latestSnapshot(@PathVariable Long targetJobId) {
         SecurityAssert.requireLoginUserId();
         return Result.success(jobReadinessService.latest(targetJobId));
+    }
+
+    @GetMapping("/readiness-snapshots/page")
+    public Result<PageResult<JobReadinessSnapshotVO>> snapshotPage(
+            @PathVariable Long targetJobId,
+            @Valid @ModelAttribute JobReadinessPageQueryDTO query) {
+        SecurityAssert.requireLoginUserId();
+        return Result.success(jobReadinessService.page(targetJobId, query.getPageNo(), query.getPageSize()));
     }
 
     @GetMapping("/readiness-snapshots/{snapshotId}")

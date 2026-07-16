@@ -73,7 +73,7 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
                 || !userId.equals(sourceReport.getUserId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "来源面试报告不存在或不可用");
         }
-        if (!"GENERATED".equalsIgnoreCase(sourceReport.getStatus())) {
+        if (!InterviewReportTrustPolicy.isAvailableForRemediation(sourceReport)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "来源面试报告尚未成功生成，不能创建复练");
         }
         InterviewSession sourceSession = sessionMapper.selectById(sourceReport.getSessionId());
@@ -151,8 +151,34 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
                 .eq(InterviewReport::getDeleted, CommonConstants.NO)
                 .orderByDesc(InterviewReport::getId)
                 .last("limit 1"));
-        if (report == null || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前面试没有可用于复练的可信报告");
+
+        InterviewRemediationOptionsVO result = new InterviewRemediationOptionsVO();
+        result.setInterviewId(session.getId());
+        result.setTargetJobId(session.getTargetJobId());
+        result.setOptions(List.of());
+        result.setRemediationCreated(false);
+        if (report == null) {
+            result.setTrustStatus("UNAVAILABLE");
+            result.setRemediationAvailable(false);
+            result.setRemediationUnavailableReason(InterviewReportTrustPolicy.remediationUnavailableReason(null));
+            result.setStrongRemediationAvailable(false);
+            result.setStrongRemediationUnavailableReason(
+                    InterviewReportTrustPolicy.strongRemediationUnavailableReason(null));
+            return result;
+        }
+
+        boolean strongRemediationAvailable = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+        result.setSourceReportId(report.getId());
+        result.setRubricVersion(report.getRubricVersion());
+        result.setTrustStatus(reportTrustStatus(report));
+        result.setStrongRemediationAvailable(strongRemediationAvailable);
+        result.setStrongRemediationUnavailableReason(
+                InterviewReportTrustPolicy.strongRemediationUnavailableReason(report));
+        applyExistingRemediationState(result, findLatestBySourceReport(userId, report.getId()));
+        if (!InterviewReportTrustPolicy.isAvailableForRemediation(report)) {
+            result.setRemediationAvailable(false);
+            result.setRemediationUnavailableReason(InterviewReportTrustPolicy.remediationUnavailableReason(report));
+            return result;
         }
 
         List<Long> reportRequirementIds = reportRequirementIds(report, session);
@@ -166,13 +192,10 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
                 textItems(firstText(report.getMainProblems(), report.getWeaknesses())), reportRequirementIds);
         appendTextOptions(options, "PROJECT_PROBLEM", "复练项目表达问题",
                 textItems(report.getProjectProblems()), reportRequirementIds);
+        options.values().forEach(option -> option.setStrongRemediation(strongRemediationAvailable));
 
-        InterviewRemediationOptionsVO result = new InterviewRemediationOptionsVO();
-        result.setInterviewId(session.getId());
-        result.setSourceReportId(report.getId());
-        result.setTargetJobId(session.getTargetJobId());
-        result.setRubricVersion(report.getRubricVersion());
-        result.setTrustStatus("VERIFIED");
+        result.setRemediationAvailable(true);
+        result.setRemediationUnavailableReason(null);
         result.setOptions(options.values().stream().limit(MAX_OPTIONS).toList());
         return result;
     }
@@ -462,6 +485,35 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
                 .eq(InterviewRemediation::getIdempotencyKey, idempotencyKey)
                 .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
+    }
+
+    private InterviewRemediation findLatestBySourceReport(Long userId, Long sourceReportId) {
+        return remediationMapper.selectOne(new LambdaQueryWrapper<InterviewRemediation>()
+                .eq(InterviewRemediation::getUserId, userId)
+                .eq(InterviewRemediation::getSourceReportId, sourceReportId)
+                .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
+                .orderByDesc(InterviewRemediation::getCreatedAt)
+                .orderByDesc(InterviewRemediation::getId)
+                .last("limit 1"));
+    }
+
+    private void applyExistingRemediationState(
+            InterviewRemediationOptionsVO result, InterviewRemediation remediation) {
+        if (remediation == null) {
+            return;
+        }
+        result.setRemediationId(remediation.getId());
+        result.setRemediationTargetSessionId(remediation.getTargetSessionId());
+        result.setRemediationStatus(remediation.getStatus());
+        result.setRemediationCreated(STATUS_CREATED.equalsIgnoreCase(remediation.getStatus())
+                && remediation.getTargetSessionId() != null);
+    }
+
+    private String reportTrustStatus(InterviewReport report) {
+        if (InterviewReportTrustPolicy.isFallbackOrUntrusted(report)) {
+            return "FALLBACK";
+        }
+        return InterviewReportTrustPolicy.isTrustedForFormalAction(report) ? "VERIFIED" : "PARTIAL";
     }
 
     private void validateReplayPayload(

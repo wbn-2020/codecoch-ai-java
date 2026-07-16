@@ -1,11 +1,17 @@
 package com.codecoachai.resume.service.impl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -13,6 +19,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.domain.Result;
@@ -28,6 +35,7 @@ import com.codecoachai.resume.domain.entity.ResumeArtifact;
 import com.codecoachai.resume.domain.entity.ResumeAtsTemplate;
 import com.codecoachai.resume.domain.entity.ResumeExport;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.vo.ResumeArtifactVO;
 import com.codecoachai.resume.domain.vo.ResumeExportVO;
 import com.codecoachai.resume.export.AtsResumeDocumentFactory;
 import com.codecoachai.resume.export.ResumeArtifactHashes;
@@ -47,10 +55,14 @@ import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -63,6 +75,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
@@ -334,6 +347,33 @@ class ResumeExportArtifactServiceImplTest {
     }
 
     @Test
+    void legacyReadyZipFailsExplicitlyWhenRequiredChildFileIsMissing() throws Exception {
+        byte[] pdfBytes = "%PDF-package".getBytes(StandardCharsets.UTF_8);
+        byte[] docxBytes = "PK-package-docx".getBytes(StandardCharsets.UTF_8);
+        ResumeArtifact pdfArtifact = readyFileArtifact("resume.pdf", "application/pdf", pdfBytes);
+        pdfArtifact.setId(11L);
+        ResumeArtifact docxArtifact = readyFileArtifact(
+                "resume.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                docxBytes);
+        docxArtifact.setId(12L);
+        ResumeArtifact zipArtifact = readyZipArtifact(pdfArtifact, docxArtifact);
+        when(artifactMapper.selectOne(any())).thenReturn(zipArtifact, pdfArtifact);
+        ResponseEntity<Resource> missing = ResponseEntity.notFound().build();
+        when(fileFeignClient.download(pdfArtifact.getFileId(), USER_ID, "RESUME"))
+                .thenReturn(missing);
+
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> service.download(zipArtifact.getId()));
+
+        assertEquals(ErrorCode.SYSTEM_ERROR.getCode(), error.getCode());
+        assertTrue(error.getMessage().contains("child artifact"));
+        assertTrue(error.getMessage().contains("regenerate"));
+        verify(fileFeignClient).download(pdfArtifact.getFileId(), USER_ID, "RESUME");
+    }
+
+    @Test
     void rebuiltZipRejectsManifestWithoutRequiredChildArtifacts() throws Exception {
         ResumeArtifact zipArtifact = readyZipArtifact();
         Map<String, Object> stored = objectMapper.readValue(zipArtifact.getManifestJson(), LinkedHashMap.class);
@@ -390,6 +430,78 @@ class ResumeExportArtifactServiceImplTest {
         assertTrue(error.getMessage().contains("resume version"));
         verify(artifactMapper, never()).insert(any(ResumeArtifact.class));
         verifyNoInteractions(documentFactory, renderer, fileFeignClient);
+    }
+
+    @Test
+    void persistedZipCanBeRedownloadedAfterChildFilesAreCleaned() throws Exception {
+        PackageHarness harness = preparePackageHarness(false);
+
+        ResumeArtifactVO zipArtifact = service.createPackageArtifact(packageRequest());
+
+        assertEquals("READY", zipArtifact.getStatus());
+        assertEquals(3, harness.uploads().size());
+        Long pdfFileId = harness.uploadId(".pdf");
+        Long docxFileId = harness.uploadId(".docx");
+        Long zipFileId = harness.uploadId(".zip");
+        ResumeArtifact persistedArtifact = harness.artifacts().get(zipArtifact.getId());
+        assertNotNull(persistedArtifact);
+        assertEquals(zipFileId, persistedArtifact.getFileId());
+        byte[] persistedZip = harness.files().get(zipFileId);
+        assertNotNull(persistedZip);
+        assertEquals(ResumeArtifactHashes.sha256(persistedZip), zipArtifact.getSha256());
+
+        clearInvocations(fileFeignClient, artifactMapper);
+        harness.files().remove(pdfFileId);
+        harness.files().remove(docxFileId);
+
+        ResponseEntity<StreamingResponseBody> firstResponse =
+                service.download(zipArtifact.getId());
+        ResponseEntity<StreamingResponseBody> secondResponse =
+                service.download(zipArtifact.getId());
+        byte[] firstDownload = responseBytes(firstResponse);
+        byte[] secondDownload = responseBytes(secondResponse);
+
+        assertArrayEquals(persistedZip, firstDownload);
+        assertArrayEquals(firstDownload, secondDownload);
+        assertEquals(ResumeArtifactHashes.sha256(firstDownload),
+                firstResponse.getHeaders().getFirst("X-Artifact-SHA256"));
+        assertEquals(firstResponse.getHeaders().getFirst("X-Artifact-SHA256"),
+                secondResponse.getHeaders().getFirst("X-Artifact-SHA256"));
+        verify(fileFeignClient, times(2)).download(zipFileId, USER_ID, "RESUME");
+        verify(fileFeignClient, never()).download(pdfFileId, USER_ID, "RESUME");
+        verify(fileFeignClient, never()).download(docxFileId, USER_ID, "RESUME");
+    }
+
+    @Test
+    void failedDocxChildIsCompensatedAndImmediatePackageRetrySucceeds() throws Exception {
+        PackageHarness harness = preparePackageHarness(true);
+
+        assertThrows(BusinessException.class,
+                () -> service.createPackageArtifact(packageRequest()));
+
+        assertEquals(1, harness.uploads().size());
+        UploadRecord firstPdfUpload = harness.uploads().get(0);
+        assertTrue(firstPdfUpload.name().endsWith(".pdf"));
+        assertTrue(!harness.files().containsKey(firstPdfUpload.fileId()));
+        ResumeArtifact compensatedPdf = harness.artifacts().values().stream()
+                .filter(item -> firstPdfUpload.fileId().equals(item.getFileId()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("FAILED", compensatedPdf.getStatus());
+        ResumeExport compensatedExport = harness.exports().values().stream()
+                .filter(item -> compensatedPdf.getId().equals(item.getArtifactId()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("FAILED", compensatedExport.getStatus());
+        assertTrue(harness.artifacts().values().stream()
+                .noneMatch(item -> "APPLICATION_ZIP".equals(item.getArtifactType())));
+        verify(fileFeignClient).delete(firstPdfUpload.fileId(), USER_ID, "RESUME");
+
+        ResumeArtifactVO retry = service.createPackageArtifact(packageRequest());
+
+        assertEquals("READY", retry.getStatus());
+        assertNotNull(harness.artifacts().get(retry.getId()).getFileId());
+        assertEquals(4, harness.uploads().size());
     }
 
     @Test
@@ -688,6 +800,118 @@ class ResumeExportArtifactServiceImplTest {
         verifyNoInteractions(fileFeignClient);
     }
 
+    private PackageHarness preparePackageHarness(boolean failFirstDocx) throws Exception {
+        ResumeVersion version = sourceVersion();
+        ResumeAtsTemplate template = validTemplate();
+        JobApplicationPackage applicationPackage = applicationPackage();
+        when(snapshotManager.ownedVersion(2L, USER_ID)).thenReturn(version);
+        when(templateMapper.selectOne(any())).thenReturn(template);
+        when(packageMapper.selectOne(any())).thenReturn(applicationPackage);
+
+        Map<Long, ResumeArtifact> artifacts = new ConcurrentHashMap<>();
+        Map<Long, ResumeExport> exports = new ConcurrentHashMap<>();
+        Map<Long, byte[]> files = new ConcurrentHashMap<>();
+        List<UploadRecord> uploads = new ArrayList<>();
+        AtomicLong artifactIds = new AtomicLong(100L);
+        AtomicLong exportIds = new AtomicLong(200L);
+        AtomicLong fileIds = new AtomicLong(300L);
+        AtomicBoolean rejectDocx = new AtomicBoolean(failFirstDocx);
+
+        when(artifactMapper.insert(any(ResumeArtifact.class))).thenAnswer(invocation -> {
+            ResumeArtifact artifact = invocation.getArgument(0);
+            artifact.setId(artifactIds.incrementAndGet());
+            artifacts.put(artifact.getId(), artifact);
+            return 1;
+        });
+        when(artifactMapper.updateById(any(ResumeArtifact.class))).thenAnswer(invocation -> {
+            ResumeArtifact artifact = invocation.getArgument(0);
+            artifacts.put(artifact.getId(), artifact);
+            return 1;
+        });
+        when(artifactMapper.selectOne(any())).thenAnswer(invocation -> {
+            Wrapper<ResumeArtifact> wrapper = invocation.getArgument(0);
+            return artifacts.get(wrapperEntityId(wrapper));
+        });
+        when(exportMapper.insert(any(ResumeExport.class))).thenAnswer(invocation -> {
+            ResumeExport export = invocation.getArgument(0);
+            export.setId(exportIds.incrementAndGet());
+            exports.put(export.getId(), export);
+            return 1;
+        });
+        when(exportMapper.updateById(any(ResumeExport.class))).thenAnswer(invocation -> {
+            ResumeExport export = invocation.getArgument(0);
+            exports.put(export.getId(), export);
+            return 1;
+        });
+        lenient().when(exportMapper.selectById(any())).thenAnswer(invocation ->
+                exports.get(((Number) invocation.getArgument(0)).longValue()));
+        when(fileFeignClient.upload(any(), eq("RESUME"), eq(USER_ID))).thenAnswer(invocation -> {
+            org.springframework.web.multipart.MultipartFile file = invocation.getArgument(0);
+            Long fileId = fileIds.incrementAndGet();
+            byte[] bytes = file.getBytes();
+            files.put(fileId, bytes);
+            uploads.add(new UploadRecord(fileId, file.getOriginalFilename()));
+            InnerFileUploadVO uploaded = new InnerFileUploadVO();
+            uploaded.setFileId(fileId);
+            return Result.success(uploaded);
+        });
+        when(fileFeignClient.download(any(), eq(USER_ID), eq("RESUME"))).thenAnswer(invocation -> {
+            Long fileId = invocation.getArgument(0);
+            byte[] bytes = files.get(fileId);
+            return bytes == null
+                    ? ResponseEntity.notFound().build()
+                    : ResponseEntity.ok(new ByteArrayResource(bytes));
+        });
+        lenient().when(fileFeignClient.delete(any(), eq(USER_ID), eq("RESUME"))).thenAnswer(invocation -> {
+            files.remove((Long) invocation.getArgument(0));
+            return Result.success();
+        });
+
+        ResumeDocumentRenderer pdfRenderer = mock(ResumeDocumentRenderer.class);
+        ResumeDocumentRenderer docxRenderer = mock(ResumeDocumentRenderer.class);
+        when(pdfRenderer.format()).thenReturn("PDF");
+        when(docxRenderer.format()).thenReturn("DOCX");
+        doAnswer(invocation -> {
+            ((java.io.OutputStream) invocation.getArgument(1))
+                    .write("%PDF-package-child".getBytes(StandardCharsets.UTF_8));
+            return null;
+        }).when(pdfRenderer).render(any(), any());
+        doAnswer(invocation -> {
+            if (rejectDocx.compareAndSet(true, false)) {
+                throw new IllegalStateException("DOCX renderer unavailable");
+            }
+            ((java.io.OutputStream) invocation.getArgument(1))
+                    .write("PK-package-child".getBytes(StandardCharsets.UTF_8));
+            return null;
+        }).when(docxRenderer).render(any(), any());
+
+        service = new ResumeExportArtifactServiceImpl(
+                templateMapper, exportMapper, artifactMapper, packageMapper, snapshotManager,
+                documentFactory, List.of(pdfRenderer, docxRenderer), new ResumeZipBuilder(objectMapper),
+                fileFeignClient, properties, new ResumeUploadAdmissionGuard(properties), objectMapper);
+        return new PackageHarness(artifacts, exports, files, uploads);
+    }
+
+    private Long wrapperEntityId(Wrapper<?> wrapper) {
+        if (!(wrapper instanceof AbstractWrapper<?, ?, ?> query)) {
+            return null;
+        }
+        query.getSqlSegment();
+        return query.getParamNameValuePairs().values().stream()
+                .filter(Number.class::isInstance)
+                .map(Number.class::cast)
+                .map(Number::longValue)
+                .filter(value -> value >= 100L)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private byte[] responseBytes(ResponseEntity<StreamingResponseBody> response) throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        response.getBody().writeTo(output);
+        return output.toByteArray();
+    }
+
     private Map<String, byte[]> unzip(byte[] content) throws Exception {
         Map<String, byte[]> entries = new LinkedHashMap<>();
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(content))) {
@@ -704,6 +928,24 @@ class ResumeExportArtifactServiceImplTest {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value));
         } catch (Exception ex) {
             throw new IllegalStateException(ex);
+        }
+    }
+
+    private record UploadRecord(Long fileId, String name) {
+    }
+
+    private record PackageHarness(
+            Map<Long, ResumeArtifact> artifacts,
+            Map<Long, ResumeExport> exports,
+            Map<Long, byte[]> files,
+            List<UploadRecord> uploads) {
+
+        private Long uploadId(String suffix) {
+            return uploads.stream()
+                    .filter(upload -> upload.name().endsWith(suffix))
+                    .map(UploadRecord::fileId)
+                    .findFirst()
+                    .orElseThrow();
         }
     }
 }

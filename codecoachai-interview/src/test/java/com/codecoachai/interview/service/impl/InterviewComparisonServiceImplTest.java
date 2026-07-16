@@ -2,6 +2,7 @@ package com.codecoachai.interview.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -21,6 +22,7 @@ import com.codecoachai.interview.domain.entity.InterviewComparison;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.vo.InterviewComparisonVO;
+import com.codecoachai.interview.domain.vo.InterviewDimensionComparisonVO;
 import com.codecoachai.interview.mapper.InterviewComparisonMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -110,7 +112,79 @@ class InterviewComparisonServiceImplTest {
         assertEquals("INTERVIEW_RUBRIC_V1", result.getRubricVersion());
         assertEquals(12, result.getTotalScoreDelta());
         assertEquals(new BigDecimal("2"), result.getDimensions().get(0).getDelta());
+        assertEquals("INTERVIEW_COMPARISON_V2", result.getContractVersion());
+        assertFalse(result.getLegacySnapshotNormalized());
         assertEquals(900L, result.getId());
+    }
+
+    @Test
+    void comparesTrustedLegacyStageReportsUsingSessionTotalsWithCompleteTrends() {
+        InterviewReport first = stubReport(11L, 101L, 10L, 300L, null, 70, 2,
+                LocalDateTime.of(2026, 7, 1, 10, 0));
+        first.setTotalScore(null);
+        first.setRubricScores(null);
+        first.setStageScores("""
+                {"TECHNICAL_DEPTH":72,"COMMUNICATION":68}
+                """);
+        sessions.get(101L).setTotalScore(74);
+
+        InterviewReport latest = stubReport(12L, 102L, 10L, 300L, null, 82, 4,
+                LocalDateTime.of(2026, 7, 8, 10, 0));
+        latest.setTotalScore(null);
+        latest.setRubricScores(null);
+        latest.setStageScores("""
+                {"TECHNICAL_DEPTH":84,"COMMUNICATION":79}
+                """);
+        sessions.get(102L).setTotalScore(86);
+
+        InterviewComparisonVO result = service.compare(request("compare-legacy-recovered"));
+
+        assertTrue(result.getComparable());
+        assertEquals("INTERVIEW_COMPARISON_V2", result.getContractVersion());
+        assertTrue(result.getRubricVersion().startsWith(
+                InterviewReportComparabilityPolicy.LEGACY_STAGE_RUBRIC_PREFIX));
+        assertEquals(74, result.getFirstTotalScore());
+        assertEquals(86, result.getLatestTotalScore());
+        assertEquals(12, result.getTotalScoreDelta());
+        assertEquals(2, result.getDimensions().size());
+
+        InterviewDimensionComparisonVO technicalDepth =
+                dimension(result, "TECHNICAL_DEPTH");
+        assertEquals(new BigDecimal("72"), technicalDepth.getFirstScore());
+        assertEquals(new BigDecimal("84"), technicalDepth.getLatestScore());
+        assertEquals(new BigDecimal("12"), technicalDepth.getDelta());
+        assertEquals(2, technicalDepth.getPoints().size());
+        assertEquals(new BigDecimal("72"), technicalDepth.getPoints().get(0).getScore());
+        assertEquals(null, technicalDepth.getPoints().get(0).getDeltaFromPrevious());
+        assertEquals(new BigDecimal("84"), technicalDepth.getPoints().get(1).getScore());
+        assertEquals(new BigDecimal("12"),
+                technicalDepth.getPoints().get(1).getDeltaFromPrevious());
+
+        assertEquals(List.of(74, 86),
+                result.getRounds().stream().map(round -> round.getTotalScore()).toList());
+        assertTrue(result.getRounds().stream().allMatch(round ->
+                "LEGACY_STAGE_SCORES".equals(round.getNormalizationSource())
+                        && "NORMALIZED".equals(round.getTrustStatus())
+                        && round.getRubricScores().size() == 2));
+        assertWarning(result, "TOTAL_SCORE_RECOVERED_FROM_SESSION");
+        assertWarning(result, "RUBRIC_RECOVERED_FROM_STAGE_SCORES");
+        assertWarning(result, "RUBRIC_VERSION_INFERRED");
+    }
+
+    @Test
+    void normalizesScenarioMetadataToSameRubricIdentityAcrossScenarios() {
+        stubReport(11L, 101L, 10L, 300L, "scenario:1:rubric:77", 70, 2,
+                LocalDateTime.of(2026, 7, 1, 10, 0));
+        stubReport(12L, 102L, 10L, 300L, "scenario:9:rubric:77", 82, 4,
+                LocalDateTime.of(2026, 7, 8, 10, 0));
+
+        InterviewComparisonVO result = service.compare(request("compare-same-rubric-id"));
+
+        assertTrue(result.getComparable());
+        assertEquals("RUBRIC_ID:77", result.getRubricVersion());
+        assertEquals("RUBRIC_ID:77", result.getRounds().get(0).getRubricVersion());
+        assertEquals("RUBRIC_ID:77", result.getRounds().get(1).getRubricVersion());
+        assertWarning(result, "RUBRIC_VERSION_NORMALIZED");
     }
 
     @Test
@@ -303,7 +377,7 @@ class InterviewComparisonServiceImplTest {
     }
 
     @Test
-    void sampleInsufficientReportAddsWeakSignalWarning() {
+    void sampleInsufficientReportCannotProduceComparableTrend() {
         InterviewReport first = stubReport(11L, 101L, 10L, 300L, "INTERVIEW_RUBRIC_V1", 70, 2,
                 LocalDateTime.of(2026, 7, 1, 10, 0));
         first.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":2,\"sampleInsufficient\":true}]");
@@ -312,8 +386,30 @@ class InterviewComparisonServiceImplTest {
 
         InterviewComparisonVO result = service.compare(request("compare-warning"));
 
-        assertTrue(result.getComparable());
-        assertEquals("SAMPLE_INSUFFICIENT_REPORT", result.getWarnings().get(0).getCode());
+        assertFalse(result.getComparable());
+        assertReason(result, "REPORT_UNTRUSTED");
+        assertEquals(List.of(), result.getDimensions());
+        assertEquals(List.of(), result.getRounds().get(0).getRubricScores().entrySet().stream().toList());
+        assertWarning(result, "SAMPLE_INSUFFICIENT_REPORT");
+    }
+
+    @Test
+    void fallbackRubricDimensionsCannotRelaxComparisonTrust() {
+        InterviewReport first = stubReport(11L, 101L, 10L, 300L, "INTERVIEW_FALLBACK_RUBRIC_V1", 70, 2,
+                LocalDateTime.of(2026, 7, 1, 10, 0));
+        first.setRubricScores("""
+                [{"dimension":"TECHNICAL_DEPTH","score":2,"fallback":true}]
+                """);
+        first.setFailureReason("AI report fallback");
+        stubReport(12L, 102L, 10L, 300L, "INTERVIEW_FALLBACK_RUBRIC_V1", 82, 4,
+                LocalDateTime.of(2026, 7, 8, 10, 0));
+
+        InterviewComparisonVO result = service.compare(request("compare-fallback-untrusted"));
+
+        assertFalse(result.getComparable());
+        assertReason(result, "REPORT_UNTRUSTED");
+        assertEquals(List.of(), result.getDimensions());
+        assertTrue(result.getRounds().get(0).getRubricScores().isEmpty());
     }
 
     @Test
@@ -363,6 +459,7 @@ class InterviewComparisonServiceImplTest {
         assertEquals(900L, result.getId());
         assertTrue(result.getIdempotentReplay());
         verify(reportMapper, never()).selectById(any());
+        verify(reportMapper, never()).selectList(any());
     }
 
     @Test
@@ -471,6 +568,42 @@ class InterviewComparisonServiceImplTest {
 
         assertEquals(900L, result.getId());
         assertFalse(result.getIdempotentReplay());
+    }
+
+    @Test
+    void legacyComparisonDetailIsReadOnlyRecomputedFromRecoverableReports() throws Exception {
+        InterviewComparison stored = storedComparison();
+        InterviewComparisonVO legacySnapshot = new InterviewComparisonVO();
+        legacySnapshot.setComparable(false);
+        legacySnapshot.setReportIds(List.of(11L, 12L));
+        legacySnapshot.setUnavailableReasons(new ArrayList<>());
+        legacySnapshot.setWarnings(new ArrayList<>());
+        legacySnapshot.setRounds(List.of());
+        legacySnapshot.setDimensions(List.of());
+        stored.setResultJson(objectMapper.writeValueAsString(legacySnapshot));
+        when(comparisonMapper.selectOne(any())).thenReturn(stored);
+
+        InterviewReport first = stubReport(11L, 101L, 10L, 300L, null, 70, 2,
+                LocalDateTime.of(2026, 7, 1, 10, 0));
+        first.setTotalScore(null);
+        first.setRubricScores(null);
+        first.setStageScores("{\"TECHNICAL_DEPTH\":70}");
+        sessions.get(101L).setTotalScore(72);
+        InterviewReport latest = stubReport(12L, 102L, 10L, 300L, null, 82, 4,
+                LocalDateTime.of(2026, 7, 8, 10, 0));
+        latest.setTotalScore(null);
+        latest.setRubricScores(null);
+        latest.setStageScores("{\"TECHNICAL_DEPTH\":84}");
+        sessions.get(102L).setTotalScore(85);
+
+        InterviewComparisonVO result = service.detail(900L);
+
+        assertTrue(result.getComparable());
+        assertTrue(result.getLegacySnapshotNormalized());
+        assertEquals("INTERVIEW_COMPARISON_V2", result.getContractVersion());
+        assertEquals(13, result.getTotalScoreDelta());
+        assertEquals(new BigDecimal("14"), result.getDimensions().get(0).getDelta());
+        verify(comparisonMapper, never()).insert(any(InterviewComparison.class));
     }
 
     @Test
@@ -687,5 +820,19 @@ class InterviewComparisonServiceImplTest {
 
     private void assertReason(InterviewComparisonVO result, String code) {
         assertTrue(result.getUnavailableReasons().stream().anyMatch(reason -> code.equals(reason.getCode())));
+    }
+
+    private void assertWarning(InterviewComparisonVO result, String code) {
+        assertTrue(result.getWarnings().stream().anyMatch(reason -> code.equals(reason.getCode())),
+                () -> "Expected warning " + code + " but got " + result.getWarnings());
+    }
+
+    private InterviewDimensionComparisonVO dimension(InterviewComparisonVO result, String dimension) {
+        InterviewDimensionComparisonVO match = result.getDimensions().stream()
+                .filter(item -> dimension.equals(item.getDimension()))
+                .findFirst()
+                .orElse(null);
+        assertNotNull(match, () -> "Missing comparison dimension " + dimension);
+        return match;
     }
 }

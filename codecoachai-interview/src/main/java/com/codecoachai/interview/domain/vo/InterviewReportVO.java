@@ -54,6 +54,10 @@ public class InterviewReportVO {
     private String strongRemediationUnavailableReason;
     private Boolean comparisonAvailable;
     private String comparisonUnavailableReason;
+    private String comparisonRubricVersion;
+    private String comparisonNormalizationSource;
+    private List<InterviewComparisonReasonVO> comparisonWarnings;
+    private List<Map<String, Object>> comparisonRubricScores;
     private Long sourceReportId;
     private List<Long> sourceRequirementIds;
     private String practicePurpose;

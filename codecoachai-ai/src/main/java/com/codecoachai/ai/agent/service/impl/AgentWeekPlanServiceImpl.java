@@ -64,6 +64,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
 
     private static final String PLAN_STATUS_ACTIVE = "ACTIVE";
     private static final String PLAN_STATUS_REFRESHED = "REFRESHED";
+    private static final String REASON_OUT_OF_WINDOW_ITEMS_REPAIRED = "OUT_OF_WINDOW_ITEMS_REPAIRED";
     private static final String RESULT_SOURCE_RULE = "RULE";
     private static final String TARGET_SCOPE_ALL = "ALL";
     private static final String LAYER_TODAY = "TODAY";
@@ -103,6 +104,9 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         LocalDate weekStart = weekStart(anchorDate);
         AgentWeekPlan existing = findPlan(userId, validatedTargetJobId, weekStart);
         if (existing != null) {
+            if (hasOutOfWindowItems(existing)) {
+                return rebuildPlan(existing, anchorDate, REASON_OUT_OF_WINDOW_ITEMS_REPAIRED, true);
+            }
             return toVO(existing);
         }
         AgentWeekPlanGenerateDTO dto = new AgentWeekPlanGenerateDTO();
@@ -244,11 +248,14 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
             plan.setGeneratedAt(now);
             plan.setSnapshotVersion(1);
             plan.setCreatedAt(now);
-        } else if (refresh || "FORCE_REGENERATED".equals(reason)) {
+        } else if (refresh || "FORCE_REGENERATED".equals(reason)
+                || REASON_OUT_OF_WINDOW_ITEMS_REPAIRED.equals(reason)) {
             plan.setSnapshotVersion(Math.max(1, valueOrDefault(plan.getSnapshotVersion(), 1) + 1));
             plan.setRefreshedAt(now);
         }
-        plan.setPlanStatus(refresh ? PLAN_STATUS_REFRESHED : PLAN_STATUS_ACTIVE);
+        plan.setPlanStatus(refresh || REASON_OUT_OF_WINDOW_ITEMS_REPAIRED.equals(reason)
+                ? PLAN_STATUS_REFRESHED
+                : PLAN_STATUS_ACTIVE);
         plan.setAgentRunId(primaryRun == null ? null : primaryRun.getId());
         plan.setTraceId(firstText(primaryRun == null ? null : primaryRun.getTraceId(), plan.getTraceId(), newTraceId()));
         plan.setResultSource(RESULT_SOURCE_RULE);
@@ -363,6 +370,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
                         .and(wrapper -> wrapper
                                 .between(AgentTask::getDueDate, weekStart, weekEnd)
                                 .or()
+                                .isNull(AgentTask::getDueDate)
                                 .in(AgentTask::getStatus, AgentTaskStatusEnum.TODO.name(),
                                         AgentTaskStatusEnum.DOING.name(),
                                         AgentTaskStatusEnum.DEFERRED.name()))
@@ -373,6 +381,23 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
                 .stream()
                 .sorted(taskComparator(weekStart))
                 .toList();
+    }
+
+    private boolean hasOutOfWindowItems(AgentWeekPlan plan) {
+        if (plan == null || plan.getId() == null || plan.getUserId() == null
+                || plan.getWeekStartDate() == null || plan.getWeekEndDate() == null) {
+            return false;
+        }
+        Long count = weekPlanItemMapper.selectCount(new LambdaQueryWrapper<AgentWeekPlanItem>()
+                .eq(AgentWeekPlanItem::getWeekPlanId, plan.getId())
+                .eq(AgentWeekPlanItem::getUserId, plan.getUserId())
+                .eq(AgentWeekPlanItem::getDeleted, 0)
+                .isNotNull(AgentWeekPlanItem::getPlannedDate)
+                .and(wrapper -> wrapper
+                        .lt(AgentWeekPlanItem::getPlannedDate, plan.getWeekStartDate())
+                        .or()
+                        .gt(AgentWeekPlanItem::getPlannedDate, plan.getWeekEndDate())));
+        return count != null && count > 0;
     }
 
     private Comparator<AgentTask> taskComparator(LocalDate weekStart) {
@@ -499,7 +524,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     private AgentWeekPlan requirePlan(Long userId, Long weekPlanId) {
         AgentWeekPlan plan = weekPlanMapper.selectById(weekPlanId);
         if (plan == null || !userId.equals(plan.getUserId()) || Integer.valueOf(1).equals(plan.getDeleted())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Agent week plan not found");
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "未找到当前周计划");
         }
         return plan;
     }
@@ -533,7 +558,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         adjustment.setAdjustmentType("PLAN_REFRESHED");
         adjustment.setFromStatus(beforeStatus);
         adjustment.setToStatus(refreshed.getPlanStatus());
-        adjustment.setReason("Week plan snapshot refreshed from current Agent tasks and influence references.");
+        adjustment.setReason("已根据当前 Agent 任务和关联依据刷新周计划快照。");
         adjustment.setTraceId(refreshed.getTraceId());
         adjustment.setSnapshotVersion(refreshed.getSnapshotVersion());
         adjustment.setSourceType("AGENT_WEEK_PLAN");
@@ -718,46 +743,43 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         try {
             Map<?, ?> evidence = objectMapper.readValue(evidenceJson, Map.class);
             List<String> lines = new ArrayList<>();
-            appendEvidence(lines, "task", evidence.get("agentTaskId"));
-            appendEvidence(lines, "run", evidence.get("agentRunId"));
-            appendEvidence(lines, "trace", evidence.get("traceId"));
-            appendEvidence(lines, "source", evidence.get("relatedBizType"));
-            appendEvidence(lines, "resultSource", evidence.get("resultSource"));
-            appendEvidence(lines, "titleHash", evidence.get("titleHash"));
+            appendEvidence(lines, null, evidence.get("summary"));
+            if (lines.isEmpty()) {
+                appendEvidence(lines, "来源：", sourceLabel(String.valueOf(evidence.get("relatedBizType"))));
+            }
             return lines;
         } catch (Exception ex) {
-            return List.of("Evidence summary unavailable");
+            return List.of("证据摘要暂不可用");
         }
     }
 
     private void appendEvidence(List<String> lines, String label, Object value) {
         if (value != null && StringUtils.hasText(String.valueOf(value))) {
-            lines.add(label + "=" + safeText(String.valueOf(value), 80));
+            lines.add((label == null ? "" : label) + safeText(String.valueOf(value), 80));
         }
     }
 
     private String planSummary(List<AgentWeekPlanItem> items, List<AgentTask> tasks, boolean refresh) {
         if (items.isEmpty()) {
             return refresh
-                    ? "Week plan refreshed, but no active Agent tasks were available for this week."
-                    : "Week plan created from current context, but no active Agent tasks were available for this week.";
+                    ? "周计划已刷新，但本周暂无可执行的 Agent 任务。"
+                    : "已根据当前上下文生成周计划，但本周暂无可执行的 Agent 任务。";
         }
         long todayCount = items.stream().filter(item -> LAYER_TODAY.equals(item.getLayer())).count();
         long experimentCount = items.stream().filter(item -> LAYER_NEXT_EXPERIMENT.equals(item.getLayer())).count();
-        return "Week plan snapshot contains " + items.size() + " items, including "
-                + todayCount + " today item(s) and " + experimentCount
-                + " next-experiment observation item(s).";
+        return "本周计划共 " + items.size() + " 项，其中今日行动 "
+                + todayCount + " 项，下一轮实验观察 " + experimentCount + " 项。";
     }
 
     private String fallbackReason(List<AgentWeekPlanItem> items, List<AgentTask> tasks) {
         if (items.isEmpty()) {
-            return "No persisted Agent tasks were found for the selected week and scope.";
+            return "所选周次和范围内暂无已持久化的 Agent 任务。";
         }
         long fallbackItems = items.stream().filter(item -> Integer.valueOf(1).equals(item.getFallback())).count();
         if (fallbackItems <= 0) {
             return null;
         }
-        return fallbackItems + " plan item(s) have limited trace/source evidence and should be treated as weak coaching observations.";
+        return fallbackItems + " 项计划的链路或来源证据有限，请作为保守建议使用。";
     }
 
     private String layerFor(AgentTask task, LocalDate anchorDate) {
@@ -867,33 +889,51 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     }
 
     private String lowSampleWarning() {
-        return "Low-sample or limited trace evidence; treat as weak coaching observation.";
+        return "样本量或链路证据有限，请将本项作为保守的教练观察使用。";
     }
 
     private String safeWeekPlanTitle(AgentTask task) {
-        String label = firstText(task.getTaskType(), task.getRelatedBizType(), "AGENT_TASK");
-        String idPart = task.getId() == null ? "" : "#" + task.getId() + " ";
-        return safeText("Agent task " + idPart + label, 240);
+        return safeText(firstText(
+                task.getTitle(),
+                task.getRelatedSkillName(),
+                sourceLabel(task.getRelatedBizType()),
+                "训练任务"), 240);
     }
 
     private String safeWeekPlanDescription(AgentTask task) {
-        String source = firstText(task.getRelatedBizType(), task.getTaskType(), "Agent task");
-        return safeText("Derived from " + source + " status and safe source metadata.", 500);
+        return safeText(firstText(
+                task.getDescription(),
+                task.getReason(),
+                "请结合关联记录完成本项训练或复核。"), 500);
     }
 
     private String safeAdjustmentReason(String adjustmentType, String reason) {
-        String type = firstText(adjustmentType, "TASK_UPDATED");
         if (StringUtils.hasText(reason)) {
-            return safeText(type + " recorded; user note retained only as hash and length in metadata.", 500);
+            return safeText("已记录任务状态调整；为保护隐私，仅保留用户备注的摘要元数据。", 500);
         }
-        return safeText(type + " recorded from Agent task state change.", 500);
+        return safeText("已根据 Agent 任务状态变化记录计划调整。", 500);
     }
 
     private String safeDefaultReason(AgentTask task) {
-        if (StringUtils.hasText(task.getRelatedBizType())) {
-            return "Derived from " + task.getRelatedBizType() + " signal.";
+        return safeText(firstText(
+                task.getReason(),
+                "该任务已根据当前准备状态生成，请结合关联记录推进。"), 500);
+    }
+
+    private String sourceLabel(String sourceType) {
+        if (!StringUtils.hasText(sourceType)) {
+            return "已关联的业务来源";
         }
-        return "Derived from persisted Agent task status.";
+        return switch (sourceType) {
+            case "INTERVIEW_REPORT" -> "面试报告";
+            case "PROJECT_EVIDENCE" -> "项目证据";
+            case "QUESTION", "QUESTION_PRACTICE" -> "题库练习";
+            case "JOB_APPLICATION_PACKAGE" -> "投递准备";
+            case "JOB_APPLICATION" -> "投递记录";
+            case "TARGET_JOB" -> "目标岗位";
+            case "AGENT_TASK" -> "智能教练任务";
+            default -> "已关联的业务来源";
+        };
     }
 
     private LocalDate normalizeDate(LocalDate date) {

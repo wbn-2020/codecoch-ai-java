@@ -17,9 +17,10 @@ import org.springframework.stereotype.Component;
 /**
  * Limits concurrent resume artifact uploads after validating file metadata.
  *
- * <p>This is admission control only. The multipart encoder may still call
- * {@code PathMultipartFile.getBytes()} and buffer the accepted file. Fully
- * streaming multipart upload requires a separate implementation.
+ * <p>This component owns admission and source revalidation. The file Feign
+ * client uses the common streaming multipart transport, which reads accepted
+ * files through {@code MultipartFile.getInputStream()} with a fixed 8 KiB copy
+ * buffer and does not call {@code getBytes()}.
  */
 @Component
 public class ResumeUploadAdmissionGuard {
