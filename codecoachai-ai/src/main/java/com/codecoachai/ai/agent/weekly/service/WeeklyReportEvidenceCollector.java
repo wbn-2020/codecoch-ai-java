@@ -23,6 +23,7 @@ import com.codecoachai.ai.agent.mapper.weekly.AgentWeeklyReportSnapshotMapper;
 import com.codecoachai.ai.agent.weekly.model.WeeklyReportModels.EvidenceBundle;
 import com.codecoachai.ai.agent.weekly.model.WeeklyReportModels.RequestContext;
 import com.codecoachai.ai.agent.weekly.support.WeeklyReportVersions;
+import com.codecoachai.ai.agent.service.support.AgentScopeKey;
 import com.codecoachai.common.core.domain.Result;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -182,11 +183,8 @@ public class WeeklyReportEvidenceCollector {
                     .isNull(AgentWeekPlan::getTargetJobId));
         } else {
             String id = String.valueOf(context.getTargetJobId());
-            query.and(item -> item.eq(AgentWeekPlan::getTargetScopeKey, context.getTargetScopeKey())
-                    .or()
-                    .eq(AgentWeekPlan::getTargetScopeKey, id)
-                    .or()
-                    .eq(AgentWeekPlan::getTargetScopeKey, "JOB:" + id)
+            query.and(item -> item.in(AgentWeekPlan::getTargetScopeKey,
+                            AgentScopeKey.readAliases(context.getTargetScopeKey()))
                     .or()
                     .eq(AgentWeekPlan::getTargetJobId, context.getTargetJobId()));
         }

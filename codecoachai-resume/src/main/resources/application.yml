@@ -21,6 +21,13 @@ spring:
         group: DEFAULT_GROUP
         file-extension: yml
 codecoachai:
+  features:
+    v7:
+      campaign-workspace: ${CODECOACHAI_V7_CAMPAIGN_WORKSPACE_ENABLED:false}
+      real-interview: ${CODECOACHAI_V7_REAL_INTERVIEW_ENABLED:false}
+      offer: ${CODECOACHAI_V7_OFFER_ENABLED:false}
+      contact-activity: ${CODECOACHAI_V7_CONTACT_ACTIVITY_ENABLED:false}
+      research: ${CODECOACHAI_V7_RESEARCH_ENABLED:false}
   resume:
     career-import:
       recovery:

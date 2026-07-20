@@ -28,4 +28,9 @@ public class AgentReviewPlanSuggestion extends BaseEntity {
     private Integer decisionVersion;
     private LocalDateTime decidedAt;
     private String ignoredReason;
+    private String sourceType;
+    private Long sourceId;
+    private Integer sourceVersion;
+    private String sourceSnapshotHash;
+    private String sourceItemKey;
 }

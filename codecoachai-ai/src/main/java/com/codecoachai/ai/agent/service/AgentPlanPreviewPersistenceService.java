@@ -62,22 +62,31 @@ public class AgentPlanPreviewPersistenceService {
             return new PersistedPreview(existing, loadItems(existing));
         }
 
-        AgentReview review = reviewMapper.selectOwnedForUpdate(requested.getUserId(), requested.getReviewId());
-        if (review == null
-                || !Objects.equals(review.getReviewVersion(), requested.getReviewVersion())
-                || !Objects.equals(review.getSourceSnapshotHash(), requested.getSourceSnapshotHash())) {
-            throw stale("预览计算期间来源复盘已经变化。");
+        if (requested.getReviewId() != null) {
+            AgentReview review = reviewMapper.selectOwnedForUpdate(requested.getUserId(), requested.getReviewId());
+            if (review == null
+                    || !Objects.equals(review.getReviewVersion(), requested.getReviewVersion())
+                    || !Objects.equals(review.getSourceSnapshotHash(), requested.getSourceSnapshotHash())) {
+                throw stale("预览计算期间来源复盘已经变化。");
+            }
         }
-        List<AgentReviewPlanSuggestion> suggestions = suggestionMapper.selectList(
+        LambdaQueryWrapper<AgentReviewPlanSuggestion> suggestionQuery =
                 new LambdaQueryWrapper<AgentReviewPlanSuggestion>()
                         .eq(AgentReviewPlanSuggestion::getUserId, requested.getUserId())
-                        .eq(AgentReviewPlanSuggestion::getReviewId, requested.getReviewId())
-                        .eq(AgentReviewPlanSuggestion::getReviewVersion, requested.getReviewVersion())
                         .in(AgentReviewPlanSuggestion::getId, draft.suggestionIds())
                         .eq(AgentReviewPlanSuggestion::getDecisionStatus, "ACCEPTED")
-                        .eq(AgentReviewPlanSuggestion::getDeleted, 0)
-                        .orderByAsc(AgentReviewPlanSuggestion::getId)
-                        .last("FOR UPDATE"));
+                        .eq(AgentReviewPlanSuggestion::getDeleted, 0);
+        if (requested.getReviewId() != null) {
+            suggestionQuery.eq(AgentReviewPlanSuggestion::getReviewId, requested.getReviewId())
+                    .eq(AgentReviewPlanSuggestion::getReviewVersion, requested.getReviewVersion());
+        } else {
+            suggestionQuery.eq(AgentReviewPlanSuggestion::getSourceType, requested.getSourceType())
+                    .eq(AgentReviewPlanSuggestion::getSourceId, requested.getSourceId())
+                    .eq(AgentReviewPlanSuggestion::getSourceVersion, requested.getSourceVersion())
+                    .eq(AgentReviewPlanSuggestion::getSourceSnapshotHash, requested.getSourceContextHash());
+        }
+        List<AgentReviewPlanSuggestion> suggestions = suggestionMapper.selectList(
+                suggestionQuery.orderByAsc(AgentReviewPlanSuggestion::getId).last("FOR UPDATE"));
         if (suggestions.size() != draft.suggestionIds().size()
                 || !Objects.equals(requested.getSelectionHash(),
                 AgentAdaptivePlanHashUtils.selectionHash(suggestions))) {

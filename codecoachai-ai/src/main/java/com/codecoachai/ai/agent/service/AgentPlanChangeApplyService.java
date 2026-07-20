@@ -113,10 +113,12 @@ public class AgentPlanChangeApplyService {
 
         List<AgentPlanChangeItem> items = changeItemMapper.selectByChangeSetForUpdate(userId, changeSetId);
         requireConfirmableItems(changeSet, items, dto.getAcknowledgedWarningCodes());
-        AgentReview review = reviewMapper.selectOwnedForUpdate(userId, changeSet.getReviewId());
-        if (review == null || !Objects.equals(review.getReviewVersion(), changeSet.getReviewVersion())
-                || !Objects.equals(review.getSourceSnapshotHash(), changeSet.getSourceSnapshotHash())) {
-            markStaleAndThrow(changeSet, "来源复盘已经变化，请重新生成预览。");
+        if (changeSet.getReviewId() != null) {
+            AgentReview review = reviewMapper.selectOwnedForUpdate(userId, changeSet.getReviewId());
+            if (review == null || !Objects.equals(review.getReviewVersion(), changeSet.getReviewVersion())
+                    || !Objects.equals(review.getSourceSnapshotHash(), changeSet.getSourceSnapshotHash())) {
+                markStaleAndThrow(changeSet, "来源复盘已经变化，请重新生成预览。");
+            }
         }
         validateSelection(changeSet, items);
 
@@ -463,16 +465,23 @@ public class AgentPlanChangeApplyService {
         Set<Long> suggestionIds = items.stream().map(AgentPlanChangeItem::getSuggestionId)
                 .filter(Objects::nonNull)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        List<AgentReviewPlanSuggestion> suggestions = suggestionMapper.selectList(
+        LambdaQueryWrapper<AgentReviewPlanSuggestion> suggestionQuery =
                 new LambdaQueryWrapper<AgentReviewPlanSuggestion>()
                         .eq(AgentReviewPlanSuggestion::getUserId, changeSet.getUserId())
-                        .eq(AgentReviewPlanSuggestion::getReviewId, changeSet.getReviewId())
-                        .eq(AgentReviewPlanSuggestion::getReviewVersion, changeSet.getReviewVersion())
                         .in(!suggestionIds.isEmpty(), AgentReviewPlanSuggestion::getId, suggestionIds)
                         .eq(AgentReviewPlanSuggestion::getDecisionStatus, "ACCEPTED")
-                        .eq(AgentReviewPlanSuggestion::getDeleted, 0)
-                        .orderByAsc(AgentReviewPlanSuggestion::getId)
-                        .last("FOR UPDATE"));
+                        .eq(AgentReviewPlanSuggestion::getDeleted, 0);
+        if (changeSet.getReviewId() != null) {
+            suggestionQuery.eq(AgentReviewPlanSuggestion::getReviewId, changeSet.getReviewId())
+                    .eq(AgentReviewPlanSuggestion::getReviewVersion, changeSet.getReviewVersion());
+        } else {
+            suggestionQuery.eq(AgentReviewPlanSuggestion::getSourceType, changeSet.getSourceType())
+                    .eq(AgentReviewPlanSuggestion::getSourceId, changeSet.getSourceId())
+                    .eq(AgentReviewPlanSuggestion::getSourceVersion, changeSet.getSourceVersion())
+                    .eq(AgentReviewPlanSuggestion::getSourceSnapshotHash, changeSet.getSourceContextHash());
+        }
+        List<AgentReviewPlanSuggestion> suggestions = suggestionMapper.selectList(
+                suggestionQuery.orderByAsc(AgentReviewPlanSuggestion::getId).last("FOR UPDATE"));
         if (suggestions.size() != suggestionIds.size()
                 || !Objects.equals(changeSet.getSelectionHash(),
                 AgentAdaptivePlanHashUtils.selectionHash(suggestions))) {

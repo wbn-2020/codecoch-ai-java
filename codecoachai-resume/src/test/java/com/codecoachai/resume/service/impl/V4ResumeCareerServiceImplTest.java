@@ -48,6 +48,7 @@ import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
+import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -64,6 +65,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class V4ResumeCareerServiceImplTest {
@@ -96,6 +98,8 @@ class V4ResumeCareerServiceImplTest {
     private ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
     @Mock
     private ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
+    @Mock
+    private JobApplicationLifecycleService jobApplicationLifecycleService;
 
     private V4ResumeCareerServiceImpl service;
 
@@ -137,6 +141,7 @@ class V4ResumeCareerServiceImplTest {
                 resumeSearchSyncOutboxService,
                 experimentAutoAssignmentService,
                 new ObjectMapper());
+        ReflectionTestUtils.setField(service, "jobApplicationLifecycleService", jobApplicationLifecycleService);
     }
 
     @AfterEach
@@ -890,6 +895,54 @@ class V4ResumeCareerServiceImplTest {
         assertEquals(vo.getType(), second.get(0).getType());
         assertEquals(vo.getBizType(), second.get(0).getBizType());
         assertEquals(vo.getBizId(), second.get(0).getBizId());
+    }
+
+    @Test
+    void updateApplicationDelegatesStatusChangeToLifecycleService() {
+        JobApplication current = application(55L, USER_ID);
+        current.setStatus("SAVED");
+        current.setLockVersion(3);
+        JobApplication transitioned = application(55L, USER_ID);
+        transitioned.setStatus("APPLIED");
+        transitioned.setLockVersion(4);
+        when(jobApplicationMapper.selectById(55L)).thenReturn(current, transitioned);
+        when(jobApplicationLifecycleService.transitionForUser(
+                USER_ID, 55L, "APPLIED", 3, "legacy-update-1")).thenReturn(transitioned);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setStatus("APPLIED");
+        dto.setExpectedLockVersion(3);
+        dto.setIdempotencyKey("legacy-update-1");
+
+        JobApplicationVO result = service.updateApplication(55L, dto);
+
+        assertEquals("APPLIED", result.getStatus());
+        verify(jobApplicationLifecycleService).transitionForUser(
+                USER_ID, 55L, "APPLIED", 3, "legacy-update-1");
+    }
+
+    @Test
+    void updateApplicationKeepsCampaignWhenLegacyRequestOmitsCampaignId() {
+        JobApplication current = application(56L, USER_ID);
+        current.setCampaignId(700L);
+        current.setCompanyName("Old Company");
+        current.setJobTitle("Old Title");
+        current.setStatus("SAVED");
+        when(jobApplicationMapper.selectById(56L)).thenReturn(current, current);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setCompanyName("New Company");
+        dto.setJobTitle("New Title");
+        dto.setStatus("SAVED");
+
+        JobApplicationVO result = service.updateApplication(56L, dto);
+
+        ArgumentCaptor<JobApplication> captor = ArgumentCaptor.forClass(JobApplication.class);
+        verify(jobApplicationMapper).updateById(captor.capture());
+        JobApplication updated = captor.getValue();
+        assertEquals(700L, updated.getCampaignId());
+        assertEquals("New Company", updated.getCompanyName());
+        assertEquals("New Title", updated.getJobTitle());
+        assertEquals("SAVED", updated.getStatus());
+        assertEquals(700L, result.getCampaignId());
     }
 
     @Test

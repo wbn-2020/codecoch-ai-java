@@ -34,6 +34,7 @@ import com.codecoachai.ai.agent.mapper.AgentWeekPlanMapper;
 import com.codecoachai.ai.agent.service.AgentPlanChangeApplyService;
 import com.codecoachai.ai.agent.service.AgentPlanPreviewPersistenceService;
 import com.codecoachai.ai.agent.service.AgentPlanPreviewPlanner;
+import com.codecoachai.ai.agent.service.AgentPlanSourceAdapter;
 import com.codecoachai.ai.agent.service.AgentReviewPlanService;
 import com.codecoachai.ai.agent.service.support.AgentBusinessTimeProvider;
 import com.codecoachai.ai.agent.service.support.AgentPlanChangeJsonCodec;
@@ -266,6 +267,7 @@ class AgentReviewPlanServiceImplTest {
                 weekPlanMapper,
                 weekPlanItemMapper,
                 previewPlanner,
+                new AgentPlanSourceAdapter(),
                 previewPersistenceService,
                 applyService,
                 new AgentPlanChangeJsonCodec(new ObjectMapper().findAndRegisterModules()),

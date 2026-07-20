@@ -25,4 +25,6 @@ public class AgentPlanChangeItemVO {
     private Boolean fallback;
     private String applyStatus;
     private List<String> warnings = new ArrayList<>();
+    private String sourceType;
+    private String sourceItemKey;
 }

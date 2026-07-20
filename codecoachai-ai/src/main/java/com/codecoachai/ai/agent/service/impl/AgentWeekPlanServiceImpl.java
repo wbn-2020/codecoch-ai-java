@@ -30,6 +30,7 @@ import com.codecoachai.ai.agent.mapper.AgentWeekPlanItemMapper;
 import com.codecoachai.ai.agent.mapper.AgentWeekPlanMapper;
 import com.codecoachai.ai.agent.service.AgentWeekPlanService;
 import com.codecoachai.ai.agent.service.support.AgentAdaptivePlanHashUtils;
+import com.codecoachai.ai.agent.service.support.AgentScopeKey;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -1273,7 +1274,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     }
 
     private String targetScopeKey(Long targetJobId) {
-        return targetJobId == null ? TARGET_SCOPE_ALL : String.valueOf(targetJobId);
+        return AgentScopeKey.write(targetJobId);
     }
 
     private Long validateOwnedTargetJob(Long userId, Long targetJobId) {

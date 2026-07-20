@@ -16,4 +16,5 @@ public class JobApplicationEvent extends BaseEntity {
     private LocalDateTime eventTime;
     private String summary;
     private String reviewJson;
+    private String idempotencyKeyHash;
 }

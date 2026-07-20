@@ -12,6 +12,7 @@ import com.codecoachai.ai.agent.weekly.model.WeeklyReportModels.RequestContext;
 import com.codecoachai.ai.agent.weekly.support.WeeklyReportHashUtils;
 import com.codecoachai.ai.agent.weekly.support.WeeklyReportSanitizer;
 import com.codecoachai.ai.agent.weekly.support.WeeklyReportTimeProvider;
+import com.codecoachai.ai.agent.service.support.AgentScopeKey;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -241,7 +242,7 @@ public class WeeklyReportRequestValidator {
     }
 
     private String targetScopeKey(Long targetJobId) {
-        return targetJobId == null ? "ALL" : "TARGET_JOB:" + targetJobId;
+        return AgentScopeKey.write(targetJobId);
     }
 
     private String safeIdentifier(String value, String fieldName) {

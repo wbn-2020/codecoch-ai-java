@@ -1358,7 +1358,7 @@ class JobCoachAgentServiceImplTest {
         assertEquals("TASK", review.getReviewType());
         assertEquals(99L, review.getSourceTaskId());
         assertEquals("TASK:10:99", review.getIdempotencyKey());
-        assertEquals("JOB:88", review.getTargetScopeKey());
+        assertEquals("TARGET_JOB:88", review.getTargetScopeKey());
         assertNotNull(review.getSummary());
         assertTrue(review.getReviewJson().contains("\"taskId\":99"));
         assertTrue(review.getReviewJson().contains("\"status\":\"DONE\""));

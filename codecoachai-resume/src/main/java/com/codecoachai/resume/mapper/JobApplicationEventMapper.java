@@ -12,6 +12,20 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface JobApplicationEventMapper extends BaseMapper<JobApplicationEvent> {
 
+    @Select("""
+            SELECT *
+              FROM job_application_event
+             WHERE user_id = #{userId}
+               AND application_id = #{applicationId}
+               AND idempotency_key_hash = #{idempotencyKeyHash}
+               AND deleted = 0
+             ORDER BY id ASC
+             LIMIT 1
+            """)
+    JobApplicationEvent selectByIdempotencyKey(@Param("userId") Long userId,
+                                              @Param("applicationId") Long applicationId,
+                                              @Param("idempotencyKeyHash") String idempotencyKeyHash);
+
     @Update("""
             <script>
             UPDATE job_application_event

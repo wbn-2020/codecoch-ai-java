@@ -9,9 +9,31 @@ import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface JobApplicationMapper extends BaseMapper<JobApplication> {
+
+    @Update("""
+            UPDATE job_application
+               SET status = #{status},
+                   stage_changed_at = #{stageChangedAt},
+                   opportunity_outcome = #{opportunityOutcome},
+                   lock_version = lock_version + 1,
+                   updated_at = CURRENT_TIMESTAMP
+             WHERE id = #{applicationId}
+               AND user_id = #{userId}
+               AND deleted = 0
+               AND UPPER(TRIM(status)) = #{expectedStatus}
+               AND lock_version = #{expectedLockVersion}
+            """)
+    int transitionStatus(@Param("applicationId") Long applicationId,
+                         @Param("userId") Long userId,
+                         @Param("expectedStatus") String expectedStatus,
+                         @Param("status") String status,
+                         @Param("stageChangedAt") LocalDateTime stageChangedAt,
+                         @Param("opportunityOutcome") String opportunityOutcome,
+                         @Param("expectedLockVersion") Integer expectedLockVersion);
 
     @Select("""
             SELECT COUNT(1) AS total,

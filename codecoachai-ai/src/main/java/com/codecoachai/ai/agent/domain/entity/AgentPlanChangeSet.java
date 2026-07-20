@@ -41,4 +41,8 @@ public class AgentPlanChangeSet extends BaseEntity {
     private LocalDateTime appliedAt;
     private String failureCode;
     private String failureMessage;
+    private String sourceType;
+    private Long sourceId;
+    private Integer sourceVersion;
+    private String sourceContextHash;
 }

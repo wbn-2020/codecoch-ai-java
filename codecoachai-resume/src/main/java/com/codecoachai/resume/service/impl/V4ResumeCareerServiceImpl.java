@@ -8,6 +8,10 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
 import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
+import com.codecoachai.resume.careercontact.service.CareerContactReminderCandidateService;
+import com.codecoachai.resume.careercontact.vo.CareerContactReminderCandidateVO;
+import com.codecoachai.resume.careeroffer.service.CareerOfferReminderProvider;
+import com.codecoachai.resume.careeroffer.vo.CareerOfferReminderCandidateVO;
 import com.codecoachai.resume.domain.dto.ApplicationStatsAggregate;
 import com.codecoachai.resume.domain.dto.ApplicationStatusCount;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
@@ -49,6 +53,7 @@ import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
+import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -70,6 +75,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -117,6 +123,15 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
     private final ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
     private final ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private JobApplicationLifecycleService jobApplicationLifecycleService;
+
+    @Autowired(required = false)
+    private CareerContactReminderCandidateService careerContactReminderCandidateService;
+
+    @Autowired(required = false)
+    private CareerOfferReminderProvider careerOfferReminderProvider;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -317,7 +332,64 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         List<ApplicationReminderCandidateVO> candidates = new ArrayList<>(
                 applicationReminderCandidates(userId, reminderDate, effectiveNow));
         candidates.addAll(calendarReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(contactReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(offerReminderCandidates(userId, reminderDate));
         return candidates;
+    }
+
+    private List<ApplicationReminderCandidateVO> contactReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                            LocalDateTime now) {
+        if (careerContactReminderCandidateService == null) {
+            return List.of();
+        }
+        List<CareerContactReminderCandidateVO> source =
+                careerContactReminderCandidateService.listReminderCandidates(userId, reminderDate, now);
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream().filter(Objects::nonNull).map(candidate -> {
+            ApplicationReminderCandidateVO target = new ApplicationReminderCandidateVO();
+            target.setType(StringUtils.hasText(candidate.getType()) ? candidate.getType() : "FOLLOW_UP");
+            target.setBizType(StringUtils.hasText(candidate.getBizType())
+                    ? candidate.getBizType() : "CAREER_CONTACT");
+            target.setBizId(candidate.getBizId());
+            target.setTitle(candidate.getTitle());
+            target.setContent(candidate.getContent());
+            target.setActionUrl(candidate.getActionUrl());
+            target.setFallbackPath("/applications");
+            target.setFallbackLabel("查看机会工作区");
+            target.setPlanDate(candidate.getPlanDate() == null ? reminderDate : candidate.getPlanDate());
+            return target;
+        }).toList();
+    }
+
+    private List<ApplicationReminderCandidateVO> offerReminderCandidates(Long userId, LocalDate reminderDate) {
+        if (careerOfferReminderProvider == null) {
+            return List.of();
+        }
+        List<CareerOfferReminderCandidateVO> source =
+                careerOfferReminderProvider.deadlineReminderCandidatesForUser(userId, reminderDate, 10);
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream().filter(Objects::nonNull).map(candidate -> {
+            ApplicationReminderCandidateVO target = new ApplicationReminderCandidateVO();
+            target.setType("OFFER_DEADLINE_REMINDER");
+            target.setBizType(StringUtils.hasText(candidate.getBizType())
+                    ? candidate.getBizType() : "CAREER_OFFER");
+            target.setBizId(StringUtils.hasText(candidate.getBizId())
+                    ? candidate.getBizId() : String.valueOf(candidate.getOfferId()));
+            target.setTitle("Offer 决定截止时间提醒");
+            target.setContent("Offer #" + candidate.getOfferId() + " 的决定截止时间为 "
+                    + candidate.getDecisionDeadline());
+            target.setActionUrl(candidate.getApplicationId() == null
+                    ? "/applications"
+                    : "/applications/" + candidate.getApplicationId() + "?tab=offer");
+            target.setFallbackPath("/applications");
+            target.setFallbackLabel("查看机会工作区");
+            target.setPlanDate(candidate.getReminderDate() == null ? reminderDate : candidate.getReminderDate());
+            return target;
+        }).toList();
     }
 
     private List<ApplicationReminderCandidateVO> applicationReminderCandidates(Long userId, LocalDate reminderDate,
@@ -538,6 +610,15 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         JobApplication app = ownedApplication(id);
         JobApplicationSaveDTO request = prepareApplicationRequest(dto, app.getUserId());
         ensureMatchReportNotLinkedToAnotherApplication(request.getMatchReportId(), app.getUserId(), app.getId());
+        String requestedStatus = normalizeApplicationStatus(request.getStatus());
+        String currentStatus = normalizeApplicationStatus(app.getStatus());
+        if (jobApplicationLifecycleService != null
+                && StringUtils.hasText(request.getStatus())
+                && !Objects.equals(requestedStatus, currentStatus)) {
+            app = jobApplicationLifecycleService.transitionForUser(
+                    app.getUserId(), id, requestedStatus, request.getExpectedLockVersion(),
+                    request.getIdempotencyKey());
+        }
         fillApplication(app, request);
         jobApplicationMapper.updateById(app);
         return toApplicationVOWithDetails(jobApplicationMapper.selectById(id));
@@ -1541,6 +1622,9 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     }
 
     private void fillApplication(JobApplication app, JobApplicationSaveDTO dto) {
+        if (dto != null && dto.getCampaignId() != null) {
+            app.setCampaignId(dto.getCampaignId());
+        }
         app.setTargetJobId(dto == null ? null : dto.getTargetJobId());
         app.setResumeVersionId(dto == null ? null : dto.getResumeVersionId());
         app.setMatchReportId(dto == null ? null : dto.getMatchReportId());
@@ -1598,6 +1682,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             return vo;
         }
         vo.setId(app.getId());
+        vo.setCampaignId(app.getCampaignId());
         vo.setTargetJobId(app.getTargetJobId());
         vo.setResumeVersionId(app.getResumeVersionId());
         vo.setMatchReportId(app.getMatchReportId());
@@ -1605,6 +1690,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setJobTitle(app.getJobTitle());
         vo.setSource(app.getSource());
         vo.setStatus(app.getStatus());
+        vo.setStageChangedAt(app.getStageChangedAt());
+        vo.setPriorityLevel(app.getPriorityLevel());
+        vo.setOpportunityOutcome(app.getOpportunityOutcome());
+        vo.setLockVersion(app.getLockVersion());
         vo.setAppliedAt(app.getAppliedAt());
         vo.setNextFollowUpAt(app.getNextFollowUpAt());
         vo.setNote(app.getNote());

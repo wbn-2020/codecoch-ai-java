@@ -2,6 +2,7 @@ package com.codecoachai.ai.agent.service;
 
 import com.codecoachai.ai.agent.domain.dto.AgentPlanChangeConfirmDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentPlanChangePreviewDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentExternalPlanChangePreviewDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentReviewPlanDecisionDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentReview;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -20,6 +21,8 @@ public interface AgentReviewPlanService {
     AgentReviewPlanSuggestionListVO decide(Long userId, Long reviewId, AgentReviewPlanDecisionDTO dto);
 
     AgentPlanChangePreviewVO preview(Long userId, Long reviewId, AgentPlanChangePreviewDTO dto);
+
+    AgentPlanChangePreviewVO previewExternal(Long userId, AgentExternalPlanChangePreviewDTO dto);
 
     AgentPlanChangePreviewVO changeSet(Long userId, Long changeSetId);
 

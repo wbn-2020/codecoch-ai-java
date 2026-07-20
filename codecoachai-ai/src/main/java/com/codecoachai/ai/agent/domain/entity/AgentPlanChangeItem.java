@@ -32,4 +32,5 @@ public class AgentPlanChangeItem extends BaseEntity {
     private Long appliedWeekPlanId;
     private Long appliedWeekPlanItemId;
     private Integer applyCount;
+    private String sourceItemKey;
 }

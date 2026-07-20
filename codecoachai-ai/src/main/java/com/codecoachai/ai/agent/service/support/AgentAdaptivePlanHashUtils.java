@@ -111,7 +111,7 @@ public final class AgentAdaptivePlanHashUtils {
     }
 
     public static String targetScopeKey(Long targetJobId) {
-        return targetJobId == null ? "ALL" : "JOB:" + targetJobId;
+        return AgentScopeKey.write(targetJobId);
     }
 
     public static String normalizeText(String value) {

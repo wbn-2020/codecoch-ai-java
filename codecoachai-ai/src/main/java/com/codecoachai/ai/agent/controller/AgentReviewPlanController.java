@@ -1,8 +1,10 @@
 package com.codecoachai.ai.agent.controller;
 
 import com.codecoachai.ai.agent.config.V4FeatureGate;
+import com.codecoachai.ai.agent.config.V7FeatureGate;
 import com.codecoachai.ai.agent.domain.dto.AgentPlanChangeConfirmDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentPlanChangePreviewDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentExternalPlanChangePreviewDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentReviewPlanDecisionDTO;
 import com.codecoachai.ai.agent.domain.vo.review.AgentPlanChangeConfirmVO;
 import com.codecoachai.ai.agent.domain.vo.review.AgentPlanChangePreviewVO;
@@ -29,6 +31,7 @@ public class AgentReviewPlanController {
 
     private final AgentReviewPlanService reviewPlanService;
     private final V4FeatureGate featureGate;
+    private final V7FeatureGate v7FeatureGate;
 
     @GetMapping("/reviews/{reviewId}/plan-suggestions")
     public Result<AgentReviewPlanSuggestionListVO> suggestions(@PathVariable Long reviewId) {
@@ -52,6 +55,15 @@ public class AgentReviewPlanController {
         Long userId = SecurityAssert.requireLoginUserId();
         featureGate.requireAdaptivePlanEnabled();
         return Result.success(reviewPlanService.preview(userId, reviewId, dto));
+    }
+
+    @PostMapping("/plan-changes/external/preview")
+    public Result<AgentPlanChangePreviewVO> previewExternal(
+            @Valid @RequestBody AgentExternalPlanChangePreviewDTO dto) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        featureGate.requireAdaptivePlanEnabled();
+        v7FeatureGate.requireExternalPlanSource();
+        return Result.success(reviewPlanService.previewExternal(userId, dto));
     }
 
     @GetMapping("/plan-change-sets/{changeSetId}")

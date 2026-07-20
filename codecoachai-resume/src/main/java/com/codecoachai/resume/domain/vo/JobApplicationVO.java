@@ -6,6 +6,7 @@ import lombok.Data;
 @Data
 public class JobApplicationVO {
     private Long id;
+    private Long campaignId;
     private Long targetJobId;
     private Long resumeVersionId;
     private Long resumeId;
@@ -17,6 +18,10 @@ public class JobApplicationVO {
     private String jobTitle;
     private String source;
     private String status;
+    private LocalDateTime stageChangedAt;
+    private String priorityLevel;
+    private String opportunityOutcome;
+    private Integer lockVersion;
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
     private String note;
