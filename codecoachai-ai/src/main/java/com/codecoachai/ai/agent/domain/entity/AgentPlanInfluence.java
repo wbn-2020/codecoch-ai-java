@@ -26,4 +26,5 @@ public class AgentPlanInfluence extends BaseEntity {
     private Integer snapshotVersion;
     private String snapshotHash;
     private Integer fallback;
+    private String referenceKey;
 }

@@ -44,3 +44,11 @@ codecoachai:
       # Required when saving AI model apiKey values from the admin UI.
       # Use at least 16 characters, or base64:<16/24/32-byte-key>.
       secret-key: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY}
+  v4:
+    features:
+      adaptive-plan-enabled: true
+  v6:
+    features:
+      weekly-report-enabled: true
+      weekly-report-ai-enabled: true
+      weekly-report-plan-draft-enabled: false

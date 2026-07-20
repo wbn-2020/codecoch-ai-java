@@ -24,4 +24,5 @@ public class AgentPlanAdjustment extends BaseEntity {
     private Long sourceId;
     private LocalDateTime occurredAt;
     private String metadataJson;
+    private String eventKey;
 }

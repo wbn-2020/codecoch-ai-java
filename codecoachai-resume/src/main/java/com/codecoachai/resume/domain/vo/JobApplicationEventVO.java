@@ -13,6 +13,7 @@ public class JobApplicationEventVO {
     private String summary;
     private Map<String, Object> review;
     private String reviewJson;
+    private JobApplicationEventStructuredReviewVO structuredReview;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

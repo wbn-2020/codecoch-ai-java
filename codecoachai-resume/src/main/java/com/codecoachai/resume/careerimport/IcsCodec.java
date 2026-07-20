@@ -95,12 +95,13 @@ public class IcsCodec {
 
     private IcsEvent toEvent(int eventNumber, Map<String, Property> properties, ZoneId fallbackZone) {
         Property startProperty = required(properties, "DTSTART", eventNumber);
-        ParsedDate start = parseDate(startProperty, fallbackZone);
+        ZoneId eventTimezone = eventTimezone(properties);
+        ParsedDate start = parseDate(startProperty, fallbackZone, eventTimezone);
         Property endProperty = properties.get("DTEND");
         ParsedDate end = endProperty == null
                 ? new ParsedDate(start.localDateTime().plus(start.allDay() ? java.time.Period.ofDays(1)
                         : java.time.Duration.ofHours(1)), start.zone(), start.allDay())
-                : parseDate(endProperty, fallbackZone);
+                : parseDate(endProperty, fallbackZone, eventTimezone);
         Instant startInstant = start.localDateTime().atZone(start.zone()).toInstant();
         Instant endInstant = end.localDateTime().atZone(end.zone()).toInstant();
         if (!endInstant.isAfter(startInstant)) {
@@ -121,7 +122,7 @@ public class IcsCodec {
                 parseLong(value(properties, "X-CODECOACHAI-APPLICATION-ID")));
     }
 
-    private ParsedDate parseDate(Property property, ZoneId fallbackZone) {
+    private ParsedDate parseDate(Property property, ZoneId fallbackZone, ZoneId eventTimezone) {
         String raw = property.value().trim();
         boolean allDay = "DATE".equalsIgnoreCase(property.params().get("VALUE")) || raw.length() == 8;
         try {
@@ -131,18 +132,25 @@ public class IcsCodec {
             String tzid = property.params().get("TZID");
             if (raw.endsWith("Z")) {
                 Instant instant = Instant.from(UTC_DATE_TIME.parse(raw));
-                return new ParsedDate(LocalDateTime.ofInstant(instant, ZoneOffset.UTC), ZoneOffset.UTC, false);
+                ZoneId zone = eventTimezone == null ? ZoneOffset.UTC : eventTimezone;
+                return new ParsedDate(LocalDateTime.ofInstant(instant, zone), zone, false);
             }
             if (raw.matches(".*[+-]\\d{4}$")) {
                 OffsetDateTime offset = OffsetDateTime.parse(raw,
                         DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmssxx"));
-                return new ParsedDate(offset.toLocalDateTime(), offset.getOffset(), false);
+                ZoneId zone = eventTimezone == null ? offset.getOffset() : eventTimezone;
+                return new ParsedDate(LocalDateTime.ofInstant(offset.toInstant(), zone), zone, false);
             }
             ZoneId zone = StringUtils.hasText(tzid) ? requireZone(tzid) : fallbackZone;
             return new ParsedDate(LocalDateTime.parse(raw, BASIC_DATE_TIME), zone, false);
         } catch (DateTimeParseException ex) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Invalid ICS date-time: " + raw);
         }
+    }
+
+    private ZoneId eventTimezone(Map<String, Property> properties) {
+        String value = unescape(value(properties, "X-CODECOACHAI-TIMEZONE"));
+        return StringUtils.hasText(value) ? requireZone(value) : null;
     }
 
     private Property parseProperty(String line) {

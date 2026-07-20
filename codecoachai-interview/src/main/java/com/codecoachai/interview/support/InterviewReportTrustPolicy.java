@@ -106,15 +106,16 @@ public final class InterviewReportTrustPolicy {
                 || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient");
     }
 
-    private static boolean containsFallbackOrInsufficientEvidence(InterviewReport report) {
-        return containsTrueFlag(report.getQaReview(), "fallback")
+    public static boolean hasFallbackEvidence(InterviewReport report) {
+        return report != null
+                && (containsTrueFlag(report.getQaReview(), "fallback")
                 || containsTrueFlag(report.getRubricScores(), "fallback")
                 || containsTrueFlag(report.getAdviceEvidence(), "fallback")
-                || containsTrueFlag(report.getAbilityProfileUpdates(), "fallback")
-                || containsTrueFlag(report.getQaReview(), "sampleInsufficient")
-                || containsTrueFlag(report.getRubricScores(), "sampleInsufficient")
-                || containsTrueFlag(report.getAdviceEvidence(), "sampleInsufficient")
-                || containsTrueFlag(report.getAbilityProfileUpdates(), "sampleInsufficient");
+                || containsTrueFlag(report.getAbilityProfileUpdates(), "fallback"));
+    }
+
+    private static boolean containsFallbackOrInsufficientEvidence(InterviewReport report) {
+        return hasFallbackEvidence(report) || isSampleInsufficient(report);
     }
 
     public static boolean isTrustedAdvice(Map<String, Object> item, Long reportId) {

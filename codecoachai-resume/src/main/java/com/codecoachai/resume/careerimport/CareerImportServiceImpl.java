@@ -309,7 +309,8 @@ public class CareerImportServiceImpl implements CareerImportService {
         }
         try {
             EventView created = calendarService.createImported(userId, new ImportedEvent(
-                    event.applicationId(), event.title(), "IMPORTED", event.startsAt(), event.endsAt(),
+                    event.applicationId(), event.title(), importedIcsEventType(event),
+                    event.startsAt(), event.endsAt(),
                     event.timezone(), event.allDay(), event.location(), event.description(), event.status(),
                     "ICS", "vevent:" + event.rowNumber(), event.uid(), batchId));
             view.setCalendarEventId(created.getId());
@@ -687,7 +688,39 @@ public class CareerImportServiceImpl implements CareerImportService {
         raw.put("ends_at", text(event.endsAt()));
         raw.put("timezone", event.timezone());
         raw.put("application_id", text(event.applicationId()));
+        raw.put("event_type", importedIcsEventType(event));
         return raw;
+    }
+
+    private String importedIcsEventType(IcsEvent event) {
+        String searchable = text(event == null ? null : event.title())
+                + " " + text(event == null ? null : event.description());
+        String normalized = searchable.toUpperCase(Locale.ROOT);
+        if (containsAny(normalized, "FINAL INTERVIEW", "FINAL ROUND", "终面", "最终面试")) {
+            return "FINAL_INTERVIEW";
+        }
+        if (containsAny(normalized, "HR INTERVIEW", "HR面", "人事面试")) {
+            return "HR_INTERVIEW";
+        }
+        if (containsAny(normalized, "TECHNICAL INTERVIEW", "TECH INTERVIEW", "技术面", "技术面试")) {
+            return "TECHNICAL_INTERVIEW";
+        }
+        if (containsAny(normalized, "PHONE SCREEN", "TELEPHONE INTERVIEW", "电话面试", "电话筛选")) {
+            return "PHONE_SCREEN";
+        }
+        if (containsAny(normalized, "INTERVIEW", "面试", "一面", "二面", "三面")) {
+            return "INTERVIEW";
+        }
+        return "IMPORTED";
+    }
+
+    private boolean containsAny(String value, String... candidates) {
+        for (String candidate : candidates) {
+            if (value.contains(candidate.toUpperCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void markError(ImportRowView view, String code, String message) {

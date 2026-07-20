@@ -3,11 +3,15 @@ package com.codecoachai.resume.feign;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.resume.feign.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.resume.feign.dto.AnalyzeSkillGapDTO;
+import com.codecoachai.resume.feign.dto.GenerateApplicationEventReviewAiDTO;
+import com.codecoachai.resume.feign.dto.GenerateInterviewPreparationAiDTO;
 import com.codecoachai.resume.feign.dto.ParseResumeDTO;
 import com.codecoachai.resume.feign.dto.ParseJobDescriptionDTO;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.resume.feign.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.resume.feign.vo.AnalyzeSkillGapVO;
+import com.codecoachai.resume.feign.vo.GenerateApplicationEventReviewAiVO;
+import com.codecoachai.resume.feign.vo.GenerateInterviewPreparationAiVO;
 import com.codecoachai.resume.feign.vo.ParseJobDescriptionVO;
 import com.codecoachai.resume.feign.vo.ParseResumeVO;
 import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
@@ -32,4 +36,12 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/skill-gaps/analyze")
     Result<AnalyzeSkillGapVO> analyzeSkillGap(@RequestBody AnalyzeSkillGapDTO dto);
+
+    @PostMapping("/inner/ai/application-event-reviews/generate")
+    Result<GenerateApplicationEventReviewAiVO> generateApplicationEventReview(
+            @RequestBody GenerateApplicationEventReviewAiDTO dto);
+
+    @PostMapping("/inner/ai/interview-preparations/generate")
+    Result<GenerateInterviewPreparationAiVO> generateInterviewPreparation(
+            @RequestBody GenerateInterviewPreparationAiDTO dto);
 }

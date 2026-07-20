@@ -2,8 +2,11 @@ package com.codecoachai.ai.agent.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.ai.agent.domain.dto.AgentWeekPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.context.AgentReviewPlanWeekResult;
 import com.codecoachai.ai.agent.domain.entity.AgentContextUsageReference;
 import com.codecoachai.ai.agent.domain.entity.AgentPlanAdjustment;
+import com.codecoachai.ai.agent.domain.entity.AgentPlanChangeItem;
+import com.codecoachai.ai.agent.domain.entity.AgentPlanChangeSet;
 import com.codecoachai.ai.agent.domain.entity.AgentPlanInfluence;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -18,12 +21,15 @@ import com.codecoachai.ai.agent.domain.vo.weekplan.AgentWeekPlanItemVO;
 import com.codecoachai.ai.agent.domain.vo.weekplan.AgentWeekPlanVO;
 import com.codecoachai.ai.agent.mapper.AgentContextUsageReferenceMapper;
 import com.codecoachai.ai.agent.mapper.AgentPlanAdjustmentMapper;
+import com.codecoachai.ai.agent.mapper.AgentPlanChangeItemMapper;
+import com.codecoachai.ai.agent.mapper.AgentPlanChangeSetMapper;
 import com.codecoachai.ai.agent.mapper.AgentPlanInfluenceMapper;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
 import com.codecoachai.ai.agent.mapper.AgentWeekPlanItemMapper;
 import com.codecoachai.ai.agent.mapper.AgentWeekPlanMapper;
 import com.codecoachai.ai.agent.service.AgentWeekPlanService;
+import com.codecoachai.ai.agent.service.support.AgentAdaptivePlanHashUtils;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -74,7 +80,11 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     private static final String TRUST_PARTIAL = "PARTIAL";
     private static final String TRUST_FALLBACK = "FALLBACK";
     private static final String CONSUMER_WEEK_PLAN_ITEM = "AGENT_WEEK_PLAN_ITEM";
+    private static final String CONSUMER_WEEK_PLAN = "AGENT_WEEK_PLAN";
     private static final String USAGE_SCENE_WEEK_PLAN = "WEEK_PLAN_GENERATION";
+    private static final String USAGE_SCENE_REVIEW_PENDING = "REVIEW_CONFIRMED_PENDING";
+    private static final String USAGE_SCENE_REVIEW_WEEK_PLAN = "REVIEW_CONFIRMED_WEEK_PLAN";
+    private static final String SOURCE_AGENT_REVIEW = "AGENT_REVIEW";
     private static final Pattern EMAIL_PATTERN = Pattern.compile("[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}");
     private static final Pattern PHONE_PATTERN = Pattern.compile("(?<!\\d)(?:\\+?\\d[\\d\\s-]{7,}\\d)(?!\\d)");
     private static final Pattern TOKEN_PATTERN = Pattern.compile("(?i)(api[_-]?key|authorization|token|secret|password|idempotency[_-]?key)\\s*[:=]\\s*[^,\\s}]+");
@@ -89,6 +99,8 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
     private final AgentWeekPlanMapper weekPlanMapper;
     private final AgentWeekPlanItemMapper weekPlanItemMapper;
     private final AgentPlanAdjustmentMapper adjustmentMapper;
+    private final AgentPlanChangeSetMapper changeSetMapper;
+    private final AgentPlanChangeItemMapper changeItemMapper;
     private final AgentPlanInfluenceMapper influenceMapper;
     private final AgentTaskMapper agentTaskMapper;
     private final AgentRunMapper agentRunMapper;
@@ -236,6 +248,51 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         }
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentReviewPlanWeekResult recordPendingReviewChange(Long userId,
+                                                               AgentPlanChangeSet changeSet,
+                                                               List<AgentPlanChangeItem> items) {
+        requireOwnedChangeSet(userId, changeSet);
+        AgentWeekPlan plan = findPlanForUpdate(userId, changeSet.getTargetJobId(), weekStart(changeSet.getTargetDate()));
+        if (plan == null) {
+            plan = createPlanSkeleton(userId, changeSet.getTargetJobId(), weekStart(changeSet.getTargetDate()));
+            rebuildPlan(plan, changeSet.getTargetDate(), "REVIEW_CONFIRMED_PENDING", false);
+        } else {
+            insertPendingReviewInfluences(plan, List.of(changeSet), items);
+        }
+        return reviewWeekResult(plan);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentReviewPlanWeekResult rebuildAfterReviewChange(Long userId,
+                                                              AgentPlanChangeSet changeSet,
+                                                              List<AgentPlanChangeItem> items) {
+        requireOwnedChangeSet(userId, changeSet);
+        LocalDate weekStart = weekStart(changeSet.getTargetDate());
+        AgentWeekPlan plan = findPlanForUpdate(userId, changeSet.getTargetJobId(), weekStart);
+        if (plan == null) {
+            plan = createPlanSkeleton(userId, changeSet.getTargetJobId(), weekStart);
+            rebuildPlan(plan, changeSet.getTargetDate(), "REVIEW_CHANGE_SET_APPLIED", false);
+        } else {
+            rebuildPlan(plan, changeSet.getTargetDate(), "REVIEW_CHANGE_SET_APPLIED", true);
+        }
+        Map<Long, AgentWeekPlanItem> itemByTaskId = weekPlanItemMapper.selectList(
+                        new LambdaQueryWrapper<AgentWeekPlanItem>()
+                                .eq(AgentWeekPlanItem::getWeekPlanId, plan.getId())
+                                .eq(AgentWeekPlanItem::getUserId, userId)
+                                .eq(AgentWeekPlanItem::getDeleted, 0))
+                .stream()
+                .filter(item -> item.getAgentTaskId() != null)
+                .collect(Collectors.toMap(AgentWeekPlanItem::getAgentTaskId, item -> item,
+                        (left, right) -> left, LinkedHashMap::new));
+        recordStrictReviewAdjustments(plan, changeSet, items, itemByTaskId);
+        AgentReviewPlanWeekResult result = reviewWeekResult(plan);
+        itemByTaskId.forEach((taskId, item) -> result.getWeekPlanItemIdsByTaskId().put(taskId, item.getId()));
+        return result;
+    }
+
     private AgentWeekPlanVO rebuildPlan(AgentWeekPlan plan, LocalDate anchorDate, String reason, boolean refresh) {
         LocalDateTime now = LocalDateTime.now();
         List<AgentTask> tasks = weekTasks(plan.getUserId(), plan.getTargetJobId(), plan.getWeekStartDate(), plan.getWeekEndDate());
@@ -308,7 +365,10 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
             AgentTask task = taskById.get(item.getAgentTaskId());
             AgentRun run = task == null ? null : runs.get(task.getAgentRunId());
             insertInfluences(plan, item, task, run);
+            insertReviewConfirmedInfluence(plan, item, task);
         }
+        List<AgentPlanChangeSet> pendingSets = pendingReviewChangeSets(plan);
+        insertPendingReviewInfluences(plan, pendingSets, null);
     }
 
     private void insertInfluences(AgentWeekPlan plan, AgentWeekPlanItem item, AgentTask task, AgentRun run) {
@@ -359,6 +419,135 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         influence.setSnapshotHash(hashOf(sourceType + "#" + sourceId + ":" + task.getId() + ":" + item.getItemStatus()));
         influence.setFallback(Integer.valueOf(1).equals(item.getFallback()) ? 1 : 0);
         return influence;
+    }
+
+    private void insertReviewConfirmedInfluence(AgentWeekPlan plan,
+                                                AgentWeekPlanItem weekItem,
+                                                AgentTask task) {
+        if (task == null || task.getPlanChangeItemId() == null) {
+            return;
+        }
+        AgentPlanChangeItem changeItem = changeItemMapper.selectById(task.getPlanChangeItemId());
+        if (changeItem == null || !Objects.equals(changeItem.getUserId(), plan.getUserId())
+                || Integer.valueOf(1).equals(changeItem.getDeleted())) {
+            return;
+        }
+        AgentPlanChangeSet changeSet = changeSetMapper.selectById(changeItem.getChangeSetId());
+        if (changeSet == null || !Objects.equals(changeSet.getUserId(), plan.getUserId())
+                || Integer.valueOf(1).equals(changeSet.getDeleted())) {
+            return;
+        }
+        AgentPlanInfluence influence = new AgentPlanInfluence();
+        influence.setUserId(plan.getUserId());
+        influence.setWeekPlanId(plan.getId());
+        influence.setWeekPlanItemId(weekItem.getId());
+        influence.setSourceType(SOURCE_AGENT_REVIEW);
+        influence.setSourceId(changeSet.getReviewId());
+        influence.setSourceTitle("用户确认的每日复盘调整");
+        influence.setConsumerType(CONSUMER_WEEK_PLAN_ITEM);
+        influence.setConsumerId(weekItem.getId());
+        influence.setUsageScene(USAGE_SCENE_REVIEW_WEEK_PLAN);
+        influence.setInfluenceStrength(confidenceStrength(changeItem.getConfidenceLevel()));
+        influence.setConfidence(confidenceValue(changeItem.getConfidenceLevel()));
+        influence.setTraceId(plan.getTraceId());
+        influence.setSnapshotVersion(valueOrDefault(plan.getSnapshotVersion(), 1));
+        influence.setSnapshotHash(hashOf(changeSet.getPreviewHash() + ":" + changeItem.getId()));
+        influence.setFallback(Boolean.TRUE.equals(changeItem.getFallback()) ? 1 : 0);
+        influence.setReferenceKey(reviewReferenceKey(changeItem.getId(), plan.getId(), weekItem.getId(),
+                USAGE_SCENE_REVIEW_WEEK_PLAN, plan.getSnapshotVersion()));
+        insertStrictInfluence(influence);
+    }
+
+    private List<AgentPlanChangeSet> pendingReviewChangeSets(AgentWeekPlan plan) {
+        return changeSetMapper.selectList(new LambdaQueryWrapper<AgentPlanChangeSet>()
+                .eq(AgentPlanChangeSet::getUserId, plan.getUserId())
+                .eq(AgentPlanChangeSet::getTargetScopeKey, plan.getTargetScopeKey())
+                .between(AgentPlanChangeSet::getTargetDate, plan.getWeekStartDate(), plan.getWeekEndDate())
+                .in(AgentPlanChangeSet::getStatus, "CONFIRMED_WAITING_PLAN", "APPLY_FAILED")
+                .eq(AgentPlanChangeSet::getDeleted, 0)
+                .orderByAsc(AgentPlanChangeSet::getId));
+    }
+
+    private void insertPendingReviewInfluences(AgentWeekPlan plan,
+                                               List<AgentPlanChangeSet> changeSets,
+                                               List<AgentPlanChangeItem> suppliedItems) {
+        if (changeSets == null || changeSets.isEmpty()) {
+            return;
+        }
+        Map<Long, List<AgentPlanChangeItem>> suppliedBySet = suppliedItems == null
+                ? Map.of()
+                : suppliedItems.stream().collect(Collectors.groupingBy(AgentPlanChangeItem::getChangeSetId));
+        for (AgentPlanChangeSet changeSet : changeSets) {
+            if (changeSet == null || !Objects.equals(changeSet.getUserId(), plan.getUserId())) {
+                continue;
+            }
+            List<AgentPlanChangeItem> items = suppliedBySet.get(changeSet.getId());
+            if (items == null) {
+                items = changeItemMapper.selectList(new LambdaQueryWrapper<AgentPlanChangeItem>()
+                        .eq(AgentPlanChangeItem::getUserId, plan.getUserId())
+                        .eq(AgentPlanChangeItem::getChangeSetId, changeSet.getId())
+                        .eq(AgentPlanChangeItem::getDeleted, 0)
+                        .orderByAsc(AgentPlanChangeItem::getId));
+            }
+            for (AgentPlanChangeItem item : items) {
+                AgentPlanInfluence influence = new AgentPlanInfluence();
+                influence.setUserId(plan.getUserId());
+                influence.setWeekPlanId(plan.getId());
+                influence.setWeekPlanItemId(null);
+                influence.setSourceType(SOURCE_AGENT_REVIEW);
+                influence.setSourceId(changeSet.getReviewId());
+                influence.setSourceTitle("已确认、等待日计划生成的复盘调整");
+                influence.setConsumerType(CONSUMER_WEEK_PLAN);
+                influence.setConsumerId(plan.getId());
+                influence.setUsageScene(USAGE_SCENE_REVIEW_PENDING);
+                influence.setInfluenceStrength(confidenceStrength(item.getConfidenceLevel()));
+                influence.setConfidence(confidenceValue(item.getConfidenceLevel()));
+                influence.setTraceId(plan.getTraceId());
+                influence.setSnapshotVersion(valueOrDefault(plan.getSnapshotVersion(), 1));
+                influence.setSnapshotHash(hashOf(changeSet.getPreviewHash() + ":" + item.getId()));
+                influence.setFallback(Boolean.TRUE.equals(item.getFallback()) ? 1 : 0);
+                influence.setReferenceKey(reviewReferenceKey(item.getId(), plan.getId(), null,
+                        USAGE_SCENE_REVIEW_PENDING, plan.getSnapshotVersion()));
+                insertStrictInfluence(influence);
+            }
+        }
+    }
+
+    private void insertStrictInfluence(AgentPlanInfluence influence) {
+        try {
+            influenceMapper.insert(influence);
+        } catch (DuplicateKeyException ex) {
+            if (!StringUtils.hasText(influence.getReferenceKey())) {
+                throw ex;
+            }
+        }
+    }
+
+    private String reviewReferenceKey(Long changeItemId,
+                                      Long weekPlanId,
+                                      Long weekPlanItemId,
+                                      String usageScene,
+                                      Integer snapshotVersion) {
+        return AgentAdaptivePlanHashUtils.sha256(changeItemId + "|" + weekPlanId + "|"
+                + Objects.toString(weekPlanItemId, "") + "|" + usageScene + "|"
+                + valueOrDefault(snapshotVersion, 1));
+    }
+
+    private BigDecimal confidenceValue(String level) {
+        return switch (firstText(level, "LOW").toUpperCase(Locale.ROOT)) {
+            case "HIGH" -> BigDecimal.valueOf(0.85);
+            case "MEDIUM" -> BigDecimal.valueOf(0.65);
+            case "INSUFFICIENT" -> BigDecimal.valueOf(0.25);
+            default -> BigDecimal.valueOf(0.40);
+        };
+    }
+
+    private String confidenceStrength(String level) {
+        return switch (firstText(level, "LOW").toUpperCase(Locale.ROOT)) {
+            case "HIGH" -> "STRONG";
+            case "MEDIUM" -> "MEDIUM";
+            default -> "WEAK";
+        };
     }
 
     private List<AgentTask> weekTasks(Long userId, Long targetJobId, LocalDate weekStart, LocalDate weekEnd) {
@@ -521,6 +710,122 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
                 .last("LIMIT 1"));
     }
 
+    private AgentWeekPlan findPlanForUpdate(Long userId, Long targetJobId, LocalDate weekStart) {
+        if (userId == null || weekStart == null) {
+            return null;
+        }
+        return weekPlanMapper.selectOne(new LambdaQueryWrapper<AgentWeekPlan>()
+                .eq(AgentWeekPlan::getUserId, userId)
+                .eq(AgentWeekPlan::getTargetScopeKey, targetScopeKey(targetJobId))
+                .eq(AgentWeekPlan::getWeekStartDate, weekStart)
+                .eq(AgentWeekPlan::getDeleted, 0)
+                .orderByDesc(AgentWeekPlan::getUpdatedAt)
+                .last("LIMIT 1 FOR UPDATE"));
+    }
+
+    private void requireOwnedChangeSet(Long userId, AgentPlanChangeSet changeSet) {
+        if (changeSet == null || !Objects.equals(changeSet.getUserId(), userId)
+                || Integer.valueOf(1).equals(changeSet.getDeleted())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "计划变更集不存在或不属于当前用户。");
+        }
+    }
+
+    private AgentReviewPlanWeekResult reviewWeekResult(AgentWeekPlan plan) {
+        AgentReviewPlanWeekResult result = new AgentReviewPlanWeekResult();
+        result.setWeekPlanId(plan.getId());
+        result.setSnapshotVersion(plan.getSnapshotVersion());
+        return result;
+    }
+
+    private void recordStrictReviewAdjustments(AgentWeekPlan plan,
+                                               AgentPlanChangeSet changeSet,
+                                               List<AgentPlanChangeItem> items,
+                                               Map<Long, AgentWeekPlanItem> itemByTaskId) {
+        List<AgentPlanChangeItem> safeItems = items == null ? List.of() : items;
+        for (AgentPlanChangeItem item : safeItems) {
+            if ("SKIPPED_DUPLICATE".equals(item.getApplyStatus())) {
+                continue;
+            }
+            Long taskId = item.getAppliedTaskId() == null ? item.getSourceTaskId() : item.getAppliedTaskId();
+            AgentWeekPlanItem weekItem = taskId == null ? null : itemByTaskId.get(taskId);
+            AgentPlanAdjustment adjustment = new AgentPlanAdjustment();
+            adjustment.setUserId(plan.getUserId());
+            adjustment.setWeekPlanId(plan.getId());
+            adjustment.setWeekPlanItemId(weekItem == null ? null : weekItem.getId());
+            adjustment.setAgentTaskId(taskId);
+            adjustment.setAdjustmentType(reviewAdjustmentType(item.getChangeType()));
+            adjustment.setFromStatus("PREVIEW_READY");
+            adjustment.setToStatus(item.getApplyStatus());
+            adjustment.setReason("已按用户确认的复盘差异写入计划。");
+            adjustment.setTraceId(plan.getTraceId());
+            adjustment.setSnapshotVersion(plan.getSnapshotVersion());
+            adjustment.setSourceType(SOURCE_AGENT_REVIEW);
+            adjustment.setSourceId(changeSet.getReviewId());
+            adjustment.setOccurredAt(LocalDateTime.now());
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("changeSetId", changeSet.getId());
+            metadata.put("changeItemId", item.getId());
+            metadata.put("changeType", item.getChangeType());
+            metadata.put("targetDate", item.getTargetDate());
+            metadata.put("appliedRunId", item.getAppliedRunId());
+            adjustment.setMetadataJson(toJson(metadata));
+            adjustment.setEventKey(reviewAdjustmentEventKey(changeSet.getId(), item.getId(),
+                    adjustment.getAdjustmentType(), taskId, plan.getSnapshotVersion()));
+            insertStrictAdjustment(adjustment);
+        }
+
+        AgentPlanAdjustment setAdjustment = new AgentPlanAdjustment();
+        setAdjustment.setUserId(plan.getUserId());
+        setAdjustment.setWeekPlanId(plan.getId());
+        setAdjustment.setAdjustmentType("REVIEW_CHANGE_SET_APPLIED");
+        setAdjustment.setFromStatus("APPLYING");
+        setAdjustment.setToStatus("APPLIED");
+        setAdjustment.setReason("已根据最新任务事实重建周计划并记录复盘来源。");
+        setAdjustment.setTraceId(plan.getTraceId());
+        setAdjustment.setSnapshotVersion(plan.getSnapshotVersion());
+        setAdjustment.setSourceType(SOURCE_AGENT_REVIEW);
+        setAdjustment.setSourceId(changeSet.getReviewId());
+        setAdjustment.setOccurredAt(LocalDateTime.now());
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("changeSetId", changeSet.getId());
+        metadata.put("itemCount", safeItems.size());
+        metadata.put("targetDate", changeSet.getTargetDate());
+        setAdjustment.setMetadataJson(toJson(metadata));
+        setAdjustment.setEventKey(reviewAdjustmentEventKey(changeSet.getId(), 0L,
+                setAdjustment.getAdjustmentType(), plan.getId(), plan.getSnapshotVersion()));
+        insertStrictAdjustment(setAdjustment);
+    }
+
+    private void insertStrictAdjustment(AgentPlanAdjustment adjustment) {
+        try {
+            adjustmentMapper.insert(adjustment);
+        } catch (DuplicateKeyException ex) {
+            if (!StringUtils.hasText(adjustment.getEventKey())) {
+                throw ex;
+            }
+        }
+    }
+
+    private String reviewAdjustmentType(String changeType) {
+        return switch (firstText(changeType, "")) {
+            case "ADD_TASK", "CARRY_OVER_TASK" -> "REVIEW_TASK_ADDED";
+            case "REMOVE_OPEN_TASK" -> "REVIEW_TASK_REMOVED";
+            case "RESCHEDULE_TASK" -> "REVIEW_TASK_RESCHEDULED";
+            case "CHANGE_PRIORITY" -> "REVIEW_TASK_PRIORITY_CHANGED";
+            default -> "REVIEW_TASK_UPDATED";
+        };
+    }
+
+    private String reviewAdjustmentEventKey(Long changeSetId,
+                                            Long changeItemId,
+                                            String adjustmentType,
+                                            Long targetEntityId,
+                                            Integer snapshotVersion) {
+        return AgentAdaptivePlanHashUtils.sha256(changeSetId + "|" + changeItemId + "|"
+                + adjustmentType + "|" + Objects.toString(targetEntityId, "") + "|"
+                + valueOrDefault(snapshotVersion, 1));
+    }
+
     private AgentWeekPlan requirePlan(Long userId, Long weekPlanId) {
         AgentWeekPlan plan = weekPlanMapper.selectById(weekPlanId);
         if (plan == null || !userId.equals(plan.getUserId()) || Integer.valueOf(1).equals(plan.getDeleted())) {
@@ -619,6 +924,7 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         vo.setRelatedBizId(item.getRelatedBizId());
         vo.setRelatedBizTitle(item.getRelatedBizTitle());
         vo.setAgentTaskId(item.getAgentTaskId());
+        attachReviewOrigin(vo, item);
         vo.setPriority(item.getPriority());
         vo.setConfidence(item.getConfidence());
         vo.setConfidenceLevel(item.getConfidenceLevel());
@@ -638,6 +944,28 @@ public class AgentWeekPlanServiceImpl implements AgentWeekPlanService {
         vo.setCreatedAt(item.getCreatedAt());
         vo.setUpdatedAt(item.getUpdatedAt());
         return vo;
+    }
+
+    private void attachReviewOrigin(AgentWeekPlanItemVO vo, AgentWeekPlanItem item) {
+        if (item.getAgentTaskId() == null) {
+            return;
+        }
+        AgentTask task = agentTaskMapper.selectById(item.getAgentTaskId());
+        if (task == null || task.getPlanChangeItemId() == null) {
+            return;
+        }
+        AgentPlanChangeItem changeItem = changeItemMapper.selectById(task.getPlanChangeItemId());
+        if (changeItem == null || Integer.valueOf(1).equals(changeItem.getDeleted())) {
+            return;
+        }
+        AgentPlanChangeSet changeSet = changeSetMapper.selectById(changeItem.getChangeSetId());
+        if (changeSet == null || Integer.valueOf(1).equals(changeSet.getDeleted())) {
+            return;
+        }
+        vo.setPlanChangeItemId(changeItem.getId());
+        vo.setReviewConfirmed(Boolean.TRUE.equals(task.getUserConfirmed()));
+        vo.setSourceReviewId(changeSet.getReviewId());
+        vo.setReviewChangeType(changeItem.getChangeType());
     }
 
     private AgentPlanAdjustmentVO toAdjustmentVO(AgentPlanAdjustment adjustment) {

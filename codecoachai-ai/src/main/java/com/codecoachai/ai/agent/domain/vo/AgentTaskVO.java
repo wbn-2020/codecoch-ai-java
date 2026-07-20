@@ -31,6 +31,10 @@ public class AgentTaskVO {
     private String relatedSkillName;
     private String relatedBizType;
     private Long relatedBizId;
+    private Long planChangeItemId;
+    private String planOriginType;
+    private Long planOriginId;
+    private Boolean userConfirmed;
     private String actionUrl;
     private String actionType;
     private String sourceType;

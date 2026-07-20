@@ -28,6 +28,7 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.entity.TargetJob;
+import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
 import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
@@ -45,6 +46,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -83,6 +85,8 @@ class V4ResumeCareerServiceImplTest {
     @Mock
     private JobApplicationEventMapper jobApplicationEventMapper;
     @Mock
+    private CareerCalendarEventMapper careerCalendarEventMapper;
+    @Mock
     private TargetJobMapper targetJobMapper;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
@@ -102,6 +106,7 @@ class V4ResumeCareerServiceImplTest {
         initTableInfo(ResumeJobMatchReport.class);
         initTableInfo(JobApplication.class);
         initTableInfo(JobApplicationEvent.class);
+        initTableInfo(CareerCalendarEvent.class);
     }
 
     private static void initTableInfo(Class<?> entityType) {
@@ -125,6 +130,7 @@ class V4ResumeCareerServiceImplTest {
                 resumeJobMatchReportMapper,
                 resumeSuggestionAdoptionMapper,
                 jobApplicationEventMapper,
+                careerCalendarEventMapper,
                 targetJobMapper,
                 agentBusinessActionNotifier,
                 notificationBusinessResolver,
@@ -850,6 +856,182 @@ class V4ResumeCareerServiceImplTest {
                 reminderDate.atStartOfDay(),
                 reminderDate.plusDays(1).atStartOfDay(),
                 5);
+    }
+
+    @Test
+    void listApplicationReminderCandidatesAppendsActiveCalendarEventsAndUsesStableReminderIdentity() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent confirmedInterview = calendarEvent(501L, "面试一面", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 10, 0), LocalDateTime.of(2026, 6, 16, 11, 0), "UTC");
+        CareerCalendarEvent cancelled = calendarEvent(502L, "已取消笔试", "WRITTEN_TEST", "CANCELLED",
+                LocalDateTime.of(2026, 6, 16, 8, 0), LocalDateTime.of(2026, 6, 16, 9, 0), "UTC");
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of(confirmedInterview, cancelled));
+
+        List<ApplicationReminderCandidateVO> first =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+        List<ApplicationReminderCandidateVO> second =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(1, first.size());
+        ApplicationReminderCandidateVO vo = first.get(0);
+        assertEquals("CALENDAR_REMINDER", vo.getType());
+        assertEquals("CAREER_CALENDAR_EVENT", vo.getBizType());
+        assertEquals("501", vo.getBizId());
+        assertEquals("/career-calendar", vo.getActionUrl());
+        assertEquals("/career-calendar", vo.getFallbackPath());
+        assertEquals("打开求职日历", vo.getFallbackLabel());
+        assertEquals(reminderDate, vo.getPlanDate());
+        assertEquals("今天的求职日程", vo.getTitle());
+        assertTrue(vo.getContent().contains("面试"));
+        assertTrue(vo.getContent().contains("面试一面"));
+        assertEquals(vo.getType(), second.get(0).getType());
+        assertEquals(vo.getBizType(), second.get(0).getBizType());
+        assertEquals(vo.getBizId(), second.get(0).getBizId());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesKeepsOverdueAndTomorrowEventsButFiltersOutsideAndDeleted() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent overdue = calendarEvent(511L, "逾期跟进", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 15, 6, 0), LocalDateTime.of(2026, 6, 15, 7, 0), "UTC");
+        CareerCalendarEvent tomorrow = calendarEvent(512L, "明日笔试", "WRITTEN_TEST", "TENTATIVE",
+                LocalDateTime.of(2026, 6, 17, 6, 0), LocalDateTime.of(2026, 6, 17, 7, 0), "UTC");
+        CareerCalendarEvent outside = calendarEvent(513L, "后天事项", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 18, 6, 0), LocalDateTime.of(2026, 6, 18, 7, 0), "UTC");
+        CareerCalendarEvent deleted = calendarEvent(514L, "已删除面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 12, 0), LocalDateTime.of(2026, 6, 16, 13, 0), "UTC");
+        deleted.setDeleted(1);
+        when(careerCalendarEventMapper.selectList(any()))
+                .thenReturn(List.of(tomorrow, outside, deleted, overdue));
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(List.of("511", "512"), result.stream().map(ApplicationReminderCandidateVO::getBizId).toList());
+        assertEquals("求职日程已逾期", result.get(0).getTitle());
+        assertEquals("明天的求职日程", result.get(1).getTitle());
+        assertEquals(reminderDate, result.get(0).getPlanDate());
+        assertEquals(reminderDate, result.get(1).getPlanDate());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesScopesCalendarQueryToOwnerAndActiveRows() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of());
+
+        service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<CareerCalendarEvent>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(careerCalendarEventMapper).selectList(captor.capture());
+        String sql = (captor.getValue().getSqlSegment() + " " + captor.getValue().getTargetSql())
+                .replaceAll("\\s+", " ").toLowerCase();
+        assertTrue(sql.contains("user_id"), sql);
+        assertTrue(sql.contains("deleted"), sql);
+        assertTrue(sql.contains("status in"), sql);
+        assertTrue(sql.contains("starts_at_utc"), sql);
+        assertTrue(sql.contains("starts_at_utc >="), sql);
+        assertTrue(sql.contains("limit 50"), sql);
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue(USER_ID));
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue("CONFIRMED"));
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue("TENTATIVE"));
+    }
+
+    @Test
+    void listApplicationReminderCandidatesLimitsCalendarEvents() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        List<CareerCalendarEvent> events = new java.util.ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            events.add(calendarEvent(600L + i, "日程 " + i, "FOLLOW_UP", "CONFIRMED",
+                    LocalDateTime.of(2026, 6, 16, 10, 0), LocalDateTime.of(2026, 6, 16, 11, 0), "UTC"));
+        }
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(events);
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(5, result.size());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesReservesUpcomingSlotsWhenOverdueEventsAreNumerous() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        List<CareerCalendarEvent> events = new java.util.ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            events.add(calendarEvent(700L + i, "逾期日程 " + i, "FOLLOW_UP", "CONFIRMED",
+                    LocalDateTime.of(2026, 6, 10 + i % 3, 6, 0),
+                    LocalDateTime.of(2026, 6, 10 + i % 3, 7, 0), "UTC"));
+        }
+        events.add(calendarEvent(799L, "今天面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 10, 0),
+                LocalDateTime.of(2026, 6, 16, 11, 0), "UTC"));
+        events.add(calendarEvent(800L, "明天笔试", "WRITTEN_TEST", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 17, 10, 0),
+                LocalDateTime.of(2026, 6, 17, 11, 0), "UTC"));
+        events.add(calendarEvent(801L, "今天跟进", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 12, 0),
+                LocalDateTime.of(2026, 6, 16, 13, 0), "UTC"));
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(events);
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(5, result.size());
+        assertEquals(2, result.stream()
+                .filter(item -> "求职日程已逾期".equals(item.getTitle()))
+                .count());
+        assertTrue(result.stream().anyMatch(item -> "今天的求职日程".equals(item.getTitle())));
+        assertTrue(result.stream().anyMatch(item -> "明天的求职日程".equals(item.getTitle())));
+    }
+
+    @Test
+    void listApplicationReminderCandidatesUsesEventTimezoneForLocalDate() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent pacificLateNight = calendarEvent(811L, "太平洋时区面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 17, 6, 30),
+                LocalDateTime.of(2026, 6, 17, 7, 30), "America/Los_Angeles");
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of(pacificLateNight));
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(1, result.size());
+        assertEquals("今天的求职日程", result.get(0).getTitle());
+        assertEquals(reminderDate, result.get(0).getPlanDate());
+    }
+
+    private CareerCalendarEvent calendarEvent(Long id, String title, String eventType, String status,
+                                              LocalDateTime startsAtUtc, LocalDateTime endsAtUtc, String timezone) {
+        CareerCalendarEvent event = new CareerCalendarEvent();
+        event.setId(id);
+        event.setUserId(USER_ID);
+        event.setTitle(title);
+        event.setEventType(eventType);
+        event.setStatus(status);
+        event.setStartsAtUtc(startsAtUtc);
+        event.setEndsAtUtc(endsAtUtc);
+        event.setTimezone(timezone);
+        event.setDeleted(0);
+        return event;
     }
 
     private void assertAgentContextQuery(LambdaQueryWrapper<JobApplication> query, boolean expectTargetJobFilter) {

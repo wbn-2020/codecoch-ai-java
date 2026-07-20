@@ -4,11 +4,13 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.mapper.NotificationMapper;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -47,17 +49,49 @@ public class NotificationCommandService {
     }
 
     public void ensureDailyReminder(Long userId, String type, String title, String content, String bizType, String bizId) {
+        ensureDailyReminder(userId, type, title, content, bizType, bizId, LocalDate.now());
+    }
+
+    public void ensureDailyReminder(Long userId, String type, String title, String content,
+                                    String bizType, String bizId, LocalDate reminderDate) {
         if (userId == null || !StringUtils.hasText(type) || !StringUtils.hasText(title)
                 || !StringUtils.hasText(content) || !StringUtils.hasText(bizType) || !StringUtils.hasText(bizId)) {
             return;
         }
+        String normalizedType = type.trim();
+        String normalizedBizType = bizType.trim();
+        String normalizedBizId = bizId.trim();
+        LocalDate effectiveReminderDate = reminderDate == null ? LocalDate.now() : reminderDate;
+        LocalDateTime sentAt = LocalDateTime.now();
+        try {
+            notificationMapper.insertDailyReminderIfAbsent(
+                    userId,
+                    normalizedType,
+                    title,
+                    content,
+                    normalizedBizType,
+                    normalizedBizId,
+                    effectiveReminderDate,
+                    sentAt);
+            return;
+        } catch (DataAccessException ex) {
+            log.warn("每日提醒原子写入失败，回退旧表兼容逻辑 userId={} type={} bizType={} bizId={}",
+                    userId, normalizedType, normalizedBizType, normalizedBizId, ex);
+        }
+
+        ensureDailyReminderWithLegacySchema(
+                userId, normalizedType, title, content, normalizedBizType, normalizedBizId);
+    }
+
+    private void ensureDailyReminderWithLegacySchema(Long userId, String type, String title, String content,
+                                                     String bizType, String bizId) {
         LocalDateTime start = LocalDateTime.now().with(LocalTime.MIN);
         LocalDateTime end = LocalDateTime.now().with(LocalTime.MAX);
         List<Notification> existing = notificationMapper.selectList(new LambdaQueryWrapper<Notification>()
                 .eq(Notification::getUserId, userId)
-                .eq(Notification::getType, type.trim())
-                .eq(Notification::getBizType, bizType.trim())
-                .eq(Notification::getBizId, bizId.trim())
+                .eq(Notification::getType, type)
+                .eq(Notification::getBizType, bizType)
+                .eq(Notification::getBizId, bizId)
                 .ge(Notification::getCreatedAt, start)
                 .le(Notification::getCreatedAt, end)
                 .last("LIMIT 1"));

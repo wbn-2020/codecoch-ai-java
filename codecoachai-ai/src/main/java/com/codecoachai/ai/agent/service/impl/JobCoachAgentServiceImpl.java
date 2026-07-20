@@ -52,6 +52,7 @@ import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
 import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
+import com.codecoachai.ai.agent.service.AgentConfirmedPlanEffectReconciler;
 import com.codecoachai.ai.agent.service.AgentMetricsService;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
@@ -59,6 +60,7 @@ import com.codecoachai.ai.agent.service.AgentPromptBuilder;
 import com.codecoachai.ai.agent.service.AgentWeekPlanService;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
+import com.codecoachai.ai.agent.service.support.AgentAdaptivePlanHashUtils;
 import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
@@ -103,6 +105,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String AGENT_TYPE = "JOB_COACH";
     private static final String REVIEW_SOURCE_RULE = "RULE";
     private static final String REVIEW_SOURCE_RULE_LABEL = "规则复盘";
+    private static final String REVIEW_TYPE_TASK = "TASK";
     private static final String TRIGGER_MANUAL = "MANUAL";
     private static final String REVIEW_SOURCE_LLM_LABEL = "AI复盘";
     private static final String REVIEW_SOURCE_FALLBACK_LABEL = "规则兜底";
@@ -171,6 +174,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private final AgentOutputValidator agentOutputValidator;
     private final AgentMetricsService agentMetricsService;
     private final AgentContextUsageReferenceService usageReferenceService;
+    private final AgentConfirmedPlanEffectReconciler confirmedPlanEffectReconciler;
     private final AgentWeekPlanService agentWeekPlanService;
     private final AiCallLogService aiCallLogService;
     private final QuestionPracticeEvidenceFeignClient questionPracticeEvidenceFeignClient;
@@ -312,6 +316,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 }
                 clearRunTasks(run);
                 saveTasks(userId, run, resolvedPlan.planResult(), resolvedPlan.candidates());
+                confirmedPlanEffectReconciler.reconcile(userId, run);
                 recordAgentContextUsage(userId, run, context);
                 return toDailyPlan(agentRunMapper.selectById(run.getId()));
             });
@@ -904,6 +909,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             task.setRelatedSkillName(firstText(candidate == null ? null : candidate.getRelatedSkillName(), item.getRelatedSkillName()));
             task.setRelatedBizType(firstText(candidate == null ? null : candidate.getRelatedBizType(), item.getRelatedBizType()));
             task.setRelatedBizId(candidate == null ? item.getRelatedBizId() : candidate.getRelatedBizId());
+            task.setPlanOriginType("AGENT_GENERATED");
+            task.setPlanOriginId(run.getId());
+            task.setUserConfirmed(false);
             task.setActionUrl(firstText(candidate == null ? null : candidate.getActionUrl(), item.getActionUrl()));
             task.setStatus(AgentTaskStatusEnum.TODO.name());
             task.setDueDate(run.getPlanDate());
@@ -1707,15 +1715,28 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             review.setTargetJobId(task.getTargetJobId());
             review.setReviewDate(task.getDueDate() == null ? LocalDate.now() : task.getDueDate());
             review.setAgentRunId(task.getAgentRunId());
+            applyTaskReviewIdentity(review, task);
             applyTaskReviewPayload(review, task, note, REVIEW_SOURCE_RULE, null, null);
             tryEnhanceReviewWithAi(review, task, note);
             agentReviewMapper.insert(review);
             return review;
         }
+        applyTaskReviewIdentity(review, task);
         applyTaskReviewPayload(review, task, note, REVIEW_SOURCE_RULE, null, null);
         tryEnhanceReviewWithAi(review, task, note);
         agentReviewMapper.updateById(review);
         return review;
+    }
+
+    private void applyTaskReviewIdentity(AgentReview review, AgentTask task) {
+        review.setReviewType(REVIEW_TYPE_TASK);
+        review.setSourceTaskId(task.getId());
+        review.setIdempotencyKey(taskReviewIdempotencyKey(task.getUserId(), task.getId()));
+        review.setTargetScopeKey(AgentAdaptivePlanHashUtils.targetScopeKey(task.getTargetJobId()));
+    }
+
+    private String taskReviewIdempotencyKey(Long userId, Long taskId) {
+        return REVIEW_TYPE_TASK + ":" + userId + ":" + taskId;
     }
 
     private void applyTaskReviewPayload(AgentReview review, AgentTask task, String note,
@@ -1884,14 +1905,11 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         if (task == null || task.getId() == null || task.getUserId() == null) {
             return null;
         }
-        LocalDate reviewDate = task.getDueDate() == null ? LocalDate.now() : task.getDueDate();
         List<AgentReview> reviews = agentReviewMapper.selectList(new LambdaQueryWrapper<AgentReview>()
                 .eq(AgentReview::getUserId, task.getUserId())
-                .eq(AgentReview::getReviewDate, reviewDate)
-                .eq(task.getAgentRunId() != null, AgentReview::getAgentRunId, task.getAgentRunId())
-                .eq(task.getAgentRunId() == null && task.getTargetJobId() != null, AgentReview::getTargetJobId, task.getTargetJobId())
+                .eq(AgentReview::getReviewType, REVIEW_TYPE_TASK)
+                .eq(AgentReview::getSourceTaskId, task.getId())
                 .eq(AgentReview::getDeleted, 0)
-                .like(AgentReview::getReviewJson, "\"taskId\":" + task.getId())
                 .last("limit 1"));
         return reviews == null || reviews.isEmpty() ? null : reviews.get(0);
     }

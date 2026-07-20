@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -19,6 +20,8 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.resume.careercalendar.CareerCalendarModels.EventView;
+import com.codecoachai.resume.careercalendar.CareerCalendarModels.ImportedEvent;
 import com.codecoachai.resume.careercalendar.CareerCalendarService;
 import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
 import com.codecoachai.resume.careerimport.CareerImportModels.ImportPreview;
@@ -452,6 +455,26 @@ class CareerImportServiceImplTest {
         assertEquals(801L, result.getRows().get(0).getCalendarEventId());
         verify(calendarEventMapper).selectActiveByExternalUidBinaryForUpdate(
                 10L, "case-sensitive-UID");
+    }
+
+    @Test
+    void interviewIcsMapsToPreparationSupportedEventType() {
+        prepareBatch(45L);
+        when(calendarEventMapper.selectList(any())).thenReturn(List.of());
+        when(calendarService.createImported(any(), any())).thenAnswer(invocation -> {
+            EventView view = new EventView();
+            view.setId(901L);
+            return view;
+        });
+
+        ImportResult result = service.importIcs(
+                "interview.ics", ics("interview-UID"), "Asia/Shanghai");
+
+        ArgumentCaptor<ImportedEvent> captor = ArgumentCaptor.forClass(ImportedEvent.class);
+        verify(calendarService).createImported(eq(10L), captor.capture());
+        assertEquals("TECHNICAL_INTERVIEW", captor.getValue().eventType());
+        assertEquals("SUCCESS", result.getRows().get(0).getDisposition());
+        assertEquals(901L, result.getRows().get(0).getCalendarEventId());
     }
 
     @Test

@@ -20,6 +20,10 @@ public class AgentWeekPlanItemVO {
     private Long relatedBizId;
     private String relatedBizTitle;
     private Long agentTaskId;
+    private Long planChangeItemId;
+    private Boolean reviewConfirmed;
+    private Long sourceReviewId;
+    private String reviewChangeType;
     private String priority;
     private BigDecimal confidence;
     private String confidenceLevel;

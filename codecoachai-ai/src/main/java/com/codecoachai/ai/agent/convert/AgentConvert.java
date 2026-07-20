@@ -41,6 +41,10 @@ public final class AgentConvert {
         vo.setRelatedSkillName(task.getRelatedSkillName());
         vo.setRelatedBizType(task.getRelatedBizType());
         vo.setRelatedBizId(task.getRelatedBizId());
+        vo.setPlanChangeItemId(task.getPlanChangeItemId());
+        vo.setPlanOriginType(task.getPlanOriginType());
+        vo.setPlanOriginId(task.getPlanOriginId());
+        vo.setUserConfirmed(task.getUserConfirmed());
         vo.setActionUrl(task.getActionUrl());
         vo.setActionType(taskActionType(task));
         applyTaskTrustEvidence(vo, task);

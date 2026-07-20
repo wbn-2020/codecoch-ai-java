@@ -25,4 +25,9 @@ public class CareerCalendarEvent extends BaseEntity {
     private String sourceRef;
     private String externalUid;
     private Long importBatchId;
+    private String preparationJson;
+    private String preparationStatus;
+    private Long preparationAiCallLogId;
+    private LocalDateTime preparationGeneratedAt;
+    private String preparationSourceHash;
 }

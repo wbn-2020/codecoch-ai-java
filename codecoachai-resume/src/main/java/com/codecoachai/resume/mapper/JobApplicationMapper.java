@@ -111,4 +111,49 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
             """)
     List<JobApplication> selectCareerImportCandidatesForUndated(
             @Param("userId") Long userId);
+
+    @Select("""
+            <script>
+            SELECT *
+              FROM job_application
+             WHERE user_id = #{userId}
+               AND deleted = 0
+               AND COALESCE(applied_at, created_at, updated_at) &gt;= #{rangeStartUtc}
+               AND COALESCE(applied_at, created_at, updated_at) &lt; #{rangeEndUtc}
+               AND COALESCE(created_at, applied_at, updated_at) &lt;= #{sourceCutoffAt}
+               AND (updated_at IS NULL OR updated_at &lt;= #{sourceCutoffAt})
+               <if test="targetJobId != null">
+                 AND target_job_id = #{targetJobId}
+               </if>
+             ORDER BY COALESCE(applied_at, created_at, updated_at) ASC, id ASC
+             LIMIT #{limit}
+            </script>
+            """)
+    List<JobApplication> selectWeeklyEvidenceApplications(
+            @Param("userId") Long userId,
+            @Param("rangeStartUtc") LocalDateTime rangeStartUtc,
+            @Param("rangeEndUtc") LocalDateTime rangeEndUtc,
+            @Param("sourceCutoffAt") LocalDateTime sourceCutoffAt,
+            @Param("targetJobId") Long targetJobId,
+            @Param("limit") Integer limit);
+
+    @Select("""
+            <script>
+            SELECT *
+             FROM job_application
+             WHERE user_id = #{userId}
+               AND deleted = 0
+               AND COALESCE(created_at, applied_at, updated_at) &lt;= #{sourceCutoffAt}
+               AND (updated_at IS NULL OR updated_at &lt;= #{sourceCutoffAt})
+               AND id IN
+               <foreach collection="applicationIds" item="applicationId" open="(" separator="," close=")">
+                 #{applicationId}
+               </foreach>
+             ORDER BY id ASC
+            </script>
+            """)
+    List<JobApplication> selectWeeklyEvidenceOwnedApplications(
+            @Param("userId") Long userId,
+            @Param("applicationIds") List<Long> applicationIds,
+            @Param("sourceCutoffAt") LocalDateTime sourceCutoffAt);
 }

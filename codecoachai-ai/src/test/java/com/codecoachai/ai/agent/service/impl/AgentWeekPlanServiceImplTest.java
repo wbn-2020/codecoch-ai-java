@@ -23,6 +23,8 @@ import com.codecoachai.ai.agent.domain.vo.weekplan.AgentWeekPlanVO;
 import com.codecoachai.ai.agent.feign.ResumeAgentContextFeignClient;
 import com.codecoachai.ai.agent.mapper.AgentContextUsageReferenceMapper;
 import com.codecoachai.ai.agent.mapper.AgentPlanAdjustmentMapper;
+import com.codecoachai.ai.agent.mapper.AgentPlanChangeItemMapper;
+import com.codecoachai.ai.agent.mapper.AgentPlanChangeSetMapper;
 import com.codecoachai.ai.agent.mapper.AgentPlanInfluenceMapper;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
@@ -53,6 +55,10 @@ class AgentWeekPlanServiceImplTest {
     @Mock
     private AgentPlanAdjustmentMapper adjustmentMapper;
     @Mock
+    private AgentPlanChangeSetMapper changeSetMapper;
+    @Mock
+    private AgentPlanChangeItemMapper changeItemMapper;
+    @Mock
     private AgentPlanInfluenceMapper influenceMapper;
     @Mock
     private AgentTaskMapper agentTaskMapper;
@@ -82,6 +88,8 @@ class AgentWeekPlanServiceImplTest {
                 weekPlanMapper,
                 weekPlanItemMapper,
                 adjustmentMapper,
+                changeSetMapper,
+                changeItemMapper,
                 influenceMapper,
                 agentTaskMapper,
                 agentRunMapper,

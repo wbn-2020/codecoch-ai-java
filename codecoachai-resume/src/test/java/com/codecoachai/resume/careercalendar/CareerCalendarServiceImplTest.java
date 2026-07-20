@@ -232,6 +232,47 @@ class CareerCalendarServiceImplTest {
         verify(transactionManager, never()).rollback(transactionStatus);
     }
 
+    @Test
+    void updateMarksExistingPreparationStaleWhenSourceFieldsChange() {
+        CareerCalendarEvent event = new CareerCalendarEvent();
+        event.setId(20L);
+        event.setUserId(10L);
+        event.setTitle("Technical interview");
+        event.setEventType("INTERVIEW");
+        event.setStartsAtUtc(LocalDateTime.of(2026, 7, 20, 1, 0));
+        event.setEndsAtUtc(LocalDateTime.of(2026, 7, 20, 2, 0));
+        event.setTimezone("Asia/Shanghai");
+        event.setAllDayFlag(0);
+        event.setLocation("Online");
+        event.setDescription("Backend round");
+        event.setStatus("CONFIRMED");
+        event.setPreparationJson("{\"status\":\"READY\",\"summary\":\"old\"}");
+        event.setPreparationStatus("READY");
+        event.setPreparationSourceHash("old-hash");
+        event.setPreparationGeneratedAt(LocalDateTime.of(2026, 7, 18, 10, 0));
+        when(eventMapper.selectById(20L)).thenReturn(event);
+        when(eventMapper.updateById(any(CareerCalendarEvent.class))).thenReturn(1);
+        when(eventMapper.markPreparationStale(20L, 10L)).thenReturn(1);
+        EventSave request = new EventSave();
+        request.setTitle("Technical interview updated");
+        request.setEventType("INTERVIEW");
+        request.setStartsAt(LocalDateTime.of(2026, 7, 20, 9, 0));
+        request.setEndsAt(LocalDateTime.of(2026, 7, 20, 10, 0));
+        request.setTimezone("Asia/Shanghai");
+        request.setAllDay(false);
+        request.setLocation("Online");
+        request.setDescription("Backend round");
+        request.setStatus("CONFIRMED");
+
+        EventView result = service.update(20L, request);
+
+        assertEquals("STALE", event.getPreparationStatus());
+        assertEquals("STALE", result.getPreparationStatus());
+        assertTrue(result.getPreparationStale());
+        assertEquals("old-hash", result.getPreparationSourceHash());
+        verify(eventMapper).markPreparationStale(20L, 10L);
+    }
+
     private static int occurrences(String text, String token) {
         int count = 0;
         int offset = 0;

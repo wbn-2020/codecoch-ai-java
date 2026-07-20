@@ -54,6 +54,7 @@ import com.codecoachai.ai.agent.feign.vo.ResumeOptimizeRecordEvidenceVO;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
 import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
+import com.codecoachai.ai.agent.service.AgentConfirmedPlanEffectReconciler;
 import com.codecoachai.ai.agent.service.AgentMetricsService;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
@@ -117,6 +118,8 @@ class JobCoachAgentServiceImplTest {
     @Mock
     private AgentContextUsageReferenceService usageReferenceService;
     @Mock
+    private AgentConfirmedPlanEffectReconciler confirmedPlanEffectReconciler;
+    @Mock
     private AgentWeekPlanService agentWeekPlanService;
     @Mock
     private QuestionPracticeEvidenceFeignClient questionPracticeEvidenceFeignClient;
@@ -154,6 +157,7 @@ class JobCoachAgentServiceImplTest {
                 agentOutputValidator,
                 agentMetricsService,
                 usageReferenceService,
+                confirmedPlanEffectReconciler,
                 agentWeekPlanService,
                 aiCallLogService,
                 questionPracticeEvidenceFeignClient,
@@ -1330,10 +1334,12 @@ class JobCoachAgentServiceImplTest {
         before.setRelatedBizType("QUESTION_PRACTICE");
         before.setRelatedBizId(700L);
         before.setRelatedSkillName("MySQL Index");
+        before.setTargetJobId(88L);
         AgentTask after = task(99L, USER_ID, AgentTaskStatusEnum.DONE.name());
         after.setRelatedBizType(before.getRelatedBizType());
         after.setRelatedBizId(before.getRelatedBizId());
         after.setRelatedSkillName(before.getRelatedSkillName());
+        after.setTargetJobId(before.getTargetJobId());
         when(agentTaskMapper.selectById(99L)).thenReturn(before).thenReturn(after);
         when(agentTaskMapper.update(any(), any())).thenReturn(1);
         when(agentReviewMapper.selectList(any())).thenReturn(List.of());
@@ -1349,6 +1355,10 @@ class JobCoachAgentServiceImplTest {
         assertEquals(after.getTargetJobId(), review.getTargetJobId());
         assertEquals(after.getDueDate(), review.getReviewDate());
         assertEquals(after.getAgentRunId(), review.getAgentRunId());
+        assertEquals("TASK", review.getReviewType());
+        assertEquals(99L, review.getSourceTaskId());
+        assertEquals("TASK:10:99", review.getIdempotencyKey());
+        assertEquals("JOB:88", review.getTargetScopeKey());
         assertNotNull(review.getSummary());
         assertTrue(review.getReviewJson().contains("\"taskId\":99"));
         assertTrue(review.getReviewJson().contains("\"status\":\"DONE\""));
@@ -1518,6 +1528,9 @@ class JobCoachAgentServiceImplTest {
         AgentReview review = new AgentReview();
         review.setId(200L);
         review.setUserId(USER_ID);
+        review.setReviewType("TASK");
+        review.setSourceTaskId(99L);
+        review.setIdempotencyKey("TASK:10:99");
         review.setSummary("You finished a useful MySQL review.");
         review.setNextActionsJson("[\"Practice one follow-up question.\",\"Write down one mistake.\"]");
         review.setAiCallLogId(777L);
@@ -1537,6 +1550,17 @@ class JobCoachAgentServiceImplTest {
         assertEquals("LLM", vo.getResultSource());
         assertEquals(777L, vo.getAiCallLogId());
         verify(aiCallLogService, never()).callAndLog(any());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AgentReview>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(agentReviewMapper).selectList(wrapperCaptor.capture());
+        String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
+        assertTrue(sqlSegment.contains("review_type"));
+        assertTrue(sqlSegment.contains("source_task_id"));
+        assertTrue(sqlSegment.contains("deleted"));
+        assertFalse(sqlSegment.contains("review_json"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue("TASK"));
+        assertTrue(wrapperParams(wrapperCaptor.getValue()).containsValue(99L));
     }
 
     @Test
@@ -1549,6 +1573,9 @@ class JobCoachAgentServiceImplTest {
         existing.setUserId(USER_ID);
         existing.setReviewDate(after.getDueDate());
         existing.setAgentRunId(after.getAgentRunId());
+        existing.setReviewType("TASK");
+        existing.setSourceTaskId(99L);
+        existing.setIdempotencyKey("LEGACY:200");
         existing.setReviewJson("{\"taskId\":99,\"generatedSource\":\"RULE\"}");
         when(agentTaskMapper.selectById(99L)).thenReturn(before).thenReturn(after);
         when(agentTaskMapper.update(any(), any())).thenReturn(1);
@@ -1563,6 +1590,9 @@ class JobCoachAgentServiceImplTest {
         verify(agentReviewMapper, never()).insert(any(AgentReview.class));
         AgentReview updated = reviewCaptor.getValue();
         assertEquals(200L, updated.getId());
+        assertEquals("TASK", updated.getReviewType());
+        assertEquals(99L, updated.getSourceTaskId());
+        assertEquals("TASK:10:99", updated.getIdempotencyKey());
         assertTrue(updated.getReviewJson().contains("\"taskId\":99"));
         assertTrue(updated.getReviewJson().contains("\"status\":\"SKIPPED\""));
         assertEquals(200L, vo.getReviewId());

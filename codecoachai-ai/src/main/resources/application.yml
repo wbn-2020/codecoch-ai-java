@@ -20,8 +20,15 @@ spring:
 codecoachai:
   v4:
     features:
-      growth-enabled: ${CODECOACHAI_V4_GROWTH_ENABLED:false}
+      growth-enabled: ${CODECOACHAI_V4_GROWTH_ENABLED:true}
       knowledge-enabled: ${CODECOACHAI_V4_KNOWLEDGE_ENABLED:false}
+      adaptive-plan-enabled: ${CODECOACHAI_V4_ADAPTIVE_PLAN_ENABLED:false}
+
+  v6:
+    features:
+      weekly-report-enabled: ${CODECOACHAI_V6_WEEKLY_REPORT_ENABLED:false}
+      weekly-report-ai-enabled: ${CODECOACHAI_V6_WEEKLY_REPORT_AI_ENABLED:false}
+      weekly-report-plan-draft-enabled: ${CODECOACHAI_V6_WEEKLY_REPORT_PLAN_DRAFT_ENABLED:false}
 
   knowledge:
     collection: personal_knowledge_chunk

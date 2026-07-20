@@ -147,6 +147,39 @@ public class InterviewReportComparabilityPolicy {
                 "GROUP", immutableNotices(warnings));
     }
 
+    public Identity identify(InterviewReport report, InterviewSession session) {
+        if (report == null || session == null) {
+            return unavailableIdentity("REPORT_UNAVAILABLE", null, null, null, List.of());
+        }
+        if (session.getTargetJobId() == null) {
+            return unavailableIdentity("TARGET_JOB_MISSING", null, null, null, List.of());
+        }
+
+        List<Notice> warnings = new ArrayList<>();
+        Integer totalScore;
+        try {
+            totalScore = resolveTotalScore(report, session, warnings);
+        } catch (NormalizationException ex) {
+            return unavailableIdentity(
+                    ex.reasonCode, session.getTargetJobId(), null, null, warnings);
+        }
+
+        RubricResolution rubric;
+        try {
+            rubric = resolveRubric(report, totalScore, warnings);
+        } catch (NormalizationException ex) {
+            return unavailableIdentity(
+                    ex.reasonCode, session.getTargetJobId(), null, null, warnings);
+        }
+        return new Identity(
+                true,
+                null,
+                session.getTargetJobId(),
+                rubric.rubricVersion(),
+                dimensionFingerprint(rubric.dimensions().keySet()),
+                immutableNotices(warnings));
+    }
+
     private Integer resolveTotalScore(
             InterviewReport report, InterviewSession session, List<Notice> warnings) {
         if (report.getTotalScore() != null) {
@@ -429,7 +462,7 @@ public class InterviewReportComparabilityPolicy {
         return null;
     }
 
-    private String dimensionFingerprint(Collection<String> dimensions) {
+    public String dimensionFingerprint(Collection<String> dimensions) {
         try {
             String canonical = dimensions.stream()
                     .sorted(Comparator.naturalOrder())
@@ -445,6 +478,21 @@ public class InterviewReportComparabilityPolicy {
         } catch (Exception ex) {
             throw new IllegalStateException("Unable to fingerprint interview rubric dimensions", ex);
         }
+    }
+
+    private Identity unavailableIdentity(
+            String reasonCode,
+            Long targetJobId,
+            String rubricVersion,
+            String fingerprint,
+            List<Notice> warnings) {
+        return new Identity(
+                false,
+                reasonCode,
+                targetJobId,
+                rubricVersion,
+                fingerprint,
+                immutableNotices(warnings));
     }
 
     private Long commonTargetJob(List<Result> reports) {
@@ -517,6 +565,15 @@ public class InterviewReportComparabilityPolicy {
     }
 
     public record Notice(String code, String message) {
+    }
+
+    public record Identity(
+            boolean available,
+            String reasonCode,
+            Long targetJobId,
+            String rubricVersion,
+            String dimensionFingerprint,
+            List<Notice> normalizationWarnings) {
     }
 
     private record RubricResolution(

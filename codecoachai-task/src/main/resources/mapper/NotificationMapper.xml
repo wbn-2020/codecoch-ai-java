@@ -95,4 +95,38 @@
             updated_at = VALUES(updated_at),
             deleted = 0
     </insert>
+
+    <insert id="insertDailyReminderIfAbsent">
+        INSERT INTO notification (
+            user_id,
+            type,
+            title,
+            content,
+            biz_type,
+            biz_id,
+            reminder_date,
+            read_status,
+            send_status,
+            sent_at,
+            created_at,
+            updated_at,
+            deleted
+        ) VALUES (
+            #{userId},
+            #{type},
+            #{title},
+            #{content},
+            #{bizType},
+            #{bizId},
+            #{reminderDate},
+            0,
+            'SUCCESS',
+            #{sentAt},
+            #{sentAt},
+            #{sentAt},
+            0
+        )
+        ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id)
+    </insert>
 </mapper>

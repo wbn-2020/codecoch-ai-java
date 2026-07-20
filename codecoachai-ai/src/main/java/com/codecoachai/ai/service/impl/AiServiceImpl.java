@@ -5,7 +5,11 @@ import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
+import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
+import com.codecoachai.ai.domain.dto.GenerateAgentWeeklyReportDTO;
+import com.codecoachai.ai.domain.dto.GenerateApplicationEventReviewDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
+import com.codecoachai.ai.domain.dto.GenerateInterviewPreparationDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionRecommendationDTO;
@@ -21,7 +25,11 @@ import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
+import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
+import com.codecoachai.ai.domain.vo.GenerateAgentWeeklyReportVO;
+import com.codecoachai.ai.domain.vo.GenerateApplicationEventReviewVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
+import com.codecoachai.ai.domain.vo.GenerateInterviewPreparationVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionRecommendationVO;
@@ -52,10 +60,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -84,7 +96,36 @@ public class AiServiceImpl implements AiService {
     private static final String TRUST_VERIFIED = "VERIFIED";
     private static final String TRUST_PARTIAL = "PARTIAL";
     private static final String SCENE_SKILL_GAP_ANALYZE = "SKILL_GAP_ANALYZE";
+    private static final String SCENE_AGENT_REVIEW_GENERATE = "AGENT_REVIEW_GENERATE";
+    private static final String SCENE_APPLICATION_EVENT_REVIEW_GENERATE = "APPLICATION_EVENT_REVIEW_GENERATE";
+    private static final String SCENE_INTERVIEW_PREPARATION_GENERATE = "INTERVIEW_PREPARATION_GENERATE";
+    private static final String SCENE_WEEKLY_CAREER_REPORT_GENERATE = "WEEKLY_CAREER_REPORT_GENERATE";
     private static final String SCENE_TARGETED_STUDY_PLAN_GENERATE = "TARGETED_STUDY_PLAN_GENERATE";
+    private static final int MAX_AGENT_REVIEW_TASKS = 30;
+    private static final int MAX_EVENT_REVIEW_FACTS = 30;
+    private static final int MAX_EVENT_REVIEW_TEXT_LENGTH = 300;
+    private static final int MAX_PREPARATION_REQUIREMENTS = 20;
+    private static final int MAX_PREPARATION_ITEMS = 10;
+    private static final int MAX_PREPARATION_WEAKNESSES = 8;
+    private static final int MAX_WEEKLY_FACTS = 60;
+    private static final int MAX_WEEKLY_SIGNALS = 20;
+    private static final int MAX_WEEKLY_SUGGESTIONS = 2;
+    private static final int MAX_WEEKLY_PLAN_ITEMS = 8;
+    private static final Pattern WEEKLY_NUMBER_OR_DATE_PATTERN = Pattern.compile(
+            "(?<![\\w一二三四五六七八九十])(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d+(?:\\.\\d+)?)(?![\\w一二三四五六七八九十])");
+    private static final Set<String> APPLICATION_REVIEW_SCENARIOS = Set.of(
+            "INTERVIEW_COMPLETED", "REJECTION", "NO_RESPONSE");
+    private static final Set<String> PREPARATION_EVENT_TYPES = Set.of(
+            "INTERVIEW", "INTERVIEW_SCHEDULED", "PHONE_SCREEN", "TECHNICAL_INTERVIEW",
+            "HR_INTERVIEW", "FINAL_INTERVIEW");
+    private static final Set<String> WEEKLY_ALLOWED_VARIABLES = Set.of(
+            "resume_version", "channel", "application_channel", "follow_up", "target_job",
+            "project_evidence", "interview_preparation", "daily_action");
+    private static final List<String> BOUNDARY_VIOLATIONS = List.of(
+            "录用概率", "通过概率", "候选人排名", "招聘方偏好", "招聘方认为", "面试官认为",
+            "一定因为", "肯定因为", "证明了", "必然导致", "确定性原因", "淘汰原因是",
+            "自动投递", "自动发送", "自动联系", "自动修改计划", "高频催促", "预测真题",
+            "面试真题", "必考题", "一定会问", "肯定会问", "公司技术栈是", "面试共");
     private static final List<String> RESUME_MATCH_FACT_TERMS = List.of(
             "PostgreSQL", "MongoDB", "Jenkins", "GitHub Actions", "GitHub Action", "AWS", "Kubernetes",
             "K8s", "WebFlux", "Docker", "RabbitMQ", "RocketMQ", "Kafka", "Nacos", "Seata",
@@ -636,6 +677,133 @@ public class AiServiceImpl implements AiService {
         }
     }
 
+    @Override
+    public GenerateAgentReviewVO generateAgentReview(GenerateAgentReviewDTO dto) {
+        validateGenerateAgentReviewDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_AGENT_REVIEW_GENERATE,
+                agentReviewPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockAgentReviewJson(dto);
+                logId = saveLog(promptResult, resultJson,
+                        businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(),
+                        businessId(dto.getTargetJobId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseAgentReviewJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
+            GenerateAgentReviewVO vo = toAgentReviewVO(resultJson);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    businessId(dto.getTargetJobId()), start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public GenerateApplicationEventReviewVO generateApplicationEventReview(GenerateApplicationEventReviewDTO dto) {
+        validateGenerateApplicationEventReviewDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_APPLICATION_EVENT_REVIEW_GENERATE,
+                applicationEventReviewPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockApplicationEventReviewJson(dto);
+                logId = saveLog(promptResult, resultJson, businessId(dto.getEventId()),
+                        start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getEventId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseApplicationEventReviewJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
+            GenerateApplicationEventReviewVO vo = toApplicationEventReviewVO(resultJson, dto);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getEventId()),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public GenerateInterviewPreparationVO generateInterviewPreparation(GenerateInterviewPreparationDTO dto) {
+        validateGenerateInterviewPreparationDTO(dto);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_INTERVIEW_PREPARATION_GENERATE,
+                interviewPreparationPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockInterviewPreparationJson(dto);
+                logId = saveLog(promptResult, resultJson, businessId(dto.getCalendarEventId()),
+                        start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(),
+                        businessId(dto.getCalendarEventId()));
+                rawResponse = routeResult.getContent();
+                resultJson = parseInterviewPreparationJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
+            GenerateInterviewPreparationVO vo = toInterviewPreparationVO(resultJson, dto);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()), businessId(dto.getCalendarEventId()),
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public GenerateAgentWeeklyReportVO generateWeeklyCareerReport(GenerateAgentWeeklyReportDTO dto) {
+        validateGenerateWeeklyCareerReportDTO(dto);
+        long start = System.currentTimeMillis();
+        String reportBusinessId = firstText(dto.getTargetScopeKey(), dto.getWeekStartDate());
+        PromptRenderResult promptResult = promptRenderService.render(SCENE_WEEKLY_CAREER_REPORT_GENERATE,
+                weeklyCareerReportPromptContent(), variables(dto));
+        String rawResponse = null;
+        try {
+            Long logId;
+            String resultJson;
+            if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+                resultJson = mockWeeklyCareerReportJson(dto);
+                logId = saveLog(promptResult, resultJson, reportBusinessId,
+                        start, null, dto.getUserId(), AiFailureType.NONE);
+            } else {
+                RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), reportBusinessId);
+                rawResponse = routeResult.getContent();
+                resultJson = parseWeeklyCareerReportJson(rawResponse);
+                logId = routeResult.getAiCallLogId();
+            }
+            GenerateAgentWeeklyReportVO vo = toWeeklyCareerReportVO(resultJson, dto);
+            vo.setAiCallLogId(logId);
+            vo.setRawResponse(firstText(rawResponse, resultJson));
+            return vo;
+        } catch (RuntimeException ex) {
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()), reportBusinessId,
+                    start, ex.getMessage(), dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
     private void validateParseResumeDTO(ParseResumeDTO dto) {
         if (dto == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
@@ -716,6 +884,194 @@ public class AiServiceImpl implements AiService {
         if (!StringUtils.hasText(dto.getGapsJson())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "能力短板内容不能为空");
         }
+    }
+
+    private void validateGenerateAgentReviewDTO(GenerateAgentReviewDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+    }
+
+    private void validateGenerateApplicationEventReviewDTO(GenerateApplicationEventReviewDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        if (dto.getEventId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "求职事件不能为空");
+        }
+        String scenario = normalizeCode(dto.getScenario());
+        if (!APPLICATION_REVIEW_SCENARIOS.contains(scenario)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的求职事件复盘场景");
+        }
+        String eventScope = normalizeCode(dto.getEventScope());
+        if (!Set.of("REAL_JOB", "SIMULATION", "UNKNOWN").contains(eventScope)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "求职事件范围不合法");
+        }
+        validateTextLength(dto.getEventSummary(), 2000, "事件摘要不能超过 2000 字");
+        validateTextLength(dto.getSelfReflection(), 2000, "自我反思不能超过 2000 字");
+        validateListSize(dto.getFacts(), MAX_EVENT_REVIEW_FACTS, "复盘事实不能超过 30 条");
+        Set<String> factIds = new LinkedHashSet<>();
+        if (dto.getFacts() != null) {
+            for (GenerateApplicationEventReviewDTO.Fact fact : dto.getFacts()) {
+                if (fact == null || !StringUtils.hasText(fact.getId()) || !StringUtils.hasText(fact.getContent())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "复盘事实的 ID 和内容不能为空");
+                }
+                String factId = fact.getId().trim();
+                if (!factIds.add(factId)) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "复盘事实 ID 不能重复");
+                }
+                validateTextLength(fact.getContent(), 1000, "单条复盘事实不能超过 1000 字");
+            }
+        }
+        validateTextItems(dto.getLegacyHypotheses(), 10, 500, "历史假设");
+        if (StringUtils.hasText(dto.getConfidenceCeiling())
+                && !Set.of("LOW", "MEDIUM", "HIGH").contains(normalizeCode(dto.getConfidenceCeiling()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "置信度上限不合法");
+        }
+    }
+
+    private void validateGenerateInterviewPreparationDTO(GenerateInterviewPreparationDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        if (dto.getCalendarEventId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "日历事件不能为空");
+        }
+        if (!PREPARATION_EVENT_TYPES.contains(normalizeCode(dto.getEventType()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "仅面试类日历事件可以生成准备包");
+        }
+        if (!Set.of(30, 60, 120).contains(dto.getTimeBudgetMinutes())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "准备时长仅支持 30、60 或 120 分钟");
+        }
+        validateTextLength(dto.getEventTitle(), 500, "事件标题不能超过 500 字");
+        validateTextLength(dto.getEventDescription(), 2000, "事件描述不能超过 2000 字");
+        validateTextLength(dto.getTargetJobSummary(), 2000, "目标岗位摘要不能超过 2000 字");
+        validateTextLength(dto.getResumeVersionSummary(), 2000, "简历版本摘要不能超过 2000 字");
+        validateTextItems(dto.getJobRequirements(), MAX_PREPARATION_REQUIREMENTS, 500, "岗位要求");
+        validateTextItems(dto.getProjectEvidence(), MAX_PREPARATION_ITEMS, 1000, "项目证据");
+        validateTextItems(dto.getReadinessGaps(), MAX_PREPARATION_WEAKNESSES, 500, "准备度缺口");
+        validateTextItems(dto.getRecentInterviewWeaknesses(), MAX_PREPARATION_WEAKNESSES, 500, "近期面试弱项");
+        validateTextItems(dto.getConfirmedMemories(), MAX_PREPARATION_WEAKNESSES, 500, "已确认记忆");
+        validateTextItems(dto.getSourceWarnings(), MAX_PREPARATION_ITEMS, 500, "来源告警");
+    }
+
+    private void validateGenerateWeeklyCareerReportDTO(GenerateAgentWeeklyReportDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请求内容不能为空");
+        }
+        if (dto.getUserId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        LocalDate weekStart = parseRequiredDate(dto.getWeekStartDate(), "周报开始日期");
+        LocalDate weekEnd = parseRequiredDate(dto.getWeekEndDate(), "周报结束日期");
+        if (weekEnd.isBefore(weekStart)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "周报结束日期不能早于开始日期");
+        }
+        if (!StringUtils.hasText(dto.getTargetScopeKey())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "周报目标范围不能为空");
+        }
+        validateTextLength(dto.getTargetScopeKey(), 128, "周报目标范围不能超过 128 字");
+        validateTextLength(dto.getTimezone(), 64, "时区不能超过 64 字");
+        validateListSize(dto.getFacts(), MAX_WEEKLY_FACTS, "周报事实不能超过 60 条");
+        validateListSize(dto.getSignals(), MAX_WEEKLY_SIGNALS, "周报信号不能超过 20 条");
+        validateTextItems(dto.getLimits(), 20, 500, "周报限制");
+        validateListSize(dto.getAllowedSuggestions(), MAX_WEEKLY_SUGGESTIONS, "周报实验建议不能超过 2 条");
+        validateListSize(dto.getAllowedPlanItems(), MAX_WEEKLY_PLAN_ITEMS, "周报计划草案不能超过 8 条");
+
+        Set<String> factIds = new LinkedHashSet<>();
+        if (dto.getFacts() != null) {
+            for (GenerateAgentWeeklyReportDTO.WeeklyFact fact : dto.getFacts()) {
+                if (fact == null || !StringUtils.hasText(fact.getFactId())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "周报事实 ID 不能为空");
+                }
+                if (!factIds.add(fact.getFactId().trim())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "周报事实 ID 不能重复");
+                }
+                validateTextLength(fact.getLabel(), 500, "周报事实描述不能超过 500 字");
+                validateTextItems(fact.getSourceRefs(), 20, 200, "周报事实来源");
+            }
+        }
+        Set<String> signalIds = new LinkedHashSet<>();
+        if (dto.getSignals() != null) {
+            for (GenerateAgentWeeklyReportDTO.WeeklySignal signal : dto.getSignals()) {
+                if (signal == null || !StringUtils.hasText(signal.getSignalId())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "周报信号 ID 不能为空");
+                }
+                if (!signalIds.add(signal.getSignalId().trim())) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "周报信号 ID 不能重复");
+                }
+                validateTextLength(signal.getTitle(), 500, "周报信号标题不能超过 500 字");
+                validateTextLength(signal.getDescription(), 500, "周报信号描述不能超过 500 字");
+                validateTextItems(signal.getSourceRefs(), 20, 200, "周报信号来源");
+            }
+        }
+    }
+
+    private String normalizeCode(String value) {
+        return StringUtils.hasText(value)
+                ? value.trim().toUpperCase(java.util.Locale.ROOT)
+                : "";
+    }
+
+    private void validateTextLength(String value, int maxLength, String message) {
+        if (value != null && value.length() > maxLength) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, message);
+        }
+    }
+
+    private void validateTextItems(List<String> values, int maxSize, int maxItemLength, String fieldName) {
+        validateListSize(values, maxSize, fieldName + "不能超过 " + maxSize + " 条");
+        if (values == null) {
+            return;
+        }
+        for (String value : values) {
+            validateTextLength(value, maxItemLength,
+                    fieldName + "单条内容不能超过 " + maxItemLength + " 字");
+        }
+    }
+
+    private void validateListSize(List<?> values, int maxSize, String message) {
+        if (values != null && values.size() > maxSize) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, message);
+        }
+    }
+
+    private LocalDate parseRequiredDate(String value, String fieldName) {
+        if (!StringUtils.hasText(value)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + "不能为空");
+        }
+        try {
+            return LocalDate.parse(value.trim());
+        } catch (DateTimeParseException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, fieldName + "格式必须为 yyyy-MM-dd");
+        }
+    }
+
+    private String maskText(String value) {
+        return StringUtils.hasText(value) ? AiPiiMasker.maskResumeJson(value) : value;
+    }
+
+    private List<String> maskedTextList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(StringUtils::hasText)
+                .map(this::maskText)
+                .toList();
+    }
+
+    private String maskJson(String value) {
+        return StringUtils.hasText(value) ? AiPiiMasker.maskResumeJson(value) : value;
     }
 
     private void validateResumeOptimizeDTO(ResumeOptimizeAiRequestDTO dto) {
@@ -1010,6 +1366,22 @@ public class AiServiceImpl implements AiService {
         return defaultSkillGapAnalyzePrompt();
     }
 
+    private String agentReviewPromptContent() {
+        return defaultAgentReviewPrompt();
+    }
+
+    private String applicationEventReviewPromptContent() {
+        return defaultApplicationEventReviewPrompt();
+    }
+
+    private String interviewPreparationPromptContent() {
+        return defaultInterviewPreparationPrompt();
+    }
+
+    private String weeklyCareerReportPromptContent() {
+        return defaultWeeklyCareerReportPrompt();
+    }
+
     private String questionDraftPromptContent() {
         return defaultQuestionDraftPrompt();
     }
@@ -1207,6 +1579,114 @@ public class AiServiceImpl implements AiService {
         values.put("recommendedInterviewTopicsJson", dto.getRecommendedInterviewTopicsJson());
         values.put("resumeAnalysisJson", AiPiiMasker.maskResumeJson(dto.getResumeAnalysisJson()));
         values.put("resumeSnapshotJson", AiPiiMasker.maskResumeJson(dto.getResumeSnapshotJson()));
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateAgentReviewDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        List<GenerateAgentReviewDTO.TaskBrief> tasks = dto.getTasks() == null
+                ? List.of()
+                : dto.getTasks().stream().limit(MAX_AGENT_REVIEW_TASKS).toList();
+        int suppliedTaskCount = dto.getTasks() == null ? 0 : dto.getTasks().size();
+        int reportedTaskCount = dto.getTaskCount() == null ? suppliedTaskCount : dto.getTaskCount();
+        boolean truncated = suppliedTaskCount > tasks.size() || reportedTaskCount > tasks.size();
+        values.put("userId", String.valueOf(dto.getUserId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("reviewDate", firstText(dto.getReviewDate(), ""));
+        values.put("taskCount", String.valueOf(dto.getTaskCount() == null ? 0 : dto.getTaskCount()));
+        values.put("doneCount", String.valueOf(dto.getDoneCount() == null ? 0 : dto.getDoneCount()));
+        values.put("skippedCount", String.valueOf(dto.getSkippedCount() == null ? 0 : dto.getSkippedCount()));
+        values.put("todoCount", String.valueOf(dto.getTodoCount() == null ? 0 : dto.getTodoCount()));
+        values.put("completionRate", dto.getCompletionRate() == null ? "" : dto.getCompletionRate().toPlainString());
+        values.put("agentSuccessRate",
+                dto.getAgentSuccessRate() == null ? "" : dto.getAgentSuccessRate().toPlainString());
+        values.put("readinessScore", dto.getReadinessScore() == null ? "" : String.valueOf(dto.getReadinessScore()));
+        values.put("tasksJson", toJson(tasks));
+        values.put("topSkillsJson", toJson(dto.getTopSkills() == null ? List.of() : dto.getTopSkills()));
+        values.put("providedTaskCount", String.valueOf(suppliedTaskCount));
+        values.put("displayedTaskCount", String.valueOf(tasks.size()));
+        values.put("tasksTruncated", String.valueOf(truncated));
+        values.put("taskDisplayNotice", truncated
+                ? "任务总数超过 30 条，以下仅展示前 30 条部分任务，结论不得假设未展示任务的内容。"
+                : "以下已展示本次提供的全部任务。");
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateApplicationEventReviewDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("userId", String.valueOf(dto.getUserId()));
+        values.put("eventId", String.valueOf(dto.getEventId()));
+        values.put("applicationId", dto.getApplicationId() == null ? "" : String.valueOf(dto.getApplicationId()));
+        values.put("targetJobId", dto.getTargetJobId() == null ? "" : String.valueOf(dto.getTargetJobId()));
+        values.put("scenario", normalizeCode(dto.getScenario()));
+        values.put("eventScope", normalizeCode(dto.getEventScope()));
+        values.put("jobTitle", maskText(dto.getJobTitle()));
+        values.put("applicationSource", maskText(dto.getApplicationSource()));
+        values.put("applicationStatus", maskText(dto.getApplicationStatus()));
+        values.put("eventType", normalizeCode(dto.getEventType()));
+        values.put("eventTime", maskText(dto.getEventTime()));
+        values.put("eventSummary", maskText(dto.getEventSummary()));
+        List<Map<String, String>> facts = new ArrayList<>();
+        if (dto.getFacts() != null) {
+            for (GenerateApplicationEventReviewDTO.Fact fact : dto.getFacts()) {
+                if (fact == null) {
+                    continue;
+                }
+                Map<String, String> safeFact = new LinkedHashMap<>();
+                safeFact.put("id", fact.getId());
+                safeFact.put("content", maskText(fact.getContent()));
+                safeFact.put("owner", fact.getOwner());
+                safeFact.put("sourceType", fact.getSourceType());
+                facts.add(safeFact);
+            }
+        }
+        values.put("factsJson", toJson(facts));
+        values.put("selfReflection", maskText(dto.getSelfReflection()));
+        values.put("legacyHypothesesJson", toJson(maskedTextList(dto.getLegacyHypotheses())));
+        values.put("confidenceCeiling", normalizeCode(dto.getConfidenceCeiling()));
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateInterviewPreparationDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("userId", String.valueOf(dto.getUserId()));
+        values.put("calendarEventId", String.valueOf(dto.getCalendarEventId()));
+        values.put("applicationId", dto.getApplicationId() == null ? "" : String.valueOf(dto.getApplicationId()));
+        values.put("timeBudgetMinutes", String.valueOf(dto.getTimeBudgetMinutes()));
+        values.put("eventTitle", maskText(dto.getEventTitle()));
+        values.put("eventDescription", maskText(dto.getEventDescription()));
+        values.put("eventType", normalizeCode(dto.getEventType()));
+        values.put("eventLocalTime", maskText(dto.getEventLocalTime()));
+        values.put("timezone", maskText(dto.getTimezone()));
+        values.put("location", maskText(dto.getLocation()));
+        values.put("companyName", maskText(dto.getCompanyName()));
+        values.put("jobTitle", maskText(dto.getJobTitle()));
+        values.put("targetJobSummary", maskText(dto.getTargetJobSummary()));
+        values.put("jobRequirementsJson", toJson(maskedTextList(dto.getJobRequirements())));
+        values.put("resumeVersionSummary", maskText(dto.getResumeVersionSummary()));
+        values.put("projectEvidenceJson", toJson(maskedTextList(dto.getProjectEvidence())));
+        values.put("readinessGapsJson", toJson(maskedTextList(dto.getReadinessGaps())));
+        values.put("recentInterviewWeaknessesJson", toJson(maskedTextList(dto.getRecentInterviewWeaknesses())));
+        values.put("confirmedMemoriesJson", toJson(maskedTextList(dto.getConfirmedMemories())));
+        values.put("sourceWarningsJson", toJson(maskedTextList(dto.getSourceWarnings())));
+        values.put("sourceHash", firstText(dto.getSourceHash(), ""));
+        return values;
+    }
+
+    private Map<String, String> variables(GenerateAgentWeeklyReportDTO dto) {
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("userId", String.valueOf(dto.getUserId()));
+        values.put("weekStartDate", dto.getWeekStartDate());
+        values.put("weekEndDate", dto.getWeekEndDate());
+        values.put("targetScopeKey", maskText(dto.getTargetScopeKey()));
+        values.put("timezone", maskText(dto.getTimezone()));
+        values.put("factsJson", maskJson(toJson(dto.getFacts() == null ? List.of() : dto.getFacts())));
+        values.put("signalsJson", maskJson(toJson(dto.getSignals() == null ? List.of() : dto.getSignals())));
+        values.put("limitsJson", maskJson(toJson(maskedTextList(dto.getLimits()))));
+        values.put("allowedSuggestionsJson",
+                maskJson(toJson(dto.getAllowedSuggestions() == null ? List.of() : dto.getAllowedSuggestions())));
+        values.put("allowedPlanItemsJson",
+                maskJson(toJson(dto.getAllowedPlanItems() == null ? List.of() : dto.getAllowedPlanItems())));
         return values;
     }
 
@@ -2632,6 +3112,245 @@ public class AiServiceImpl implements AiService {
         return json.toString();
     }
 
+    private String parseAgentReviewJson(String raw) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI 每日复盘结果必须是 JSON 对象");
+        }
+        return json.toString();
+    }
+
+    private GenerateAgentReviewVO toAgentReviewVO(String resultJson) {
+        JsonNode json = parseJson(resultJson);
+        GenerateAgentReviewVO vo = new GenerateAgentReviewVO();
+        vo.setSummary(json.path("summary").asText(null));
+        vo.setFacts(readAgentReviewTextList(json.path("facts")));
+        vo.setLimits(readAgentReviewTextList(json.path("limits")));
+        JsonNode drifts = json.has("driftReasons") ? json.path("driftReasons") : json.path("drifts");
+        vo.setDriftReasons(readAgentReviewTextList(drifts));
+        vo.setAdjustments(readAgentReviewTextList(json.path("adjustments")));
+        vo.setNextActions(readAgentReviewTextList(json.path("nextActions")));
+        return vo;
+    }
+
+    private String parseApplicationEventReviewJson(String raw) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI 求职事件复盘结果必须是 JSON 对象");
+        }
+        return json.toString();
+    }
+
+    private GenerateApplicationEventReviewVO toApplicationEventReviewVO(
+            String resultJson,
+            GenerateApplicationEventReviewDTO dto) {
+        JsonNode json = parseJson(resultJson);
+        GenerateApplicationEventReviewVO vo = new GenerateApplicationEventReviewVO();
+        vo.setSummary(boundedText(json.path("summary"), 500));
+        vo.setLimits(readBoundedTextList(json.path("limits"), 4, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setAdjustments(readBoundedTextList(json.path("adjustments"), 4, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setNextActions(readBoundedTextList(json.path("nextActions"), 4, MAX_EVENT_REVIEW_TEXT_LENGTH));
+
+        List<GenerateApplicationEventReviewVO.Signal> signals = new ArrayList<>();
+        JsonNode signalNodes = json.path("signals");
+        if (signalNodes.isArray()) {
+            for (JsonNode signalNode : signalNodes) {
+                if (!signalNode.isObject() || signals.size() >= 4) {
+                    continue;
+                }
+                String content = boundedText(signalNode.path("content"), MAX_EVENT_REVIEW_TEXT_LENGTH);
+                if (!StringUtils.hasText(content)) {
+                    continue;
+                }
+                GenerateApplicationEventReviewVO.Signal signal = new GenerateApplicationEventReviewVO.Signal();
+                signal.setContent(content);
+                signal.setFactRefs(readBoundedTextList(signalNode.path("factRefs"), MAX_EVENT_REVIEW_FACTS, 128));
+                signal.setConfidenceLevel(normalizeConfidence(signalNode.path("confidenceLevel").asText(null)));
+                signals.add(signal);
+            }
+        }
+        vo.setSignals(signals);
+        return vo;
+    }
+
+    private String parseInterviewPreparationJson(String raw) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI 面试准备包结果必须是 JSON 对象");
+        }
+        return json.toString();
+    }
+
+    private GenerateInterviewPreparationVO toInterviewPreparationVO(
+            String resultJson,
+            GenerateInterviewPreparationDTO dto) {
+        JsonNode json = parseJson(resultJson);
+        GenerateInterviewPreparationVO vo = new GenerateInterviewPreparationVO();
+        vo.setSummary(boundedText(json.path("summary"), 500));
+        vo.setFacts(readBoundedTextList(json.path("facts"), 12, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setLimits(readBoundedTextList(json.path("limits"), 8, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setFocusAreas(readBoundedTextList(json.path("focusAreas"), 8, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setProjectStories(readBoundedTextList(json.path("projectStories"), 3, 500));
+        vo.setPracticeQuestions(readBoundedTextList(json.path("practiceQuestions"), 8, 500));
+        vo.setChecklist(readBoundedTextList(json.path("checklist"), 12, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setSchedule(readBoundedTextList(json.path("schedule"), 8, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setNextActions(readBoundedTextList(json.path("nextActions"), 8, MAX_EVENT_REVIEW_TEXT_LENGTH));
+        vo.setEvidenceSources(readBoundedTextList(json.path("evidenceSources"), 20, 200));
+        vo.setConfidenceLevel(normalizeConfidence(json.path("confidenceLevel").asText(null)));
+        vo.setFallback(false);
+        vo.setSourceHash(dto == null ? null : dto.getSourceHash());
+        return vo;
+    }
+
+    private String parseWeeklyCareerReportJson(String raw) {
+        JsonNode json = parseJson(raw);
+        if (json == null || !json.isObject()) {
+            throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI 求职周报结果必须是 JSON 对象");
+        }
+        return json.toString();
+    }
+
+    private GenerateAgentWeeklyReportVO toWeeklyCareerReportVO(
+            String resultJson,
+            GenerateAgentWeeklyReportDTO dto) {
+        JsonNode json = parseJson(resultJson);
+        GenerateAgentWeeklyReportVO vo = new GenerateAgentWeeklyReportVO();
+        vo.setSummary(boundedText(json.path("summary"), 800));
+        vo.setFactNarrative(readBoundedTextList(json.path("factNarrative"), MAX_WEEKLY_FACTS, 500));
+        vo.setSignalNarrative(readBoundedTextList(json.path("signalNarrative"), MAX_WEEKLY_SIGNALS, 500));
+        vo.setLimits(readBoundedTextList(json.path("limits"), 20, 500));
+
+        Map<String, GenerateAgentWeeklyReportDTO.AllowedSuggestion> allowedSuggestions = new LinkedHashMap<>();
+        if (dto != null && dto.getAllowedSuggestions() != null) {
+            for (GenerateAgentWeeklyReportDTO.AllowedSuggestion suggestion : dto.getAllowedSuggestions()) {
+                if (suggestion != null && StringUtils.hasText(suggestion.getSuggestionId())) {
+                    allowedSuggestions.putIfAbsent(suggestion.getSuggestionId().trim(), suggestion);
+                }
+            }
+        }
+
+        List<GenerateAgentWeeklyReportVO.Hypothesis> hypotheses = new ArrayList<>();
+        JsonNode hypothesisNodes = json.path("hypotheses");
+        if (hypothesisNodes.isArray()) {
+            for (JsonNode hypothesisNode : hypothesisNodes) {
+                if (!hypothesisNode.isObject() || hypotheses.size() >= MAX_WEEKLY_SUGGESTIONS) {
+                    continue;
+                }
+                String hypothesisId = boundedText(hypothesisNode.path("hypothesisId"), 128);
+                GenerateAgentWeeklyReportDTO.AllowedSuggestion allowed =
+                        StringUtils.hasText(hypothesisId) ? allowedSuggestions.get(hypothesisId) : null;
+                if (allowed == null) {
+                    continue;
+                }
+                String normalizedVariable = allowed.getPrimaryVariable() == null
+                        ? null
+                        : allowed.getPrimaryVariable().trim().toLowerCase(java.util.Locale.ROOT);
+                if (!StringUtils.hasText(normalizedVariable)
+                        || !WEEKLY_ALLOWED_VARIABLES.contains(normalizedVariable)) {
+                    continue;
+                }
+                GenerateAgentWeeklyReportVO.Hypothesis hypothesis = new GenerateAgentWeeklyReportVO.Hypothesis();
+                hypothesis.setHypothesisId(hypothesisId);
+                hypothesis.setStatement(firstText(allowed.getStatement(), allowed.getTitle()));
+                hypothesis.setPrimaryVariable(normalizedVariable);
+                hypothesis.setFixedVariables(copyBoundedTextList(allowed.getFixedVariables(), 12, 128));
+                hypothesis.setExpectedSignal(trimText(allowed.getExpectedSignal(), 500));
+                hypothesis.setSuccessMetric(trimText(allowed.getSuccessMetric(), 500));
+                hypothesis.setMinimumSample(allowed.getMinimumSample());
+                hypothesis.setObservationDays(allowed.getObservationDays());
+                hypothesis.setStopCondition(trimText(allowed.getStopCondition(), 500));
+                hypothesis.setConfidenceLevel(normalizeConfidence(allowed.getConfidenceLevel()));
+                hypothesis.setBasedOnSignalIds(copyBoundedTextList(
+                        allowed.getBasedOnSignalIds(), MAX_WEEKLY_SIGNALS, 128));
+                hypothesis.setSourceRefs(copyBoundedTextList(allowed.getSourceRefs(), 30, 200));
+                hypothesis.setStatus("PROPOSED");
+                if (StringUtils.hasText(hypothesis.getStatement())) {
+                    hypotheses.add(hypothesis);
+                }
+            }
+        }
+        vo.setHypotheses(hypotheses);
+        return vo;
+    }
+
+    private String boundedText(JsonNode node, int maxLength) {
+        if (node == null || !node.isTextual() || !StringUtils.hasText(node.asText())) {
+            return null;
+        }
+        String value = node.asText().trim();
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
+    private List<String> readBoundedTextList(JsonNode node, int maxSize, int maxItemLength) {
+        List<String> values = readAgentReviewTextList(node);
+        if (values.isEmpty()) {
+            return values;
+        }
+        List<String> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String value : values) {
+            if (result.size() >= maxSize) {
+                break;
+            }
+            String bounded = value.length() <= maxItemLength ? value : value.substring(0, maxItemLength);
+            if (seen.add(bounded)) {
+                result.add(bounded);
+            }
+        }
+        return result;
+    }
+
+    private String normalizeConfidence(String value) {
+        String normalized = normalizeCode(value);
+        return Set.of("LOW", "MEDIUM", "HIGH").contains(normalized) ? normalized : null;
+    }
+
+    private String trimText(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.length() <= maxLength ? trimmed : trimmed.substring(0, maxLength);
+    }
+
+    private List<String> copyBoundedTextList(List<String> values, int maxSize, int maxItemLength) {
+        if (values == null || values.isEmpty()) {
+            return new ArrayList<>();
+        }
+        List<String> result = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (String value : values) {
+            if (result.size() >= maxSize) {
+                break;
+            }
+            String bounded = trimText(value, maxItemLength);
+            if (StringUtils.hasText(bounded) && seen.add(bounded)) {
+                result.add(bounded);
+            }
+        }
+        return result;
+    }
+
+    private List<String> readAgentReviewTextList(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return new ArrayList<>();
+        }
+        List<String> values = new ArrayList<>();
+        if (node.isArray()) {
+            node.forEach(item -> {
+                String value = item.isValueNode() ? item.asText(null) : null;
+                if (StringUtils.hasText(value)) {
+                    values.add(value.trim());
+                }
+            });
+            return values;
+        }
+        if (node.isTextual() && StringUtils.hasText(node.asText())) {
+            values.add(node.asText().trim());
+        }
+        return values;
+    }
+
     private void validateResumeStructuredJson(JsonNode json) {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
@@ -3401,6 +4120,318 @@ public class AiServiceImpl implements AiService {
         json.put("nextActions", List.of("完成 Redis 缓存一致性复盘",
                 "练习 5 道 Redis 场景题",
                 "用可量化结果改写一段项目经历"));
+        return toJson(json);
+    }
+
+    private String mockAgentReviewJson(GenerateAgentReviewDTO dto) {
+        int taskCount = safeInt(dto.getTaskCount());
+        int doneCount = safeInt(dto.getDoneCount());
+        int skippedCount = safeInt(dto.getSkippedCount());
+        int todoCount = safeInt(dto.getTodoCount());
+        Map<String, Object> json = new LinkedHashMap<>();
+        String summary;
+        if (taskCount == 0) {
+            summary = "今天尚未记录可供复盘的任务事实。下一轮应先建立少量、明确且可验证的任务记录。";
+        } else if (doneCount == 0) {
+            summary = "今天已记录 " + taskCount + " 项任务，但尚无已完成记录。"
+                    + "下一轮应优先收敛一个最小可验证动作。";
+        } else {
+            summary = "今天共记录 " + taskCount + " 项任务，已完成 " + doneCount + " 项。"
+                    + "下一轮应优先收敛未完成项，并继续围绕核心技能积累任务证据。";
+        }
+        json.put("summary", summary);
+        json.put("facts", List.of(
+                "系统记录今日共有 " + taskCount + " 项任务，其中完成 " + doneCount
+                        + " 项、暂缓 " + skippedCount + " 项、待处理 " + todoCount + " 项。",
+                "复盘仅依据系统记录的当日任务、状态和技能标签。"));
+        List<String> limits = new ArrayList<>();
+        if (taskCount < 3 || doneCount < 2) {
+            limits.add("样本不足，结论仅为弱调整信号。");
+        }
+        limits.add("任务记录不能证明录用通知、面试通过等外部求职结果。");
+        limits.add("结论仅反映当前任务样本，不代表长期能力变化。");
+        json.put("limits", limits);
+        json.put("drifts", List.of("未完成或跳过的任务可能使原定节奏发生偏移。"));
+        json.put("adjustments", List.of(
+                "下一轮先处理优先级最高的未完成任务。",
+                "完成后补充结果记录，便于后续复盘。"));
+        json.put("nextActions", List.of(
+                "选择一个未完成任务并明确完成标准。",
+                "围绕核心技能完成一次可验证练习。"));
+        return toJson(json);
+    }
+
+    private String mockApplicationEventReviewJson(GenerateApplicationEventReviewDTO dto) {
+        String scenario = normalizeCode(dto.getScenario());
+        String firstFactId = dto.getFacts() == null
+                ? null
+                : dto.getFacts().stream()
+                        .filter(fact -> fact != null && StringUtils.hasText(fact.getId()))
+                        .map(fact -> fact.getId().trim())
+                        .findFirst()
+                        .orElse(null);
+        Map<String, Object> json = new LinkedHashMap<>();
+        List<Map<String, Object>> signals = new ArrayList<>();
+
+        if ("REJECTION".equals(scenario)) {
+            json.put("summary", "系统已记录本次求职流程的明确拒绝结果。现有事实不足以判断招聘方的具体决策原因，建议只做小范围、可验证的调整。");
+            json.put("limits", List.of(
+                    "当前记录只能确认流程结果，无法判断招聘方的具体决策原因。",
+                    "单次结果不足以证明长期能力变化或某一求职策略无效。"));
+            if (StringUtils.hasText(firstFactId)) {
+                signals.add(eventReviewSignal(
+                        "下一轮可以优先检查与现有事实直接相关的一个可控变量。",
+                        List.of(firstFactId),
+                        "LOW"));
+            }
+            json.put("adjustments", List.of("保持其他条件不变，只选择一个可控变量进行小范围调整。"));
+            json.put("nextActions", List.of("记录本次可确认事实，并为下一次投递设定一个可验证的改进点。"));
+        } else if ("NO_RESPONSE".equals(scenario)) {
+            json.put("summary", "当前记录表明在观察期内尚未收到明确反馈。这个事实本身不能说明流程是否继续，下一步应采用低成本跟进并设置停止条件。");
+            json.put("limits", List.of(
+                    "尚未收到反馈不等于已经得到明确结果。",
+                    "当前没有足够信息判断招聘流程内部状态。"));
+            if (StringUtils.hasText(firstFactId)) {
+                signals.add(eventReviewSignal(
+                        "可以把跟进节奏和渠道记录为下一轮需要观察的弱信号。",
+                        List.of(firstFactId),
+                        "LOW"));
+            }
+            json.put("adjustments", List.of("仅调整一次跟进时间或渠道，并保留清晰的停止条件。"));
+            json.put("nextActions", List.of("确认是否已到约定反馈时间，再决定是否进行一次礼貌跟进。"));
+        } else {
+            String scopeLimit = "SIMULATION".equals(normalizeCode(dto.getEventScope()))
+                    ? "当前事件属于 CodeCoachAI 模拟面试，不能代表真实招聘结果或招聘方评价。"
+                    : "缺少招聘方直接反馈时，只能复盘已记录的回答过程和用户观察。";
+            json.put("summary", "本次记录可以支持对面试表达过程做有限复盘，但不能据此扩写未记录的外部评价。下一轮应围绕直接事实选择一个重点复练。");
+            json.put("limits", List.of(scopeLimit, "单次面试记录不足以判断长期能力趋势。"));
+            if (StringUtils.hasText(firstFactId)) {
+                signals.add(eventReviewSignal(
+                        "该事实所对应的表达环节值得在下一轮优先复练。",
+                        List.of(firstFactId),
+                        "MEDIUM"));
+            }
+            json.put("adjustments", List.of("把一个薄弱表达拆成背景、方案、取舍和结果四步重新组织。"));
+            json.put("nextActions", List.of("针对已记录事实完成一次三分钟复述，并记录仍然遗漏的步骤。"));
+        }
+        json.put("signals", signals);
+        return toJson(json);
+    }
+
+    private Map<String, Object> eventReviewSignal(
+            String content,
+            List<String> factRefs,
+            String confidenceLevel) {
+        Map<String, Object> signal = new LinkedHashMap<>();
+        signal.put("content", content);
+        signal.put("factRefs", factRefs);
+        signal.put("confidenceLevel", confidenceLevel);
+        return signal;
+    }
+
+    private String mockInterviewPreparationJson(GenerateInterviewPreparationDTO dto) {
+        int timeBudget = dto.getTimeBudgetMinutes() == null ? 60 : dto.getTimeBudgetMinutes();
+        int focusLimit = timeBudget >= 120 ? 8 : timeBudget >= 60 ? 5 : 3;
+        int storyLimit = timeBudget >= 120 ? 3 : timeBudget >= 60 ? 2 : 1;
+        int questionLimit = timeBudget >= 120 ? 8 : timeBudget >= 60 ? 5 : 3;
+
+        List<String> facts = new ArrayList<>();
+        addFact(facts, "日历事件", dto.getEventTitle());
+        addFact(facts, "事件时间", dto.getEventLocalTime());
+        addFact(facts, "事件地点", dto.getLocation());
+        addFact(facts, "关联公司", dto.getCompanyName());
+        addFact(facts, "关联岗位", dto.getJobTitle());
+
+        List<String> focusAreas = mergeTextItems(focusLimit,
+                dto.getReadinessGaps(),
+                dto.getRecentInterviewWeaknesses(),
+                dto.getJobRequirements());
+        if (focusAreas.isEmpty()) {
+            focusAreas = List.of(
+                    "核对岗位要求与个人证据的对应关系",
+                    "准备一个能够说明个人职责和技术取舍的项目案例",
+                    "练习简洁说明未知问题的分析路径").subList(0, Math.min(focusLimit, 3));
+        }
+
+        List<String> projectStories = mergeTextItems(storyLimit, dto.getProjectEvidence());
+        if (projectStories.isEmpty()) {
+            projectStories = List.of("选择一个真实项目，按背景、职责、方案、取舍和结果整理讲述提纲。");
+        }
+
+        List<String> practiceQuestions = new ArrayList<>();
+        for (String focusArea : focusAreas) {
+            if (practiceQuestions.size() >= questionLimit) {
+                break;
+            }
+            practiceQuestions.add("建议练习方向：请结合真实经历说明“" + focusArea + "”的背景、方案和取舍。");
+        }
+        while (practiceQuestions.size() < questionLimit) {
+            practiceQuestions.add("建议练习方向：遇到信息不足的问题时，如何澄清边界并给出可验证的分析步骤？");
+        }
+
+        List<String> limits = new ArrayList<>();
+        if (dto.getApplicationId() == null) {
+            limits.add("当前日历事件未关联投递，只能使用事件信息和已有通用弱项生成准备建议。");
+        }
+        if (dto.getSourceWarnings() != null) {
+            limits.addAll(dto.getSourceWarnings().stream().filter(StringUtils::hasText).limit(5).toList());
+        }
+        if (dto.getJobRequirements() == null || dto.getJobRequirements().isEmpty()) {
+            limits.add("当前缺少结构化岗位要求，不能推断公司技术栈、面试轮次或具体题目。");
+        }
+        if (limits.isEmpty()) {
+            limits.add("准备包只依据当前已加载证据，不代表真实面试题或招聘方评价。");
+        }
+
+        List<String> evidenceSources = new ArrayList<>();
+        evidenceSources.add("CAREER_CALENDAR_EVENT");
+        if (dto.getApplicationId() != null) {
+            evidenceSources.add("JOB_APPLICATION");
+        }
+        if (dto.getJobRequirements() != null && !dto.getJobRequirements().isEmpty()) {
+            evidenceSources.add("JOB_REQUIREMENT_SUMMARY");
+        }
+        if (dto.getProjectEvidence() != null && !dto.getProjectEvidence().isEmpty()) {
+            evidenceSources.add("PROJECT_EVIDENCE");
+        }
+        if (dto.getRecentInterviewWeaknesses() != null && !dto.getRecentInterviewWeaknesses().isEmpty()) {
+            evidenceSources.add("INTERVIEW_WEAKNESS_SUMMARY");
+        }
+
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("summary", "已根据 " + timeBudget + " 分钟时间预算整理面试前准备重点。内容只基于当前事件和已加载证据，建议按优先级完成。");
+        json.put("facts", facts);
+        json.put("limits", limits);
+        json.put("focusAreas", focusAreas);
+        json.put("projectStories", projectStories);
+        json.put("practiceQuestions", practiceQuestions);
+        json.put("checklist", List.of(
+                "确认面试时间、时区、地点或会议入口。",
+                "准备可用设备、网络、电源和备用联系方式。",
+                "核对简历版本与岗位信息是否一致。",
+                "准备一段两分钟自我介绍和一个真实项目案例。",
+                "预留提前进入或到达的缓冲时间。"));
+        json.put("schedule", preparationSchedule(timeBudget));
+        json.put("nextActions", focusAreas.stream()
+                .limit(Math.min(3, focusAreas.size()))
+                .map(item -> "完成准备重点：" + item)
+                .toList());
+        json.put("evidenceSources", evidenceSources);
+        json.put("confidenceLevel", dto.getApplicationId() == null ? "LOW" : "MEDIUM");
+        return toJson(json);
+    }
+
+    private void addFact(List<String> facts, String label, String value) {
+        if (StringUtils.hasText(value)) {
+            facts.add(label + "：" + value.trim());
+        }
+    }
+
+    @SafeVarargs
+    private final List<String> mergeTextItems(int maxSize, List<String>... groups) {
+        List<String> values = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        if (groups == null) {
+            return values;
+        }
+        for (List<String> group : groups) {
+            if (group == null) {
+                continue;
+            }
+            for (String value : group) {
+                if (values.size() >= maxSize) {
+                    return values;
+                }
+                if (StringUtils.hasText(value) && seen.add(value.trim())) {
+                    values.add(value.trim());
+                }
+            }
+        }
+        return values;
+    }
+
+    private List<String> preparationSchedule(int timeBudget) {
+        if (timeBudget >= 120) {
+            return List.of(
+                    "前 30 分钟：核对岗位要求并标记证据缺口。",
+                    "第 31 至 65 分钟：整理项目故事和技术取舍。",
+                    "第 66 至 100 分钟：完成技术、项目和行为问题练习。",
+                    "最后 20 分钟：检查设备、材料、时间与进入方式。");
+        }
+        if (timeBudget >= 60) {
+            return List.of(
+                    "前 15 分钟：核对岗位要求和最高优先级弱项。",
+                    "第 16 至 40 分钟：复述项目故事并练习重点问题。",
+                    "最后 20 分钟：完成自我介绍、材料和设备检查。");
+        }
+        return List.of(
+                "前 10 分钟：只看三个最高优先级关注点。",
+                "中间 12 分钟：复述一个项目故事并练习三个问题。",
+                "最后 8 分钟：检查时间、入口、设备和材料。");
+    }
+
+    private String mockWeeklyCareerReportJson(GenerateAgentWeeklyReportDTO dto) {
+        List<String> factNarrative = new ArrayList<>();
+        if (dto.getFacts() != null) {
+            for (GenerateAgentWeeklyReportDTO.WeeklyFact fact : dto.getFacts()) {
+                if (fact == null || factNarrative.size() >= MAX_WEEKLY_FACTS) {
+                    continue;
+                }
+                String label = firstText(fact.getLabel(), fact.getFactId());
+                if (!StringUtils.hasText(label)) {
+                    continue;
+                }
+                String value = fact.getValue() == null ? "" : "：" + String.valueOf(fact.getValue());
+                String unit = StringUtils.hasText(fact.getUnit()) ? " " + fact.getUnit().trim() : "";
+                factNarrative.add(label.trim() + value + unit);
+            }
+        }
+
+        List<String> signalNarrative = new ArrayList<>();
+        if (dto.getSignals() != null) {
+            for (GenerateAgentWeeklyReportDTO.WeeklySignal signal : dto.getSignals()) {
+                if (signal == null || signalNarrative.size() >= MAX_WEEKLY_SIGNALS) {
+                    continue;
+                }
+                String title = firstText(signal.getTitle(), signal.getSignalId());
+                String description = signal.getDescription();
+                if (StringUtils.hasText(title)) {
+                    signalNarrative.add(StringUtils.hasText(description)
+                            ? title.trim() + "：" + description.trim()
+                            : title.trim());
+                }
+            }
+        }
+
+        List<Map<String, Object>> hypotheses = new ArrayList<>();
+        if (dto.getAllowedSuggestions() != null) {
+            for (GenerateAgentWeeklyReportDTO.AllowedSuggestion suggestion : dto.getAllowedSuggestions()) {
+                if (suggestion == null || hypotheses.size() >= MAX_WEEKLY_SUGGESTIONS) {
+                    continue;
+                }
+                Map<String, Object> hypothesis = new LinkedHashMap<>();
+                hypothesis.put("hypothesisId", suggestion.getSuggestionId());
+                hypothesis.put("statement", firstText(suggestion.getStatement(), suggestion.getTitle()));
+                hypothesis.put("primaryVariable", suggestion.getPrimaryVariable());
+                hypothesis.put("fixedVariables", suggestion.getFixedVariables());
+                hypothesis.put("expectedSignal", suggestion.getExpectedSignal());
+                hypothesis.put("successMetric", suggestion.getSuccessMetric());
+                hypothesis.put("minimumSample", suggestion.getMinimumSample());
+                hypothesis.put("observationDays", suggestion.getObservationDays());
+                hypothesis.put("stopCondition", suggestion.getStopCondition());
+                hypothesis.put("confidenceLevel", suggestion.getConfidenceLevel());
+                hypothesis.put("basedOnSignalIds", suggestion.getBasedOnSignalIds());
+                hypothesis.put("sourceRefs", suggestion.getSourceRefs());
+                hypotheses.add(hypothesis);
+            }
+        }
+
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("summary", "本周周报已依据结构化事实、规则信号和明确限制生成。当前结论只用于复盘和设计下一轮可验证实验，不代表招聘结果或因果判断。");
+        json.put("factNarrative", factNarrative);
+        json.put("signalNarrative", signalNarrative);
+        json.put("hypotheses", hypotheses);
+        json.put("limits", dto.getLimits() == null ? List.of() : dto.getLimits());
         return toJson(json);
     }
 
@@ -4188,6 +5219,195 @@ public class AiServiceImpl implements AiService {
                 优先引用 RESUME_JOB_MATCH 证据；建议动作要能落到学习、刷题、简历优化或定向模拟面试。
                 示例：
                 {"profileSummary":"Java 和 Spring Boot 基础较稳定，Redis 场景证据仍有明显缺口。","overallLevel":2,"overallScore":68,"skillGaps":[{"skillName":"Redis","category":"中间件","targetLevel":4,"currentLevel":2,"gapLevel":2,"confidence":0.82,"severity":"HIGH","evidenceSources":["RESUME_JOB_MATCH"],"gapDescription":"简历缺少缓存一致性项目证据。","recommendedActions":["复习缓存一致性方案","练习 Redis 场景题"],"priority":1}],"nextPrioritySkills":["Redis"],"nextActions":["完成 Redis 缓存一致性复盘"]}
+                """;
+    }
+
+    private String defaultAgentReviewPrompt() {
+        return """
+                你是资深求职教练，请基于当日 Agent 任务记录生成结构化每日复盘。
+                用户 ID：{{userId}}
+                目标岗位 ID：{{targetJobId}}
+                复盘日期：{{reviewDate}}
+                任务总数：{{taskCount}}
+                已完成：{{doneCount}}
+                已跳过：{{skippedCount}}
+                待处理：{{todoCount}}
+                完成率：{{completionRate}}
+                Agent 成功率：{{agentSuccessRate}}
+                准备度分数：{{readinessScore}}
+                调用方提供任务数：{{providedTaskCount}}
+                本次展示任务数：{{displayedTaskCount}}
+                是否截断：{{tasksTruncated}}
+                任务展示说明：{{taskDisplayNotice}}
+                精简任务列表（仅含标题、状态、技能标签）：
+                {{tasksJson}}
+                今日重点技能：
+                {{topSkillsJson}}
+
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或额外解释。
+                所有给用户看的内容必须使用中文，可保留 Java、Redis、Spring Boot 等技术名。
+                顶层字段固定为 summary、facts、limits、drifts、adjustments、nextActions。
+                summary 为 2 到 3 句自然语言总结。
+                facts 为 2 到 5 条任务事实；limits 为 1 到 3 条数据或结论限制；
+                drifts 为 0 到 3 条计划偏移原因；adjustments 为 1 到 4 条下一轮调整建议；
+                nextActions 为 1 到 4 条明确、可执行的下一步动作。除 summary 外均为字符串数组。
+
+                必须遵守以下可信边界：
+                1. facts 只能陈述输入中已经记录的任务事实，不得补写未展示任务，也不得编造录用通知、面试通过、薪资变化等外部求职结果。
+                2. 不得给出与任务数量、状态、完成率、Agent 成功率或准备度分数矛盾的乐观结论。
+                3. 当 taskCount 小于 3 或 doneCount 小于 2 时，limits 必须明确写出“样本不足，结论仅为弱调整信号”。
+                4. 若任务列表已截断，只能结合统计值和已展示任务概括，不得假设未展示任务的标题、技能或结果。
+                5. 证据不足时应在 limits 中明确限制，不得把推测写成事实。
+
+                示例：
+                {"summary":"今天完成了主要任务，但样本仍不足以判断长期趋势。下一轮应优先收敛未完成项。","facts":["系统记录今日共有 2 个任务，其中 1 个已完成。"],"limits":["样本不足，结论仅为弱调整信号。","任务记录不能证明面试通过等外部结果。"],"drifts":["仍有任务未完成，原定节奏尚未完全闭环。"],"adjustments":["缩小下一轮任务范围并明确完成标准。"],"nextActions":["完成优先级最高的待处理任务。"]}
+                """;
+    }
+
+    private String defaultApplicationEventReviewPrompt() {
+        return """
+                你是基于结构化求职事实工作的保守复盘教练。请为一个已经记录的求职事件生成有限、可追溯的结构化复盘。
+                用户 ID：{{userId}}
+                事件 ID：{{eventId}}
+                投递 ID：{{applicationId}}
+                目标岗位 ID：{{targetJobId}}
+                规范场景：{{scenario}}
+                事件范围：{{eventScope}}
+                岗位名称：{{jobTitle}}
+                投递来源：{{applicationSource}}
+                当前投递状态：{{applicationStatus}}
+                事件类型：{{eventType}}
+                事件时间：{{eventTime}}
+                事件摘要：{{eventSummary}}
+                可引用事实：
+                {{factsJson}}
+                用户自我反思：
+                {{selfReflection}}
+                历史弱假设：
+                {{legacyHypothesesJson}}
+                置信度上限：
+                {{confidenceCeiling}}
+
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或解释文字。
+                全部自然语言必须使用中文，可保留 Java、Redis、Spring Boot 等技术名。
+                顶层字段固定为 summary、limits、signals、adjustments、nextActions。
+                summary 为字符串；limits、adjustments、nextActions 为字符串数组。
+                signals 为对象数组，每项字段固定为 content、factRefs、confidenceLevel。
+                factRefs 只能引用输入事实中已经存在的 id；confidenceLevel 只能是 LOW 或 MEDIUM。
+                不要输出 facts，不要改写用户原始事实，也不要把自我反思或历史假设升级为系统事实。
+
+                必须遵守以下可信边界：
+                1. 只能使用输入中的事实、事件元数据和明确限制，证据不足时必须写入 limits。
+                2. 不得推断招聘方内部原因、偏好、候选人排名、录用概率或通过概率。
+                3. REJECTION 场景没有直接原因时，只能确认拒绝结果，不能归因为学历、年龄、能力、性格、薪资或竞争力。
+                4. NO_RESPONSE 场景只能确认尚未收到明确反馈，不能推断流程终止、岗位关闭或简历未通过。
+                5. eventScope 为 SIMULATION 时，只能描述 CodeCoachAI 模拟面试，不得扩写为真实招聘面试反馈或结果。
+                6. 没有直接外部反馈时，只能写“值得复练”“需要继续验证”等弱信号，不能写成确定性评价。
+                7. 每条 signal 必须至少引用一个输入 fact id；没有有效事实时 signals 可以为空。
+                8. 每次只建议改变一个或少量可控变量，不得自动投递、自动发送、自动联系或自动修改计划。
+                9. summary 最多 500 字；limits 1 至 4 条；signals 0 至 4 条；adjustments 和 nextActions 各 1 至 4 条。
+
+                输出示例：
+                {"summary":"当前事实可以支持对表达过程做有限复盘，但不能代表招聘方评价。","limits":["缺少招聘方直接反馈，无法判断流程结果。"],"signals":[{"content":"项目异常链路的表达值得优先复练。","factRefs":["U1"],"confidenceLevel":"MEDIUM"}],"adjustments":["下一轮只补强异常链路的完整表达。"],"nextActions":["用三分钟重新讲述一次相关项目案例。"]}
+                """;
+    }
+
+    private String defaultInterviewPreparationPrompt() {
+        return """
+                你是基于已确认业务证据生成面试准备包的资深求职教练。请按照时间预算整理结构化、可执行的准备内容。
+                用户 ID：{{userId}}
+                日历事件 ID：{{calendarEventId}}
+                关联投递 ID：{{applicationId}}
+                时间预算（分钟）：{{timeBudgetMinutes}}
+                事件标题：{{eventTitle}}
+                事件描述：{{eventDescription}}
+                事件类型：{{eventType}}
+                事件本地时间：{{eventLocalTime}}
+                时区：{{timezone}}
+                地点或会议入口摘要：{{location}}
+                公司名称：{{companyName}}
+                岗位名称：{{jobTitle}}
+                目标岗位摘要：{{targetJobSummary}}
+                岗位要求摘要：
+                {{jobRequirementsJson}}
+                简历版本摘要：{{resumeVersionSummary}}
+                已确认项目证据：
+                {{projectEvidenceJson}}
+                准备度缺口：
+                {{readinessGapsJson}}
+                近期面试弱项：
+                {{recentInterviewWeaknessesJson}}
+                已确认记忆：
+                {{confirmedMemoriesJson}}
+                来源告警：
+                {{sourceWarningsJson}}
+                输入快照哈希：{{sourceHash}}
+
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或解释文字。
+                全部自然语言必须使用中文，可保留技术名。
+                顶层字段固定为 summary、facts、limits、focusAreas、projectStories、practiceQuestions、
+                checklist、schedule、nextActions、evidenceSources、confidenceLevel。
+                除 summary 和 confidenceLevel 外，其余字段均为字符串数组。
+                confidenceLevel 只能是 LOW、MEDIUM 或 HIGH。
+
+                必须遵守以下可信边界：
+                1. facts 只能复述日历事件和输入中已经加载的业务事实，不得补造公司技术栈、面试轮次、岗位要求、项目经历或外部评价。
+                2. practiceQuestions 必须写成“建议练习方向”，不得宣称是真题、必考题或预测题。
+                3. 关联投递为空时，只能使用事件信息和用户已有通用弱项，limits 必须明确数据限制，confidenceLevel 必须为 LOW。
+                4. 来源告警、岗位要求缺失、项目证据缺失或样本不足必须体现在 limits 中。
+                5. 不得把模拟面试内容写成真实招聘反馈，不得生成录用概率或招聘方内部判断。
+                6. 不得自动发送消息、自动联系招聘方、自动投递或自动修改用户计划。
+                7. 30 分钟预算最多 3 个关注点、1 个项目故事和 3 个练习问题。
+                8. 60 分钟预算最多 5 个关注点、2 个项目故事和 5 个练习问题。
+                9. 120 分钟预算最多 8 个关注点、3 个项目故事和 8 个练习问题。
+                10. schedule 必须与时间预算一致，nextActions 必须明确且可由用户手动完成。
+
+                输出示例：
+                {"summary":"已按 60 分钟预算整理准备重点。","facts":["日历记录的事件时间为 2026-07-20 14:00。"],"limits":["准备包不代表真实面试题。"],"focusAreas":["Redis 缓存一致性表达"],"projectStories":["按背景、职责、方案、取舍和结果整理已有项目案例。"],"practiceQuestions":["建议练习方向：结合真实项目说明缓存一致性方案和取舍。"],"checklist":["确认面试时间和会议入口。"],"schedule":["前 15 分钟核对重点。","中间 30 分钟练习项目与技术表达。","最后 15 分钟检查材料和设备。"],"nextActions":["完成一次三分钟项目复述。"],"evidenceSources":["CAREER_CALENDAR_EVENT"],"confidenceLevel":"MEDIUM"}
+                """;
+    }
+
+    private String defaultWeeklyCareerReportPrompt() {
+        return """
+                你是基于结构化求职事实工作的保守复盘教练。请把规则层已经计算好的事实、信号、限制和允许实验整理成中文周报叙事。
+                用户 ID：{{userId}}
+                周开始日期：{{weekStartDate}}
+                周结束日期：{{weekEndDate}}
+                目标范围：{{targetScopeKey}}
+                用户时区：{{timezone}}
+                规则事实：
+                {{factsJson}}
+                规则信号：
+                {{signalsJson}}
+                已知限制：
+                {{limitsJson}}
+                允许输出的实验建议：
+                {{allowedSuggestionsJson}}
+                允许展示的计划草案：
+                {{allowedPlanItemsJson}}
+
+                只输出一个 JSON 对象，不要输出 Markdown、代码块或解释文字。
+                全部自然语言必须使用中文，可保留技术名、来源 ID 和规范枚举。
+                顶层字段固定为 summary、factNarrative、signalNarrative、hypotheses、limits。
+                summary 为字符串；factNarrative、signalNarrative、limits 为字符串数组。
+                hypotheses 为对象数组，每项字段固定为：
+                hypothesisId、statement、primaryVariable、fixedVariables、expectedSignal、successMetric、
+                minimumSample、observationDays、stopCondition、confidenceLevel、basedOnSignalIds、sourceRefs。
+
+                必须遵守以下可信边界：
+                1. 只能使用输入中的事实、信号、限制和允许建议，不得新增或修改数字、日期、来源 ID、样本量、范围和可信等级。
+                2. factNarrative 只能叙述规则事实；signalNarrative 只能叙述规则信号；不得把信号升级为事实。
+                3. 不得把相关性写成因果，不得猜测招聘方原因、偏好、候选人排名、录用概率或通过概率。
+                4. 样本不足时必须使用“弱观察”“待验证”“需要补样本”等保守措辞。
+                5. hypotheses 只能从 allowedSuggestions 中选择，hypothesisId 必须使用对应 suggestionId，不得自行创造实验。
+                6. primaryVariable 必须原样使用输入允许值；fixedVariables、指标、最低样本、观察期、停止条件和来源引用不得改写。
+                7. 每份周报最多输出 2 条 hypotheses；没有允许建议时必须输出空数组。
+                8. 不得输出自动投递、自动发送、自动联系或自动修改计划的动作。
+                9. 不得把计划草案描述为已经执行；用户确认前只能称为建议或草案。
+                10. 输入被截断或来源缺失时，必须保留对应 limits，不得假装看到了完整数据。
+
+                输出示例：
+                {"summary":"本周事实可以支持有限复盘，但样本仍不足以判断长期策略效果。","factNarrative":["系统记录本周完成了 4 次投递。"],"signalNarrative":["当前仅形成渠道层面的弱观察，需要继续补样本。"],"hypotheses":[{"hypothesisId":"SUG-1","statement":"在固定岗位和简历版本的前提下观察渠道变化。","primaryVariable":"channel","fixedVariables":["target_job","resume_version"],"expectedSignal":"有效反馈数量变化","successMetric":"成熟样本中的有效反馈数","minimumSample":10,"observationDays":14,"stopCondition":"达到观察期或样本门槛后复盘","confidenceLevel":"LOW","basedOnSignalIds":["SIG-1"],"sourceRefs":["application:1"]}],"limits":["样本不足，当前只形成弱观察。"]}
                 """;
     }
 

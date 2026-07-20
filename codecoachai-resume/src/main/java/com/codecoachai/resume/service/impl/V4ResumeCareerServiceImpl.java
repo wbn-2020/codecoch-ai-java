@@ -6,6 +6,8 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
+import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
 import com.codecoachai.resume.domain.dto.ApplicationStatsAggregate;
 import com.codecoachai.resume.domain.dto.ApplicationStatusCount;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
@@ -28,6 +30,7 @@ import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventStructuredReviewVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationSummaryVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
@@ -51,12 +54,16 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -84,6 +91,17 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             "SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER");
     private static final String AGENT_APPLICATION_ORDER_LIMIT_SQL =
             "ORDER BY next_follow_up_at IS NULL ASC, next_follow_up_at ASC, updated_at DESC LIMIT 20";
+    private static final int CALENDAR_REMINDER_LIMIT = 5;
+    private static final int CALENDAR_REMINDER_QUERY_LIMIT = 50;
+    private static final int CALENDAR_REMINDER_LOOKAHEAD_DAYS = 2;
+    private static final int CALENDAR_REMINDER_OVERDUE_LOOKBACK_DAYS = 14;
+    private static final int CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT = 2;
+    private static final String CALENDAR_REMINDER_TYPE = "CALENDAR_REMINDER";
+    private static final String CALENDAR_REMINDER_BIZ_TYPE = "CAREER_CALENDAR_EVENT";
+    private static final Set<String> CALENDAR_REMINDER_ACTIVE_STATUSES = Set.of("CONFIRMED", "TENTATIVE");
+    private static final ZoneId CALENDAR_REMINDER_BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter CALENDAR_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper resumeProjectMapper;
@@ -92,6 +110,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final ResumeJobMatchReportMapper resumeJobMatchReportMapper;
     private final ResumeSuggestionAdoptionMapper resumeSuggestionAdoptionMapper;
     private final JobApplicationEventMapper jobApplicationEventMapper;
+    private final CareerCalendarEventMapper careerCalendarEventMapper;
     private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final NotificationBusinessResolver notificationBusinessResolver;
@@ -295,6 +314,14 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         LocalDate reminderDate = date == null ? effectiveNow.toLocalDate() : date;
+        List<ApplicationReminderCandidateVO> candidates = new ArrayList<>(
+                applicationReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(calendarReminderCandidates(userId, reminderDate, effectiveNow));
+        return candidates;
+    }
+
+    private List<ApplicationReminderCandidateVO> applicationReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                              LocalDateTime effectiveNow) {
         List<JobApplication> applications = jobApplicationMapper.selectReminderCandidates(
                 userId,
                 effectiveNow,
@@ -320,6 +347,172 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .limit(5)
                 .map(app -> toApplicationReminderCandidateVO(app, reminderDate, effectiveNow))
                 .toList();
+    }
+
+    /**
+     * 求职日历事件提醒候选：覆盖逾期事件以及 reminderDate 当天、次日开始的事件。
+     * 候选经现有 resume→task 通道进入通知中心，事件 id 作为 bizId 保证每日落库幂等。
+     */
+    private List<ApplicationReminderCandidateVO> calendarReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                           LocalDateTime effectiveNow) {
+        LocalDateTime nowUtc = LocalDateTime.ofInstant(
+                effectiveNow.atZone(CALENDAR_REMINDER_BUSINESS_ZONE).toInstant(), ZoneOffset.UTC);
+        LocalDateTime windowStartUtc = reminderDate
+                .minusDays(CALENDAR_REMINDER_OVERDUE_LOOKBACK_DAYS + 1L)
+                .atStartOfDay(ZoneOffset.UTC)
+                .toLocalDateTime();
+        LocalDateTime windowEndUtc = reminderDate
+                .plusDays(CALENDAR_REMINDER_LOOKAHEAD_DAYS + 2L)
+                .atStartOfDay(ZoneOffset.UTC)
+                .toLocalDateTime();
+
+        List<CareerCalendarEvent> events = careerCalendarEventMapper.selectList(
+                new LambdaQueryWrapper<CareerCalendarEvent>()
+                        .eq(CareerCalendarEvent::getUserId, userId)
+                        .eq(CareerCalendarEvent::getDeleted, CommonConstants.NO)
+                        .in(CareerCalendarEvent::getStatus, CALENDAR_REMINDER_ACTIVE_STATUSES)
+                        .ge(CareerCalendarEvent::getStartsAtUtc, windowStartUtc)
+                        .lt(CareerCalendarEvent::getStartsAtUtc, windowEndUtc)
+                        .orderByDesc(CareerCalendarEvent::getStartsAtUtc)
+                        .orderByDesc(CareerCalendarEvent::getId)
+                        .last("LIMIT " + CALENDAR_REMINDER_QUERY_LIMIT));
+        if (events == null || events.isEmpty()) {
+            return List.of();
+        }
+        List<CareerCalendarEvent> eligible = events.stream()
+                .filter(event -> isCalendarReminderCandidate(event, reminderDate, nowUtc))
+                .toList();
+        List<CareerCalendarEvent> overdue = eligible.stream()
+                .filter(event -> isCalendarEventOverdue(event, nowUtc))
+                .sorted(Comparator
+                        .comparing(CareerCalendarEvent::getEndsAtUtc,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(CareerCalendarEvent::getId, Comparator.reverseOrder()))
+                .toList();
+        List<CareerCalendarEvent> upcoming = eligible.stream()
+                .filter(event -> !isCalendarEventOverdue(event, nowUtc))
+                .sorted(Comparator
+                        .comparing(CareerCalendarEvent::getStartsAtUtc)
+                        .thenComparing(CareerCalendarEvent::getId))
+                .toList();
+
+        List<CareerCalendarEvent> selected = new ArrayList<>(CALENDAR_REMINDER_LIMIT);
+        overdue.stream()
+                .limit(CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT)
+                .forEach(selected::add);
+        upcoming.stream()
+                .limit(CALENDAR_REMINDER_LIMIT - selected.size())
+                .forEach(selected::add);
+        if (selected.size() < CALENDAR_REMINDER_LIMIT) {
+            overdue.stream()
+                    .skip(CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT)
+                    .limit(CALENDAR_REMINDER_LIMIT - selected.size())
+                    .forEach(selected::add);
+        }
+        return selected.stream()
+                .map(event -> toCalendarReminderCandidateVO(event, reminderDate, nowUtc))
+                .toList();
+    }
+
+    private boolean isCalendarReminderCandidate(CareerCalendarEvent event, LocalDate reminderDate,
+                                                LocalDateTime nowUtc) {
+        if (event == null || event.getStartsAtUtc() == null || event.getEndsAtUtc() == null
+                || Objects.equals(event.getDeleted(), CommonConstants.YES)) {
+            return false;
+        }
+        String status = event.getStatus() == null ? "" : event.getStatus().trim().toUpperCase(Locale.ROOT);
+        if (!CALENDAR_REMINDER_ACTIVE_STATUSES.contains(status)) {
+            return false;
+        }
+        if (isCalendarEventOverdue(event, nowUtc)) {
+            return true;
+        }
+        LocalDate eventDate = calendarEventLocalDate(event);
+        return Objects.equals(eventDate, reminderDate)
+                || Objects.equals(eventDate, reminderDate.plusDays(1));
+    }
+
+    private boolean isCalendarEventOverdue(CareerCalendarEvent event, LocalDateTime nowUtc) {
+        return event.getEndsAtUtc() != null && event.getEndsAtUtc().isBefore(nowUtc);
+    }
+
+    private ApplicationReminderCandidateVO toCalendarReminderCandidateVO(CareerCalendarEvent event, LocalDate reminderDate,
+                                                                        LocalDateTime nowUtc) {
+        boolean overdue = isCalendarEventOverdue(event, nowUtc);
+        LocalDate eventDate = calendarEventLocalDate(event);
+        ApplicationReminderCandidateVO vo = new ApplicationReminderCandidateVO();
+        vo.setType(CALENDAR_REMINDER_TYPE);
+        vo.setBizType(CALENDAR_REMINDER_BIZ_TYPE);
+        vo.setBizId(String.valueOf(event.getId()));
+        vo.setTitle(calendarReminderTitle(eventDate, reminderDate, overdue));
+        vo.setContent(calendarReminderContent(event, overdue));
+        vo.setActionUrl("/career-calendar");
+        vo.setFallbackPath("/career-calendar");
+        vo.setFallbackLabel("打开求职日历");
+        vo.setPlanDate(reminderDate);
+        return vo;
+    }
+
+    private String calendarReminderTitle(LocalDate eventDate, LocalDate reminderDate, boolean overdue) {
+        if (overdue) {
+            return "求职日程已逾期";
+        }
+        if (Objects.equals(eventDate, reminderDate)) {
+            return "今天的求职日程";
+        }
+        if (Objects.equals(eventDate, reminderDate.plusDays(1))) {
+            return "明天的求职日程";
+        }
+        return "临近的求职日程";
+    }
+
+    private String calendarReminderContent(CareerCalendarEvent event, boolean overdue) {
+        String title = StringUtils.hasText(event.getTitle()) ? event.getTitle() : "未命名日程";
+        String eventType = calendarEventTypeLabel(event.getEventType());
+        // 用事件自身时区把 UTC 起始时间还原为本地展示时间。
+        String localTime = formatCalendarLocalTime(event);
+        String suffix = overdue ? "已经开始，请及时跟进" : "即将开始";
+        return eventType + " · " + title + "（" + localTime + "）" + suffix;
+    }
+
+    private String calendarEventTypeLabel(String eventType) {
+        String normalized = eventType == null ? "" : eventType.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "APPLICATION" -> "投递";
+            case "INTERVIEW" -> "面试";
+            case "WRITTEN_TEST" -> "笔试";
+            case "FOLLOW_UP" -> "跟进";
+            case "THANK_YOU" -> "感谢信";
+            case "DEADLINE", "OFFER_DEADLINE" -> "Offer 截止";
+            case "REVIEW" -> "复盘";
+            default -> "求职日程";
+        };
+    }
+
+    private LocalDate calendarEventLocalDate(CareerCalendarEvent event) {
+        return LocalDateTime.ofInstant(
+                event.getStartsAtUtc().toInstant(ZoneOffset.UTC), calendarEventZone(event)).toLocalDate();
+    }
+
+    private String formatCalendarLocalTime(CareerCalendarEvent event) {
+        if (event.getStartsAtUtc() == null) {
+            return "时间待定";
+        }
+        LocalDateTime local = LocalDateTime.ofInstant(
+                event.getStartsAtUtc().toInstant(ZoneOffset.UTC), calendarEventZone(event));
+        return CALENDAR_TIME_FORMAT.format(local);
+    }
+
+    private ZoneId calendarEventZone(CareerCalendarEvent event) {
+        ZoneId zone;
+        try {
+            zone = StringUtils.hasText(event.getTimezone())
+                    ? ZoneId.of(event.getTimezone().trim())
+                    : CALENDAR_REMINDER_BUSINESS_ZONE;
+        } catch (RuntimeException ex) {
+            zone = CALENDAR_REMINDER_BUSINESS_ZONE;
+        }
+        return zone;
     }
 
     @Override
@@ -1675,7 +1868,17 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setEventTime(event.getEventTime());
         vo.setSummary(event.getSummary());
         vo.setReviewJson(event.getReviewJson());
-        vo.setReview(readMap(event.getReviewJson()));
+        Map<String, Object> review = readMap(event.getReviewJson());
+        vo.setReview(review);
+        Object structuredReview = review.get("structuredReview");
+        if (structuredReview != null) {
+            try {
+                vo.setStructuredReview(objectMapper.convertValue(
+                        structuredReview, JobApplicationEventStructuredReviewVO.class));
+            } catch (IllegalArgumentException ignored) {
+                // Historical malformed JSON remains available through review/reviewJson.
+            }
+        }
         vo.setCreatedAt(event.getCreatedAt());
         vo.setUpdatedAt(event.getUpdatedAt());
         return vo;

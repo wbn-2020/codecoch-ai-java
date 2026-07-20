@@ -1,6 +1,9 @@
 package com.codecoachai.ai.agent.service;
 
 import com.codecoachai.ai.agent.domain.dto.AgentWeekPlanGenerateDTO;
+import com.codecoachai.ai.agent.domain.context.AgentReviewPlanWeekResult;
+import com.codecoachai.ai.agent.domain.entity.AgentPlanChangeItem;
+import com.codecoachai.ai.agent.domain.entity.AgentPlanChangeSet;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.vo.weekplan.AgentPlanAdjustmentVO;
 import com.codecoachai.ai.agent.domain.vo.weekplan.AgentPlanInfluenceVO;
@@ -23,4 +26,12 @@ public interface AgentWeekPlanService {
     List<AgentPlanInfluenceVO> influences(Long userId, Long weekPlanId);
 
     void recordTaskAdjustment(Long userId, AgentTask before, AgentTask after, String adjustmentType, String reason);
+
+    AgentReviewPlanWeekResult recordPendingReviewChange(Long userId,
+                                                        AgentPlanChangeSet changeSet,
+                                                        List<AgentPlanChangeItem> items);
+
+    AgentReviewPlanWeekResult rebuildAfterReviewChange(Long userId,
+                                                       AgentPlanChangeSet changeSet,
+                                                       List<AgentPlanChangeItem> items);
 }

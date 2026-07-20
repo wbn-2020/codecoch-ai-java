@@ -2,6 +2,7 @@ package com.codecoachai.task.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
@@ -29,6 +30,9 @@ public class Notification extends BaseEntity {
 
     /** 关联业务 ID（点击跳转用） */
     private String bizId;
+
+    /** 每日提醒的业务日期；普通通知为空 */
+    private LocalDate reminderDate;
 
     /** 0=未读 1=已读 */
     private Integer readStatus;

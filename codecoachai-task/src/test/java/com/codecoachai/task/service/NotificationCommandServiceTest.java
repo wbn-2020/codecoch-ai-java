@@ -2,6 +2,7 @@ package com.codecoachai.task.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -12,12 +13,16 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.task.controller.NotificationController.NotificationVO;
 import com.codecoachai.task.domain.entity.Notification;
 import com.codecoachai.task.mapper.NotificationMapper;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationCommandServiceTest {
@@ -54,6 +59,59 @@ class NotificationCommandServiceTest {
         assertEquals(0, service.resolveByBiz(null, "SYSTEM", "NOTICE", "1", "done"));
 
         verify(notificationMapper, never()).update(any(), any(LambdaUpdateWrapper.class));
+    }
+
+    @Test
+    void ensureDailyReminderUsesAtomicBusinessDateInsert() {
+        NotificationCommandService service = new NotificationCommandService(notificationService, notificationMapper);
+        LocalDate reminderDate = LocalDate.of(2026, 7, 20);
+
+        service.ensureDailyReminder(
+                9L,
+                "CALENDAR_REMINDER",
+                "今天的求职日程",
+                "面试即将开始",
+                "CAREER_CALENDAR_EVENT",
+                "501",
+                reminderDate);
+
+        verify(notificationMapper).insertDailyReminderIfAbsent(
+                eq(9L),
+                eq("CALENDAR_REMINDER"),
+                eq("今天的求职日程"),
+                eq("面试即将开始"),
+                eq("CAREER_CALENDAR_EVENT"),
+                eq("501"),
+                eq(reminderDate),
+                any(LocalDateTime.class));
+        verify(notificationService, never()).createNotification(
+                any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void ensureDailyReminderFallsBackForLegacySchema() {
+        NotificationCommandService service = new NotificationCommandService(notificationService, notificationMapper);
+        when(notificationMapper.insertDailyReminderIfAbsent(
+                any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenThrow(new DataIntegrityViolationException("unknown reminder_date"));
+        when(notificationMapper.selectList(any())).thenReturn(List.of());
+
+        service.ensureDailyReminder(
+                9L,
+                "CALENDAR_REMINDER",
+                "今天的求职日程",
+                "面试即将开始",
+                "CAREER_CALENDAR_EVENT",
+                "501",
+                LocalDate.of(2026, 7, 20));
+
+        verify(notificationService).createNotification(
+                9L,
+                "CALENDAR_REMINDER",
+                "CAREER_CALENDAR_EVENT",
+                "501",
+                "今天的求职日程",
+                "面试即将开始");
     }
 
     @Test

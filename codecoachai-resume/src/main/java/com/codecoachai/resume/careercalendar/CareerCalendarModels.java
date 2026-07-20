@@ -48,6 +48,11 @@ public final class CareerCalendarModels {
         private String sourceRef;
         private String externalUid;
         private Long importBatchId;
+        private String preparationStatus;
+        private Long preparationAiCallLogId;
+        private LocalDateTime preparationGeneratedAt;
+        private String preparationSourceHash;
+        private Boolean preparationStale;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
     }

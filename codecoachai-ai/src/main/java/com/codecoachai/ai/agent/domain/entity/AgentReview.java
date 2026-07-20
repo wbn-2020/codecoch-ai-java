@@ -14,6 +14,12 @@ public class AgentReview extends BaseEntity {
     private Long userId;
     private Long targetJobId;
     private LocalDate reviewDate;
+    private String reviewType;
+    private Long sourceTaskId;
+    private String idempotencyKey;
+    private String targetScopeKey;
+    private Integer reviewVersion;
+    private String sourceSnapshotHash;
     private String summary;
     private Integer doneCount;
     private Integer skippedCount;
@@ -24,4 +30,6 @@ public class AgentReview extends BaseEntity {
     private String reviewJson;
     private Long agentRunId;
     private Long aiCallLogId;
+    private String confidenceLevel;
+    private Boolean fallback;
 }

@@ -5,6 +5,7 @@ import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.resume.careercalendar.CareerCalendarModels.EventSave;
 import com.codecoachai.resume.careercalendar.CareerCalendarModels.EventView;
+import io.swagger.v3.oas.annotations.Operation;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import java.io.IOException;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class CareerCalendarController {
 
     private final CareerCalendarService careerCalendarService;
+    private final CareerInterviewPreparationService careerInterviewPreparationService;
 
     @GetMapping("/events")
     public Result<List<EventView>> list(@RequestParam(required = false) Instant from,
@@ -58,6 +60,26 @@ public class CareerCalendarController {
         SecurityAssert.requireLoginUserId();
         careerCalendarService.delete(eventId);
         return Result.success();
+    }
+
+    @GetMapping("/events/{eventId}/preparation")
+    @Operation(summary = "获取日历面试准备包")
+    public Result<CareerInterviewPreparationVO> getPreparation(@PathVariable Long eventId) {
+        SecurityAssert.requireLoginUserId();
+        return Result.success(careerInterviewPreparationService.get(eventId));
+    }
+
+    @OperationLog(module = "career-calendar", action = "GENERATE_INTERVIEW_PREPARATION",
+            description = "生成日历面试准备包", logResponse = false)
+    @Operation(summary = "生成日历面试准备包")
+    @PostMapping("/events/{eventId}/preparation")
+    public Result<CareerInterviewPreparationVO> generatePreparation(
+            @PathVariable Long eventId,
+            @RequestBody(required = false) CareerInterviewPreparationGenerateDTO request) {
+        SecurityAssert.requireLoginUserId();
+        CareerInterviewPreparationGenerateDTO actual =
+                request == null ? new CareerInterviewPreparationGenerateDTO() : request;
+        return Result.success(careerInterviewPreparationService.generate(eventId, actual));
     }
 
     @GetMapping("/export.csv")

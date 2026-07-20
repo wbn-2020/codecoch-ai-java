@@ -38,6 +38,8 @@ public class CareerCalendarServiceImpl implements CareerCalendarService {
     private static final DateTimeFormatter ISO_OFFSET = DateTimeFormatter.ISO_OFFSET_DATE_TIME;
     private static final Duration MAX_WINDOW = Duration.ofDays(366);
     private static final int MAX_EVENTS = 5000;
+    private static final String PREPARATION_STATUS_GENERATING = "GENERATING";
+    private static final String PREPARATION_STATUS_STALE = "STALE";
 
     private final CareerCalendarEventMapper calendarEventMapper;
     private final JobApplicationMapper applicationMapper;
@@ -66,11 +68,18 @@ public class CareerCalendarServiceImpl implements CareerCalendarService {
         Long userId = SecurityAssert.requireLoginUserId();
         CareerCalendarEvent entity = ownedEvent(userId, eventId);
         validateApplication(userId, request.getApplicationId());
+        boolean hadPreparation = hasPreparation(entity);
         fill(entity, request.getApplicationId(), request.getTitle(), request.getEventType(),
                 request.getStartsAt(), request.getEndsAt(), request.getTimezone(),
                 Boolean.TRUE.equals(request.getAllDay()), request.getLocation(), request.getDescription(),
                 request.getStatus());
+        if (hadPreparation) {
+            entity.setPreparationStatus(PREPARATION_STATUS_STALE);
+        }
         calendarEventMapper.updateById(entity);
+        if (calendarEventMapper.markPreparationStale(eventId, userId) == 1) {
+            entity.setPreparationStatus(PREPARATION_STATUS_STALE);
+        }
         return toView(entity);
     }
 
@@ -235,6 +244,11 @@ public class CareerCalendarServiceImpl implements CareerCalendarService {
         view.setSourceRef(entity.getSourceRef());
         view.setExternalUid(entity.getExternalUid());
         view.setImportBatchId(entity.getImportBatchId());
+        view.setPreparationStatus(entity.getPreparationStatus());
+        view.setPreparationAiCallLogId(entity.getPreparationAiCallLogId());
+        view.setPreparationGeneratedAt(entity.getPreparationGeneratedAt());
+        view.setPreparationSourceHash(entity.getPreparationSourceHash());
+        view.setPreparationStale(isPreparationUnavailable(entity.getPreparationStatus()));
         view.setCreatedAt(entity.getCreatedAt());
         view.setUpdatedAt(entity.getUpdatedAt());
         return view;
@@ -298,6 +312,20 @@ public class CareerCalendarServiceImpl implements CareerCalendarService {
 
     private String text(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private boolean hasPreparation(CareerCalendarEvent event) {
+        return StringUtils.hasText(event.getPreparationJson())
+                || StringUtils.hasText(event.getPreparationStatus())
+                || StringUtils.hasText(event.getPreparationSourceHash())
+                || event.getPreparationGeneratedAt() != null;
+    }
+
+    private boolean isPreparationUnavailable(String status) {
+        String normalized = StringUtils.hasText(status)
+                ? status.trim().toUpperCase(Locale.ROOT) : "";
+        return PREPARATION_STATUS_STALE.equals(normalized)
+                || PREPARATION_STATUS_GENERATING.equals(normalized);
     }
 
     private record Window(Instant from, Instant to) {

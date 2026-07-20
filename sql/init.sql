@@ -689,6 +689,41 @@ CREATE TABLE IF NOT EXISTS ai_call_log (
   KEY idx_ai_call_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS notification (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL COMMENT 'recipient user id; 0 means broadcast',
+  type VARCHAR(32) NOT NULL COMMENT 'notification type',
+  title VARCHAR(255) NOT NULL,
+  content TEXT DEFAULT NULL,
+  biz_type VARCHAR(64) DEFAULT NULL COMMENT 'related business type',
+  biz_id VARCHAR(64) DEFAULT NULL COMMENT 'related business id',
+  reminder_date DATE DEFAULT NULL COMMENT 'business date used to deduplicate daily reminders',
+  read_status TINYINT NOT NULL DEFAULT 0 COMMENT '0 unread, 1 read',
+  read_at DATETIME DEFAULT NULL,
+  resolved_status TINYINT NOT NULL DEFAULT 0 COMMENT '0 unresolved, 1 resolved',
+  resolved_at DATETIME DEFAULT NULL,
+  resolved_reason VARCHAR(64) DEFAULT NULL,
+  send_status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS / FAILED / UNKNOWN',
+  send_error VARCHAR(1000) DEFAULT NULL,
+  sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_reminder_date DATE GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN reminder_date ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_notification_daily_reminder (
+    user_id, type, biz_type, biz_id, live_reminder_date
+  ),
+  KEY idx_notification_user_read (user_id, read_status, created_at),
+  KEY idx_notification_created_at (created_at),
+  KEY idx_notification_send_status (send_status, created_at),
+  KEY idx_notification_user_type_biz_resolved (
+    user_id, type, biz_type, biz_id, resolved_status
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='in-app notification';
+
 CREATE TABLE IF NOT EXISTS interview_session (
     id BIGINT NOT NULL AUTO_INCREMENT,
     user_id BIGINT NOT NULL,
