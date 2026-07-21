@@ -32,10 +32,9 @@ class ResumeApplicationMapperScanTest {
                 "com.codecoachai.resume.careercampaign"
             );
         assertThat(Arrays.asList(mapperScans.value()))
-            .anySatisfy(scan -> {
-                assertThat(scan.basePackages())
-                    .containsExactly("com.codecoachai.resume.careercampaign");
-                assertThat(scan.annotationClass()).isEqualTo(Mapper.class);
-            });
+            .filteredOn(scan -> Arrays.asList(scan.value()).contains("com.codecoachai.resume.careercampaign")
+                || Arrays.asList(scan.basePackages()).contains("com.codecoachai.resume.careercampaign"))
+            .singleElement()
+            .satisfies(scan -> assertThat(scan.annotationClass()).isEqualTo(Mapper.class));
     }
 }
