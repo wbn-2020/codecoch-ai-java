@@ -86,6 +86,10 @@ spring:
           uri: lb://codecoachai-resume
           predicates:
             - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
+        - id: resume-v7-career
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/career-campaigns,/career-campaigns/**,/interview-processes,/interview-processes/**,/interview-rounds,/interview-rounds/**,/interview-round-contacts,/interview-round-contacts/**,/offers,/offers/**,/career-contacts,/career-contacts/**,/career-activities,/career-activities/**,/research-sources,/research-sources/**,/research-snapshots,/research-snapshots/**
         # Kept separate from the large resume route because the current Gateway runtime
         # does not reliably register this token when it is part of that aggregate predicate.
         - id: codecoachai-resume-claim-audits
