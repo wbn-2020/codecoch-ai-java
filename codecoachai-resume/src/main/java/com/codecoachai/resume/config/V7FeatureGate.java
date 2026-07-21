@@ -4,29 +4,47 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import java.util.ArrayList;
 import java.util.List;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.stereotype.Component;
 
 /**
  * V7 后端最终门禁。前端开关只负责隐藏入口，真正的能力保护必须在服务端完成。
  */
 @Component
+@RefreshScope
+@ConfigurationProperties(prefix = "codecoachai.features.v7")
 public class V7FeatureGate {
 
-    @Value("${codecoachai.features.v7.campaign-workspace:false}")
     private boolean campaignWorkspace;
 
-    @Value("${codecoachai.features.v7.real-interview:false}")
     private boolean realInterview;
 
-    @Value("${codecoachai.features.v7.offer:false}")
     private boolean offer;
 
-    @Value("${codecoachai.features.v7.contact-activity:false}")
     private boolean contactActivity;
 
-    @Value("${codecoachai.features.v7.research:false}")
     private boolean research;
+
+    public void setCampaignWorkspace(boolean campaignWorkspace) {
+        this.campaignWorkspace = campaignWorkspace;
+    }
+
+    public void setRealInterview(boolean realInterview) {
+        this.realInterview = realInterview;
+    }
+
+    public void setOffer(boolean offer) {
+        this.offer = offer;
+    }
+
+    public void setContactActivity(boolean contactActivity) {
+        this.contactActivity = contactActivity;
+    }
+
+    public void setResearch(boolean research) {
+        this.research = research;
+    }
 
     public void requireCampaignWorkspace() {
         require(campaignWorkspace, "当前版本未开启求职周期与机会工作区功能。");

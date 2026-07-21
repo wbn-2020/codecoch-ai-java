@@ -2,17 +2,26 @@ package com.codecoachai.ai.agent.config;
 
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.stereotype.Component;
 
 @Component
+@RefreshScope
+@ConfigurationProperties(prefix = "codecoachai.features.v7")
 public class V7FeatureGate {
 
-    @Value("${codecoachai.features.v7.external-plan-source:false}")
     private boolean externalPlanSource;
 
-    @Value("${codecoachai.features.v7.campaign-review:false}")
     private boolean campaignReview;
+
+    public void setExternalPlanSource(boolean externalPlanSource) {
+        this.externalPlanSource = externalPlanSource;
+    }
+
+    public void setCampaignReview(boolean campaignReview) {
+        this.campaignReview = campaignReview;
+    }
 
     public void requireExternalPlanSource() {
         require(externalPlanSource, "当前版本未开启外部计划来源功能。");

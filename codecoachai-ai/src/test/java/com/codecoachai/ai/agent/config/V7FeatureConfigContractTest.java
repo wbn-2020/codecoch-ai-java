@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.config;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -8,6 +9,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.env.StandardEnvironment;
 
 class V7FeatureConfigContractTest {
 
@@ -24,6 +30,25 @@ class V7FeatureConfigContractTest {
         assertFalse(applicationYaml.contains("CODECOACHAI_V7_CAMPAIGN_REVIEW_ENABLED"));
         assertTrue(nacosYaml.contains("external-plan-source: true"));
         assertTrue(nacosYaml.contains("campaign-review: true"));
+    }
+
+    @Test
+    void authoritativeNacosYamlBindsEveryAiV7Capability() throws IOException {
+        V7FeatureGate gate = bindNacosGate(
+                repositoryRoot().resolve("docs/nacos/codecoachai-ai-dev.yml"));
+
+        assertDoesNotThrow(gate::requireExternalPlanSource);
+        assertDoesNotThrow(gate::requireCampaignReview);
+    }
+
+    private static V7FeatureGate bindNacosGate(Path path) throws IOException {
+        StandardEnvironment environment = new StandardEnvironment();
+        YamlPropertySourceLoader loader = new YamlPropertySourceLoader();
+        loader.load("v7-ai-nacos", new FileSystemResource(path))
+                .forEach(environment.getPropertySources()::addFirst);
+        return Binder.get(environment)
+                .bind("codecoachai.features.v7", Bindable.of(V7FeatureGate.class))
+                .orElseThrow(() -> new IllegalStateException("AI V7 Nacos properties did not bind"));
     }
 
     private static Path repositoryRoot() {
