@@ -250,20 +250,22 @@ class GatewayRouteContractTest {
 
     @Test
     void v7CareerResourcesUseTheirDedicatedGatewayRoute() throws IOException {
+        Map<String, String> expectedRouteIds = Map.ofEntries(
+                Map.entry("/career-campaigns/contract-probe", "codecoachai-resume-v7-campaigns"),
+                Map.entry("/interview-processes/contract-probe", "codecoachai-resume-v7-interviews"),
+                Map.entry("/interview-rounds/contract-probe", "codecoachai-resume-v7-interviews"),
+                Map.entry("/interview-round-contacts/contract-probe", "codecoachai-resume-v7-interviews"),
+                Map.entry("/offers/contract-probe", "codecoachai-resume-v7-offers"),
+                Map.entry("/career-contacts/contract-probe", "codecoachai-resume-v7-contact-activity"),
+                Map.entry("/career-activities/contract-probe", "codecoachai-resume-v7-contact-activity"),
+                Map.entry("/research-sources/contract-probe", "codecoachai-resume-v7-research"),
+                Map.entry("/research-snapshots/contract-probe", "codecoachai-resume-v7-research"));
         for (GatewayConfig config : readGatewayConfigs().values()) {
-            for (String path : List.of(
-                    "/career-campaigns/contract-probe",
-                    "/interview-processes/contract-probe",
-                    "/interview-rounds/contract-probe",
-                    "/interview-round-contacts/contract-probe",
-                    "/offers/contract-probe",
-                    "/career-contacts/contract-probe",
-                    "/career-activities/contract-probe",
-                    "/research-sources/contract-probe",
-                    "/research-snapshots/contract-probe")) {
+            for (Map.Entry<String, String> entry : expectedRouteIds.entrySet()) {
+                String path = entry.getKey();
                 GatewayRoute route = config.routesMatching(path).get(0);
                 assertEquals(
-                        "resume-v7-career",
+                        entry.getValue(),
                         route.id(),
                         () -> config.relativePath()
                                 + " must keep V7 career resource " + path
