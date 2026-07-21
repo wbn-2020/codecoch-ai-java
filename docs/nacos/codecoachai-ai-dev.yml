@@ -52,3 +52,7 @@ codecoachai:
       weekly-report-enabled: true
       weekly-report-ai-enabled: true
       weekly-report-plan-draft-enabled: false
+  features:
+    v7:
+      external-plan-source: true
+      campaign-review: true

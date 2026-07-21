@@ -18,10 +18,6 @@ spring:
         file-extension: yml
 
 codecoachai:
-  features:
-    v7:
-      external-plan-source: ${CODECOACHAI_V7_EXTERNAL_PLAN_SOURCE_ENABLED:false}
-      campaign-review: ${CODECOACHAI_V7_CAMPAIGN_REVIEW_ENABLED:false}
   v4:
     features:
       growth-enabled: ${CODECOACHAI_V4_GROWTH_ENABLED:true}

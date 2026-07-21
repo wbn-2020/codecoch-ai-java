@@ -18,3 +18,10 @@ codecoachai:
       # Upload admission concurrency and wait settings apply at resume service startup; restart is required after changes.
       max-concurrent-uploads: ${RESUME_EXPORT_MAX_CONCURRENT_UPLOADS:2}
       upload-acquire-timeout-millis: ${RESUME_EXPORT_UPLOAD_ACQUIRE_TIMEOUT_MILLIS:250}
+  features:
+    v7:
+      campaign-workspace: true
+      real-interview: true
+      offer: true
+      contact-activity: true
+      research: true
