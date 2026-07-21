@@ -50,26 +50,6 @@ spring:
           uri: lb://codecoachai-resume
           predicates:
             - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/skill-profiles,/skill-profiles/**,/job-targets,/job-targets/**,/resume-job-match,/resume-job-match/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/resume-versions,/resume-versions/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**,/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
-        - id: codecoachai-resume-v7-campaigns
-          uri: lb://codecoachai-resume
-          predicates:
-            - Path=/career-campaigns,/career-campaigns/**
-        - id: codecoachai-resume-v7-interviews
-          uri: lb://codecoachai-resume
-          predicates:
-            - Path=/interview-processes,/interview-processes/**,/interview-rounds,/interview-rounds/**,/interview-round-contacts,/interview-round-contacts/**
-        - id: codecoachai-resume-v7-offers
-          uri: lb://codecoachai-resume
-          predicates:
-            - Path=/offers,/offers/**
-        - id: codecoachai-resume-v7-contact-activity
-          uri: lb://codecoachai-resume
-          predicates:
-            - Path=/career-contacts,/career-contacts/**,/career-activities,/career-activities/**
-        - id: codecoachai-resume-v7-research
-          uri: lb://codecoachai-resume
-          predicates:
-            - Path=/research-sources,/research-sources/**,/research-snapshots,/research-snapshots/**
         # Kept separate from the large resume route because the current Gateway runtime
         # does not reliably register this token when it is part of that aggregate predicate.
         - id: resume-claim-audits

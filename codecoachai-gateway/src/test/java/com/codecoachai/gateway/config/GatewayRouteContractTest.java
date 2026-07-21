@@ -47,15 +47,6 @@ class GatewayRouteContractTest {
             "/job-experiments-v2",
             "/career-calendar",
             "/career-imports",
-            "/career-campaigns",
-            "/interview-processes",
-            "/interview-rounds",
-            "/interview-round-contacts",
-            "/offers",
-            "/career-contacts",
-            "/career-activities",
-            "/research-sources",
-            "/research-snapshots",
             "/portfolio-demo",
             "/interview-comparisons",
             "/interview-scenarios",
@@ -104,15 +95,6 @@ class GatewayRouteContractTest {
             routeFamily("job experiments v2", "/job-experiments-v2/contract-probe", "resume"),
             routeFamily("career calendar", "/career-calendar/contract-probe", "resume"),
             routeFamily("career imports", "/career-imports/contract-probe", "resume"),
-            routeFamily("career campaigns", "/career-campaigns/contract-probe", "resume"),
-            routeFamily("interview processes", "/interview-processes/contract-probe", "resume"),
-            routeFamily("interview rounds", "/interview-rounds/contract-probe", "resume"),
-            routeFamily("interview round contacts", "/interview-round-contacts/contract-probe", "resume"),
-            routeFamily("offers", "/offers/contract-probe", "resume"),
-            routeFamily("career contacts", "/career-contacts/contract-probe", "resume"),
-            routeFamily("career activities", "/career-activities/contract-probe", "resume"),
-            routeFamily("research sources", "/research-sources/contract-probe", "resume"),
-            routeFamily("research snapshots", "/research-snapshots/contract-probe", "resume"),
             routeFamily("portfolio demo", "/portfolio-demo/contract-probe", "resume"),
             routeFamily("interviews", "/interviews/contract-probe", "interview"),
             routeFamily("interview comparisons", "/interview-comparisons/contract-probe", "interview"),
@@ -245,32 +227,6 @@ class GatewayRouteContractTest {
                     route.pathPatterns(),
                     () -> config.relativePath()
                             + " must keep resume claim audits isolated from the aggregate resume route");
-        }
-    }
-
-    @Test
-    void v7CareerResourcesUseTheirDedicatedGatewayRoute() throws IOException {
-        Map<String, String> expectedRouteIds = Map.ofEntries(
-                Map.entry("/career-campaigns/contract-probe", "codecoachai-resume-v7-campaigns"),
-                Map.entry("/interview-processes/contract-probe", "codecoachai-resume-v7-interviews"),
-                Map.entry("/interview-rounds/contract-probe", "codecoachai-resume-v7-interviews"),
-                Map.entry("/interview-round-contacts/contract-probe", "codecoachai-resume-v7-interviews"),
-                Map.entry("/offers/contract-probe", "codecoachai-resume-v7-offers"),
-                Map.entry("/career-contacts/contract-probe", "codecoachai-resume-v7-contact-activity"),
-                Map.entry("/career-activities/contract-probe", "codecoachai-resume-v7-contact-activity"),
-                Map.entry("/research-sources/contract-probe", "codecoachai-resume-v7-research"),
-                Map.entry("/research-snapshots/contract-probe", "codecoachai-resume-v7-research"));
-        for (GatewayConfig config : readGatewayConfigs().values()) {
-            for (Map.Entry<String, String> entry : expectedRouteIds.entrySet()) {
-                String path = entry.getKey();
-                GatewayRoute route = config.routesMatching(path).get(0);
-                assertEquals(
-                        entry.getValue(),
-                        route.id(),
-                        () -> config.relativePath()
-                                + " must keep V7 career resource " + path
-                                + " on the dedicated resume route; actual route=" + route);
-            }
         }
     }
 
