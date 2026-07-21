@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -132,7 +133,7 @@ class CareerInterviewServiceImplTest {
             inserted.setId(40L);
             return 1;
         });
-        when(eventMapper.selectCreatedByProcessIdempotency(20L, 10L, any()))
+        when(eventMapper.selectCreatedByProcessIdempotency(eq(20L), eq(10L), any()))
                 .thenReturn(null);
         when(eventMapper.selectByRound(40L, 10L)).thenReturn(List.of());
 
@@ -161,7 +162,7 @@ class CareerInterviewServiceImplTest {
         CareerInterviewRound round = round(1L, "SCHEDULED");
         AtomicReference<CareerInterviewRoundEvent> stored = new AtomicReference<>();
         when(roundMapper.selectOwned(1L, 10L)).thenReturn(round);
-        when(eventMapper.selectByIdempotency(1L, 10L, any()))
+        when(eventMapper.selectByIdempotency(eq(1L), eq(10L), any()))
                 .thenAnswer(invocation -> stored.get());
         when(roundMapper.transition(1L, "SCHEDULED", "PREPARING", 1))
                 .thenAnswer(invocation -> {
