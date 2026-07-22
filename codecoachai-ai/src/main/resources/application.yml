@@ -30,6 +30,14 @@ codecoachai:
       weekly-report-ai-enabled: ${CODECOACHAI_V6_WEEKLY_REPORT_AI_ENABLED:false}
       weekly-report-plan-draft-enabled: ${CODECOACHAI_V6_WEEKLY_REPORT_PLAN_DRAFT_ENABLED:false}
 
+  features:
+    v8:
+      campaign-cockpit: ${CODECOACHAI_V8_CAMPAIGN_COCKPIT:false}
+      campaign-pulse: ${CODECOACHAI_V8_CAMPAIGN_PULSE:false}
+      campaign-plan: ${CODECOACHAI_V8_CAMPAIGN_PLAN:false}
+      campaign-portfolio: ${CODECOACHAI_V8_CAMPAIGN_PORTFOLIO:false}
+      campaign-export: ${CODECOACHAI_V8_CAMPAIGN_EXPORT:false}
+
   knowledge:
     collection: personal_knowledge_chunk
     chunk-strategy: STRUCTURED_MARKDOWN_BLOCK_800_OVERLAP_80

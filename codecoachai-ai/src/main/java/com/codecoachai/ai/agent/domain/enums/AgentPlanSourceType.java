@@ -5,7 +5,8 @@ import java.util.Locale;
 public enum AgentPlanSourceType {
     DAILY_REVIEW,
     WEEKLY_REPORT,
-    INTERVIEW_PREPARATION;
+    INTERVIEW_PREPARATION,
+    CAMPAIGN_PULSE;
 
     public static AgentPlanSourceType parse(String value) {
         if (value == null || value.trim().isEmpty()) {

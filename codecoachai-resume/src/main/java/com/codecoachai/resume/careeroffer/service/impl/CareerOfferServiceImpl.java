@@ -264,7 +264,8 @@ public class CareerOfferServiceImpl implements CareerOfferService, CareerOfferRe
                 "ACCEPTED", "ACCEPTED", "Offer decision confirmed", keyHash, payloadHash);
         if (Boolean.TRUE.equals(request.getCloseCampaign())) {
             campaignClosurePort.close(userId, decision.getCampaignId(),
-                    Boolean.TRUE.equals(request.getRetainOpenApplications()));
+                    Boolean.TRUE.equals(request.getRetainOpenApplications()),
+                    "offer-close:" + idempotencyKey);
         }
         return decisionView(ownedDecision(userId, decisionId));
     }

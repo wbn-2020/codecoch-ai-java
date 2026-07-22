@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import com.fasterxml.jackson.annotation.JsonAlias;
 import lombok.Data;
 
 public final class ApplicationWorkspaceModels {
@@ -18,9 +19,19 @@ public final class ApplicationWorkspaceModels {
 
     @Data
     public static class StatusTransitionRequest {
+        @JsonAlias({"status"})
         private String targetStatus;
+        @JsonAlias({"lockVersion"})
         private Integer expectedLockVersion;
         private String idempotencyKey;
+        @JsonAlias({"reason", "transitionNote"})
+        private String note;
+    }
+
+    @Data
+    public static class StatusTransitionView {
+        private JobApplication application;
+        private List<String> allowedTransitions = new ArrayList<>();
     }
 
     @Data
@@ -32,6 +43,7 @@ public final class ApplicationWorkspaceModels {
         private List<JobApplicationPackage> materials = new ArrayList<>();
         private List<String> nextSteps = new ArrayList<>();
         private List<String> capabilities = new ArrayList<>();
+        private List<String> allowedTransitions = new ArrayList<>();
         private Map<String, Coverage> coverage = new LinkedHashMap<>();
         private List<String> warnings = new ArrayList<>();
     }

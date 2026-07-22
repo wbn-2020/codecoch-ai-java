@@ -120,6 +120,9 @@ public class CareerCampaignReviewPersistenceServiceImpl
             CareerCampaignReviewVO result,
             String inputHash,
             String requestId,
+            String evidenceManifestJson,
+            String evidenceSchemaVersion,
+            String ruleVersion,
             List<CareerCampaignReviewSource> sources) {
         CareerCampaignReview locked = reviewMapper.selectIdentityForUpdate(
                 userId, review.getCampaignId());
@@ -146,6 +149,9 @@ public class CareerCampaignReviewPersistenceServiceImpl
         snapshot.setMemoryCandidatesJson(write(result.getMemoryCandidates()));
         snapshot.setExperimentCandidatesJson(write(result.getExperimentCandidates()));
         snapshot.setNextCycleActionsJson(write(result.getNextCycleActions()));
+        snapshot.setEvidenceManifestJson(evidenceManifestJson);
+        snapshot.setEvidenceSchemaVersion(evidenceSchemaVersion);
+        snapshot.setRuleVersion(ruleVersion);
         snapshot.setResultSource(Boolean.TRUE.equals(result.getFallback()) ? "FALLBACK" : "AI");
         snapshot.setFallback(Boolean.TRUE.equals(result.getFallback()) ? 1 : 0);
         snapshot.setFallbackReason(result.getFallbackReason());

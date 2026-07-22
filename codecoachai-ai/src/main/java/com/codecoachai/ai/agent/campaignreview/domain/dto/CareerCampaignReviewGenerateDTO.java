@@ -1,7 +1,7 @@
 package com.codecoachai.ai.agent.campaignreview.domain.dto;
 
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -12,16 +12,12 @@ public class CareerCampaignReviewGenerateDTO {
 
     @NotNull
     private Long campaignId;
-    @NotBlank
     private String campaignStatus;
     @NotBlank
     private String idempotencyKey;
     private String requestId;
-    @NotNull
     private Boolean completed;
-    @NotNull
     private Boolean allOpportunitiesClosed;
-    @NotNull
     private LocalDateTime dataCutoffAt;
     private Integer sampleSize = 0;
     private String campaignTitle;

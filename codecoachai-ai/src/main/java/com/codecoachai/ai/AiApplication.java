@@ -9,11 +9,16 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @EnableDiscoveryClient
 @EnableScheduling
-@EnableFeignClients(basePackages = "com.codecoachai.ai.agent.feign")
+@EnableFeignClients(basePackages = {
+    "com.codecoachai.ai.agent.feign",
+    "com.codecoachai.ai.agent.campaigncockpit"
+})
 @MapperScan({
     "com.codecoachai.ai.mapper",
     "com.codecoachai.ai.agent.mapper",
-    "com.codecoachai.ai.agent.campaignreview.mapper"
+    "com.codecoachai.ai.agent.campaignreview.mapper",
+    "com.codecoachai.ai.agent.campaigncockpit.mapper",
+    "com.codecoachai.ai.agent.campaignpulse.mapper"
 })
 @SpringBootApplication(scanBasePackages = "com.codecoachai")
 public class AiApplication {

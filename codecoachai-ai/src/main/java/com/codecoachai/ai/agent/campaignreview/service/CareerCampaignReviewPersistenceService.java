@@ -32,6 +32,9 @@ public interface CareerCampaignReviewPersistenceService {
                                              CareerCampaignReviewVO result,
                                              String inputHash,
                                              String requestId,
+                                             String evidenceManifestJson,
+                                             String evidenceSchemaVersion,
+                                             String ruleVersion,
                                              List<CareerCampaignReviewSource> sources);
 
     void releaseClaim(Long userId, Long reviewId, String claimToken);

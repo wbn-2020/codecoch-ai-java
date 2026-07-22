@@ -10,21 +10,34 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.domain.entity.JobApplication;
 import com.codecoachai.resume.domain.entity.JobApplicationEvent;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import java.time.LocalDateTime;
-import com.codecoachai.common.core.exception.BusinessException;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class JobApplicationLifecycleServiceImplTest {
 
     private JobApplicationMapper applicationMapper;
     private JobApplicationEventMapper eventMapper;
     private JobApplicationLifecycleServiceImpl service;
+
+    @BeforeAll
+    static void initTableInfo() {
+        if (TableInfoHelper.getTableInfo(JobApplication.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""), JobApplication.class);
+        }
+    }
 
     @BeforeEach
     void setUp() {
@@ -54,8 +67,24 @@ class JobApplicationLifecycleServiceImplTest {
         JobApplication result = service.transitionForUser(7L, 88L, "DECLINED", 2, "offer-decision-1");
 
         assertEquals(application, result);
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(applicationMapper).selectOne(queryCaptor.capture());
+        assertTrue(queryCaptor.getValue().getSqlSegment().contains("FOR UPDATE"));
         verify(applicationMapper, never()).transitionStatus(any(), any(), any(), any(), any(), any(), any());
         verify(eventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void transitionRequiresExpectedVersionAndIdempotencyKey() {
+        JobApplication application = application(88L, 7L, "OFFER", 2);
+        when(applicationMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(application);
+
+        assertThrows(BusinessException.class,
+                () -> service.transitionForUser(7L, 88L, "ACCEPTED", null, "missing-version"));
+        assertThrows(BusinessException.class,
+                () -> service.transitionForUser(7L, 88L, "ACCEPTED", 2, null));
+        verify(applicationMapper, never()).transitionStatus(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test

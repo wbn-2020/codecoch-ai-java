@@ -19,7 +19,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
     "com.codecoachai.resume.careerresearch.mapper"
 })
 @MapperScan(
-    basePackages = "com.codecoachai.resume.careercampaign",
+    basePackages = {
+        "com.codecoachai.resume.careercampaign",
+        "com.codecoachai.resume.campaignarchive"
+    },
     annotationClass = Mapper.class
 )
 @SpringBootApplication(scanBasePackages = "com.codecoachai")

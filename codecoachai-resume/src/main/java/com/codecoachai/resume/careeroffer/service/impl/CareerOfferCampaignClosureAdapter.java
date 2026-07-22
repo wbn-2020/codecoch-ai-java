@@ -12,7 +12,8 @@ public class CareerOfferCampaignClosureAdapter implements CareerOfferCampaignClo
     private final CareerCampaignService campaignService;
 
     @Override
-    public void close(Long userId, Long campaignId, boolean retainOpenApplications) {
-        campaignService.complete(campaignId, retainOpenApplications);
+    public void close(Long userId, Long campaignId, boolean retainOpenApplications, String idempotencyKey) {
+        campaignService.completeForUser(userId, campaignId, retainOpenApplications,
+                idempotencyKey, "Offer 决策已关闭求职周期");
     }
 }

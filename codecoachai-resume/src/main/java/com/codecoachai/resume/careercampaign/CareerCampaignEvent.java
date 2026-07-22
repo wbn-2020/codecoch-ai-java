@@ -15,5 +15,7 @@ public class CareerCampaignEvent extends BaseEntity {
     private String eventType;
     private String summary;
     private String idempotencyKeyHash;
+    private String requestHash;
+    private Integer resultLockVersion;
     private LocalDateTime occurredAt;
 }

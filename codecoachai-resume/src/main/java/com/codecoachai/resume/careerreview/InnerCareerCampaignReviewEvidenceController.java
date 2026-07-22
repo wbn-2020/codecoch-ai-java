@@ -22,7 +22,11 @@ public class InnerCareerCampaignReviewEvidenceController {
             @PathVariable Long userId,
             @PathVariable Long campaignId,
             @RequestParam("dataCutoffAt")
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime dataCutoffAt) {
-        return Result.success(evidenceService.get(userId, campaignId, dataCutoffAt));
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime dataCutoffAt,
+            @RequestParam(value = "applicationLimit", required = false) Integer applicationLimit,
+            @RequestParam(value = "eventLimitPerSection", required = false)
+            Integer eventLimitPerSection) {
+        return Result.success(evidenceService.get(
+                userId, campaignId, dataCutoffAt, applicationLimit, eventLimitPerSection));
     }
 }
