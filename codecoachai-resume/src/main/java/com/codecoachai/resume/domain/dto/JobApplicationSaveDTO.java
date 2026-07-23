@@ -5,6 +5,7 @@ import lombok.Data;
 
 @Data
 public class JobApplicationSaveDTO {
+    private Long campaignId;
     private Long targetJobId;
     private Long resumeVersionId;
     private Long matchReportId;
@@ -15,4 +16,6 @@ public class JobApplicationSaveDTO {
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
     private String note;
+    private Integer expectedLockVersion;
+    private String idempotencyKey;
 }

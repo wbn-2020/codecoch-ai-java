@@ -15,12 +15,14 @@ import com.codecoachai.resume.domain.entity.ProjectStoryGeneration;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.vo.ProjectJdCoverageVO;
 import com.codecoachai.resume.domain.vo.ProjectStoryGenerationVO;
+import com.codecoachai.resume.domain.vo.JobRequirementMatrixVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.ProjectEvidenceMapper;
 import com.codecoachai.resume.mapper.ProjectSkillEvidenceMapper;
 import com.codecoachai.resume.mapper.ProjectStoryGenerationMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.ProjectEvidenceMaterialService;
+import com.codecoachai.resume.service.JobRequirementService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -57,6 +59,7 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
     private final TargetJobMapper targetJobMapper;
     private final JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper;
     private final ObjectMapper objectMapper;
+    private final JobRequirementService jobRequirementService;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
 
     @Override
@@ -107,6 +110,7 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
             wrapper.eq(ProjectStoryGeneration::getAccepted,
                     Boolean.TRUE.equals(query.getAccepted()) ? CommonConstants.YES : CommonConstants.NO);
         }
+        wrapper.last("limit 100");
         return storyGenerationMapper.selectList(wrapper).stream().map(this::toVO).toList();
     }
 
@@ -144,24 +148,51 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
         Long targetJobId = dto == null ? null : dto.getTargetJobId();
         TargetJob targetJob = targetJobId == null ? null : getOwnedTargetJob(targetJobId, userId);
         JobDescriptionAnalysis analysis = targetJob == null ? null : latestJdAnalysis(targetJob.getId(), userId);
-        List<String> jdSkills = extractJdSkills(dto == null ? null : dto.getJdText(), targetJob, analysis);
         List<ProjectSkillEvidence> skills = listSkills(userId, project.getId());
         ProjectJdCoverageVO vo = new ProjectJdCoverageVO();
         vo.setProjectEvidenceId(project.getId());
         vo.setTargetJobId(targetJobId);
-        vo.setJdSkills(jdSkills);
-        for (String jdSkill : jdSkills) {
-            CoverageMatch match = matchSkill(jdSkill, project, skills);
-            if (match == CoverageMatch.COVERED) {
-                vo.getCoveredSkills().add(jdSkill);
-            } else if (match == CoverageMatch.WEAK) {
-                vo.getWeakCoveredSkills().add(jdSkill);
-            } else {
-                vo.getMissingSkills().add(jdSkill);
+        JobRequirementMatrixVO matrix = null;
+        if (targetJobId != null) {
+            try {
+                matrix = jobRequirementService.getMatrix(targetJobId);
+            } catch (RuntimeException ex) {
+                vo.getWarnings().add("REQUIREMENT_MATRIX_UNAVAILABLE");
             }
         }
-        int score = jdSkills.isEmpty() ? 0 : Math.round((vo.getCoveredSkills().size() * 100.0f
-                + vo.getWeakCoveredSkills().size() * 50.0f) / jdSkills.size());
+        if (matrix != null && matrix.getRequirements() != null && !matrix.getRequirements().isEmpty()) {
+            vo.setSourceType("JOB_REQUIREMENT_MATRIX");
+            vo.setFallback(false);
+            vo.setConfidenceLevel(matrixLowTrust(matrix) ? "LOW" : "HIGH");
+            for (JobRequirementMatrixVO.RequirementItem requirement : matrix.getRequirements()) {
+                if (requirement == null) {
+                    continue;
+                }
+                String name = firstText(requirement.getRequirementName(), requirement.getRequirementKey(),
+                        "Job requirement");
+                vo.getJdSkills().add(name);
+                CoverageMatch match = requirementCoverage(requirement, project.getId());
+                addCoverage(vo, name, match);
+            }
+            if (matrixLowTrust(matrix)) {
+                vo.setFallback(true);
+                vo.getWarnings().add("REQUIREMENT_MATRIX_LOW_TRUST");
+            }
+        } else {
+            vo.setSourceType("INPUT_OR_JD_FALLBACK");
+            vo.setConfidenceLevel("LOW");
+            vo.setFallback(true);
+            vo.getWarnings().add("STRONG_COVERAGE_DISABLED_WITHOUT_REQUIREMENT_MATRIX");
+            List<String> fallbackRequirements = extractFallbackRequirements(
+                    dto == null ? null : dto.getJdText(), targetJob, analysis);
+            vo.setJdSkills(fallbackRequirements);
+            for (String requirement : fallbackRequirements) {
+                addCoverage(vo, requirement, fallbackMatchSkill(requirement, project, skills));
+            }
+        }
+        int requirementCount = vo.getJdSkills().size();
+        int score = requirementCount == 0 ? 0 : Math.round((vo.getCoveredSkills().size() * 100.0f
+                + vo.getWeakCoveredSkills().size() * 50.0f) / requirementCount);
         vo.setCoverageScore(score);
         vo.setExpressionSuggestions(expressionSuggestions(project, vo));
         return vo;
@@ -286,17 +317,18 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
                 targetJob == null ? "" : firstText(targetJob.getJobTitle(), ""));
     }
 
-    private List<String> extractJdSkills(String inputJdText, TargetJob targetJob, JobDescriptionAnalysis analysis) {
-        LinkedHashSet<String> skills = new LinkedHashSet<>();
-        addKeywordItems(skills, inputJdText);
-        if (skills.isEmpty()) {
-            addJsonItems(skills, analysis == null ? null : analysis.getRequiredSkillsJson());
-            addJsonItems(skills, analysis == null ? null : analysis.getTechKeywordsJson());
+    private List<String> extractFallbackRequirements(String inputJdText, TargetJob targetJob,
+                                                     JobDescriptionAnalysis analysis) {
+        LinkedHashSet<String> requirements = new LinkedHashSet<>();
+        addJsonItems(requirements, analysis == null ? null : analysis.getRequiredSkillsJson());
+        addJsonItems(requirements, analysis == null ? null : analysis.getResponsibilitiesJson());
+        if (requirements.isEmpty()) {
+            addTextItems(requirements, inputJdText);
         }
-        if (skills.isEmpty()) {
-            addKeywordItems(skills, targetJob == null ? null : targetJob.getJdText());
+        if (requirements.isEmpty()) {
+            addTextItems(requirements, targetJob == null ? null : targetJob.getJdText());
         }
-        return new ArrayList<>(skills);
+        return new ArrayList<>(requirements).stream().limit(20).toList();
     }
 
     private void addJsonItems(Set<String> skills, String rawJson) {
@@ -319,31 +351,79 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
                 }
             }
         } catch (Exception ignored) {
-            addKeywordItems(skills, rawJson);
+            addTextItems(skills, rawJson);
         }
     }
 
-    private void addKeywordItems(Set<String> skills, String text) {
+    private void addTextItems(Set<String> requirements, String text) {
         if (!StringUtils.hasText(text)) {
             return;
         }
-        List<String> known = List.of("Java", "Spring Boot", "Spring Cloud", "Redis", "Kafka", "RocketMQ",
-                "MySQL", "MyBatis", "JVM", "Docker", "Kubernetes", "Elasticsearch", "Nacos");
-        String normalized = normalize(text);
-        for (String keyword : known) {
-            if (normalized.contains(normalize(keyword))) {
-                skills.add(keyword);
+        for (String part : text.split("[\\r\\n,，;；]+")) {
+            String value = part == null ? null : part.trim();
+            if (StringUtils.hasText(value) && value.length() >= 2) {
+                requirements.add(value.length() > 160 ? value.substring(0, 160) : value);
+                if (requirements.size() >= 20) {
+                    return;
+                }
             }
         }
     }
 
-    private CoverageMatch matchSkill(String jdSkill, ProjectEvidence project, List<ProjectSkillEvidence> skills) {
+    private CoverageMatch requirementCoverage(JobRequirementMatrixVO.RequirementItem requirement,
+                                              Long projectEvidenceId) {
+        if (requirement == null || requirement.getEvidences() == null) {
+            return CoverageMatch.MISSING;
+        }
+        boolean weak = false;
+        for (JobRequirementMatrixVO.EvidenceItem evidence : requirement.getEvidences()) {
+            if (evidence == null || !java.util.Objects.equals(projectEvidenceId, evidence.getProjectEvidenceId())) {
+                continue;
+            }
+            if (trustedStrongRequirementEvidence(requirement, evidence)) {
+                return CoverageMatch.COVERED;
+            }
+            weak = true;
+        }
+        return weak ? CoverageMatch.WEAK : CoverageMatch.MISSING;
+    }
+
+    private boolean trustedStrongRequirementEvidence(JobRequirementMatrixVO.RequirementItem requirement,
+                                                     JobRequirementMatrixVO.EvidenceItem evidence) {
+        return requirement != null
+                && evidence != null
+                && "STRONG".equalsIgnoreCase(requirement.getCoverageLevel())
+                && !Boolean.TRUE.equals(requirement.getRequirementFallback())
+                && !"LOW".equalsIgnoreCase(requirement.getRequirementConfidence())
+                && "STRONG".equalsIgnoreCase(evidence.getCoverageLevel())
+                && Boolean.TRUE.equals(evidence.getConfirmed())
+                && !Boolean.TRUE.equals(evidence.getFallback())
+                && !"LOW".equalsIgnoreCase(evidence.getConfidenceLevel());
+    }
+
+    private boolean matrixLowTrust(JobRequirementMatrixVO matrix) {
+        return matrix == null || matrix.getRequirements() == null || matrix.getRequirements().isEmpty()
+                || matrix.getRequirements().stream()
+                .filter(java.util.Objects::nonNull)
+                .anyMatch(item -> Boolean.TRUE.equals(item.getRequirementFallback())
+                        || "LOW".equalsIgnoreCase(item.getRequirementConfidence()));
+    }
+
+    private void addCoverage(ProjectJdCoverageVO vo, String requirement, CoverageMatch match) {
+        if (match == CoverageMatch.COVERED) {
+            vo.getCoveredSkills().add(requirement);
+        } else if (match == CoverageMatch.WEAK) {
+            vo.getWeakCoveredSkills().add(requirement);
+        } else {
+            vo.getMissingSkills().add(requirement);
+        }
+    }
+
+    private CoverageMatch fallbackMatchSkill(String jdSkill, ProjectEvidence project,
+                                             List<ProjectSkillEvidence> skills) {
         for (ProjectSkillEvidence skill : skills) {
             if (!matches(jdSkill, skill.getSkillName()) && !matches(jdSkill, skill.getJdKeyword())) {
                 continue;
-            }
-            if (confirmed(skill) && !"WEAK".equalsIgnoreCase(firstText(skill.getStrengthLevel(), ""))) {
-                return CoverageMatch.COVERED;
             }
             return CoverageMatch.WEAK;
         }

@@ -22,7 +22,9 @@ public class CorsConfig {
             @Value("${codecoachai.gateway.cors.allowed-methods:GET,POST,PUT,PATCH,DELETE,OPTIONS}")
             String allowedMethods,
             @Value("${codecoachai.gateway.cors.allowed-headers:Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id}")
-            String allowedHeaders) {
+            String allowedHeaders,
+            @Value("${codecoachai.gateway.cors.exposed-headers:X-Trace-Id}")
+            String exposedHeaders) {
         CorsConfiguration configuration = new CorsConfiguration();
         List<String> origins = parseOrigins(allowedOriginPatterns);
         if (origins.stream().anyMatch("*"::equals)) {
@@ -32,6 +34,8 @@ public class CorsConfig {
         origins.forEach(configuration::addAllowedOriginPattern);
         parseList(allowedHeaders, "codecoachai.gateway.cors.allowed-headers").forEach(configuration::addAllowedHeader);
         parseList(allowedMethods, "codecoachai.gateway.cors.allowed-methods").forEach(configuration::addAllowedMethod);
+        parseList(exposedHeaders, "codecoachai.gateway.cors.exposed-headers")
+                .forEach(configuration::addExposedHeader);
         configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);

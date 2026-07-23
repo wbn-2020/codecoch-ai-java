@@ -1,5 +1,6 @@
 package com.codecoachai.interview.domain.vo;
 
+import java.math.BigDecimal;
 import lombok.Data;
 
 @Data
@@ -20,4 +21,11 @@ public class SubmitInterviewAnswerVO {
     private String followUpReason;
     private Boolean followUpValid;
     private CurrentQuestionVO nextQuestion;
+    private Long voiceSubmissionId;
+    private Long transcriptId;
+    private BigDecimal transcriptConfidence;
+    private String answerSource;
+    private Boolean voiceLowConfidence;
+    private Boolean voiceFallback;
+    private String voiceTraceId;
 }

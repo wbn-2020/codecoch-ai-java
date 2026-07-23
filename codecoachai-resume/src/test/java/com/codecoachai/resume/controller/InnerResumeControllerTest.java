@@ -8,7 +8,6 @@ import static org.mockito.Mockito.when;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
-import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.service.ResumeService;
 import java.time.LocalDateTime;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,14 +21,11 @@ class InnerResumeControllerTest {
 
     @Mock
     private ResumeService resumeService;
-    @Mock
-    private ResumeMapper resumeMapper;
-
     private InnerResumeController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new InnerResumeController(resumeService, resumeMapper);
+        controller = new InnerResumeController(resumeService);
     }
 
     @Test

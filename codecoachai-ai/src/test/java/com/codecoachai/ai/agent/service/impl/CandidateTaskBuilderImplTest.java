@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.codecoachai.ai.agent.domain.context.CandidateTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import java.time.LocalDateTime;
@@ -31,7 +33,7 @@ class CandidateTaskBuilderImplTest {
         assertEquals(AgentTaskTypeEnum.APPLICATION_FOLLOW_UP.name(), first.getType());
         assertEquals("JOB_APPLICATION", first.getRelatedBizType());
         assertEquals(11L, first.getRelatedBizId());
-        assertEquals("/applications", first.getActionUrl());
+        assertEquals("/applications?applicationId=11&openEvents=1", first.getActionUrl());
         assertEquals(15, first.getEstimatedMinutes());
         assertEquals("HIGH", first.getPriority());
         assertTrue(first.getCandidateId().startsWith("application-follow-up-"));
@@ -96,6 +98,33 @@ class CandidateTaskBuilderImplTest {
         assertTrue(experimentTask.getReason().contains("样本不足"));
     }
 
+    @Test
+    void buildCreatesRequirementDrivenStationActionsFromTrustedSnapshot() {
+        JobCoachAgentContext context = context(List.of());
+        context.setRequirementReadiness(requirementReadiness(false, "HIGH", true, true));
+
+        List<CandidateTask> tasks = builder.build(context, 6);
+
+        assertTrue(tasks.stream().anyMatch(task -> task.getCandidateId().startsWith("requirement-resume-")
+                && task.getActionUrl().startsWith("/resumes?")));
+        assertTrue(tasks.stream().anyMatch(task -> task.getCandidateId().startsWith("requirement-project-")
+                && task.getActionUrl().startsWith("/project-evidence")));
+        assertTrue(tasks.stream().anyMatch(task -> task.getCandidateId().startsWith("requirement-question-")
+                && task.getActionUrl().startsWith("/questions/practice?")));
+        assertTrue(tasks.stream().anyMatch(task -> task.getCandidateId().startsWith("requirement-interview-")
+                && task.getActionUrl().startsWith("/interviews/create?")));
+    }
+
+    @Test
+    void buildGatesRequirementTasksWhenFallbackOrSampleInsufficient() {
+        JobCoachAgentContext context = context(List.of());
+        context.setRequirementReadiness(requirementReadiness(true, "LOW", true, false));
+
+        List<CandidateTask> tasks = builder.build(context, 6);
+
+        assertTrue(tasks.stream().noneMatch(task -> task.getCandidateId().startsWith("requirement-")));
+    }
+
     private JobCoachAgentContext context(List<ApplicationSnapshot> applications) {
         JobCoachAgentContext context = new JobCoachAgentContext();
         context.setTargetJobId(100L);
@@ -149,5 +178,35 @@ class CandidateTaskBuilderImplTest {
         type.getMethod("setSampleWarning", String.class).invoke(snapshot, "样本不足：投递少于 5 条。");
         type.getMethod("setNextStrategy", String.class).invoke(snapshot, "继续积累可比较投递。");
         return snapshot;
+    }
+
+    private RequirementReadinessSnapshot requirementReadiness(boolean fallback, String confidence,
+                                                               boolean matrixCurrent, boolean sampleSufficient) {
+        RequirementReadinessSnapshot readiness = new RequirementReadinessSnapshot();
+        readiness.setTargetJobId(100L);
+        readiness.setSnapshotId(901L);
+        readiness.setReadinessLevel("NEAR_READY");
+        readiness.setConfidenceLevel(confidence);
+        readiness.setFallback(fallback);
+        readiness.setMatrixCurrent(matrixCurrent);
+        readiness.setSampleSufficient(sampleSufficient);
+        readiness.setRequirementCount(3);
+        readiness.setMissingRequirements(List.of(
+                missingRequirement(101L, "Redis", "SKILL", "MUST"),
+                missingRequirement(102L, "Project delivery", "PROJECT_EXPERIENCE", "MUST")));
+        return readiness;
+    }
+
+    private MissingRequirementSnapshot missingRequirement(Long id, String name, String type, String priority) {
+        MissingRequirementSnapshot requirement = new MissingRequirementSnapshot();
+        requirement.setRequirementId(id);
+        requirement.setRequirementKey(name.toLowerCase());
+        requirement.setRequirementName(name);
+        requirement.setRequirementType(type);
+        requirement.setPriority(priority);
+        requirement.setCoverageLevel("MISSING");
+        requirement.setConfidenceLevel("HIGH");
+        requirement.setFallback(false);
+        return requirement;
     }
 }

@@ -8,6 +8,9 @@ public class CreateInterviewVO {
 
     private Long id;
     private Long applicationId;
+    private Long applicationPackageId;
+    private Long jdAnalysisId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
@@ -20,6 +23,9 @@ public class CreateInterviewVO {
     private String industryContext;
     private String difficulty;
     private String interviewerStyle;
+    private Long scenarioVersionId;
+    private Long rubricVersionId;
+    private String scenarioCode;
     private Boolean basedOnResume;
     private String trainingScene;
     private String targetSkillDomain;

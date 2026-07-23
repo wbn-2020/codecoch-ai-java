@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -65,10 +66,23 @@ public class AdminAiModelController {
         return Result.success(rows);
     }
 
+    @GetMapping("/admin/ai/model-configs")
+    public Result<List<AiModelConfig>> listCompat(@RequestParam(required = false) String keyword,
+                                                  @RequestParam(required = false) String provider,
+                                                  @RequestParam(required = false) Integer enabled,
+                                                  @RequestParam(required = false) Integer status) {
+        return list(keyword, provider, enabled, status);
+    }
+
     @GetMapping("/admin/ai/models/{id}")
     public Result<AiModelConfig> detail(@PathVariable Long id) {
         permissionGuard.require(PERM_MODEL_LIST);
         return Result.success(maskApiKey(get(id)));
+    }
+
+    @GetMapping("/admin/ai/model-configs/{id}")
+    public Result<AiModelConfig> detailCompat(@PathVariable Long id) {
+        return detail(id);
     }
 
     @PostMapping("/admin/ai/models")
@@ -88,7 +102,7 @@ public class AdminAiModelController {
                         clearDefault(entity.getProvider(), null);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
-                    mapper.insert(entity);
+                    writeModelConfigWithDefaultGuard(() -> mapper.insert(entity));
                     return Result.success(maskApiKey(entity));
                 });
     }
@@ -110,7 +124,7 @@ public class AdminAiModelController {
                         clearDefault(entity.getProvider(), id);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
-                    mapper.updateById(entity);
+                    writeModelConfigWithDefaultGuard(() -> mapper.updateById(entity));
                     return Result.success(maskApiKey(entity));
                 });
     }
@@ -132,7 +146,7 @@ public class AdminAiModelController {
                     entity.setDefaultModel(1);
                     entity.setEnabled(1);
                     encryptPlainApiKeyBeforeSave(entity);
-                    mapper.updateById(entity);
+                    writeModelConfigWithDefaultGuard(() -> mapper.updateById(entity));
                     return Result.success(maskApiKey(entity));
                 });
     }
@@ -243,6 +257,15 @@ public class AdminAiModelController {
                 .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    private void writeModelConfigWithDefaultGuard(Runnable action) {
+        try {
+            action.run();
+        } catch (DuplicateKeyException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "同一供应商只能有一个默认模型，请刷新后重试");
+        }
     }
 
     private void ensureDefaultModelNotDisabled(AiModelConfig entity, Integer enabled) {

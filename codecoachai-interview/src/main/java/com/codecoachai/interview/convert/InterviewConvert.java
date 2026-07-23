@@ -9,6 +9,7 @@ import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportNextActionVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.InterviewStageVO;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
@@ -26,8 +27,6 @@ public final class InterviewConvert {
     private static final String TRUST_FALLBACK = "FALLBACK";
     private static final String BIZ_INTERVIEW_REPORT = "INTERVIEW_REPORT";
     private static final String BIZ_INTERVIEW_SESSION = "INTERVIEW_SESSION";
-    private static final String FALLBACK_REPORT_REASON_KEYWORD = "保底复盘";
-
     private InterviewConvert() {
     }
 
@@ -56,6 +55,9 @@ public final class InterviewConvert {
         InterviewListVO vo = new InterviewListVO();
         vo.setId(session.getId());
         vo.setApplicationId(session.getApplicationId());
+        vo.setApplicationPackageId(session.getApplicationPackageId());
+        vo.setJdAnalysisId(session.getJdAnalysisId());
+        vo.setResumeVersionId(session.getResumeVersionId());
         vo.setTargetJobId(session.getTargetJobId());
         vo.setSkillProfileId(session.getSkillProfileId());
         vo.setMatchReportId(session.getMatchReportId());
@@ -78,6 +80,15 @@ public final class InterviewConvert {
         vo.setReportStatus(session.getReportStatus());
         vo.setAnsweredQuestionCount(session.getAnsweredQuestionCount());
         vo.setUpdatedAt(session.getUpdatedAt());
+        return vo;
+    }
+
+    public static InterviewListVO toListVO(InterviewSession session, InterviewReport report) {
+        InterviewListVO vo = toListVO(session);
+        if (report != null) {
+            vo.setReportId(report.getId());
+            vo.setTotalScore(report.getTotalScore());
+        }
         return vo;
     }
 
@@ -134,6 +145,7 @@ public final class InterviewConvert {
         vo.setFollowUpTree(parseObjectList(report.getFollowUpTree()));
         vo.setAdviceEvidence(parseObjectList(report.getAdviceEvidence()));
         vo.setAbilityProfileUpdates(parseObjectList(report.getAbilityProfileUpdates()));
+        vo.setRubricVersion(report.getRubricVersion());
         vo.setReportContent(report.getReportContent());
         vo.setGeneratedAt(report.getGeneratedAt());
         vo.setCreatedAt(report.getCreatedAt());
@@ -143,6 +155,15 @@ public final class InterviewConvert {
         vo.setTrustStatus(reportTrustStatus(report));
         vo.setEvidenceSummary(reportEvidenceSummary(report));
         vo.setFallback(reportFallback(report));
+        boolean generated = "GENERATED".equalsIgnoreCase(report.getStatus());
+        boolean strongRemediationAvailable = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+        vo.setRemediationAvailable(generated);
+        vo.setStrongRemediationAvailable(strongRemediationAvailable);
+        vo.setStrongRemediationUnavailableReason(strongRemediationAvailable
+                ? null
+                : InterviewReportTrustPolicy.isSampleInsufficient(report)
+                ? "SAMPLE_INSUFFICIENT"
+                : "REPORT_UNTRUSTED");
         return vo;
     }
 
@@ -213,6 +234,9 @@ public final class InterviewConvert {
     private static void appendAdviceActions(List<InterviewReportNextActionVO> actions, InterviewReport report) {
         List<Map<String, Object>> adviceItems = parseObjectList(report.getAdviceEvidence());
         for (Map<String, Object> item : adviceItems) {
+            if (!InterviewReportTrustPolicy.isTrustedAdvice(item, report.getId())) {
+                continue;
+            }
             String title = objectText(item.get("title"));
             if (!StringUtils.hasText(title)) {
                 continue;
@@ -271,40 +295,18 @@ public final class InterviewConvert {
     }
 
     private static boolean shouldExposeNextActions(InterviewReport report) {
-        if (report == null || isFallbackReport(report)) {
-            return false;
-        }
-        String status = report.getStatus();
-        return "GENERATED".equalsIgnoreCase(status)
-                || "SUCCESS".equalsIgnoreCase(status)
-                || "COMPLETED".equalsIgnoreCase(status);
+        return InterviewReportTrustPolicy.isTrustedForFormalAction(report);
     }
 
     private static String reportTrustStatus(InterviewReport report) {
-        if (report == null) {
-            return TRUST_PARTIAL;
-        }
-        String status = report.getStatus();
-        if ("FAILED".equalsIgnoreCase(status) || "UNSCORABLE".equalsIgnoreCase(status)) {
+        if (InterviewReportTrustPolicy.isFallbackOrUntrusted(report)) {
             return TRUST_FALLBACK;
         }
-        if (isFallbackReport(report)) {
-            return TRUST_FALLBACK;
-        }
-        boolean generated = "GENERATED".equalsIgnoreCase(status) || "SUCCESS".equalsIgnoreCase(status);
-        boolean hasScore = report.getTotalScore() != null && report.getTotalScore() > 0;
-        boolean hasContent = StringUtils.hasText(report.getReportContent())
-                || StringUtils.hasText(report.getSummary())
-                || StringUtils.hasText(report.getQaReview());
-        return generated && hasScore && hasContent ? TRUST_VERIFIED : TRUST_PARTIAL;
+        return InterviewReportTrustPolicy.isTrustedForFormalAction(report) ? TRUST_VERIFIED : TRUST_PARTIAL;
     }
 
     private static Boolean reportFallback(InterviewReport report) {
-        if (report == null || report.getSessionId() == null) {
-            return true;
-        }
-        String status = report.getStatus();
-        return "FAILED".equalsIgnoreCase(status) || "UNSCORABLE".equalsIgnoreCase(status) || isFallbackReport(report);
+        return InterviewReportTrustPolicy.isFallbackOrUntrusted(report);
     }
 
     private static String reportEvidenceSummary(InterviewReport report) {
@@ -314,7 +316,7 @@ public final class InterviewConvert {
         String reportId = report.getId() == null ? "未落库" : "#" + report.getId();
         String sessionId = report.getSessionId() == null ? "未绑定面试" : "#" + report.getSessionId();
         String status = firstText(report.getStatus(), "状态待确认");
-        if ("FAILED".equalsIgnoreCase(report.getStatus()) || "UNSCORABLE".equalsIgnoreCase(report.getStatus()) || isFallbackReport(report)) {
+        if (InterviewReportTrustPolicy.isFallbackOrUntrusted(report)) {
             return "来自面试 " + sessionId + " · 报告 " + reportId + " · " + status + "："
                     + firstText(report.getFailureReason(), "原因待排查");
         }
@@ -380,12 +382,6 @@ public final class InterviewConvert {
         } catch (Exception ex) {
             return Collections.emptyList();
         }
-    }
-
-    private static boolean isFallbackReport(InterviewReport report) {
-        return report != null
-                && StringUtils.hasText(report.getFailureReason())
-                && report.getFailureReason().contains(FALLBACK_REPORT_REASON_KEYWORD);
     }
 
     private static String firstText(String first, String second) {

@@ -7,14 +7,24 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.ai.agent.domain.dto.AgentMemoryCreateDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentMemoryQueryDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentReviewGenerateDTO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
+import com.codecoachai.ai.agent.domain.entity.AgentReview;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.entity.ReadinessScoreRecord;
@@ -25,25 +35,52 @@ import com.codecoachai.ai.agent.domain.vo.growth.GrowthOverviewVO;
 import com.codecoachai.ai.agent.domain.vo.growth.ReadinessScoreRecordVO;
 import com.codecoachai.ai.agent.domain.vo.growth.SkillGrowthSnapshotVO;
 import com.codecoachai.ai.agent.domain.vo.memory.AgentMemoryVO;
+import com.codecoachai.ai.agent.domain.vo.review.AgentReviewVO;
 import com.codecoachai.ai.agent.mapper.AgentMemoryMapper;
 import com.codecoachai.ai.agent.mapper.AgentReviewMapper;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
 import com.codecoachai.ai.agent.mapper.ReadinessScoreRecordMapper;
 import com.codecoachai.ai.agent.mapper.SkillGrowthSnapshotMapper;
+import com.codecoachai.ai.agent.service.AgentReviewPlanService;
+import com.codecoachai.ai.agent.service.support.AgentBusinessTimeProvider;
+import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
+import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
+import com.codecoachai.ai.service.AiService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class AgentGrowthServiceImplTest {
+
+    @BeforeAll
+    static void initMybatisPlusTableInfo() {
+        if (TableInfoHelper.getTableInfo(AgentReview.class) == null) {
+            MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
+            TableInfoHelper.initTableInfo(assistant, AgentReview.class);
+        }
+    }
 
     @Mock
     private AgentTaskMapper agentTaskMapper;
@@ -57,6 +94,354 @@ class AgentGrowthServiceImplTest {
     private ReadinessScoreRecordMapper readinessScoreRecordMapper;
     @Mock
     private AgentMemoryMapper agentMemoryMapper;
+    @Mock
+    private AiService aiService;
+    @Mock
+    private AgentReviewPlanService agentReviewPlanService;
+
+    @Test
+    void generateReviewIsDailyIdempotentAndSkipsAiAndSideEffectsOnRepeat() {
+        LocalDate date = LocalDate.of(2026, 7, 18);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.TODO.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        GenerateAgentReviewVO aiReview = aiReview(
+                "今日需要继续闭环。",
+                List.of("存在一项待处理任务。"),
+                List.of("样本有限。"),
+                List.of("任务尚未完成。"),
+                List.of("缩小下一步动作。"),
+                List.of("完成 Java 任务。"));
+        when(aiService.generateAgentReview(any())).thenReturn(aiReview);
+
+        AtomicReference<AgentReview> stored = new AtomicReference<>();
+        when(agentReviewMapper.selectList(any())).thenAnswer(invocation ->
+                stored.get() == null ? List.of() : List.of(stored.get()));
+        when(agentReviewMapper.insert(any(AgentReview.class))).thenAnswer(invocation -> {
+            AgentReview review = invocation.getArgument(0);
+            review.setId(201L);
+            stored.set(review);
+            return 1;
+        });
+
+        AgentReviewGenerateDTO dto = new AgentReviewGenerateDTO();
+        dto.setDate(date);
+
+        AgentReviewVO first = service().generateReview(10L, dto);
+        AgentReviewVO second = service().generateReview(10L, dto);
+
+        assertEquals(first.getId(), second.getId());
+        assertEquals("DAILY", first.getReviewType());
+        assertEquals("DAILY:10:2026-07-18:ALL", first.getIdempotencyKey());
+        assertNull(first.getSourceTaskId());
+        verify(aiService, times(1)).generateAgentReview(any());
+        verify(agentReviewMapper, times(1)).insert(any(AgentReview.class));
+        verify(readinessScoreRecordMapper, times(1)).insert(any(ReadinessScoreRecord.class));
+        verify(skillGrowthSnapshotMapper, times(1)).insert(any(SkillGrowthSnapshot.class));
+        verify(agentMemoryMapper, times(1)).insert(any(AgentMemory.class));
+    }
+
+    @Test
+    void generateReviewUsesDifferentDailyKeysForDifferentJobScopes() {
+        LocalDate date = LocalDate.of(2026, 7, 18);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(aiService.generateAgentReview(any())).thenReturn(aiReview(
+                "今日没有任务记录。",
+                List.of(),
+                List.of("暂无任务样本。"),
+                List.of(),
+                List.of("补充一项可验证任务。"),
+                List.of("补充一项可验证任务。")));
+        when(agentReviewMapper.insert(any(AgentReview.class))).thenAnswer(invocation -> {
+            AgentReview review = invocation.getArgument(0);
+            review.setId(review.getTargetJobId());
+            return 1;
+        });
+
+        AgentReviewGenerateDTO firstRequest = new AgentReviewGenerateDTO();
+        firstRequest.setDate(date);
+        firstRequest.setTargetJobId(11L);
+        AgentReviewGenerateDTO secondRequest = new AgentReviewGenerateDTO();
+        secondRequest.setDate(date);
+        secondRequest.setTargetJobId(22L);
+
+        AgentReviewVO first = service().generateReview(10L, firstRequest);
+        AgentReviewVO second = service().generateReview(10L, secondRequest);
+
+        assertEquals("DAILY:10:2026-07-18:11", first.getIdempotencyKey());
+        assertEquals("DAILY:10:2026-07-18:22", second.getIdempotencyKey());
+        verify(aiService, times(2)).generateAgentReview(any());
+        verify(agentReviewMapper, times(2)).insert(any(AgentReview.class));
+    }
+
+    @Test
+    void generateReviewScopesAgentSuccessRateToTargetJob() {
+        LocalDate date = LocalDate.of(2026, 7, 20);
+        AgentRun successfulRun = run(31L, date, AgentRunStatusEnum.SUCCESS.name());
+        successfulRun.setTargetJobId(11L);
+        AgentRun otherJobFailedRun = run(32L, date, AgentRunStatusEnum.FAILED.name());
+        otherJobFailedRun.setTargetJobId(22L);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.DONE.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of(successfulRun, otherJobFailedRun));
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of());
+        when(aiService.generateAgentReview(any())).thenReturn(aiReview(
+                "Scoped review", List.of(), List.of(), List.of(), List.of(), List.of("Next")));
+
+        AgentReviewGenerateDTO request = new AgentReviewGenerateDTO();
+        request.setDate(date);
+        request.setTargetJobId(11L);
+
+        service().generateReview(10L, request);
+
+        ArgumentCaptor<GenerateAgentReviewDTO> aiCaptor = ArgumentCaptor.forClass(GenerateAgentReviewDTO.class);
+        verify(aiService).generateAgentReview(aiCaptor.capture());
+        assertEquals(BigDecimal.valueOf(100).setScale(2), aiCaptor.getValue().getAgentSuccessRate());
+    }
+
+    @Test
+    void concurrentGenerateReviewCallsAiAndDerivedWritesOnlyOnce() throws Exception {
+        LocalDate date = LocalDate.of(2026, 7, 20);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.TODO.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of());
+        AgentGrowthServiceImpl service = service();
+        Object monitor = new Object();
+        AtomicBoolean ownerClaimed = new AtomicBoolean();
+        AtomicReference<AgentReview> completed = new AtomicReference<>();
+        CountDownLatch replayWaiting = new CountDownLatch(1);
+
+        lenient().doAnswer(invocation -> {
+                    AgentReview identity = invocation.getArgument(0);
+                    synchronized (monitor) {
+                        if (ownerClaimed.compareAndSet(false, true)) {
+                            identity.setId(601L);
+                            identity.setReviewVersion(0);
+                            return new AgentReviewPlanService.ReviewGenerationClaim(
+                                    identity,
+                                    identity.getSourceSnapshotHash(),
+                                    0,
+                                    identity.getSourceSnapshotHash(),
+                                    true,
+                                    true);
+                        }
+                        replayWaiting.countDown();
+                        while (completed.get() == null) {
+                            monitor.wait(2_000L);
+                        }
+                        AgentReview current = completed.get();
+                        return new AgentReviewPlanService.ReviewGenerationClaim(
+                                current,
+                                current.getSourceSnapshotHash(),
+                                current.getReviewVersion(),
+                                current.getSourceSnapshotHash(),
+                                false,
+                                false);
+                    }
+                })
+                .when(agentReviewPlanService)
+                .claimDailyReview(any(AgentReview.class));
+        when(aiService.generateAgentReview(any())).thenAnswer(invocation -> {
+            assertTrue(replayWaiting.await(5, TimeUnit.SECONDS));
+            return aiReview("Concurrent review", List.of(), List.of(), List.of(),
+                    List.of("Adjust"), List.of("Next"));
+        });
+        lenient().doAnswer(invocation -> {
+                    AgentReview review = invocation.getArgument(1);
+                    review.setReviewVersion(1);
+                    completed.set(review);
+                    synchronized (monitor) {
+                        monitor.notifyAll();
+                    }
+                    return review;
+                })
+                .when(agentReviewPlanService)
+                .completeClaimedDailyReview(
+                        any(AgentReviewPlanService.ReviewGenerationClaim.class),
+                        any(AgentReview.class),
+                        anyList(),
+                        anyList());
+
+        AgentReviewGenerateDTO request = new AgentReviewGenerateDTO();
+        request.setDate(date);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<AgentReviewVO> first = executor.submit(() -> service.generateReview(10L, request));
+            Future<AgentReviewVO> second = executor.submit(() -> service.generateReview(10L, request));
+
+            assertEquals(601L, first.get(10, TimeUnit.SECONDS).getId());
+            assertEquals(601L, second.get(10, TimeUnit.SECONDS).getId());
+        } finally {
+            executor.shutdownNow();
+        }
+
+        verify(aiService, times(1)).generateAgentReview(any());
+        verify(readinessScoreRecordMapper, times(1)).insert(any(ReadinessScoreRecord.class));
+        verify(skillGrowthSnapshotMapper, times(1)).insert(any(SkillGrowthSnapshot.class));
+        verify(agentMemoryMapper, times(1)).insert(any(AgentMemory.class));
+        InOrder order = inOrder(readinessScoreRecordMapper, skillGrowthSnapshotMapper, agentMemoryMapper);
+        order.verify(readinessScoreRecordMapper).insert(any(ReadinessScoreRecord.class));
+        order.verify(skillGrowthSnapshotMapper).insert(any(SkillGrowthSnapshot.class));
+        order.verify(agentMemoryMapper).insert(any(AgentMemory.class));
+    }
+
+    @Test
+    void listReviewsAddsDailyTypeFilter() {
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of());
+
+        service().listReviews(10L, null);
+
+        ArgumentCaptor<Wrapper<AgentReview>> captor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(agentReviewMapper).selectList(captor.capture());
+        Wrapper<AgentReview> wrapper = captor.getValue();
+        assertTrue(wrapper instanceof AbstractWrapper<?, ?, ?>);
+        String sqlSegment = ((AbstractWrapper<?, ?, ?>) wrapper).getSqlSegment();
+        assertTrue(sqlSegment.contains("review_type"));
+        assertTrue(sqlSegment.contains("deleted"));
+        assertTrue(((AbstractWrapper<?, ?, ?>) wrapper).getParamNameValuePairs().containsValue("DAILY"));
+    }
+
+    @Test
+    void generateReviewUsesAiNarrativeAndPersistsStructuredContent() {
+        LocalDate date = LocalDate.of(2026, 7, 17);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.DONE.name(), "JAVA", "Java"),
+                task(2L, date, AgentTaskStatusEnum.DONE.name(), "MYSQL", "MySQL"),
+                task(3L, date, AgentTaskStatusEnum.TODO.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.insert(any(AgentReview.class))).thenAnswer(invocation -> {
+            AgentReview review = invocation.getArgument(0);
+            review.setId(101L);
+            return 1;
+        });
+        GenerateAgentReviewVO aiReview = aiReview(
+                "今天完成了两项核心任务，剩余任务需要下一轮继续闭环。",
+                List.of("已完成 Java 与 MySQL 两项任务。"),
+                List.of("复盘仅基于已记录任务。"),
+                List.of("仍有一项任务未闭环。"),
+                List.of("将剩余任务拆分为更小步骤。"),
+                List.of("优先完成剩余任务。"));
+        aiReview.setAiCallLogId(9001L);
+        when(aiService.generateAgentReview(any())).thenReturn(aiReview);
+
+        AgentReviewGenerateDTO dto = new AgentReviewGenerateDTO();
+        dto.setDate(date);
+        AgentReviewVO vo = service().generateReview(10L, dto);
+
+        assertEquals(aiReview.getSummary(), vo.getSummary());
+        assertEquals(aiReview.getFacts(), vo.getFacts());
+        assertEquals(aiReview.getLimits(), vo.getLimits());
+        assertEquals(aiReview.getDriftReasons(), vo.getDriftReasons());
+        assertEquals(aiReview.getAdjustments(), vo.getAdjustments());
+        assertFalse(vo.getFallback());
+        assertEquals("HIGH", vo.getConfidenceLevel());
+        assertEquals(9001L, vo.getAiCallLogId());
+        assertFalse(vo.getSummary().startsWith("Agent review:"));
+
+        ArgumentCaptor<AgentReview> reviewCaptor = ArgumentCaptor.forClass(AgentReview.class);
+        verify(agentReviewMapper).insert(reviewCaptor.capture());
+        AgentReview stored = reviewCaptor.getValue();
+        assertEquals(Boolean.FALSE, stored.getFallback());
+        assertEquals("HIGH", stored.getConfidenceLevel());
+        assertTrue(stored.getReviewJson().contains("\"narrative\""));
+        assertTrue(stored.getReviewJson().contains("已完成 Java 与 MySQL 两项任务。"));
+    }
+
+    @Test
+    void generateReviewFallsBackToRulesWhenAiFailsAndKeepsPersistenceChain() {
+        LocalDate date = LocalDate.of(2026, 7, 17);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.TODO.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.insert(any(AgentReview.class))).thenAnswer(invocation -> {
+            AgentReview review = invocation.getArgument(0);
+            review.setId(102L);
+            return 1;
+        });
+        when(aiService.generateAgentReview(any())).thenThrow(new RuntimeException("AI unavailable"));
+
+        AgentReviewGenerateDTO dto = new AgentReviewGenerateDTO();
+        dto.setDate(date);
+        AgentReviewVO vo = service().generateReview(10L, dto);
+
+        assertTrue(vo.getFallback());
+        assertEquals("LOW", vo.getConfidenceLevel());
+        assertTrue(vo.getFacts().contains("已完成 0 项，已暂缓 0 项，待处理 1 项。"));
+        assertTrue(vo.getLimits().contains("任务样本仍较少，当前结论仅作为弱调整信号。"));
+        assertEquals(List.of("部分计划动作尚未闭环，下一轮计划应保留或拆分未完成工作。"),
+                vo.getDriftReasons());
+        assertFalse(vo.getAdjustments().isEmpty());
+        assertFalse(vo.getSummary().startsWith("Agent review:"));
+
+        verify(agentReviewMapper).insert(any(AgentReview.class));
+        verify(readinessScoreRecordMapper).insert(any(ReadinessScoreRecord.class));
+        verify(skillGrowthSnapshotMapper).insert(any(SkillGrowthSnapshot.class));
+        verify(agentMemoryMapper).insert(any(AgentMemory.class));
+    }
+
+    @Test
+    void generateReviewMarksLowConfidenceAndFillsWeakSignalLimitForSmallSample() {
+        LocalDate date = LocalDate.of(2026, 7, 17);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(1L, date, AgentTaskStatusEnum.DONE.name(), "JAVA", "Java")));
+        when(agentRunMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.insert(any(AgentReview.class))).thenReturn(1);
+        GenerateAgentReviewVO aiReview = aiReview(
+                "今天完成了一项任务。",
+                List.of("已完成一项 Java 任务。"),
+                List.of("当前结论无需视为弱调整信号。"),
+                List.of(),
+                List.of(),
+                List.of("记录下一项任务结果。"));
+        when(aiService.generateAgentReview(any())).thenReturn(aiReview);
+
+        AgentReviewGenerateDTO dto = new AgentReviewGenerateDTO();
+        dto.setDate(date);
+        AgentReviewVO vo = service().generateReview(10L, dto);
+
+        assertEquals("LOW", vo.getConfidenceLevel());
+        assertFalse(vo.getFallback());
+        assertTrue(vo.getLimits().contains("任务样本仍较少，当前结论仅作为弱调整信号。"));
+        assertTrue(vo.getLimits().contains("当前结论无需视为弱调整信号。"));
+    }
+
+    @Test
+    void listReviewsReadsNarrativeFromReviewJsonAfterRefresh() {
+        AgentReview review = new AgentReview();
+        review.setId(103L);
+        review.setUserId(10L);
+        review.setReviewDate(LocalDate.of(2026, 7, 17));
+        review.setReviewType("DAILY");
+        review.setIdempotencyKey("LEGACY:103");
+        review.setSummary("已持久化的复盘总结。");
+        review.setNextActionsJson("[\"执行下一步\"]");
+        review.setReviewJson("""
+                {"narrative":{
+                  "summary":"已持久化的复盘总结。",
+                  "facts":["持久化事实"],
+                  "limits":["持久化限制"],
+                  "driftReasons":["持久化偏移"],
+                  "adjustments":["持久化调整"]
+                }}
+                """);
+        review.setFallback(false);
+        review.setConfidenceLevel("HIGH");
+        when(agentReviewMapper.selectList(any())).thenReturn(List.of(review));
+
+        AgentReviewVO vo = service().listReviews(10L, null).get(0);
+
+        assertEquals(List.of("持久化事实"), vo.getFacts());
+        assertEquals(List.of("持久化限制"), vo.getLimits());
+        assertEquals(List.of("持久化偏移"), vo.getDriftReasons());
+        assertEquals(List.of("持久化调整"), vo.getAdjustments());
+        assertEquals(List.of("执行下一步"), vo.getNextActions());
+        assertEquals("DAILY", vo.getReviewType());
+        assertEquals("LEGACY:103", vo.getIdempotencyKey());
+        assertFalse(vo.getFallback());
+        assertEquals("HIGH", vo.getConfidenceLevel());
+    }
 
     @Test
     void growthOverviewHidesStrongScoresAndSuggestsEvidenceActionsWhenDataIsInsufficient() {
@@ -226,8 +611,8 @@ class AgentGrowthServiceImplTest {
         AgentMemoryVO vo = service.createMemory(10L, dto);
 
         assertEquals("CONFIRMED", vo.getMemoryStatus());
-        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
-        assertTrue(vo.getCanBeEvidence());
+        assertEquals("INPUT_ONLY", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
         assertFalse(vo.getLowConfidence());
         assertNotNull(vo.getConfirmedAt());
         assertTrue(vo.getImpactPreview().contains("AGENT_TASK"));
@@ -319,6 +704,7 @@ class AgentGrowthServiceImplTest {
         candidate.setCreatedAt(createdAt);
         candidate.setUpdatedAt(createdAt);
         AgentMemory confirmed = memory(99L, 10L, 1, "AGENT_REVIEW", BigDecimal.valueOf(0.85));
+        confirmed.setSourceType("USER_CONFIRMED_AGENT_REVIEW");
         confirmed.setCreatedAt(createdAt);
         confirmed.setUpdatedAt(createdAt.plusMinutes(1));
         when(agentMemoryMapper.selectById(99L))
@@ -333,8 +719,8 @@ class AgentGrowthServiceImplTest {
         assertNotNull(memoryCaptor.getValue().getUpdatedAt());
         assertTrue(memoryCaptor.getValue().getUpdatedAt().isAfter(createdAt));
         assertEquals("CONFIRMED", vo.getMemoryStatus());
-        assertEquals("VERIFIED", vo.getEvidenceTrustStatus());
-        assertTrue(vo.getCanBeEvidence());
+        assertEquals("INPUT_ONLY", vo.getEvidenceTrustStatus());
+        assertFalse(vo.getCanBeEvidence());
         assertNotNull(vo.getConfirmedAt());
     }
 
@@ -358,6 +744,35 @@ class AgentGrowthServiceImplTest {
     }
 
     private AgentGrowthServiceImpl service() {
+        lenient().doAnswer(invocation -> {
+                    AgentReview review = invocation.getArgument(0);
+                    agentReviewMapper.insert(review);
+                    review.setReviewVersion(0);
+                    return new AgentReviewPlanService.ReviewGenerationClaim(
+                            review,
+                            review.getSourceSnapshotHash(),
+                            0,
+                            review.getSourceSnapshotHash(),
+                            true,
+                            true);
+                })
+                .when(agentReviewPlanService)
+                .claimDailyReview(any(AgentReview.class));
+        lenient().doAnswer(invocation -> {
+                    AgentReviewPlanService.ReviewGenerationClaim claim = invocation.getArgument(0);
+                    AgentReview review = invocation.getArgument(1);
+                    review.setReviewVersion(claim.newlyClaimed()
+                            ? 1
+                            : claim.previousReviewVersion() + 1);
+                    return review;
+                })
+                .when(agentReviewPlanService)
+                .completeClaimedDailyReview(
+                        any(AgentReviewPlanService.ReviewGenerationClaim.class),
+                        any(AgentReview.class),
+                        anyList(),
+                        anyList());
+        lenient().when(agentReviewPlanService.suggestionVOs(any(), any())).thenReturn(List.of());
         return new AgentGrowthServiceImpl(
                 agentTaskMapper,
                 agentRunMapper,
@@ -365,7 +780,29 @@ class AgentGrowthServiceImplTest {
                 skillGrowthSnapshotMapper,
                 readinessScoreRecordMapper,
                 agentMemoryMapper,
-                new ObjectMapper());
+                aiService,
+                agentReviewPlanService,
+                new ObjectMapper(),
+                fixedTimeProvider());
+    }
+
+    private AgentBusinessTimeProvider fixedTimeProvider() {
+        return new AgentBusinessTimeProvider(Clock.fixed(
+                Instant.parse("2026-07-20T04:00:00Z"),
+                ZoneId.of("Asia/Shanghai")));
+    }
+
+    private GenerateAgentReviewVO aiReview(String summary, List<String> facts, List<String> limits,
+                                            List<String> driftReasons, List<String> adjustments,
+                                            List<String> nextActions) {
+        GenerateAgentReviewVO vo = new GenerateAgentReviewVO();
+        vo.setSummary(summary);
+        vo.setFacts(facts);
+        vo.setLimits(limits);
+        vo.setDriftReasons(driftReasons);
+        vo.setAdjustments(adjustments);
+        vo.setNextActions(nextActions);
+        return vo;
     }
 
     private AgentMemory memory(Long id, Long userId, Integer enabled) {
@@ -390,6 +827,7 @@ class AgentGrowthServiceImplTest {
         task.setUserId(10L);
         task.setDueDate(dueDate);
         task.setStatus(status);
+        task.setTitle(skillName + " 任务");
         task.setRelatedSkillCode(skillCode);
         task.setRelatedSkillName(skillName);
         return task;

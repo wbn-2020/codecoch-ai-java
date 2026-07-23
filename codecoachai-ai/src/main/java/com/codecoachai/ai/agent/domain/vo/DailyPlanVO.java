@@ -1,5 +1,6 @@
 package com.codecoachai.ai.agent.domain.vo;
 
+import com.codecoachai.ai.agent.domain.vo.review.AgentPlanChangePreviewVO;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ public class DailyPlanVO {
     private Long durationMs;
     private List<SkillTagVO> focusSkills = new ArrayList<>();
     private List<AgentTaskVO> tasks = new ArrayList<>();
+    private List<AgentPlanChangePreviewVO> planChanges = new ArrayList<>();
     private Boolean empty = false;
     private String emptyMessage;
     private String asyncMessageId;

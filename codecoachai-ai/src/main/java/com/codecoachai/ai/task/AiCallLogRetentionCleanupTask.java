@@ -7,6 +7,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -174,12 +175,22 @@ public class AiCallLogRetentionCleanupTask {
         for (Map<String, Object> row : rows) {
             Long id = toLong(row.get("id"));
             if (id == null) {
-                log.warn("Skip ai_call_log retention cleanup row because id is missing: {}", row);
+                log.warn("Skip ai_call_log retention cleanup row because id is missing: {}", safeRowSummary(row));
                 continue;
             }
             ids.add(id);
         }
         return ids;
+    }
+
+    private Map<String, Object> safeRowSummary(Map<String, Object> row) {
+        if (row == null) {
+            return Map.of("fieldCount", 0);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("fieldCount", row.size());
+        summary.put("fields", row.keySet());
+        return summary;
     }
 
     private Long toLong(Object value) {

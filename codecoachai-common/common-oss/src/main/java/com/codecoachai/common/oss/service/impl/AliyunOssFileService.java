@@ -21,6 +21,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Date;
+import java.util.HexFormat;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
@@ -48,7 +49,7 @@ public class AliyunOssFileService implements OssFileService {
             }
             PutObjectRequest request = new PutObjectRequest(properties.getBucket(), key, inputStream, metadata);
             PutObjectResult result = ossClient.putObject(request);
-            log.info("OSS 上传成功 key={} etag={}", key, result.getETag());
+            log.info("OSS upload succeeded keyMeta={} etag={}", safeKeyMeta(key), result.getETag());
             return OssUploadResult.builder()
                     .ossKey(key)
                     .url(publicUrl(key))
@@ -57,7 +58,7 @@ public class AliyunOssFileService implements OssFileService {
                     .contentType(contentType)
                     .build();
         } catch (OSSException ex) {
-            log.error("OSS 上传失败 key={} code={} msg={}", key, ex.getErrorCode(), ex.getMessage());
+            log.error("OSS upload failed keyMeta={} code={} msg={}", safeKeyMeta(key), ex.getErrorCode(), ex.getMessage());
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败：" + ex.getErrorCode());
         }
     }
@@ -80,7 +81,7 @@ public class AliyunOssFileService implements OssFileService {
         try (InputStream is = ossClient.getObject(properties.getBucket(), key).getObjectContent()) {
             return is.readAllBytes();
         } catch (Exception ex) {
-            log.error("OSS 下载失败 key={}", key, ex);
+            log.error("OSS download failed keyMeta={}", safeKeyMeta(key), ex);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件下载失败");
         }
     }
@@ -91,7 +92,7 @@ public class AliyunOssFileService implements OssFileService {
         try {
             return ossClient.getObject(properties.getBucket(), key).getObjectContent();
         } catch (Exception ex) {
-            log.error("OSS stream open failed key={}", key, ex);
+            log.error("OSS stream open failed keyMeta={}", safeKeyMeta(key), ex);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "OSS file stream open failed");
         }
     }
@@ -152,5 +153,34 @@ public class AliyunOssFileService implements OssFileService {
         } catch (NoSuchAlgorithmException e) {
             return "";
         }
+    }
+
+    private String safeKeyMeta(String key) {
+        if (!StringUtils.hasText(key)) {
+            return "empty";
+        }
+        return "len=" + key.length()
+                + ",hash=" + shortSha256(key)
+                + ",suffix=" + safeSuffix(key);
+    }
+
+    private String shortSha256(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(value.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
+    }
+
+    private String safeSuffix(String key) {
+        int slash = key.lastIndexOf('/');
+        String filename = slash >= 0 ? key.substring(slash + 1) : key;
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) {
+            return "none";
+        }
+        String suffix = filename.substring(dot + 1).toLowerCase();
+        return suffix.length() > 16 ? suffix.substring(0, 16) : suffix;
     }
 }

@@ -137,7 +137,7 @@ public class InterviewReportExportController {
     private InterviewReport getReportBySession(Long sessionId, Long userId) {
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null || !session.getUserId().equals(userId)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "面试不存在");
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "面试不存在");
         }
         InterviewReport report = reportMapper.selectOne(
                 new LambdaQueryWrapper<InterviewReport>()
@@ -148,7 +148,7 @@ public class InterviewReportExportController {
                         .orderByDesc(InterviewReport::getId)
                         .last("limit 1"));
         if (report == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "报告尚未生成");
+            throw new BusinessException(ErrorCode.SEMANTIC_VALIDATION_ERROR, "报告尚未生成");
         }
         return report;
     }

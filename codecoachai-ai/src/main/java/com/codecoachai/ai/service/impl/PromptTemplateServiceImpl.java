@@ -217,6 +217,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     public PromptTemplateVersionVO createVersion(Long templateId, PromptTemplateVersionCreateDTO dto) {
         PromptTemplate template = getTemplate(templateId);
         assertVersionCodeUnique(templateId, dto.getVersionCode());
+        PromptTemplateVariableValidator.validateDefinition(dto.getContent(), dto.getVariablesJson());
         PromptTemplateVersion version = new PromptTemplateVersion();
         version.setTemplateId(template.getId());
         version.setScene(template.getScene());
@@ -241,6 +242,7 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Prompt template content must be changed through version management.");
         }
+        PromptTemplateVariableValidator.validateDefinition(version.getContent(), version.getVariablesJson());
         PromptTemplate template = getTemplate(version.getTemplateId());
         assertExpectedActiveVersion(template, dto);
         promptTemplateVersionMapper.update(null, new LambdaUpdateWrapper<PromptTemplateVersion>()
@@ -290,7 +292,9 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         Map<String, String> variables = dto == null || dto.getInputVariables() == null
                 ? Collections.emptyMap()
                 : dto.getInputVariables();
-        String renderedPrompt = render(version.getContent(), variables);
+        PromptTemplateVariableValidator.validateDefinition(version.getContent(), version.getVariablesJson());
+        String renderedPrompt = PromptTemplateVariableValidator.render(
+                version.getContent(), version.getVariablesJson(), variables);
         boolean callAi = dto != null && Boolean.TRUE.equals(dto.getCallAi());
         PromptTestResult testResult = testAiResponse(template, version, renderedPrompt, variables, callAi);
 
@@ -390,14 +394,6 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         return AiConvert.toLogVO(log, true);
     }
 
-    private String render(String content, Map<String, String> variables) {
-        String rendered = content == null ? "" : content;
-        for (Map.Entry<String, String> entry : variables.entrySet()) {
-            rendered = rendered.replace("{{" + entry.getKey() + "}}", entry.getValue() == null ? "" : entry.getValue());
-        }
-        return rendered;
-    }
-
     private PromptTestResult testAiResponse(PromptTemplate template, PromptTemplateVersion version,
                                             String renderedPrompt, Map<String, String> variables, boolean callAi) {
         if (!callAi) {
@@ -489,11 +485,13 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Prompt template content must be changed through version management.");
         }
+        String content = StringUtils.hasText(dto.getContent()) ? dto.getContent() : dto.getTemplateContent();
+        PromptTemplateVariableValidator.validateDefinition(content, dto.getVariables());
         template.setScene(dto.getScene());
         template.setName(StringUtils.hasText(dto.getName()) ? dto.getName() : dto.getTemplateName());
         template.setTemplateName(StringUtils.hasText(dto.getTemplateName()) ? dto.getTemplateName() : dto.getName());
         template.setDescription(dto.getDescription());
-        template.setContent(StringUtils.hasText(dto.getContent()) ? dto.getContent() : dto.getTemplateContent());
+        template.setContent(content);
         template.setTemplateContent(StringUtils.hasText(dto.getTemplateContent()) ? dto.getTemplateContent() : dto.getContent());
         template.setVariables(dto.getVariables());
         template.setVersion(dto.getVersion());

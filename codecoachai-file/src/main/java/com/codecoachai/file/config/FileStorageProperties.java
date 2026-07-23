@@ -14,5 +14,10 @@ public class FileStorageProperties {
 
     private long maxSizeMb = 10L;
 
-    private List<String> allowedExtensions = List.of("pdf", "doc", "docx", "md", "txt");
+    private long maxInterviewVoiceSizeMb = 10L;
+
+    private List<String> allowedExtensions = List.of(
+            "pdf", "doc", "docx", "md", "txt",
+            "jpg", "jpeg", "png",
+            "webm", "wav", "mp3", "m4a", "ogg");
 }

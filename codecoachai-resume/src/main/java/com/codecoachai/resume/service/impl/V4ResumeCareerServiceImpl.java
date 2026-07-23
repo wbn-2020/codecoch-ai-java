@@ -6,6 +6,14 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
+import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
+import com.codecoachai.resume.careercontact.service.CareerContactReminderCandidateService;
+import com.codecoachai.resume.careercontact.vo.CareerContactReminderCandidateVO;
+import com.codecoachai.resume.careeroffer.service.CareerOfferReminderProvider;
+import com.codecoachai.resume.careeroffer.vo.CareerOfferReminderCandidateVO;
+import com.codecoachai.resume.domain.dto.ApplicationStatsAggregate;
+import com.codecoachai.resume.domain.dto.ApplicationStatusCount;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
@@ -18,6 +26,7 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeSuggestionAdoption;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.ApplicationInsightItemVO;
 import com.codecoachai.resume.domain.vo.ApplicationQualityVO;
@@ -25,6 +34,7 @@ import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
 import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventStructuredReviewVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationSummaryVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
@@ -33,6 +43,7 @@ import com.codecoachai.resume.domain.vo.ResumeVersionEffectVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
+import com.codecoachai.resume.experimentv2.ExperimentV2ApplicationAutoAssignmentService;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -40,22 +51,32 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
+import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -64,16 +85,29 @@ import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
     private static final List<String> SNAPSHOT_FIELDS = List.of(
             "title", "realName", "email", "phone", "targetPosition", "skillStack",
-            "workExperience", "educationExperience", "summary");
+            "workExperience", "educationExperience", "summary", "projects");
+    private static final int VERSION_INSERT_MAX_ATTEMPTS = 5;
     private static final List<String> AGENT_APPLICATION_ACTIVE_STATUSES = List.of(
             "SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER");
     private static final String AGENT_APPLICATION_ORDER_LIMIT_SQL =
             "ORDER BY next_follow_up_at IS NULL ASC, next_follow_up_at ASC, updated_at DESC LIMIT 20";
+    private static final int CALENDAR_REMINDER_LIMIT = 5;
+    private static final int CALENDAR_REMINDER_QUERY_LIMIT = 50;
+    private static final int CALENDAR_REMINDER_LOOKAHEAD_DAYS = 2;
+    private static final int CALENDAR_REMINDER_OVERDUE_LOOKBACK_DAYS = 14;
+    private static final int CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT = 2;
+    private static final String CALENDAR_REMINDER_TYPE = "CALENDAR_REMINDER";
+    private static final String CALENDAR_REMINDER_BIZ_TYPE = "CAREER_CALENDAR_EVENT";
+    private static final Set<String> CALENDAR_REMINDER_ACTIVE_STATUSES = Set.of("CONFIRMED", "TENTATIVE");
+    private static final ZoneId CALENDAR_REMINDER_BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter CALENDAR_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("MM-dd HH:mm");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper resumeProjectMapper;
@@ -82,49 +116,56 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private final ResumeJobMatchReportMapper resumeJobMatchReportMapper;
     private final ResumeSuggestionAdoptionMapper resumeSuggestionAdoptionMapper;
     private final JobApplicationEventMapper jobApplicationEventMapper;
+    private final CareerCalendarEventMapper careerCalendarEventMapper;
+    private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final NotificationBusinessResolver notificationBusinessResolver;
+    private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    private final ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
     private final ObjectMapper objectMapper;
+
+    @Autowired(required = false)
+    private JobApplicationLifecycleService jobApplicationLifecycleService;
+
+    @Autowired(required = false)
+    private CareerContactReminderCandidateService careerContactReminderCandidateService;
+
+    @Autowired(required = false)
+    private CareerOfferReminderProvider careerOfferReminderProvider;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO createVersion(Long resumeId, ResumeVersionCreateDTO dto) {
         Resume resume = ownedResume(resumeId);
-        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
-        ResumeVersion version = new ResumeVersion();
-        version.setUserId(resume.getUserId());
-        version.setResumeId(resumeId);
-        version.setVersionNo(nextNo);
-        version.setVersionName(StringUtils.hasText(dto == null ? null : dto.getVersionName()) ? dto.getVersionName() : "V" + nextNo);
-        version.setSourceType(StringUtils.hasText(dto == null ? null : dto.getSourceType()) ? dto.getSourceType() : "MANUAL");
-        version.setSourceId(dto == null ? null : dto.getSourceId());
-        version.setSnapshotJson(writeJson(snapshot(resume)));
-        version.setCurrentFlag(1);
-        clearCurrentVersions(resumeId, resume.getUserId());
-        resumeVersionMapper.insert(version);
+        lockResume(resume);
+        ResumeVersion version = insertVersionWithRetry(
+                resume,
+                dto == null ? null : dto.getVersionName(),
+                StringUtils.hasText(dto == null ? null : dto.getSourceType()) ? dto.getSourceType() : "MANUAL",
+                dto == null ? null : dto.getSourceId(),
+                writeJson(snapshot(resume)),
+                true);
         return toVersionVO(version);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO copyVersion(Long resumeId, Long versionId, ResumeVersionCopyDTO dto) {
         Resume resume = ownedResume(resumeId);
+        lockResume(resume);
         ResumeVersion source = ownedVersion(versionId);
         ensureVersionBelongsToResume(resumeId, source);
 
-        Integer nextNo = nextVersionNo(resumeId, resume.getUserId());
         String sourceName = StringUtils.hasText(source.getVersionName()) ? source.getVersionName() : "V" + source.getVersionNo();
-        ResumeVersion copy = new ResumeVersion();
-        copy.setUserId(resume.getUserId());
-        copy.setResumeId(resumeId);
-        copy.setVersionNo(nextNo);
-        copy.setVersionName(StringUtils.hasText(dto == null ? null : dto.getVersionName())
-                ? dto.getVersionName()
-                : "Copy of " + sourceName);
-        copy.setSourceType("COPY");
-        copy.setSourceId(source.getId());
-        copy.setSnapshotJson(StringUtils.hasText(source.getSnapshotJson()) ? source.getSnapshotJson() : writeJson(snapshot(resume)));
-        copy.setCurrentFlag(0);
-        resumeVersionMapper.insert(copy);
+        ResumeVersion copy = insertVersionWithRetry(
+                resume,
+                StringUtils.hasText(dto == null ? null : dto.getVersionName())
+                        ? dto.getVersionName()
+                        : "Copy of " + sourceName,
+                "COPY",
+                source.getId(),
+                StringUtils.hasText(source.getSnapshotJson()) ? source.getSnapshotJson() : writeJson(snapshot(resume)),
+                false);
         return toVersionVO(copy);
     }
 
@@ -168,13 +209,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeVersionVO rollbackVersion(Long resumeId, Long versionId) {
         Resume resume = ownedResume(resumeId);
+        lockResume(resume);
         ResumeVersion version = ownedVersion(versionId);
         ensureVersionBelongsToResume(resumeId, version);
-        applySnapshot(resume, readMap(version.getSnapshotJson()));
+        Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
+        applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
+        resumeSearchSyncOutboxService.enqueue(resume.getId(), resume.getUserId(),
+                ResumeSearchSyncOutboxService.OP_UPSERT);
         return toVersionVO(version);
     }
 
@@ -183,8 +229,11 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     public ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto) {
         ResumeVersion version = ownedVersion(versionId);
         Resume resume = ownedResume(version.getResumeId());
-        applySnapshot(resume, readMap(version.getSnapshotJson()));
+        lockResume(resume);
+        Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
+        applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -200,17 +249,40 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         adoption.setStatus(StringUtils.hasText(dto == null ? null : dto.getStatus()) ? dto.getStatus() : "ADOPTED");
         adoption.setNote(dto == null ? null : dto.getNote());
         resumeSuggestionAdoptionMapper.insert(adoption);
+        resumeSearchSyncOutboxService.enqueue(resume.getId(), resume.getUserId(),
+                ResumeSearchSyncOutboxService.OP_UPSERT);
         return toSuggestionAdoptionVO(adoption);
     }
 
     @Override
     public List<JobApplicationVO> listApplications(String status) {
+        return listApplications(status, null, null, null);
+    }
+
+    @Override
+    public List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword) {
         Long userId = currentUserId();
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                        .eq(JobApplication::getUserId, userId)
-                        .eq(JobApplication::getDeleted, CommonConstants.NO)
-                        .eq(StringUtils.hasText(status), JobApplication::getStatus, status)
-                        .orderByDesc(JobApplication::getUpdatedAt));
+        LambdaQueryWrapper<JobApplication> query = new LambdaQueryWrapper<JobApplication>()
+                .eq(JobApplication::getUserId, userId)
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .eq(StringUtils.hasText(status), JobApplication::getStatus, normalizeApplicationStatus(status))
+                .and(StringUtils.hasText(keyword), wrapper -> wrapper
+                        .like(JobApplication::getCompanyName, keyword)
+                        .or()
+                        .like(JobApplication::getJobTitle, keyword)
+                        .or()
+                        .like(JobApplication::getSource, keyword)
+                        .or()
+                        .like(JobApplication::getNote, keyword))
+                .orderByDesc(JobApplication::getUpdatedAt)
+                .orderByDesc(JobApplication::getId);
+        if (page != null || size != null) {
+            int effectivePage = page == null || page < 1 ? 1 : page;
+            int effectiveSize = size == null || size < 1 ? 20 : Math.min(size, 100);
+            long offset = (long) (effectivePage - 1) * effectiveSize;
+            query.last("LIMIT " + effectiveSize + " OFFSET " + offset);
+        }
+        List<JobApplication> applications = jobApplicationMapper.selectList(query);
         return toApplicationVOList(applications);
     }
 
@@ -218,10 +290,20 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     public JobApplicationStatsVO getApplicationStats(LocalDateTime now) {
         Long userId = currentUserId();
         LocalDateTime generatedAt = now == null ? LocalDateTime.now() : now;
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO));
-        return buildApplicationStats(applications, generatedAt);
+        ApplicationStatsAggregate aggregate = jobApplicationMapper.selectStats(
+                userId,
+                generatedAt,
+                generatedAt.toLocalDate().atStartOfDay(),
+                generatedAt.toLocalDate().plusDays(1).atStartOfDay(),
+                generatedAt.minusDays(14));
+        List<ApplicationStatusCount> statusCounts = jobApplicationMapper.selectStatusCounts(userId);
+        if (aggregate == null) {
+            List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO));
+            return buildApplicationStats(applications, generatedAt);
+        }
+        return toApplicationStats(aggregate, statusCounts, generatedAt);
     }
 
     @Override
@@ -247,10 +329,83 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
         LocalDateTime effectiveNow = now == null ? LocalDateTime.now() : now;
         LocalDate reminderDate = date == null ? effectiveNow.toLocalDate() : date;
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO)
-                .isNotNull(JobApplication::getNextFollowUpAt));
+        List<ApplicationReminderCandidateVO> candidates = new ArrayList<>(
+                applicationReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(calendarReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(contactReminderCandidates(userId, reminderDate, effectiveNow));
+        candidates.addAll(offerReminderCandidates(userId, reminderDate));
+        return candidates;
+    }
+
+    private List<ApplicationReminderCandidateVO> contactReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                            LocalDateTime now) {
+        if (careerContactReminderCandidateService == null) {
+            return List.of();
+        }
+        List<CareerContactReminderCandidateVO> source =
+                careerContactReminderCandidateService.listReminderCandidates(userId, reminderDate, now);
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream().filter(Objects::nonNull).map(candidate -> {
+            ApplicationReminderCandidateVO target = new ApplicationReminderCandidateVO();
+            target.setType(StringUtils.hasText(candidate.getType()) ? candidate.getType() : "FOLLOW_UP");
+            target.setBizType(StringUtils.hasText(candidate.getBizType())
+                    ? candidate.getBizType() : "CAREER_CONTACT");
+            target.setBizId(candidate.getBizId());
+            target.setTitle(candidate.getTitle());
+            target.setContent(candidate.getContent());
+            target.setActionUrl(candidate.getActionUrl());
+            target.setFallbackPath("/applications");
+            target.setFallbackLabel("查看机会工作区");
+            target.setPlanDate(candidate.getPlanDate() == null ? reminderDate : candidate.getPlanDate());
+            return target;
+        }).toList();
+    }
+
+    private List<ApplicationReminderCandidateVO> offerReminderCandidates(Long userId, LocalDate reminderDate) {
+        if (careerOfferReminderProvider == null) {
+            return List.of();
+        }
+        List<CareerOfferReminderCandidateVO> source =
+                careerOfferReminderProvider.deadlineReminderCandidatesForUser(userId, reminderDate, 10);
+        if (source == null || source.isEmpty()) {
+            return List.of();
+        }
+        return source.stream().filter(Objects::nonNull).map(candidate -> {
+            ApplicationReminderCandidateVO target = new ApplicationReminderCandidateVO();
+            target.setType("OFFER_DEADLINE_REMINDER");
+            target.setBizType(StringUtils.hasText(candidate.getBizType())
+                    ? candidate.getBizType() : "CAREER_OFFER");
+            target.setBizId(StringUtils.hasText(candidate.getBizId())
+                    ? candidate.getBizId() : String.valueOf(candidate.getOfferId()));
+            target.setTitle("Offer 决定截止时间提醒");
+            target.setContent("Offer #" + candidate.getOfferId() + " 的决定截止时间为 "
+                    + candidate.getDecisionDeadline());
+            target.setActionUrl(candidate.getApplicationId() == null
+                    ? "/applications"
+                    : "/applications/" + candidate.getApplicationId() + "?tab=offer");
+            target.setFallbackPath("/applications");
+            target.setFallbackLabel("查看机会工作区");
+            target.setPlanDate(candidate.getReminderDate() == null ? reminderDate : candidate.getReminderDate());
+            return target;
+        }).toList();
+    }
+
+    private List<ApplicationReminderCandidateVO> applicationReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                              LocalDateTime effectiveNow) {
+        List<JobApplication> applications = jobApplicationMapper.selectReminderCandidates(
+                userId,
+                effectiveNow,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5);
+        if (applications == null) {
+            applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .isNotNull(JobApplication::getNextFollowUpAt));
+        }
         if (applications == null || applications.isEmpty()) {
             return List.of();
         }
@@ -266,6 +421,172 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .toList();
     }
 
+    /**
+     * 求职日历事件提醒候选：覆盖逾期事件以及 reminderDate 当天、次日开始的事件。
+     * 候选经现有 resume→task 通道进入通知中心，事件 id 作为 bizId 保证每日落库幂等。
+     */
+    private List<ApplicationReminderCandidateVO> calendarReminderCandidates(Long userId, LocalDate reminderDate,
+                                                                           LocalDateTime effectiveNow) {
+        LocalDateTime nowUtc = LocalDateTime.ofInstant(
+                effectiveNow.atZone(CALENDAR_REMINDER_BUSINESS_ZONE).toInstant(), ZoneOffset.UTC);
+        LocalDateTime windowStartUtc = reminderDate
+                .minusDays(CALENDAR_REMINDER_OVERDUE_LOOKBACK_DAYS + 1L)
+                .atStartOfDay(ZoneOffset.UTC)
+                .toLocalDateTime();
+        LocalDateTime windowEndUtc = reminderDate
+                .plusDays(CALENDAR_REMINDER_LOOKAHEAD_DAYS + 2L)
+                .atStartOfDay(ZoneOffset.UTC)
+                .toLocalDateTime();
+
+        List<CareerCalendarEvent> events = careerCalendarEventMapper.selectList(
+                new LambdaQueryWrapper<CareerCalendarEvent>()
+                        .eq(CareerCalendarEvent::getUserId, userId)
+                        .eq(CareerCalendarEvent::getDeleted, CommonConstants.NO)
+                        .in(CareerCalendarEvent::getStatus, CALENDAR_REMINDER_ACTIVE_STATUSES)
+                        .ge(CareerCalendarEvent::getStartsAtUtc, windowStartUtc)
+                        .lt(CareerCalendarEvent::getStartsAtUtc, windowEndUtc)
+                        .orderByDesc(CareerCalendarEvent::getStartsAtUtc)
+                        .orderByDesc(CareerCalendarEvent::getId)
+                        .last("LIMIT " + CALENDAR_REMINDER_QUERY_LIMIT));
+        if (events == null || events.isEmpty()) {
+            return List.of();
+        }
+        List<CareerCalendarEvent> eligible = events.stream()
+                .filter(event -> isCalendarReminderCandidate(event, reminderDate, nowUtc))
+                .toList();
+        List<CareerCalendarEvent> overdue = eligible.stream()
+                .filter(event -> isCalendarEventOverdue(event, nowUtc))
+                .sorted(Comparator
+                        .comparing(CareerCalendarEvent::getEndsAtUtc,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(CareerCalendarEvent::getId, Comparator.reverseOrder()))
+                .toList();
+        List<CareerCalendarEvent> upcoming = eligible.stream()
+                .filter(event -> !isCalendarEventOverdue(event, nowUtc))
+                .sorted(Comparator
+                        .comparing(CareerCalendarEvent::getStartsAtUtc)
+                        .thenComparing(CareerCalendarEvent::getId))
+                .toList();
+
+        List<CareerCalendarEvent> selected = new ArrayList<>(CALENDAR_REMINDER_LIMIT);
+        overdue.stream()
+                .limit(CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT)
+                .forEach(selected::add);
+        upcoming.stream()
+                .limit(CALENDAR_REMINDER_LIMIT - selected.size())
+                .forEach(selected::add);
+        if (selected.size() < CALENDAR_REMINDER_LIMIT) {
+            overdue.stream()
+                    .skip(CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT)
+                    .limit(CALENDAR_REMINDER_LIMIT - selected.size())
+                    .forEach(selected::add);
+        }
+        return selected.stream()
+                .map(event -> toCalendarReminderCandidateVO(event, reminderDate, nowUtc))
+                .toList();
+    }
+
+    private boolean isCalendarReminderCandidate(CareerCalendarEvent event, LocalDate reminderDate,
+                                                LocalDateTime nowUtc) {
+        if (event == null || event.getStartsAtUtc() == null || event.getEndsAtUtc() == null
+                || Objects.equals(event.getDeleted(), CommonConstants.YES)) {
+            return false;
+        }
+        String status = event.getStatus() == null ? "" : event.getStatus().trim().toUpperCase(Locale.ROOT);
+        if (!CALENDAR_REMINDER_ACTIVE_STATUSES.contains(status)) {
+            return false;
+        }
+        if (isCalendarEventOverdue(event, nowUtc)) {
+            return true;
+        }
+        LocalDate eventDate = calendarEventLocalDate(event);
+        return Objects.equals(eventDate, reminderDate)
+                || Objects.equals(eventDate, reminderDate.plusDays(1));
+    }
+
+    private boolean isCalendarEventOverdue(CareerCalendarEvent event, LocalDateTime nowUtc) {
+        return event.getEndsAtUtc() != null && event.getEndsAtUtc().isBefore(nowUtc);
+    }
+
+    private ApplicationReminderCandidateVO toCalendarReminderCandidateVO(CareerCalendarEvent event, LocalDate reminderDate,
+                                                                        LocalDateTime nowUtc) {
+        boolean overdue = isCalendarEventOverdue(event, nowUtc);
+        LocalDate eventDate = calendarEventLocalDate(event);
+        ApplicationReminderCandidateVO vo = new ApplicationReminderCandidateVO();
+        vo.setType(CALENDAR_REMINDER_TYPE);
+        vo.setBizType(CALENDAR_REMINDER_BIZ_TYPE);
+        vo.setBizId(String.valueOf(event.getId()));
+        vo.setTitle(calendarReminderTitle(eventDate, reminderDate, overdue));
+        vo.setContent(calendarReminderContent(event, overdue));
+        vo.setActionUrl("/career-calendar");
+        vo.setFallbackPath("/career-calendar");
+        vo.setFallbackLabel("打开求职日历");
+        vo.setPlanDate(reminderDate);
+        return vo;
+    }
+
+    private String calendarReminderTitle(LocalDate eventDate, LocalDate reminderDate, boolean overdue) {
+        if (overdue) {
+            return "求职日程已逾期";
+        }
+        if (Objects.equals(eventDate, reminderDate)) {
+            return "今天的求职日程";
+        }
+        if (Objects.equals(eventDate, reminderDate.plusDays(1))) {
+            return "明天的求职日程";
+        }
+        return "临近的求职日程";
+    }
+
+    private String calendarReminderContent(CareerCalendarEvent event, boolean overdue) {
+        String title = StringUtils.hasText(event.getTitle()) ? event.getTitle() : "未命名日程";
+        String eventType = calendarEventTypeLabel(event.getEventType());
+        // 用事件自身时区把 UTC 起始时间还原为本地展示时间。
+        String localTime = formatCalendarLocalTime(event);
+        String suffix = overdue ? "已经开始，请及时跟进" : "即将开始";
+        return eventType + " · " + title + "（" + localTime + "）" + suffix;
+    }
+
+    private String calendarEventTypeLabel(String eventType) {
+        String normalized = eventType == null ? "" : eventType.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "APPLICATION" -> "投递";
+            case "INTERVIEW" -> "面试";
+            case "WRITTEN_TEST" -> "笔试";
+            case "FOLLOW_UP" -> "跟进";
+            case "THANK_YOU" -> "感谢信";
+            case "DEADLINE", "OFFER_DEADLINE" -> "Offer 截止";
+            case "REVIEW" -> "复盘";
+            default -> "求职日程";
+        };
+    }
+
+    private LocalDate calendarEventLocalDate(CareerCalendarEvent event) {
+        return LocalDateTime.ofInstant(
+                event.getStartsAtUtc().toInstant(ZoneOffset.UTC), calendarEventZone(event)).toLocalDate();
+    }
+
+    private String formatCalendarLocalTime(CareerCalendarEvent event) {
+        if (event.getStartsAtUtc() == null) {
+            return "时间待定";
+        }
+        LocalDateTime local = LocalDateTime.ofInstant(
+                event.getStartsAtUtc().toInstant(ZoneOffset.UTC), calendarEventZone(event));
+        return CALENDAR_TIME_FORMAT.format(local);
+    }
+
+    private ZoneId calendarEventZone(CareerCalendarEvent event) {
+        ZoneId zone;
+        try {
+            zone = StringUtils.hasText(event.getTimezone())
+                    ? ZoneId.of(event.getTimezone().trim())
+                    : CALENDAR_REMINDER_BUSINESS_ZONE;
+        } catch (RuntimeException ex) {
+            zone = CALENDAR_REMINDER_BUSINESS_ZONE;
+        }
+        return zone;
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public JobApplicationVO createApplication(JobApplicationSaveDTO dto) {
@@ -279,6 +600,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         app.setUserId(userId);
         fillApplication(app, request);
         jobApplicationMapper.insert(app);
+        autoAssignExperimentAfterCommit(app);
         return toApplicationVOWithDetails(app);
     }
 
@@ -288,6 +610,15 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         JobApplication app = ownedApplication(id);
         JobApplicationSaveDTO request = prepareApplicationRequest(dto, app.getUserId());
         ensureMatchReportNotLinkedToAnotherApplication(request.getMatchReportId(), app.getUserId(), app.getId());
+        String requestedStatus = normalizeApplicationStatus(request.getStatus());
+        String currentStatus = normalizeApplicationStatus(app.getStatus());
+        if (jobApplicationLifecycleService != null
+                && StringUtils.hasText(request.getStatus())
+                && !Objects.equals(requestedStatus, currentStatus)) {
+            app = jobApplicationLifecycleService.transitionForUser(
+                    app.getUserId(), id, requestedStatus, request.getExpectedLockVersion(),
+                    request.getIdempotencyKey());
+        }
         fillApplication(app, request);
         jobApplicationMapper.updateById(app);
         return toApplicationVOWithDetails(jobApplicationMapper.selectById(id));
@@ -366,15 +697,21 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
 
         LocalDateTime startAt = generatedAt.toLocalDate().minusDays(rangeDays - 1L).atStartOfDay();
-        List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
-                .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO)
-                .orderByDesc(JobApplication::getAppliedAt)
-                .orderByDesc(JobApplication::getCreatedAt)
-                .orderByDesc(JobApplication::getUpdatedAt));
-        List<JobApplication> scopedApplications = (applications == null ? List.<JobApplication>of() : applications).stream()
-                .filter(app -> isApplicationInInsightRange(app, startAt, generatedAt))
-                .toList();
+        List<JobApplication> applications = jobApplicationMapper.selectInsightRange(userId, startAt, generatedAt);
+        List<JobApplication> scopedApplications;
+        if (applications == null) {
+            List<JobApplication> fallback = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
+                    .eq(JobApplication::getUserId, userId)
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .orderByDesc(JobApplication::getAppliedAt)
+                    .orderByDesc(JobApplication::getCreatedAt)
+                    .orderByDesc(JobApplication::getUpdatedAt));
+            scopedApplications = (fallback == null ? List.<JobApplication>of() : fallback).stream()
+                    .filter(app -> isApplicationInInsightRange(app, startAt, generatedAt))
+                    .toList();
+        } else {
+            scopedApplications = applications;
+        }
         if (scopedApplications.isEmpty()) {
             summary.setQuality(buildApplicationQuality(summary, Map.of(), generatedAt));
             summary.setResumeVersionEffect(buildResumeVersionEffect(scopedApplications, Map.of(), Map.of()));
@@ -425,6 +762,29 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 "JOB_APPLICATION_EVENT:" + eventId);
     }
 
+    private void autoAssignExperimentAfterCommit(JobApplication application) {
+        Runnable action = () -> {
+            try {
+                experimentAutoAssignmentService.autoAssign(application);
+            } catch (Exception exception) {
+                log.error("Experiment auto-assignment failed after application creation: applicationId={}, userId={}",
+                        application == null ? null : application.getId(),
+                        application == null ? null : application.getUserId(),
+                        exception);
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
+    }
+
     private JobApplicationStatsVO buildApplicationStats(List<JobApplication> applications, LocalDateTime now) {
         JobApplicationStatsVO vo = new JobApplicationStatsVO();
         vo.setGeneratedAt(now);
@@ -471,6 +831,35 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         }
         vo.setStatusCounts(statusCounts);
         return vo;
+    }
+
+    private JobApplicationStatsVO toApplicationStats(ApplicationStatsAggregate aggregate,
+                                                      List<ApplicationStatusCount> statusCounts,
+                                                      LocalDateTime generatedAt) {
+        JobApplicationStatsVO vo = new JobApplicationStatsVO();
+        vo.setGeneratedAt(generatedAt);
+        vo.setTotal(zeroIfNull(aggregate.getTotal()));
+        vo.setActiveCount(zeroIfNull(aggregate.getActiveCount()));
+        vo.setOverdueFollowUpCount(zeroIfNull(aggregate.getOverdueFollowUpCount()));
+        vo.setDueTodayFollowUpCount(zeroIfNull(aggregate.getDueTodayFollowUpCount()));
+        vo.setNoFollowUpCount(zeroIfNull(aggregate.getNoFollowUpCount()));
+        vo.setStaleActiveCount(zeroIfNull(aggregate.getStaleActiveCount()));
+        vo.setInterviewCount(zeroIfNull(aggregate.getInterviewCount()));
+        vo.setOfferCount(zeroIfNull(aggregate.getOfferCount()));
+        vo.setRejectedCount(zeroIfNull(aggregate.getRejectedCount()));
+        vo.setClosedCount(zeroIfNull(aggregate.getClosedCount()));
+        Map<String, Long> counts = new LinkedHashMap<>();
+        if (statusCounts != null) {
+            statusCounts.stream()
+                    .filter(item -> item != null && StringUtils.hasText(item.getStatus()))
+                    .forEach(item -> counts.put(item.getStatus(), zeroIfNull(item.getCount())));
+        }
+        vo.setStatusCounts(counts);
+        return vo;
+    }
+
+    private long zeroIfNull(Long value) {
+        return value == null ? 0L : value;
     }
 
     private ApplicationQualityVO buildApplicationQuality(ApplicationCareerInsightSummaryVO summary,
@@ -914,7 +1303,22 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         if (request.getResumeVersionId() != null) {
             ownedVersion(request.getResumeVersionId());
         }
+        if (request.getTargetJobId() != null) {
+            ownedTargetJob(request.getTargetJobId(), userId);
+        }
         return request;
+    }
+
+    private TargetJob ownedTargetJob(Long targetJobId, Long userId) {
+        TargetJob targetJob = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
+                .eq(TargetJob::getId, targetJobId)
+                .eq(TargetJob::getUserId, userId)
+                .eq(TargetJob::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (targetJob == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target job does not exist or is unavailable");
+        }
+        return targetJob;
     }
 
     private void syncApplicationStatusFromEvent(JobApplication app, JobApplicationEvent event) {
@@ -1071,6 +1475,42 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .set(ResumeVersion::getCurrentFlag, 0));
     }
 
+    private ResumeVersion insertVersionWithRetry(Resume resume, String requestedVersionName, String sourceType,
+                                                 Long sourceId, String snapshotJson, boolean current) {
+        DuplicateKeyException lastConflict = null;
+        for (int attempt = 1; attempt <= VERSION_INSERT_MAX_ATTEMPTS; attempt++) {
+            Integer nextNo = nextVersionNo(resume.getId(), resume.getUserId());
+            ResumeVersion version = new ResumeVersion();
+            version.setUserId(resume.getUserId());
+            version.setResumeId(resume.getId());
+            version.setVersionNo(nextNo);
+            version.setVersionName(StringUtils.hasText(requestedVersionName) ? requestedVersionName : "V" + nextNo);
+            version.setSourceType(sourceType);
+            version.setSourceId(sourceId);
+            version.setSnapshotJson(snapshotJson);
+            version.setCurrentFlag(current ? 1 : 0);
+            try {
+                if (current) {
+                    clearCurrentVersions(resume.getId(), resume.getUserId());
+                }
+                resumeVersionMapper.insert(version);
+                return version;
+            } catch (DuplicateKeyException conflict) {
+                lastConflict = conflict;
+            }
+        }
+        if (lastConflict != null) {
+            throw lastConflict;
+        }
+        throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Failed to allocate a unique resume version number");
+    }
+
+    private void lockResume(Resume resume) {
+        if (resume != null && resume.getId() != null && resume.getUserId() != null) {
+            resumeMapper.lockOwnedResume(resume.getId(), resume.getUserId());
+        }
+    }
+
     private Integer nextVersionNo(Long resumeId, Long userId) {
         ResumeVersion latest = resumeVersionMapper.selectOne(new LambdaQueryWrapper<ResumeVersion>()
                 .eq(ResumeVersion::getUserId, userId)
@@ -1095,7 +1535,13 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("workExperience", resume.getWorkExperience());
         map.put("educationExperience", resume.getEducationExperience());
         map.put("summary", resume.getSummary());
-        map.put("projects", projectsForSnapshot(resume.getId()).stream().map(this::projectSnapshot).toList());
+        map.put("projects", projectsForSnapshot(resume.getId()).stream()
+                .map(this::projectSnapshot)
+                .sorted(Comparator
+                        .comparingInt((Map<String, Object> project) -> integer(project.get("sortOrder"), 0))
+                        .thenComparingInt(project -> integer(project.get("sort"), 0))
+                        .thenComparing(this::writeJson))
+                .toList());
         map.put("projectSnapshotSource", "RESUME_VERSION");
         return map;
     }
@@ -1108,8 +1554,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .eq(ResumeProject::getResumeId, resumeId)
                 .eq(ResumeProject::getDeleted, CommonConstants.NO)
                 .orderByAsc(ResumeProject::getSortOrder)
-                .orderByAsc(ResumeProject::getSort)
-                .orderByDesc(ResumeProject::getUpdatedAt));
+                .orderByAsc(ResumeProject::getSort));
         return projects == null ? List.of() : projects;
     }
 
@@ -1126,6 +1571,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("optimizationResults", project.getOptimizationResults());
         map.put("description", project.getDescription());
         map.put("highlights", project.getHighlights());
+        map.put("sort", project.getSort() == null ? 0 : project.getSort());
+        map.put("sortOrder", project.getSortOrder() == null ? 0 : project.getSortOrder());
         return map;
     }
 
@@ -1141,7 +1588,43 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         resume.setSummary(text(map.get("summary")));
     }
 
+    private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {
+        if (resumeId == null || snapshot == null || !snapshot.containsKey("projects")) {
+            return;
+        }
+        resumeProjectMapper.delete(new LambdaQueryWrapper<ResumeProject>()
+                .eq(ResumeProject::getResumeId, resumeId));
+        Object rawProjects = snapshot.get("projects");
+        if (!(rawProjects instanceof List<?> projects)) {
+            return;
+        }
+        for (Object rawProject : projects) {
+            if (!(rawProject instanceof Map<?, ?> projectSnapshot)) {
+                continue;
+            }
+            ResumeProject project = new ResumeProject();
+            project.setResumeId(resumeId);
+            project.setProjectName(text(projectSnapshot.get("projectName")));
+            project.setProjectPeriod(text(projectSnapshot.get("projectPeriod")));
+            project.setProjectBackground(text(projectSnapshot.get("projectBackground")));
+            project.setRole(text(projectSnapshot.get("role")));
+            project.setTechStack(text(projectSnapshot.get("techStack")));
+            project.setResponsibility(text(projectSnapshot.get("responsibility")));
+            project.setCoreFeatures(text(projectSnapshot.get("coreFeatures")));
+            project.setTechnicalDifficulties(text(projectSnapshot.get("technicalDifficulties")));
+            project.setOptimizationResults(text(projectSnapshot.get("optimizationResults")));
+            project.setDescription(text(projectSnapshot.get("description")));
+            project.setHighlights(text(projectSnapshot.get("highlights")));
+            project.setSort(integer(projectSnapshot.get("sort"), 0));
+            project.setSortOrder(integer(projectSnapshot.get("sortOrder"), project.getSort()));
+            resumeProjectMapper.insert(project);
+        }
+    }
+
     private void fillApplication(JobApplication app, JobApplicationSaveDTO dto) {
+        if (dto != null && dto.getCampaignId() != null) {
+            app.setCampaignId(dto.getCampaignId());
+        }
         app.setTargetJobId(dto == null ? null : dto.getTargetJobId());
         app.setResumeVersionId(dto == null ? null : dto.getResumeVersionId());
         app.setMatchReportId(dto == null ? null : dto.getMatchReportId());
@@ -1199,6 +1682,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             return vo;
         }
         vo.setId(app.getId());
+        vo.setCampaignId(app.getCampaignId());
         vo.setTargetJobId(app.getTargetJobId());
         vo.setResumeVersionId(app.getResumeVersionId());
         vo.setMatchReportId(app.getMatchReportId());
@@ -1206,6 +1690,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setJobTitle(app.getJobTitle());
         vo.setSource(app.getSource());
         vo.setStatus(app.getStatus());
+        vo.setStageChangedAt(app.getStageChangedAt());
+        vo.setPriorityLevel(app.getPriorityLevel());
+        vo.setOpportunityOutcome(app.getOpportunityOutcome());
+        vo.setLockVersion(app.getLockVersion());
         vo.setAppliedAt(app.getAppliedAt());
         vo.setNextFollowUpAt(app.getNextFollowUpAt());
         vo.setNote(app.getNote());
@@ -1426,11 +1914,18 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setBizId(String.valueOf(app.getId()));
         vo.setTitle(overdue ? "投递跟进已逾期" : "今日待跟进投递");
         vo.setContent(applicationReminderContent(app, overdue));
-        vo.setActionUrl(overdue ? "/applications?followUp=overdue" : "/applications?followUp=due-today");
+        vo.setActionUrl(applicationEventActionUrl(app));
         vo.setFallbackPath("/applications");
         vo.setFallbackLabel("查看投递工作台");
         vo.setPlanDate(reminderDate);
         return vo;
+    }
+
+    private String applicationEventActionUrl(JobApplication app) {
+        if (app == null || app.getId() == null) {
+            return "/applications";
+        }
+        return "/applications?applicationId=" + app.getId() + "&openEvents=1";
     }
 
     private String applicationReminderContent(JobApplication app, boolean overdue) {
@@ -1462,7 +1957,17 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setEventTime(event.getEventTime());
         vo.setSummary(event.getSummary());
         vo.setReviewJson(event.getReviewJson());
-        vo.setReview(readMap(event.getReviewJson()));
+        Map<String, Object> review = readMap(event.getReviewJson());
+        vo.setReview(review);
+        Object structuredReview = review.get("structuredReview");
+        if (structuredReview != null) {
+            try {
+                vo.setStructuredReview(objectMapper.convertValue(
+                        structuredReview, JobApplicationEventStructuredReviewVO.class));
+            } catch (IllegalArgumentException ignored) {
+                // Historical malformed JSON remains available through review/reviewJson.
+            }
+        }
         vo.setCreatedAt(event.getCreatedAt());
         vo.setUpdatedAt(event.getUpdatedAt());
         return vo;
@@ -1520,5 +2025,19 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private String text(Object value) {
         return value == null ? null : String.valueOf(value);
+    }
+
+    private Integer integer(Object value, Integer fallback) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.valueOf(String.valueOf(value));
+            } catch (NumberFormatException ignored) {
+                return fallback;
+            }
+        }
+        return fallback;
     }
 }

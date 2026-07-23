@@ -34,7 +34,7 @@ public interface InterviewService {
 
     FinishInterviewVO retryReport(Long id);
 
-    PageResult<InterviewListVO> list(Long pageNo, Long pageSize);
+    PageResult<InterviewListVO> list(Long pageNo, Long pageSize, String status, String reportStatus, String keyword);
 
     InterviewDetailVO detail(Long id);
 

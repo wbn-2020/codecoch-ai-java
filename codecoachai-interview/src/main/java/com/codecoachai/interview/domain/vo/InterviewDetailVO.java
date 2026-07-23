@@ -8,6 +8,9 @@ public class InterviewDetailVO {
 
     private Long id;
     private Long applicationId;
+    private Long applicationPackageId;
+    private Long jdAnalysisId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
@@ -27,6 +30,10 @@ public class InterviewDetailVO {
     private String targetLevel;
     private List<Long> projectEvidenceIds;
     private String followUpIntensity;
+    private Long sourceReportId;
+    private List<Long> sourceRequirementIds;
+    private String practicePurpose;
+    private String remediationStrength;
     private String status;
     private String reportStatus;
     private List<InterviewStageVO> stages;

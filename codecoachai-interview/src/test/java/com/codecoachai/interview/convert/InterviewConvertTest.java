@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.codecoachai.interview.domain.entity.InterviewReport;
+import com.codecoachai.interview.domain.entity.InterviewSession;
+import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewReportNextActionVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import java.time.LocalDateTime;
@@ -13,6 +15,20 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class InterviewConvertTest {
+
+    @Test
+    void listVoUsesCurrentReportIdentityAndScore() {
+        InterviewSession session = new InterviewSession();
+        session.setId(66L);
+        session.setTotalScore(99);
+        InterviewReport report = generatedReport();
+        report.setTotalScore(65);
+
+        InterviewListVO vo = InterviewConvert.toListVO(session, report);
+
+        assertEquals(88L, vo.getReportId());
+        assertEquals(65, vo.getTotalScore());
+    }
 
     @Test
     void generatedReportBuildsDeterministicNextActionsFromReportData() {
@@ -99,7 +115,7 @@ class InterviewConvertTest {
     }
 
     @Test
-    void generatedReportBuildsEvidenceBackedNextActionsFromAdviceEvidence() {
+    void sampleInsufficientAdviceDoesNotDriveFormalNextActions() {
         InterviewReport report = generatedReport();
         report.setAdviceEvidence("""
                 [
@@ -109,10 +125,22 @@ class InterviewConvertTest {
 
         List<InterviewReportNextActionVO> actions = InterviewConvert.toReportVO(report).getNextActions();
 
-        assertTrue(actions.stream().anyMatch(action -> "AI_ADVICE".equals(action.getActionType())
-                && "补充项目量化结果".equals(action.getTitle())
-                && "INTERVIEW_REPORT".equals(action.getRelatedBizType())
-                && action.getEvidence().contains("可落地性 2/5")));
+        assertTrue(actions.isEmpty());
+    }
+
+    @Test
+    void untrustedAdviceSourceDoesNotDriveFormalNextActions() {
+        InterviewReport report = generatedReport();
+        report.setAdviceEvidence("""
+                [
+                  {"title":"客户端直接指定行动","sampleInsufficient":false,"evidenceSources":[{"sourceType":"CLIENT","sourceId":88,"sourceSummary":"客户端输入"}]}
+                ]
+                """);
+
+        InterviewReportVO vo = InterviewConvert.toReportVO(report);
+
+        assertTrue(vo.getNextActions().isEmpty());
+        assertEquals("PARTIAL", vo.getTrustStatus());
     }
 
     private static InterviewReport generatedReport() {

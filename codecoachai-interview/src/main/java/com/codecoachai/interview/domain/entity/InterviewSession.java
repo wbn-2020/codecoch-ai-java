@@ -13,8 +13,11 @@ public class InterviewSession extends BaseEntity {
 
     private Long userId;
     private Long applicationId;
+    private Long applicationPackageId;
     private Long resumeId;
+    private Long resumeVersionId;
     private Long targetJobId;
+    private Long jdAnalysisId;
     private Long skillProfileId;
     private Long matchReportId;
     private String mode;
@@ -34,6 +37,10 @@ public class InterviewSession extends BaseEntity {
     private String projectEvidenceIds;
     private String followUpIntensity;
     private String trainingContextSummary;
+    private Long sourceReportId;
+    private String sourceRequirementIds;
+    private String practicePurpose;
+    private String remediationStrength;
     private String status;
     private String reportStatus;
     private Long currentStageId;

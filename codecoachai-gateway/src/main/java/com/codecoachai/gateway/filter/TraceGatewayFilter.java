@@ -1,10 +1,10 @@
 package com.codecoachai.gateway.filter;
 
 import com.codecoachai.common.core.constant.HeaderConstants;
+import com.codecoachai.gateway.config.ReactiveTraceMdcBridge;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -20,7 +20,6 @@ import reactor.core.publisher.Mono;
 @Component
 public class TraceGatewayFilter implements GlobalFilter, Ordered {
 
-    private static final String MDC_TRACE_ID = "traceId";
     private static final Pattern TRACE_ID_PATTERN = Pattern.compile("^[A-Za-z0-9._:-]{8,64}$");
 
     @Override
@@ -36,17 +35,16 @@ public class TraceGatewayFilter implements GlobalFilter, Ordered {
         if (!resolution.valid()) {
             response.setStatusCode(HttpStatus.BAD_REQUEST);
             return response.setComplete()
-                    .doOnSubscribe(subscription -> MDC.put(MDC_TRACE_ID, traceId))
-                    .doFinally(signalType -> MDC.remove(MDC_TRACE_ID));
+                    .contextWrite(context ->
+                            context.put(ReactiveTraceMdcBridge.TRACE_ID_CONTEXT_KEY, traceId));
         }
         ServerHttpRequest mutatedRequest = exchange.getRequest().mutate()
                 .headers(headers -> headers.set(HeaderConstants.TRACE_ID, traceId))
                 .build();
         ServerWebExchange mutatedExchange = exchange.mutate().request(mutatedRequest).build();
         return chain.filter(mutatedExchange)
-                .doOnSubscribe(subscription -> MDC.put(MDC_TRACE_ID, traceId))
-                .doFinally(signalType -> MDC.remove(MDC_TRACE_ID))
-                .contextWrite(context -> context.put(MDC_TRACE_ID, traceId));
+                .contextWrite(context ->
+                        context.put(ReactiveTraceMdcBridge.TRACE_ID_CONTEXT_KEY, traceId));
     }
 
     @Override
@@ -60,8 +58,9 @@ public class TraceGatewayFilter implements GlobalFilter, Ordered {
         }
         String value = traceId.trim();
         if (!TRACE_ID_PATTERN.matcher(value).matches()) {
-            log.warn("Invalid X-Trace-Id received");
-            return new TraceIdResolution(newTraceId(), false);
+            String generatedTraceId = newTraceId();
+            log.warn("Invalid X-Trace-Id received, traceId={}", generatedTraceId);
+            return new TraceIdResolution(generatedTraceId, false);
         }
         return new TraceIdResolution(value, true);
     }

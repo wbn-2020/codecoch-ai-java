@@ -16,6 +16,7 @@ import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
 import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileBizTypes;
 import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.io.InputStream;
@@ -24,6 +25,7 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -32,6 +34,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +48,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -80,21 +85,24 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public InnerFileUploadVO upload(MultipartFile file, String bizType, Long userId) {
-        validateBasic(file, bizType, userId);
+        String normalizedBizType = FileBizTypes.requireAllowed(bizType);
+        validateBasic(file, normalizedBizType, userId);
         String originalFilename = safeOriginalFilename(file.getOriginalFilename());
         String fileExt = extractExtension(originalFilename);
-        validateExtension(fileExt);
-        validateSize(file);
+        validateExtension(normalizedBizType, fileExt);
+        validateSize(file, normalizedBizType);
         // 先做文件头/内容校验，再上传 OSS，避免伪装扩展名的文件进入对象存储。
-        FileUploadValidator.validateContent(file, fileExt);
+        FileUploadValidator.validateContent(file, normalizedBizType, fileExt);
 
         // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
         String storedFilename = UUID.randomUUID().toString().replace("-", "") + "." + fileExt;
-        String ossKey = bizType.toLowerCase(Locale.ROOT) + "/"
+        String ossKey = FileBizTypes.directoryName(normalizedBizType) + "/"
                 + userId + "/"
                 + LocalDate.now().format(DATE_PATH_FORMATTER) + "/"
                 + storedFilename;
 
+        String uploadedKey = null;
+        AtomicBoolean uploadedCleanupDone = new AtomicBoolean(false);
         try {
             MessageDigest md5Digest = MessageDigest.getInstance("MD5");
             OssUploadResult uploaded;
@@ -102,11 +110,13 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 uploaded = ossFileService.upload(ossKey, inputStream, file.getSize(),
                         StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
             }
+            uploadedKey = uploaded.getOssKey();
+            registerOssRollbackCleanup(uploadedKey, uploadedCleanupDone);
             String md5 = HexFormat.of().formatHex(md5Digest.digest());
 
             FileInfo fileInfo = new FileInfo();
             fileInfo.setUserId(userId);
-            fileInfo.setBizType(bizType);
+            fileInfo.setBizType(normalizedBizType);
             fileInfo.setOriginalFilename(originalFilename);
             fileInfo.setStoredFilename(storedFilename);
             fileInfo.setFileExt(fileExt);
@@ -121,17 +131,32 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             fileInfo.setStatus(STATUS_AVAILABLE);
             fileInfoMapper.insert(fileInfo);
 
-            log.info("OSS upload succeeded fileId={} ossKey={} size={}", fileInfo.getId(), ossKey, file.getSize());
+            log.info("OSS upload succeeded fileId={} bizType={} keyMeta={} size={}",
+                    fileInfo.getId(), normalizedBizType, safeKeyMeta(uploadedKey), file.getSize());
             return toVO(fileInfo);
         } catch (IOException e) {
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "read-error");
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
         } catch (BusinessException be) {
             // OSS SDK 或校验层已经给出业务异常时直接透传，避免包装后丢失可读错误码。
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "business-error");
             throw be;
         } catch (Exception ex) {
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "system-error");
             log.error("OSS 上传失败", ex);
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败，请稍后重试");
         }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteUserFile(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = storageKey(fileInfo);
+        deleteOssRequired(key);
+        fileInfoMapper.deleteById(fileInfo.getId());
+        log.info("OSS file physically deleted fileId={} userId={} bizType={} keyMeta={}",
+                fileId, userId, fileInfo.getBizType(), safeKeyMeta(key));
     }
 
     @Override
@@ -143,7 +168,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     public String downloadUrl(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        String key = storageKey(fileInfo);
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
         }
@@ -162,7 +187,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     }
 
     private ResponseEntity<Resource> redirectToSignedUrl(FileInfo fileInfo, String missingMessage) {
-        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        String key = storageKey(fileInfo);
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, missingMessage);
         }
@@ -172,7 +197,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     }
 
     private ResponseEntity<Resource> downloadResource(FileInfo fileInfo) {
-        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        String key = storageKey(fileInfo);
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
         }
@@ -215,7 +240,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
      */
     public String signUrl(Long fileId, Long userId, String bizType, Duration expire) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        String key = StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+        String key = storageKey(fileInfo);
         return ossFileService.signUrl(key, expire);
     }
 
@@ -263,10 +288,14 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         if (userId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
         }
+        String normalizedBizType = FileBizTypes.normalizeOrNull(bizType);
+        if (normalizedBizType != null) {
+            normalizedBizType = FileBizTypes.requireAllowed(normalizedBizType);
+        }
         FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
                 .eq(FileInfo::getId, fileId)
                 .eq(FileInfo::getUserId, userId)
-                .eq(StringUtils.hasText(bizType), FileInfo::getBizType, bizType)
+                .eq(StringUtils.hasText(normalizedBizType), FileInfo::getBizType, normalizedBizType)
                 .eq(FileInfo::getStatus, STATUS_AVAILABLE)
                 .eq(FileInfo::getDeleted, NOT_DELETED)
                 .last("limit 1"));
@@ -303,8 +332,11 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         }
     }
 
-    private void validateSize(MultipartFile file) {
-        long maxBytes = properties.getMaxSizeMb() * 1024L * 1024L;
+    private void validateSize(MultipartFile file, String bizType) {
+        long maxSizeMb = FileBizTypes.isInterviewVoice(bizType)
+                ? properties.getMaxInterviewVoiceSizeMb()
+                : properties.getMaxSizeMb();
+        long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
         }
@@ -330,12 +362,8 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         return filename.substring(index + 1).toLowerCase(Locale.ROOT);
     }
 
-    private void validateExtension(String fileExt) {
-        boolean allowed = properties.getAllowedExtensions().stream()
-                .filter(StringUtils::hasText)
-                .map(item -> item.toLowerCase(Locale.ROOT))
-                .anyMatch(fileExt::equals);
-        if (!allowed) {
+    private void validateExtension(String bizType, String fileExt) {
+        if (!FileBizTypes.isExtensionAllowed(bizType, fileExt, properties.getAllowedExtensions())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
         }
     }
@@ -437,12 +465,76 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
     }
 
-    private String md5Hex(byte[] bytes) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            return HexFormat.of().formatHex(md.digest(bytes));
-        } catch (Exception ex) {
-            return "";
+    private void registerOssRollbackCleanup(String ossKey, AtomicBoolean cleaned) {
+        if (!StringUtils.hasText(ossKey) || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
         }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    deleteOssQuietly(ossKey, cleaned, "transaction-rollback");
+                }
+            }
+        });
+    }
+
+    private void deleteOssQuietly(String ossKey, AtomicBoolean cleaned, String reason) {
+        if (!StringUtils.hasText(ossKey) || cleaned == null || !cleaned.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            ossFileService.delete(ossKey);
+            log.warn("OSS upload compensation deleted orphan object reason={} keyMeta={}", reason, safeKeyMeta(ossKey));
+        } catch (RuntimeException cleanupEx) {
+            log.warn("OSS upload compensation failed reason={} keyMeta={}", reason, safeKeyMeta(ossKey), cleanupEx);
+        }
+    }
+
+    private void deleteOssRequired(String ossKey) {
+        if (!StringUtils.hasText(ossKey)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        try {
+            ossFileService.delete(ossKey);
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Physical file deletion failed.");
+        }
+    }
+
+    private String storageKey(FileInfo fileInfo) {
+        if (fileInfo == null) {
+            return null;
+        }
+        return StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+    }
+
+    private String safeKeyMeta(String key) {
+        if (!StringUtils.hasText(key)) {
+            return "empty";
+        }
+        return "len=" + key.length()
+                + ",hash=" + shortSha256(key)
+                + ",suffix=" + safeSuffix(key);
+    }
+
+    private String shortSha256(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(value.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
+    }
+
+    private String safeSuffix(String key) {
+        int slash = key.lastIndexOf('/');
+        String filename = slash >= 0 ? key.substring(slash + 1) : key;
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) {
+            return "none";
+        }
+        String suffix = filename.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return suffix.length() > 16 ? suffix.substring(0, 16) : suffix;
     }
 }

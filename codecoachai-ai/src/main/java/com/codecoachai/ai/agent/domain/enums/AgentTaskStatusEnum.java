@@ -4,6 +4,7 @@ public enum AgentTaskStatusEnum {
     TODO,
     DOING,
     DONE,
+    DEFERRED,
     SKIPPED,
     EXPIRED
 }

@@ -50,14 +50,17 @@ import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -83,6 +86,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionMqDispatcher questionMqDispatcher;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
+    private final JdbcTemplate jdbcTemplate;
 
     @Override
     public PageResult<QuestionListVO> pageQuestions(QuestionQueryDTO query) {
@@ -404,6 +408,11 @@ public class QuestionServiceImpl implements QuestionService {
         Set<String> seenCanonicalKeys = new HashSet<>();
         Set<Long> selectedQuestionIds = new HashSet<>();
         Set<Long> blockedQuestionIds = new HashSet<>();
+        Map<Long, Set<Long>> sameIntentNeighborMap = findSameIntentNeighborIds(candidates.stream()
+                .map(Question::getId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList());
         for (Question candidate : candidates) {
             if (candidate == null || candidate.getId() == null || blockedQuestionIds.contains(candidate.getId())) {
                 continue;
@@ -416,7 +425,7 @@ public class QuestionServiceImpl implements QuestionService {
             }
             result.add(candidate);
             selectedQuestionIds.add(candidate.getId());
-            blockedQuestionIds.addAll(findSameIntentNeighborIds(candidate.getId()));
+            blockedQuestionIds.addAll(sameIntentNeighborMap.getOrDefault(candidate.getId(), Set.of()));
             blockedQuestionIds.removeAll(selectedQuestionIds);
             if (result.size() >= limit) {
                 break;
@@ -425,26 +434,32 @@ public class QuestionServiceImpl implements QuestionService {
         return result;
     }
 
-    private Set<Long> findSameIntentNeighborIds(Long questionId) {
-        if (questionId == null) {
-            return Set.of();
+    private Map<Long, Set<Long>> findSameIntentNeighborIds(List<Long> questionIds) {
+        if (questionIds == null || questionIds.isEmpty()) {
+            return Map.of();
         }
+        Set<Long> seedIds = new HashSet<>(questionIds);
         List<QuestionRelation> relations = relationMapper.selectList(new LambdaQueryWrapper<QuestionRelation>()
                 .eq(QuestionRelation::getRelationType, QuestionRelationType.SAME_INTENT.name())
                 .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name())
-                .and(wrapper -> wrapper.eq(QuestionRelation::getSourceQuestionId, questionId)
+                .and(wrapper -> wrapper.in(QuestionRelation::getSourceQuestionId, questionIds)
                         .or()
-                        .eq(QuestionRelation::getTargetQuestionId, questionId)));
-        Set<Long> ids = new HashSet<>();
+                        .in(QuestionRelation::getTargetQuestionId, questionIds)));
+        Map<Long, Set<Long>> neighborMap = new HashMap<>();
         for (QuestionRelation relation : relations) {
-            if (relation.getSourceQuestionId() != null && !relation.getSourceQuestionId().equals(questionId)) {
-                ids.add(relation.getSourceQuestionId());
+            Long sourceId = relation.getSourceQuestionId();
+            Long targetId = relation.getTargetQuestionId();
+            if (sourceId == null || targetId == null) {
+                continue;
             }
-            if (relation.getTargetQuestionId() != null && !relation.getTargetQuestionId().equals(questionId)) {
-                ids.add(relation.getTargetQuestionId());
+            if (seedIds.contains(sourceId)) {
+                neighborMap.computeIfAbsent(sourceId, id -> new HashSet<>()).add(targetId);
+            }
+            if (seedIds.contains(targetId)) {
+                neighborMap.computeIfAbsent(targetId, id -> new HashSet<>()).add(sourceId);
             }
         }
-        return ids;
+        return neighborMap;
     }
 
     private void applyQuestion(Question question, AdminQuestionSaveDTO dto) {
@@ -472,21 +487,67 @@ public class QuestionServiceImpl implements QuestionService {
         question.setContentHash(QuestionTextNormalizeUtils.sha256Hex(normalizedContent));
     }
     private void replaceTags(Long questionId, List<Long> tagIds) {
-        tagRelationMapper.delete(new LambdaQueryWrapper<QuestionTagRelation>()
-                .eq(QuestionTagRelation::getQuestionId, questionId));
-        if (tagIds == null) {
-            return;
+        List<Long> normalizedTagIds = normalizeTagIds(tagIds);
+        validateQuestionTags(normalizedTagIds);
+        deactivateQuestionTagsNotIn(questionId, normalizedTagIds);
+        for (Long tagId : normalizedTagIds) {
+            upsertQuestionTagRelation(questionId, tagId);
         }
+    }
+
+    private List<Long> normalizeTagIds(List<Long> tagIds) {
+        if (tagIds == null) {
+            return List.of();
+        }
+        Set<Long> uniqueTagIds = new LinkedHashSet<>();
+        for (Long tagId : tagIds) {
+            if (tagId != null) {
+                uniqueTagIds.add(tagId);
+            }
+        }
+        return new ArrayList<>(uniqueTagIds);
+    }
+
+    private void validateQuestionTags(List<Long> tagIds) {
         for (Long tagId : tagIds) {
             QuestionTag tag = tagMapper.selectById(tagId);
             if (tag == null || !CommonConstants.YES.equals(tag.getStatus())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "Question tag unavailable");
             }
-            QuestionTagRelation relation = new QuestionTagRelation();
-            relation.setQuestionId(questionId);
-            relation.setTagId(tagId);
-            tagRelationMapper.insert(relation);
         }
+    }
+
+    private void deactivateQuestionTagsNotIn(Long questionId, List<Long> tagIds) {
+        if (tagIds.isEmpty()) {
+            jdbcTemplate.update("""
+                    UPDATE question_tag_relation
+                    SET deleted = 1, updated_at = NOW()
+                    WHERE question_id = ?
+                      AND deleted = 0
+                    """, questionId);
+            return;
+        }
+        String placeholders = tagIds.stream().map(tagId -> "?").collect(Collectors.joining(", "));
+        List<Object> args = new ArrayList<>();
+        args.add(questionId);
+        args.addAll(tagIds);
+        jdbcTemplate.update("""
+                UPDATE question_tag_relation
+                SET deleted = 1, updated_at = NOW()
+                WHERE question_id = ?
+                  AND deleted = 0
+                  AND tag_id NOT IN (%s)
+                """.formatted(placeholders), args.toArray());
+    }
+
+    private void upsertQuestionTagRelation(Long questionId, Long tagId) {
+        jdbcTemplate.update("""
+                INSERT INTO question_tag_relation (question_id, tag_id, deleted)
+                VALUES (?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                  deleted = 0,
+                  updated_at = NOW()
+                """, questionId, tagId);
     }
 
     private QuestionListVO toListVO(Question question) {

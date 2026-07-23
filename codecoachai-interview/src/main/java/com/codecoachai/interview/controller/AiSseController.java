@@ -30,14 +30,6 @@ public class AiSseController {
         return interviewStreamService.streamCurrentQuestion(sessionId);
     }
 
-    @GetMapping(value = "/interview-comment", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter interviewComment(@RequestParam Long sessionId,
-                                       @RequestParam String answerContent) {
-        SubmitInterviewAnswerDTO dto = new SubmitInterviewAnswerDTO();
-        dto.setAnswerContent(answerContent);
-        return interviewStreamService.streamAnswer(sessionId, dto);
-    }
-
     @PostMapping(value = "/interview-comment", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter interviewCommentByBody(@RequestParam Long sessionId,
                                              @Valid @RequestBody SubmitInterviewAnswerDTO dto) {

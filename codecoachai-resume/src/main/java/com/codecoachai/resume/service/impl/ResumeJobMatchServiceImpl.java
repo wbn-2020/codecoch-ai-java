@@ -1,6 +1,7 @@
 package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.BaseEntity;
@@ -227,9 +228,10 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private ResumeJobMatchSubmitVO generateReport(Long reportId) {
-        ResumeJobMatchReport report = reportMapper.selectById(reportId);
-        if (report == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
+        ExecutionClaim claim = claimReportForExecution(reportId);
+        ResumeJobMatchReport report = claim.report();
+        if (!claim.claimed()) {
+            return toSubmitVO(report);
         }
         try {
             MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId(),
@@ -244,6 +246,32 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             ResumeJobMatchReport failed = transactionTemplate.execute(status -> markFailed(report.getId(), ex));
             return toSubmitVO(failed);
         }
+    }
+
+    private ExecutionClaim claimReportForExecution(Long reportId) {
+        ResumeJobMatchReport report = reportMapper.selectById(reportId);
+        if (report == null || Objects.equals(report.getDeleted(), CommonConstants.YES)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
+        }
+        ResumeJobMatchStatus status = ResumeJobMatchStatus.of(report.getStatus());
+        if (status == ResumeJobMatchStatus.SUCCESS || status == ResumeJobMatchStatus.FAILED
+                || status == ResumeJobMatchStatus.RUNNING) {
+            return new ExecutionClaim(report, false);
+        }
+        int affectedRows = reportMapper.update(null, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .set(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
+                .set(ResumeJobMatchReport::getErrorMessage, null)
+                .eq(ResumeJobMatchReport::getId, reportId)
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.PROCESSING.getCode()));
+        ResumeJobMatchReport latest = reportMapper.selectById(reportId);
+        if (affectedRows == 1 && latest != null) {
+            return new ExecutionClaim(latest, true);
+        }
+        if (latest == null || Objects.equals(latest.getDeleted(), CommonConstants.YES)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
+        }
+        return new ExecutionClaim(latest, false);
     }
 
     private MqDispatchReceipt dispatchAnalyze(ResumeJobMatchReport report) {
@@ -307,11 +335,15 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (report == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
+        if (!ResumeJobMatchStatus.RUNNING.getCode().equals(report.getStatus())) {
+            return report;
+        }
         ObjectNode normalizedResult = normalizeStoredMatchResult(resultJson);
         JsonNode dimensionScores = normalizedResult.path("dimensionScores");
-        if (!isFallbackMatchResult(normalizedResult)) {
-            validateSuccessResult(normalizedResult, dimensionScores);
+        if (isFallbackMatchResult(normalizedResult)) {
+            return markFallbackResultFailed(report, normalizedResult, dimensionScores, aiCallLogId);
         }
+        validateSuccessResult(normalizedResult, dimensionScores);
         List<ResumeJobMatchDetail> details = buildDetails(report, normalizedResult);
         if (details.isEmpty()) {
             markStoredSchemaWarning(ensureSchemaWarningsArray(normalizedResult),
@@ -335,9 +367,46 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         report.setStatus(ResumeJobMatchStatus.SUCCESS.getCode());
         report.setErrorMessage(null);
         report.setAiCallLogId(aiCallLogId);
-        reportMapper.updateById(report);
+        int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, report.getId())
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO));
+        if (affectedRows != 1) {
+            return reportMapper.selectById(reportId);
+        }
         replaceDetails(report, details);
         return reportMapper.selectById(reportId);
+    }
+
+    private ResumeJobMatchReport markFallbackResultFailed(ResumeJobMatchReport report, ObjectNode normalizedResult,
+                                                          JsonNode dimensionScores, Long aiCallLogId) {
+        report.setStatus(ResumeJobMatchStatus.FAILED.getCode());
+        report.setOverallScore(requireScore(normalizedResult, "overallScore"));
+        report.setTechStackScore(requireScore(dimensionScores, "techStack"));
+        report.setProjectExperienceScore(requireScore(dimensionScores, "projectExperience"));
+        report.setBusinessFitScore(requireScore(dimensionScores, "businessFit"));
+        report.setCommunicationScore(requireScore(dimensionScores, "communication"));
+        report.setStrengthsJson(jsonArrayText(normalizedResult, "strengths"));
+        report.setGapsJson(jsonArrayText(normalizedResult, "gaps"));
+        report.setResumeRisksJson(jsonArrayText(normalizedResult, "resumeRisks"));
+        report.setOptimizationSuggestionsJson(jsonArrayText(normalizedResult, "optimizationSuggestions"));
+        report.setRecommendedLearningTopicsJson(jsonArrayText(normalizedResult, "recommendedLearningTopics"));
+        report.setRecommendedInterviewTopicsJson(jsonArrayText(normalizedResult, "recommendedInterviewTopics"));
+        report.setSummary(textValue(normalizedResult, "summary"));
+        report.setRawResultJson(normalizedResult.toString());
+        report.setErrorMessage("AI match result is fallback; please regenerate after checking resume and JD context.");
+        report.setAiCallLogId(aiCallLogId);
+        int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, report.getId())
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO));
+        if (affectedRows != 1) {
+            return reportMapper.selectById(report.getId());
+        }
+        detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
+                .eq(ResumeJobMatchDetail::getReportId, report.getId())
+                .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
+        return reportMapper.selectById(report.getId());
     }
 
     private ResumeJobMatchReport markFailed(Long reportId, RuntimeException ex) {
@@ -345,10 +414,19 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (report == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
         }
+        if (!ResumeJobMatchStatus.RUNNING.getCode().equals(report.getStatus())) {
+            return report;
+        }
         report.setStatus(ResumeJobMatchStatus.FAILED.getCode());
         report.setErrorMessage(safeUserFacingMatchError(ex));
         report.setRawResultJson(failedMatchDiagnosticJson(ex));
-        reportMapper.updateById(report);
+        int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, reportId)
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO));
+        if (affectedRows != 1) {
+            return reportMapper.selectById(reportId);
+        }
         detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
                 .eq(ResumeJobMatchDetail::getReportId, reportId)
                 .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
@@ -1759,5 +1837,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private record MatchContext(Resume resume, ResumeVersion resumeVersion, List<ResumeProject> projects,
                                 ResumeAnalysisRecord resumeAnalysis, TargetJob targetJob,
                                 JobDescriptionAnalysis jdAnalysis) {
+    }
+
+    private record ExecutionClaim(ResumeJobMatchReport report, boolean claimed) {
     }
 }

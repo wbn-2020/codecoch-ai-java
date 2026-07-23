@@ -5,6 +5,8 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
@@ -29,6 +31,7 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     public List<CandidateTask> build(JobCoachAgentContext context, int taskCount) {
         List<CandidateTask> candidates = new ArrayList<>();
         candidates.addAll(applicationFollowUpTasks(context));
+        candidates.addAll(requirementTasks(context));
         candidates.addAll(projectEvidenceTasks(context));
         candidates.addAll(jobExperimentTasks(context));
         TargetJobSnapshot target = context.getTargetJob();
@@ -98,6 +101,177 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 .limit(2)
                 .map(this::projectEvidenceTask)
                 .toList();
+    }
+
+    private List<CandidateTask> requirementTasks(JobCoachAgentContext context) {
+        if (!trustedRequirementContext(context)) {
+            return List.of();
+        }
+        RequirementReadinessSnapshot readiness = context.getRequirementReadiness();
+        List<MissingRequirementSnapshot> requirements = readiness.getMissingRequirements().stream()
+                .filter(this::trustedMissingRequirement)
+                .toList();
+        if (requirements.isEmpty()) {
+            return List.of();
+        }
+        Long targetJobId = context.getTargetJobId();
+        List<CandidateTask> tasks = new ArrayList<>();
+        MissingRequirementSnapshot primary = requirements.get(0);
+        tasks.add(resumeRequirementTask(targetJobId, primary));
+
+        MissingRequirementSnapshot projectRequirement = requirements.stream()
+                .filter(this::projectOrExperienceRequirement)
+                .findFirst()
+                .orElse(primary);
+        tasks.add(projectRequirementTask(context, targetJobId, projectRequirement));
+
+        requirements.stream()
+                .filter(this::skillRequirement)
+                .findFirst()
+                .map(requirement -> questionRequirementTask(targetJobId, requirement))
+                .ifPresent(tasks::add);
+
+        if (!"READY".equalsIgnoreCase(readiness.getReadinessLevel())) {
+            tasks.add(interviewRequirementTask(targetJobId, primary));
+        }
+        return tasks.stream().limit(4).toList();
+    }
+
+    private boolean trustedRequirementContext(JobCoachAgentContext context) {
+        if (context == null || context.getRequirementReadiness() == null) {
+            return false;
+        }
+        RequirementReadinessSnapshot readiness = context.getRequirementReadiness();
+        return readiness.getSnapshotId() != null
+                && java.util.Objects.equals(context.getTargetJobId(), readiness.getTargetJobId())
+                && !Boolean.TRUE.equals(readiness.getFallback())
+                && Boolean.TRUE.equals(readiness.getMatrixCurrent())
+                && Boolean.TRUE.equals(readiness.getSampleSufficient())
+                && !"LOW".equalsIgnoreCase(readiness.getConfidenceLevel())
+                && readiness.getMissingRequirements() != null
+                && !readiness.getMissingRequirements().isEmpty();
+    }
+
+    private boolean trustedMissingRequirement(MissingRequirementSnapshot requirement) {
+        return requirement != null
+                && requirement.getRequirementId() != null
+                && StringUtils.hasText(requirement.getRequirementName())
+                && !Boolean.TRUE.equals(requirement.getFallback())
+                && !"LOW".equalsIgnoreCase(requirement.getConfidenceLevel());
+    }
+
+    private CandidateTask resumeRequirementTask(Long targetJobId, MissingRequirementSnapshot requirement) {
+        String name = requirementName(requirement);
+        return task("requirement-resume-" + requirement.getRequirementId(),
+                AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
+                "Update resume for " + name,
+                "Add verifiable resume evidence that directly addresses this job requirement.",
+                requirementReason(requirement),
+                "MUST".equalsIgnoreCase(requirement.getPriority()) ? "HIGH" : "MEDIUM",
+                25,
+                toSkillCode(name),
+                name,
+                "JOB_REQUIREMENT",
+                requirement.getRequirementId(),
+                "/resumes?targetJobId=" + targetJobId
+                        + "&requirementId=" + requirement.getRequirementId()
+                        + "&action=optimize");
+    }
+
+    private CandidateTask projectRequirementTask(JobCoachAgentContext context, Long targetJobId,
+                                                 MissingRequirementSnapshot requirement) {
+        String name = requirementName(requirement);
+        Long projectEvidenceId = firstProjectEvidenceId(context, requirement);
+        String actionUrl = projectEvidenceId == null
+                ? "/project-evidence?targetJobId=" + targetJobId
+                    + "&requirementId=" + requirement.getRequirementId()
+                : "/project-evidence/" + projectEvidenceId + "/edit?targetJobId=" + targetJobId
+                    + "&requirementId=" + requirement.getRequirementId();
+        return task("requirement-project-" + requirement.getRequirementId(),
+                AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
+                "Add project evidence for " + name,
+                "Capture responsibility, decisions, tradeoffs, and measured outcomes for this requirement.",
+                requirementReason(requirement),
+                "HIGH",
+                30,
+                toSkillCode(name),
+                name,
+                projectEvidenceId == null ? "JOB_REQUIREMENT" : "PROJECT_EVIDENCE",
+                projectEvidenceId == null ? requirement.getRequirementId() : projectEvidenceId,
+                actionUrl);
+    }
+
+    private CandidateTask questionRequirementTask(Long targetJobId, MissingRequirementSnapshot requirement) {
+        String name = requirementName(requirement);
+        String encoded = URLEncoder.encode(name, StandardCharsets.UTF_8);
+        return task("requirement-question-" + requirement.getRequirementId(),
+                AgentTaskTypeEnum.QUESTION_PRACTICE.name(),
+                "Practice questions for " + name,
+                "Complete a focused question set and record the concepts that still need review.",
+                requirementReason(requirement),
+                "HIGH",
+                30,
+                toSkillCode(name),
+                name,
+                "JOB_REQUIREMENT",
+                requirement.getRequirementId(),
+                "/questions/practice?mode=category&keyword=" + encoded
+                        + "&targetJobId=" + targetJobId
+                        + "&requirementId=" + requirement.getRequirementId()
+                        + "&sourceType=JOB_REQUIREMENT&trustStatus=VERIFIED&fallback=false");
+    }
+
+    private CandidateTask interviewRequirementTask(Long targetJobId, MissingRequirementSnapshot requirement) {
+        String name = requirementName(requirement);
+        return task("requirement-interview-" + requirement.getRequirementId(),
+                AgentTaskTypeEnum.INTERVIEW.name(),
+                "Re-practice interview for " + name,
+                "Run a targeted mock interview and revisit the weak requirement after the report.",
+                requirementReason(requirement),
+                "MEDIUM",
+                40,
+                toSkillCode(name),
+                name,
+                "JOB_REQUIREMENT",
+                requirement.getRequirementId(),
+                "/interviews/create?targetJobId=" + targetJobId
+                        + "&requirementId=" + requirement.getRequirementId()
+                        + "&trainingScene=REQUIREMENT_REPRACTICE");
+    }
+
+    private Long firstProjectEvidenceId(JobCoachAgentContext context, MissingRequirementSnapshot requirement) {
+        if (requirement.getProjectEvidenceIds() != null && !requirement.getProjectEvidenceIds().isEmpty()) {
+            return requirement.getProjectEvidenceIds().get(0);
+        }
+        if (context.getProjectEvidences() == null) {
+            return null;
+        }
+        return context.getProjectEvidences().stream()
+                .filter(java.util.Objects::nonNull)
+                .filter(project -> project.getProjectEvidenceId() != null)
+                .filter(project -> project.getTargetJobId() == null
+                        || java.util.Objects.equals(context.getTargetJobId(), project.getTargetJobId()))
+                .map(ProjectEvidenceSnapshot::getProjectEvidenceId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private boolean skillRequirement(MissingRequirementSnapshot requirement) {
+        return "SKILL".equalsIgnoreCase(requirement.getRequirementType());
+    }
+
+    private boolean projectOrExperienceRequirement(MissingRequirementSnapshot requirement) {
+        String type = normalizeStatus(requirement.getRequirementType());
+        return type.contains("PROJECT") || type.contains("EXPERIENCE") || type.contains("RESPONSIBILITY");
+    }
+
+    private String requirementName(MissingRequirementSnapshot requirement) {
+        return firstText(requirement.getRequirementName(), requirement.getRequirementKey(), "job requirement");
+    }
+
+    private String requirementReason(MissingRequirementSnapshot requirement) {
+        return "Requirement coverage is " + firstText(requirement.getCoverageLevel(), "MISSING")
+                + " in the latest trusted readiness snapshot.";
     }
 
     private List<CandidateTask> jobExperimentTasks(JobCoachAgentContext context) {
@@ -201,7 +375,7 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 null,
                 "JOB_APPLICATION",
                 application.getId(),
-                "/applications");
+                "/applications?applicationId=" + application.getId() + "&openEvents=1");
     }
 
     private String applicationFollowUpReason(ApplicationSnapshot application) {

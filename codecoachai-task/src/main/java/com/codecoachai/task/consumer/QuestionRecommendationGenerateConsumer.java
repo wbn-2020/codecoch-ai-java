@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -73,13 +74,14 @@ public class QuestionRecommendationGenerateConsumer
 
             QuestionRecommendationGenerateVO result = response.getData();
             if ("FAILED".equalsIgnoreCase(result.getStatus())) {
-                String reason = StringUtils.hasText(result.getErrorMessage())
+                String userReason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "question recommendation generation failed";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
+                String safeReason = safeFailureReason(result.getErrorMessage(), "question recommendation generation failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, userReason);
                 log.warn("Question recommendation task failed batchId={} reason={}",
-                        payload.getBatchId(), reason);
+                        payload.getBatchId(), safeReason);
                 return;
             }
 
@@ -90,17 +92,23 @@ public class QuestionRecommendationGenerateConsumer
             log.info("Question recommendation task completed batchId={} count={}",
                     payload.getBatchId(), result.getQuestionCount());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Question recommendation task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "question recommendation terminal failure");
+            log.warn("Question recommendation task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Question recommendation task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "question recommendation non-retryable failure");
+            log.error("Question recommendation task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Question recommendation task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "question recommendation retryable failure");
+            log.error("Question recommendation task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("question recommendation retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -119,6 +127,19 @@ public class QuestionRecommendationGenerateConsumer
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "question recommendation failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

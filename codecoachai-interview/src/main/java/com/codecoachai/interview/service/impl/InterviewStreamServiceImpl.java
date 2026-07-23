@@ -669,6 +669,13 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         metadata.put("knowledgePoints", answer.getKnowledgePoints());
         metadata.put("followUpReason", answer.getFollowUpReason());
         metadata.put("followUpValid", answer.getFollowUpValid());
+        metadata.put("voiceSubmissionId", answer.getVoiceSubmissionId());
+        metadata.put("transcriptId", answer.getTranscriptId());
+        metadata.put("transcriptConfidence", answer.getTranscriptConfidence());
+        metadata.put("answerSource", answer.getAnswerSource());
+        metadata.put("voiceLowConfidence", answer.getVoiceLowConfidence());
+        metadata.put("voiceFallback", answer.getVoiceFallback());
+        metadata.put("voiceTraceId", answer.getVoiceTraceId());
         if (answer.getNextQuestion() != null) {
             metadata.put("nextQuestion", questionMetadata(answer.getNextQuestion()));
         }
@@ -705,6 +712,13 @@ public class InterviewStreamServiceImpl implements InterviewStreamService {
         result.put("nextQuestion", answer.getNextQuestion());
         result.put("aiCallLogId", answer.getAiCallLogId());
         result.put("followUpAiCallLogId", answer.getFollowUpAiCallLogId());
+        result.put("voiceSubmissionId", answer.getVoiceSubmissionId());
+        result.put("transcriptId", answer.getTranscriptId());
+        result.put("transcriptConfidence", answer.getTranscriptConfidence());
+        result.put("answerSource", answer.getAnswerSource());
+        result.put("voiceLowConfidence", answer.getVoiceLowConfidence());
+        result.put("voiceFallback", answer.getVoiceFallback());
+        result.put("voiceTraceId", answer.getVoiceTraceId());
         return result;
     }
 

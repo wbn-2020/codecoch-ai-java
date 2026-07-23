@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -71,12 +72,13 @@ public class JobTargetParseConsumer implements RocketMQListener<MqMessage<JobTar
 
             JobDescriptionAnalysisVO result = response.getData();
             if ("FAILED".equalsIgnoreCase(result.getParseStatus())) {
-                String reason = StringUtils.hasText(result.getParseErrorMessage())
+                String userReason = StringUtils.hasText(result.getParseErrorMessage())
                         ? result.getParseErrorMessage()
                         : "岗位分析生成失败";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
-                log.warn("Job target parse failed targetJobId={} reason={}", payload.getTargetJobId(), reason);
+                String safeReason = safeFailureReason(result.getParseErrorMessage(), "job target parse failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, userReason);
+                log.warn("Job target parse failed targetJobId={} reason={}", payload.getTargetJobId(), safeReason);
                 return;
             }
 
@@ -85,17 +87,23 @@ public class JobTargetParseConsumer implements RocketMQListener<MqMessage<JobTar
                     String.valueOf(payload.getTargetJobId()), "岗位分析已完成", "目标岗位已分析完成，请查看结构化结果");
             log.info("Job target parse task completed targetJobId={}", payload.getTargetJobId());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Job target parse task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "job target parse terminal failure");
+            log.warn("Job target parse task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Job target parse task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "job target parse non-retryable failure");
+            log.error("Job target parse task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Job target parse task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "job target parse retryable failure");
+            log.error("Job target parse task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("job target parse retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -114,6 +122,19 @@ public class JobTargetParseConsumer implements RocketMQListener<MqMessage<JobTar
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "job target parse failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

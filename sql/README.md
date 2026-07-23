@@ -2,6 +2,24 @@
 
 Use Flyway to manage the versioned scripts under `sql/migration/`.
 
+`sql/init.sql` is the single baseline schema for a fresh database. It is treated as
+Flyway version `2.999`; only `V3_001` and later migrations run after that baseline.
+
+## Fresh database bootstrap
+
+The supported Docker path is:
+
+```cmd
+set MYSQL_PASSWORD=your-local-password
+docker compose up mysql flyway-migrate
+```
+
+The MySQL container imports `sql/init.sql` once for a new `mysql-data` volume. After
+MySQL is healthy, the one-shot `flyway-migrate` container records baseline `2.999`
+and applies all V3/V4 migrations. Do not mount `sql/migration/` directly into
+`/docker-entrypoint-initdb.d`; doing so attempts to execute V2 ALTER scripts against
+an empty schema before the baseline exists.
+
 ## One-time migrate
 
 ```cmd
@@ -43,9 +61,11 @@ baselineOnMigrate = true
 baselineVersion = 2.999
 ```
 
-This means the first `flyway:migrate` on an existing schema marks the current schema as baseline 2.999, then applies `V3_001` and later scripts only.
+This means the first `flyway:migrate` on a schema created from `sql/init.sql` marks
+the current schema as baseline 2.999, then applies `V3_001` and later scripts only.
 
-If your local database has not executed the V2 series yet, run the V2 scripts manually first.
+Do not run the V2 migration directory after importing `sql/init.sql`; the baseline
+already contains the V2 schema.
 
 ## Migration order risk
 
@@ -55,7 +75,11 @@ If your local database has not executed the V2 series yet, run the V2 scripts ma
 
 ## Spring Boot integration
 
-If you want service startup to run migrations automatically, enable Flyway in the target service config:
+Business services keep startup migration disabled. Test and deployment environments
+must run one dedicated Flyway job before starting application services. Enabling
+Flyway independently in multiple microservices can race and is not supported.
+
+For a dedicated migration application, use:
 
 ```yaml
 spring:
@@ -66,7 +90,8 @@ spring:
     baseline-version: 2.999
 ```
 
-Keep `sql/migration/*.sql` aligned with `src/main/resources/db/migration/` if you copy scripts there.
+Keep the dedicated migration job pointed at the repository `sql/migration/`
+directory. Do not maintain a second copied migration tree.
 
 ## Safety: Demo data script isolated
 

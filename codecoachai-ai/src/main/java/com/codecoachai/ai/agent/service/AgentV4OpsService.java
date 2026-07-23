@@ -132,9 +132,11 @@ public interface AgentV4OpsService {
 
     List<PromptRegressionCaseVO> listPromptCases(String promptType, Integer enabled);
 
+    PageResult<PromptRegressionCaseVO> pagePromptCases(String promptType, Integer enabled, Long pageNo, Long pageSize);
+
     PromptRegressionCaseVO savePromptCase(PromptRegressionCaseSaveDTO dto);
 
     PromptRegressionResultVO runPromptCase(Long caseId, Long promptVersionId);
 
-    List<PromptRegressionResultVO> listPromptResults(Long caseId);
+    PageResult<PromptRegressionResultVO> pagePromptResults(Long caseId, Long pageNo, Long pageSize);
 }

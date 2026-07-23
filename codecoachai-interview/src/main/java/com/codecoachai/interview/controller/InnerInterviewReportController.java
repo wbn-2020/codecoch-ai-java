@@ -20,6 +20,9 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
+import com.codecoachai.interview.support.InterviewReportScoringContract;
+import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -104,6 +107,7 @@ public class InnerInterviewReportController {
 
         String status = StringUtils.hasText(dto.getReportStatus()) ? dto.getReportStatus() : "SUCCESS";
         boolean success = "SUCCESS".equalsIgnoreCase(status);
+        String completionFailureReason = dto.getErrorMessage();
         LocalDateTime now = LocalDateTime.now();
         InterviewReport report = currentReport(sessionId);
         if (report == null && (dto.getReportId() != null || StringUtils.hasText(dto.getGenerationToken()))) {
@@ -114,6 +118,11 @@ public class InnerInterviewReportController {
         if (report != null && !matchesReportAttempt(report, dto.getReportId(), dto.getGenerationToken())) {
             log.info("Ignore stale interview report callback, sessionId={}, currentReportId={}, payloadReportId={}",
                     sessionId, report.getId(), dto.getReportId());
+            return Result.success();
+        }
+        if (report != null && !ReportStatusEnum.GENERATING.name().equals(report.getStatus())) {
+            log.info("Ignore duplicate interview report callback, sessionId={}, reportId={}, currentStatus={}",
+                    sessionId, report.getId(), report.getStatus());
             return Result.success();
         }
         if (report == null) {
@@ -128,21 +137,49 @@ public class InnerInterviewReportController {
         }
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
+            InterviewReportScoringContract.Validation scoringContract =
+                    InterviewReportScoringContract.validate(
+                            objectMapper,
+                            report.getTotalScore(),
+                            report.getRubricVersion(),
+                            report.getRubricScores());
+            if (!scoringContract.valid()) {
+                success = false;
+                completionFailureReason = "Interview report scoring contract is incomplete: "
+                        + scoringContract.reasonCode();
+                report.setStatus(ReportStatusEnum.FAILED.name());
+                report.setTotalScore(null);
+                report.setFailureReason(completionFailureReason);
+            }
         }
         if (!success) {
             report.setTotalScore(null);
-            report.setFailureReason(dto.getErrorMessage());
+            report.setFailureReason(completionFailureReason);
         }
         if (report.getId() == null) {
             reportMapper.insert(report);
         } else {
-            reportMapper.updateById(report);
+            LambdaUpdateWrapper<InterviewReport> reportUpdate = new LambdaUpdateWrapper<InterviewReport>()
+                    .eq(InterviewReport::getId, report.getId())
+                    .eq(InterviewReport::getSessionId, sessionId)
+                    .eq(InterviewReport::getStatus, ReportStatusEnum.GENERATING.name())
+                    .eq(InterviewReport::getDeleted, CommonConstants.NO);
+            if (StringUtils.hasText(dto.getGenerationToken())) {
+                reportUpdate.eq(InterviewReport::getGenerationToken, dto.getGenerationToken());
+            } else {
+                reportUpdate.isNull(InterviewReport::getGenerationToken);
+            }
+            if (reportMapper.update(report, reportUpdate) != 1) {
+                log.info("Ignore stale interview report callback CAS, sessionId={}, reportId={}",
+                        sessionId, report.getId());
+                return Result.success();
+            }
         }
 
         log.info("Interview report completed sessionId={} reportId={} status={}",
-                sessionId, report.getId(), status);
+                sessionId, report.getId(), report.getStatus());
 
-        Integer completedScore = success ? firstNonNull(dto.getTotalScore(), report.getTotalScore()) : null;
+        Integer completedScore = success ? report.getTotalScore() : null;
         sessionMapper.update(null,
                 new LambdaUpdateWrapper<InterviewSession>()
                         .eq(InterviewSession::getId, sessionId)
@@ -153,7 +190,7 @@ public class InnerInterviewReportController {
                         .set(success, InterviewSession::getTotalScore, completedScore)
                         .set(!success, InterviewSession::getTotalScore, null)
                         .set(success, InterviewSession::getFailureReason, null)
-                        .set(!success, InterviewSession::getFailureReason, dto.getErrorMessage())
+                        .set(!success, InterviewSession::getFailureReason, completionFailureReason)
                         .set(InterviewSession::getEndTime, now)
                         .set(InterviewSession::getUpdatedAt, now));
 
@@ -174,6 +211,9 @@ public class InnerInterviewReportController {
                 .last("limit 1"));
         if (report == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report evidence not found");
+        }
+        if (!InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "interview report evidence is not trusted");
         }
         InterviewSession session = sessionMapper.selectById(report.getSessionId());
         if (session == null || !userId.equals(session.getUserId())
@@ -201,15 +241,17 @@ public class InnerInterviewReportController {
                 .eq(InterviewSession::getUserId, userId)
                 .eq(InterviewSession::getDeleted, CommonConstants.NO)
                 .ge(InterviewSession::getCreatedAt, startTime));
-        Long reportCount = reportMapper.selectCount(summaryReportQuery(userId, startTime));
         List<InterviewReport> reports = reportMapper.selectList(summaryReportQuery(userId, startTime)
                 .orderByDesc(InterviewReport::getGeneratedAt)
-                .orderByDesc(InterviewReport::getId));
+                .orderByDesc(InterviewReport::getId))
+                .stream()
+                .filter(InterviewReportTrustPolicy::isTrustedForFormalAction)
+                .toList();
 
         InterviewWeaknessSummaryVO vo = new InterviewWeaknessSummaryVO();
         vo.setRangeDays(rangeDays);
         vo.setInterviewCount(safeCount(interviewCount));
-        vo.setReportCount(safeCount(reportCount));
+        vo.setReportCount((long) reports.size());
         vo.setTopWeaknesses(buildTopWeaknesses(reports));
         return Result.success(vo);
     }
@@ -356,7 +398,7 @@ public class InnerInterviewReportController {
     }
 
     private void completeAgentInterviewTask(InterviewSession session, InterviewReport report) {
-        if (session == null || report == null || !ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (session == null || !InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             return;
         }
         agentBusinessActionNotifier.completeInterviewReport(session.getUserId(), session.getTargetJobId(),
@@ -465,6 +507,7 @@ public class InnerInterviewReportController {
         report.setRecommendedQuestions(payload.getRecommendedQuestions());
         report.setQaReview(payload.getQaReview());
         report.setRubricScores(payload.getRubricScores());
+        report.setRubricVersion(InterviewRubricVersion.CURRENT);
         report.setFollowUpTree(payload.getFollowUpTree());
         report.setAdviceEvidence(payload.getAdviceEvidence());
         report.setAbilityProfileUpdates(payload.getAbilityProfileUpdates());
@@ -484,6 +527,7 @@ public class InnerInterviewReportController {
         report.setRecommendedQuestions(null);
         report.setQaReview(null);
         report.setRubricScores(null);
+        report.setRubricVersion(null);
         report.setFollowUpTree(null);
         report.setAdviceEvidence(null);
         report.setAbilityProfileUpdates(null);

@@ -100,14 +100,16 @@ class NotificationQueryServiceTest {
                 "continue training",
                 "resume the pending task",
                 "AGENT_TASK",
-                "run-42");
+                "run-42",
+                LocalDate.now().minusDays(1));
         verify(notificationCommandService).ensureDailyReminder(
                 9L,
                 "APPLICATION_FOLLOW_UP_REMINDER",
                 "follow up application",
                 "application follow-up is due today",
                 "JOB_APPLICATION",
-                "3001");
+                "3001",
+                LocalDate.now());
     }
 
     @Test

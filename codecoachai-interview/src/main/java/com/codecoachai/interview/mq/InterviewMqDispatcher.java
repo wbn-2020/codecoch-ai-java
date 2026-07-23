@@ -10,8 +10,8 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 
 /**
- * 闈㈣瘯鐩稿叧 MQ 娲惧彂鍣ㄣ€?
- * interview-service 闈㈣瘯缁撴潫鍚庤皟鐢ㄦ绫绘姇閫?鎶ュ憡鐢熸垚"浠诲姟銆?
+ * 面试相关 MQ 分发器。
+ * interview-service 在面试结束后通过此类投递报告生成任务。
  */
 @Slf4j
 @Component
@@ -70,11 +70,11 @@ public class InterviewMqDispatcher {
                     userId,
                     payload
             );
-            log.info("娲惧彂闈㈣瘯鎶ュ憡浠诲姟 sessionId={} reportId={} messageId={}",
+            log.info("分发面试报告任务 sessionId={} reportId={} messageId={}",
                     sessionId, reportId, receipt.getMessageId());
             return receipt;
         } catch (Exception ex) {
-            log.error("娲惧彂闈㈣瘯鎶ュ憡浠诲姟澶辫触 sessionId={} reportId={}", sessionId, reportId, ex);
+            log.error("分发面试报告任务失败 sessionId={} reportId={}", sessionId, reportId, ex);
             return null;
         }
     }
@@ -100,10 +100,10 @@ public class InterviewMqDispatcher {
                     userId,
                     payload
             );
-            log.info("娲惧彂闈㈣瘯鎼滅储鍚屾 sessionId={} op={}", sessionId, SEARCH_OP_UPSERT);
+            log.info("分发面试搜索同步 sessionId={} op={}", sessionId, SEARCH_OP_UPSERT);
             return true;
         } catch (Exception ex) {
-            log.error("娲惧彂闈㈣瘯鎼滅储鍚屾澶辫触 sessionId={}", sessionId, ex);
+            log.error("分发面试搜索同步失败 sessionId={}", sessionId, ex);
             return false;
         }
     }

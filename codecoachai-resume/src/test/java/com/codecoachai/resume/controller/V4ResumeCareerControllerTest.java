@@ -15,9 +15,12 @@ import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationEventReviewGenerateDTO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventStructuredReviewVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import com.codecoachai.resume.service.JobApplicationEventReviewService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,6 +36,8 @@ class V4ResumeCareerControllerTest {
     @Mock
     private V4ResumeCareerService v4ResumeCareerService;
     @Mock
+    private JobApplicationEventReviewService jobApplicationEventReviewService;
+    @Mock
     private AdminOperationConfirmationGuard operationConfirmationGuard;
 
     private V4ResumeCareerController controller;
@@ -43,7 +48,10 @@ class V4ResumeCareerControllerTest {
                 .userId(USER_ID)
                 .username("resume-phase-user")
                 .build());
-        controller = new V4ResumeCareerController(v4ResumeCareerService, operationConfirmationGuard);
+        controller = new V4ResumeCareerController(
+                v4ResumeCareerService,
+                jobApplicationEventReviewService,
+                operationConfirmationGuard);
     }
 
     @AfterEach
@@ -159,6 +167,22 @@ class V4ResumeCareerControllerTest {
 
         assertEquals(9L, result.getId());
         verify(v4ResumeCareerService).applyAiSuggestion(2L, dto);
+    }
+
+    @Test
+    void generateApplicationEventReviewDelegatesOwnedPathAndRequest() {
+        JobApplicationEventReviewGenerateDTO request = new JobApplicationEventReviewGenerateDTO();
+        request.setObservedFacts(java.util.List.of("我确认收到了一封拒信。"));
+        JobApplicationEventStructuredReviewVO review =
+                new JobApplicationEventStructuredReviewVO();
+        review.setScenario("REJECTION");
+        when(jobApplicationEventReviewService.generate(8L, 9L, request)).thenReturn(review);
+
+        JobApplicationEventStructuredReviewVO result =
+                controller.generateApplicationEventReview(8L, 9L, request).getData();
+
+        assertEquals("REJECTION", result.getScenario());
+        verify(jobApplicationEventReviewService).generate(8L, 9L, request);
     }
 
     private static ResumeApplyAiSuggestionDTO confirmedSuggestionDto() {

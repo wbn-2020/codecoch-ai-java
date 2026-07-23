@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -26,6 +27,8 @@ import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.entity.TargetJob;
+import com.codecoachai.resume.careercalendar.entity.CareerCalendarEvent;
 import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
 import com.codecoachai.resume.domain.vo.CareerInsightItemVO;
 import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
@@ -34,6 +37,7 @@ import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionEffectItemVO;
+import com.codecoachai.resume.experimentv2.ExperimentV2ApplicationAutoAssignmentService;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.ResumeMapper;
@@ -41,6 +45,10 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeSuggestionAdoptionMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mapper.careercalendar.CareerCalendarEventMapper;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
+import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -55,6 +63,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class V4ResumeCareerServiceImplTest {
@@ -76,9 +87,19 @@ class V4ResumeCareerServiceImplTest {
     @Mock
     private JobApplicationEventMapper jobApplicationEventMapper;
     @Mock
+    private CareerCalendarEventMapper careerCalendarEventMapper;
+    @Mock
+    private TargetJobMapper targetJobMapper;
+    @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
     @Mock
     private NotificationBusinessResolver notificationBusinessResolver;
+    @Mock
+    private ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    @Mock
+    private ExperimentV2ApplicationAutoAssignmentService experimentAutoAssignmentService;
+    @Mock
+    private JobApplicationLifecycleService jobApplicationLifecycleService;
 
     private V4ResumeCareerServiceImpl service;
 
@@ -89,6 +110,7 @@ class V4ResumeCareerServiceImplTest {
         initTableInfo(ResumeJobMatchReport.class);
         initTableInfo(JobApplication.class);
         initTableInfo(JobApplicationEvent.class);
+        initTableInfo(CareerCalendarEvent.class);
     }
 
     private static void initTableInfo(Class<?> entityType) {
@@ -112,9 +134,14 @@ class V4ResumeCareerServiceImplTest {
                 resumeJobMatchReportMapper,
                 resumeSuggestionAdoptionMapper,
                 jobApplicationEventMapper,
+                careerCalendarEventMapper,
+                targetJobMapper,
                 agentBusinessActionNotifier,
                 notificationBusinessResolver,
+                resumeSearchSyncOutboxService,
+                experimentAutoAssignmentService,
                 new ObjectMapper());
+        ReflectionTestUtils.setField(service, "jobApplicationLifecycleService", jobApplicationLifecycleService);
     }
 
     @AfterEach
@@ -166,6 +193,30 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void createApplicationAutoAssignsOnlyAfterCommit() {
+        when(jobApplicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
+            JobApplication application = invocation.getArgument(0);
+            application.setId(41L);
+            return 1;
+        });
+        TransactionSynchronizationManager.initSynchronization();
+        try {
+            service.createApplication(new JobApplicationSaveDTO());
+
+            verify(experimentAutoAssignmentService, never()).autoAssign(any(JobApplication.class));
+            List<TransactionSynchronization> synchronizations =
+                    TransactionSynchronizationManager.getSynchronizations();
+            assertEquals(1, synchronizations.size());
+
+            synchronizations.forEach(TransactionSynchronization::afterCommit);
+
+            verify(experimentAutoAssignmentService).autoAssign(any(JobApplication.class));
+        } finally {
+            TransactionSynchronizationManager.clearSynchronization();
+        }
+    }
+
+    @Test
     void createApplicationNormalizesStatus() {
         JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
         dto.setStatus("applied");
@@ -184,6 +235,7 @@ class V4ResumeCareerServiceImplTest {
         dto.setCompanyName("测试科技");
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
 
         service.createApplication(dto);
 
@@ -204,6 +256,7 @@ class V4ResumeCareerServiceImplTest {
         dto.setMatchReportId(99L);
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
         JobApplication existing = application(188L, USER_ID);
         existing.setMatchReportId(99L);
         when(jobApplicationMapper.selectOne(any())).thenReturn(existing);
@@ -251,6 +304,7 @@ class V4ResumeCareerServiceImplTest {
         when(jobApplicationMapper.selectById(55L)).thenReturn(current);
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport(99L));
         when(resumeVersionMapper.selectById(77L)).thenReturn(resumeVersion(77L, USER_ID, 1L));
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob(88L, USER_ID));
         JobApplication linked = application(188L, USER_ID);
         linked.setMatchReportId(99L);
         when(jobApplicationMapper.selectOne(any())).thenReturn(linked);
@@ -574,7 +628,7 @@ class V4ResumeCareerServiceImplTest {
         noEventStaleWithoutVersion.setStatus("APPLIED");
         noEventStaleWithoutVersion.setAppliedAt(now.minusDays(20));
         noEventStaleWithoutVersion.setUpdatedAt(now.minusDays(10));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now))).thenReturn(List.of(
                 appliedWithFollowUpEvent, interviewByStatus, offerByEvent,
                 rejectedByEventWithoutVersion, noEventStaleWithoutVersion));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
@@ -626,7 +680,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication previousDayApplication = application(432L, USER_ID);
         previousDayApplication.setAppliedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
         previousDayApplication.setUpdatedAt(LocalDateTime.of(2026, 5, 31, 23, 59));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(boundaryDayApplication, previousDayApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(boundaryDayApplication));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
 
         ApplicationCareerInsightSummaryVO summary =
@@ -643,7 +698,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication onlyApplication = application(411L, USER_ID);
         onlyApplication.setResumeVersionId(77L);
         onlyApplication.setAppliedAt(now.minusDays(1));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(onlyApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(onlyApplication));
         ResumeVersion version = resumeVersion(77L, USER_ID, 1L);
         when(resumeVersionMapper.selectList(any())).thenReturn(List.of(version));
 
@@ -671,7 +727,7 @@ class V4ResumeCareerServiceImplTest {
         JobApplication oldWithOffer = application(424L, USER_ID);
         oldWithOffer.setResumeVersionId(78L);
         JobApplication withoutVersion = application(425L, USER_ID);
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now))).thenReturn(List.of(
                 firstCurrent, secondCurrent, thirdCurrent, oldWithOffer, withoutVersion));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(
                 event(811L, 421L, "INTERVIEW_COMPLETED", now.minusDays(5)),
@@ -711,7 +767,8 @@ class V4ResumeCareerServiceImplTest {
         JobApplication olderVersionApplication = application(426L, USER_ID);
         olderVersionApplication.setResumeVersionId(78L);
         olderVersionApplication.setAppliedAt(now.minusDays(2));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(olderVersionApplication));
+        when(jobApplicationMapper.selectInsightRange(eq(USER_ID), any(), eq(now)))
+                .thenReturn(List.of(olderVersionApplication));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
         ResumeVersion currentVersion = resumeVersion(77L, USER_ID, 1L);
         currentVersion.setVersionNo(3);
@@ -775,9 +832,12 @@ class V4ResumeCareerServiceImplTest {
         JobApplication extraDueToday3 = application(309L, USER_ID);
         extraDueToday3.setStatus("APPLIED");
         extraDueToday3.setNextFollowUpAt(now.plusHours(5));
-        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(
-                dueToday, rejected, overdueLate, future, closed, extraDueToday3,
-                extraDueToday2, overdueEarly, extraDueToday));
+        when(jobApplicationMapper.selectReminderCandidates(
+                USER_ID,
+                now,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5)).thenReturn(List.of(overdueEarly, overdueLate, dueToday, extraDueToday, extraDueToday2));
 
         List<ApplicationReminderCandidateVO> result =
                 service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
@@ -788,24 +848,243 @@ class V4ResumeCareerServiceImplTest {
         assertEquals("303", result.get(2).getBizId());
         assertEquals("APPLICATION_FOLLOW_UP_REMINDER", result.get(0).getType());
         assertEquals("JOB_APPLICATION", result.get(0).getBizType());
-        assertEquals("/applications?followUp=overdue", result.get(0).getActionUrl());
-        assertEquals("/applications?followUp=due-today", result.get(2).getActionUrl());
+        assertEquals("/applications?applicationId=301&openEvents=1", result.get(0).getActionUrl());
+        assertEquals("/applications?applicationId=303&openEvents=1", result.get(2).getActionUrl());
         assertEquals("/applications", result.get(0).getFallbackPath());
         assertEquals("查看投递工作台", result.get(0).getFallbackLabel());
         assertEquals(reminderDate, result.get(0).getPlanDate());
         assertTrue(result.get(0).getContent().contains("Alpha"));
 
-        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor = ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(jobApplicationMapper).selectList(queryCaptor.capture());
-        String sql = (queryCaptor.getValue().getSqlSegment() + " " + queryCaptor.getValue().getTargetSql())
-                .replaceAll("\\s+", " ")
-                .toLowerCase();
+        verify(jobApplicationMapper).selectReminderCandidates(
+                USER_ID,
+                now,
+                reminderDate.atStartOfDay(),
+                reminderDate.plusDays(1).atStartOfDay(),
+                5);
+    }
+
+    @Test
+    void listApplicationReminderCandidatesAppendsActiveCalendarEventsAndUsesStableReminderIdentity() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent confirmedInterview = calendarEvent(501L, "面试一面", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 10, 0), LocalDateTime.of(2026, 6, 16, 11, 0), "UTC");
+        CareerCalendarEvent cancelled = calendarEvent(502L, "已取消笔试", "WRITTEN_TEST", "CANCELLED",
+                LocalDateTime.of(2026, 6, 16, 8, 0), LocalDateTime.of(2026, 6, 16, 9, 0), "UTC");
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of(confirmedInterview, cancelled));
+
+        List<ApplicationReminderCandidateVO> first =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+        List<ApplicationReminderCandidateVO> second =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(1, first.size());
+        ApplicationReminderCandidateVO vo = first.get(0);
+        assertEquals("CALENDAR_REMINDER", vo.getType());
+        assertEquals("CAREER_CALENDAR_EVENT", vo.getBizType());
+        assertEquals("501", vo.getBizId());
+        assertEquals("/career-calendar", vo.getActionUrl());
+        assertEquals("/career-calendar", vo.getFallbackPath());
+        assertEquals("打开求职日历", vo.getFallbackLabel());
+        assertEquals(reminderDate, vo.getPlanDate());
+        assertEquals("今天的求职日程", vo.getTitle());
+        assertTrue(vo.getContent().contains("面试"));
+        assertTrue(vo.getContent().contains("面试一面"));
+        assertEquals(vo.getType(), second.get(0).getType());
+        assertEquals(vo.getBizType(), second.get(0).getBizType());
+        assertEquals(vo.getBizId(), second.get(0).getBizId());
+    }
+
+    @Test
+    void updateApplicationDelegatesStatusChangeToLifecycleService() {
+        JobApplication current = application(55L, USER_ID);
+        current.setStatus("SAVED");
+        current.setLockVersion(3);
+        JobApplication transitioned = application(55L, USER_ID);
+        transitioned.setStatus("APPLIED");
+        transitioned.setLockVersion(4);
+        when(jobApplicationMapper.selectById(55L)).thenReturn(current, transitioned);
+        when(jobApplicationLifecycleService.transitionForUser(
+                USER_ID, 55L, "APPLIED", 3, "legacy-update-1")).thenReturn(transitioned);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setStatus("APPLIED");
+        dto.setExpectedLockVersion(3);
+        dto.setIdempotencyKey("legacy-update-1");
+
+        JobApplicationVO result = service.updateApplication(55L, dto);
+
+        assertEquals("APPLIED", result.getStatus());
+        verify(jobApplicationLifecycleService).transitionForUser(
+                USER_ID, 55L, "APPLIED", 3, "legacy-update-1");
+    }
+
+    @Test
+    void updateApplicationKeepsCampaignWhenLegacyRequestOmitsCampaignId() {
+        JobApplication current = application(56L, USER_ID);
+        current.setCampaignId(700L);
+        current.setCompanyName("Old Company");
+        current.setJobTitle("Old Title");
+        current.setStatus("SAVED");
+        when(jobApplicationMapper.selectById(56L)).thenReturn(current, current);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setCompanyName("New Company");
+        dto.setJobTitle("New Title");
+        dto.setStatus("SAVED");
+
+        JobApplicationVO result = service.updateApplication(56L, dto);
+
+        ArgumentCaptor<JobApplication> captor = ArgumentCaptor.forClass(JobApplication.class);
+        verify(jobApplicationMapper).updateById(captor.capture());
+        JobApplication updated = captor.getValue();
+        assertEquals(700L, updated.getCampaignId());
+        assertEquals("New Company", updated.getCompanyName());
+        assertEquals("New Title", updated.getJobTitle());
+        assertEquals("SAVED", updated.getStatus());
+        assertEquals(700L, result.getCampaignId());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesKeepsOverdueAndTomorrowEventsButFiltersOutsideAndDeleted() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent overdue = calendarEvent(511L, "逾期跟进", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 15, 6, 0), LocalDateTime.of(2026, 6, 15, 7, 0), "UTC");
+        CareerCalendarEvent tomorrow = calendarEvent(512L, "明日笔试", "WRITTEN_TEST", "TENTATIVE",
+                LocalDateTime.of(2026, 6, 17, 6, 0), LocalDateTime.of(2026, 6, 17, 7, 0), "UTC");
+        CareerCalendarEvent outside = calendarEvent(513L, "后天事项", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 18, 6, 0), LocalDateTime.of(2026, 6, 18, 7, 0), "UTC");
+        CareerCalendarEvent deleted = calendarEvent(514L, "已删除面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 12, 0), LocalDateTime.of(2026, 6, 16, 13, 0), "UTC");
+        deleted.setDeleted(1);
+        when(careerCalendarEventMapper.selectList(any()))
+                .thenReturn(List.of(tomorrow, outside, deleted, overdue));
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(List.of("511", "512"), result.stream().map(ApplicationReminderCandidateVO::getBizId).toList());
+        assertEquals("求职日程已逾期", result.get(0).getTitle());
+        assertEquals("明天的求职日程", result.get(1).getTitle());
+        assertEquals(reminderDate, result.get(0).getPlanDate());
+        assertEquals(reminderDate, result.get(1).getPlanDate());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesScopesCalendarQueryToOwnerAndActiveRows() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of());
+
+        service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<CareerCalendarEvent>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(careerCalendarEventMapper).selectList(captor.capture());
+        String sql = (captor.getValue().getSqlSegment() + " " + captor.getValue().getTargetSql())
+                .replaceAll("\\s+", " ").toLowerCase();
         assertTrue(sql.contains("user_id"), sql);
         assertTrue(sql.contains("deleted"), sql);
-        assertFalse(sql.contains("status in"), sql);
-        assertTrue(sql.contains("next_follow_up_at is not null"), sql);
-        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("REJECTED"));
-        assertFalse(queryCaptor.getValue().getParamNameValuePairs().containsValue("CLOSED"));
+        assertTrue(sql.contains("status in"), sql);
+        assertTrue(sql.contains("starts_at_utc"), sql);
+        assertTrue(sql.contains("starts_at_utc >="), sql);
+        assertTrue(sql.contains("limit 50"), sql);
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue(USER_ID));
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue("CONFIRMED"));
+        assertTrue(captor.getValue().getParamNameValuePairs().containsValue("TENTATIVE"));
+    }
+
+    @Test
+    void listApplicationReminderCandidatesLimitsCalendarEvents() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        List<CareerCalendarEvent> events = new java.util.ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            events.add(calendarEvent(600L + i, "日程 " + i, "FOLLOW_UP", "CONFIRMED",
+                    LocalDateTime.of(2026, 6, 16, 10, 0), LocalDateTime.of(2026, 6, 16, 11, 0), "UTC"));
+        }
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(events);
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(5, result.size());
+    }
+
+    @Test
+    void listApplicationReminderCandidatesReservesUpcomingSlotsWhenOverdueEventsAreNumerous() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        List<CareerCalendarEvent> events = new java.util.ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            events.add(calendarEvent(700L + i, "逾期日程 " + i, "FOLLOW_UP", "CONFIRMED",
+                    LocalDateTime.of(2026, 6, 10 + i % 3, 6, 0),
+                    LocalDateTime.of(2026, 6, 10 + i % 3, 7, 0), "UTC"));
+        }
+        events.add(calendarEvent(799L, "今天面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 10, 0),
+                LocalDateTime.of(2026, 6, 16, 11, 0), "UTC"));
+        events.add(calendarEvent(800L, "明天笔试", "WRITTEN_TEST", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 17, 10, 0),
+                LocalDateTime.of(2026, 6, 17, 11, 0), "UTC"));
+        events.add(calendarEvent(801L, "今天跟进", "FOLLOW_UP", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 16, 12, 0),
+                LocalDateTime.of(2026, 6, 16, 13, 0), "UTC"));
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(events);
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(5, result.size());
+        assertEquals(2, result.stream()
+                .filter(item -> "求职日程已逾期".equals(item.getTitle()))
+                .count());
+        assertTrue(result.stream().anyMatch(item -> "今天的求职日程".equals(item.getTitle())));
+        assertTrue(result.stream().anyMatch(item -> "明天的求职日程".equals(item.getTitle())));
+    }
+
+    @Test
+    void listApplicationReminderCandidatesUsesEventTimezoneForLocalDate() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        LocalDate reminderDate = LocalDate.of(2026, 6, 16);
+        when(jobApplicationMapper.selectReminderCandidates(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyInt()))
+                .thenReturn(List.of());
+        CareerCalendarEvent pacificLateNight = calendarEvent(811L, "太平洋时区面试", "INTERVIEW", "CONFIRMED",
+                LocalDateTime.of(2026, 6, 17, 6, 30),
+                LocalDateTime.of(2026, 6, 17, 7, 30), "America/Los_Angeles");
+        when(careerCalendarEventMapper.selectList(any())).thenReturn(List.of(pacificLateNight));
+
+        List<ApplicationReminderCandidateVO> result =
+                service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
+
+        assertEquals(1, result.size());
+        assertEquals("今天的求职日程", result.get(0).getTitle());
+        assertEquals(reminderDate, result.get(0).getPlanDate());
+    }
+
+    private CareerCalendarEvent calendarEvent(Long id, String title, String eventType, String status,
+                                              LocalDateTime startsAtUtc, LocalDateTime endsAtUtc, String timezone) {
+        CareerCalendarEvent event = new CareerCalendarEvent();
+        event.setId(id);
+        event.setUserId(USER_ID);
+        event.setTitle(title);
+        event.setEventType(eventType);
+        event.setStatus(status);
+        event.setStartsAtUtc(startsAtUtc);
+        event.setEndsAtUtc(endsAtUtc);
+        event.setTimezone(timezone);
+        event.setDeleted(0);
+        return event;
     }
 
     private void assertAgentContextQuery(LambdaQueryWrapper<JobApplication> query, boolean expectTargetJobFilter) {
@@ -866,6 +1145,36 @@ class V4ResumeCareerServiceImplTest {
         assertTrue(version.getSnapshotJson().contains("\"projectSnapshotSource\":\"RESUME_VERSION\""));
     }
 
+    @Test
+    void createVersionCanonicalizesSameSortProjectsIndependentOfDatabaseOrder() throws Exception {
+        ResumeProject alpha = project(11L);
+        alpha.setProjectName("Alpha project");
+        alpha.setSort(null);
+        alpha.setSortOrder(null);
+        ResumeProject zulu = project(12L);
+        zulu.setProjectName("Zulu project");
+        zulu.setSort(null);
+        zulu.setSortOrder(null);
+        when(resumeMapper.selectById(1L)).thenReturn(resume(1L, USER_ID));
+        when(resumeVersionMapper.selectOne(
+                org.mockito.ArgumentMatchers.<LambdaQueryWrapper<ResumeVersion>>any())).thenReturn(null);
+        when(resumeProjectMapper.selectList(any()))
+                .thenReturn(List.of(zulu, alpha), List.of(alpha, zulu));
+
+        service.createVersion(1L, null);
+        service.createVersion(1L, null);
+
+        ArgumentCaptor<ResumeVersion> versions = ArgumentCaptor.forClass(ResumeVersion.class);
+        verify(resumeVersionMapper, times(2)).insert(versions.capture());
+        String firstSnapshot = versions.getAllValues().get(0).getSnapshotJson();
+        String secondSnapshot = versions.getAllValues().get(1).getSnapshotJson();
+        assertEquals(firstSnapshot, secondSnapshot);
+        var projects = new ObjectMapper().readTree(firstSnapshot).path("projects");
+        assertEquals("Alpha project", projects.get(0).path("projectName").asText());
+        assertEquals(0, projects.get(0).path("sort").asInt());
+        assertEquals(0, projects.get(0).path("sortOrder").asInt());
+    }
+
     private Resume resume(Long id, Long userId) {
         Resume resume = new Resume();
         resume.setId(id);
@@ -908,6 +1217,15 @@ class V4ResumeCareerServiceImplTest {
         report.setResumeVersionId(77L);
         report.setTargetJobId(88L);
         return report;
+    }
+
+    private TargetJob targetJob(Long id, Long userId) {
+        TargetJob targetJob = new TargetJob();
+        targetJob.setId(id);
+        targetJob.setUserId(userId);
+        targetJob.setJobTitle("Java Backend Engineer");
+        targetJob.setCompanyName("Demo Company");
+        return targetJob;
     }
 
     private JobApplication application(Long id, Long userId) {

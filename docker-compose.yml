@@ -12,7 +12,8 @@ x-default-logging: &default-logging
 # 按需 profile：mq、mq-dashboard、search、vector
 # 业务服务建议在 IDE 中启动（方便调试）
 # 注意：该 compose 仅用于本机开发，端口默认绑定 127.0.0.1，不应直接用于公网或准生产。
-# MySQL 初始化挂载仅在首次创建 mysql-data 时执行，使用前确认目标 volume 可丢弃。
+# MySQL 首次只导入 V2 基线 init.sql；随后由一次性 flyway-migrate 服务执行 V3+ migration。
+# 初始化仅在首次创建 mysql-data 时执行，使用前确认目标 volume 可丢弃。
 # ============================================================
 
 services:
@@ -29,13 +30,39 @@ services:
       TZ: Asia/Shanghai
     volumes:
       - mysql-data:/var/lib/mysql
-      - ./sql/migration:/docker-entrypoint-initdb.d:ro
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/001-init.sql:ro
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-time-zone=+08:00
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ---------- Database migration ----------
+  # init.sql represents the existing schema at Flyway baseline 2.999.
+  # This one-shot job baselines a fresh schema and applies V3/V4 migrations exactly once.
+  flyway-migrate:
+    image: maven:3.9.9-eclipse-temurin-17
+    container_name: codecoachai-flyway-migrate
+    logging: *default-logging
+    working_dir: /workspace
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Flyway}
+      MAVEN_OPTS: "-Xms128m -Xmx384m"
+    volumes:
+      - ./:/workspace:ro
+      - maven-cache:/root/.m2
+    command:
+      - mvn
+      - -q
+      - -DskipTests
+      - -Dflyway.url=jdbc:mysql://mysql:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      - -Dflyway.user=root
+      - flyway:migrate
+    restart: "no"
 
   # ---------- Redis ----------
   redis:
@@ -164,6 +191,7 @@ services:
 
 volumes:
   mysql-data:
+  maven-cache:
   redis-data:
   es-data:
   qdrant-data:

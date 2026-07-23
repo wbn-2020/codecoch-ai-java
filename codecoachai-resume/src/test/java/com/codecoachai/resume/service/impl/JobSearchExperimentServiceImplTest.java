@@ -33,6 +33,7 @@ import com.codecoachai.resume.mapper.ProjectEvidenceMapper;
 import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -45,6 +46,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 @ExtendWith(MockitoExtension.class)
 class JobSearchExperimentServiceImplTest {
@@ -69,6 +71,10 @@ class JobSearchExperimentServiceImplTest {
     private JobApplicationEventMapper jobApplicationEventMapper;
     @Mock
     private ProjectEvidenceMapper projectEvidenceMapper;
+    @Mock
+    private UserAbilityProfileMapper userAbilityProfileMapper;
+    @Mock
+    private JdbcTemplate jdbcTemplate;
 
     private JobSearchExperimentServiceImpl service;
 
@@ -89,6 +95,8 @@ class JobSearchExperimentServiceImplTest {
                 jobApplicationMapper,
                 jobApplicationEventMapper,
                 projectEvidenceMapper,
+                userAbilityProfileMapper,
+                jdbcTemplate,
                 new ObjectMapper());
     }
 

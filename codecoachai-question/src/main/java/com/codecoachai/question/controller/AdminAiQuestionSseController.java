@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import lombok.extern.slf4j.Slf4j;
@@ -63,7 +64,8 @@ public class AdminAiQuestionSseController {
         AtomicBoolean active = new AtomicBoolean(true);
         SseEmitter emitter = createEmitter(requestId, active);
         try {
-            submitGenerate(emitter, active, requestId, loginUser, dto, lockKey);
+            Future<?> task = submitGenerate(emitter, active, requestId, loginUser, dto, lockKey);
+            bindCancellation(emitter, active, task);
         } catch (RejectedExecutionException ex) {
             log.warn("AI question generation SSE task rejected, requestId={}", requestId, ex);
             operationConfirmationGuard.release(lockKey);
@@ -73,10 +75,23 @@ public class AdminAiQuestionSseController {
         return emitter;
     }
 
-    private void submitGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,
-                                LoginUser loginUser, AiQuestionGenerateRequestDTO dto, String lockKey) {
-        CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto, lockKey),
+    private Future<?> submitGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,
+                                     LoginUser loginUser, AiQuestionGenerateRequestDTO dto, String lockKey) {
+        return CompletableFuture.runAsync(() -> executeGenerate(emitter, active, requestId, loginUser, dto, lockKey),
                 questionSseStreamExecutor);
+    }
+
+    private void bindCancellation(SseEmitter emitter, AtomicBoolean active, Future<?> task) {
+        emitter.onCompletion(() -> cancelTask(active, task));
+        emitter.onTimeout(() -> cancelTask(active, task));
+        emitter.onError(ex -> cancelTask(active, task));
+    }
+
+    private void cancelTask(AtomicBoolean active, Future<?> task) {
+        active.set(false);
+        if (task != null && !task.isDone()) {
+            task.cancel(true);
+        }
     }
 
     private void executeGenerate(SseEmitter emitter, AtomicBoolean active, String requestId,

@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -15,12 +16,17 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimen
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeChunk;
+import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeDocument;
 import com.codecoachai.ai.agent.feign.ResumeAgentContextFeignClient;
 import com.codecoachai.ai.agent.mapper.AgentMemoryMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeChunkMapper;
+import com.codecoachai.ai.agent.mapper.PersonalKnowledgeDocumentMapper;
 import com.codecoachai.common.core.domain.Result;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -46,6 +52,10 @@ class AgentContextBuilderImplTest {
     private AgentTaskMapper agentTaskMapper;
     @Mock
     private AgentMemoryMapper agentMemoryMapper;
+    @Mock
+    private PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
+    @Mock
+    private PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
 
     private AgentContextBuilderImpl builder;
 
@@ -53,15 +63,26 @@ class AgentContextBuilderImplTest {
     static void initMybatisPlusTableInfo() {
         initTableInfo(AgentTask.class);
         initTableInfo(AgentMemory.class);
+        initTableInfo(PersonalKnowledgeDocument.class);
+        initTableInfo(PersonalKnowledgeChunk.class);
     }
 
     @BeforeEach
     void setUp() {
-        builder = new AgentContextBuilderImpl(resumeFeignClient, agentTaskMapper, agentMemoryMapper);
+        builder = new AgentContextBuilderImpl(
+                resumeFeignClient,
+                agentTaskMapper,
+                agentMemoryMapper,
+                personalKnowledgeDocumentMapper,
+                personalKnowledgeChunkMapper);
         when(resumeFeignClient.getTargetJob(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(targetJob()));
         when(resumeFeignClient.getAnalysis(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(null));
+        when(resumeFeignClient.requirementReadinessContext(USER_ID, TARGET_JOB_ID))
+                .thenReturn(Result.success(null));
         when(agentMemoryMapper.selectList(any())).thenReturn(List.of());
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        lenient().when(personalKnowledgeDocumentMapper.selectList(any())).thenReturn(List.of());
+        when(personalKnowledgeChunkMapper.selectList(any())).thenReturn(List.of());
     }
 
     @Test
@@ -144,6 +165,40 @@ class AgentContextBuilderImplTest {
         assertEquals(List.of("Redis", "Lua"), snapshot.getTopSkillNames());
         assertEquals(TARGET_JOB_ID, snapshot.getTargetJobId());
         assertEquals("/project-evidence/31", snapshot.getSuggestedActionPath());
+    }
+
+    @Test
+    void buildIncludesMissingRequirementsFromResumeInnerApi() {
+        RequirementReadinessAgentContextVO source = new RequirementReadinessAgentContextVO();
+        source.setTargetJobId(TARGET_JOB_ID);
+        source.setSnapshotId(901L);
+        source.setReadinessLevel("NEAR_READY");
+        source.setConfidenceLevel("HIGH");
+        source.setFallback(false);
+        source.setMatrixCurrent(true);
+        source.setSampleSufficient(true);
+        source.setRequirementCount(2);
+        RequirementReadinessAgentContextVO.RequirementItemVO item =
+                new RequirementReadinessAgentContextVO.RequirementItemVO();
+        item.setRequirementId(101L);
+        item.setRequirementKey("redis");
+        item.setRequirementName("Redis");
+        item.setRequirementType("SKILL");
+        item.setPriority("MUST");
+        item.setCoverageLevel("MISSING");
+        item.setConfidenceLevel("HIGH");
+        item.setFallback(false);
+        source.setMissingRequirements(List.of(item));
+        when(resumeFeignClient.requirementReadinessContext(USER_ID, TARGET_JOB_ID))
+                .thenReturn(Result.success(source));
+
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertEquals(901L, context.getRequirementReadiness().getSnapshotId());
+        assertEquals(1, context.getRequirementReadiness().getMissingRequirements().size());
+        assertEquals("Redis",
+                context.getRequirementReadiness().getMissingRequirements().get(0).getRequirementName());
+        verify(resumeFeignClient).requirementReadinessContext(USER_ID, TARGET_JOB_ID);
     }
 
     private static void initTableInfo(Class<?> entityClass) {

@@ -49,6 +49,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 @ExtendWith(MockitoExtension.class)
 class QuestionServiceImplTest {
@@ -77,6 +78,8 @@ class QuestionServiceImplTest {
     private QuestionMqDispatcher questionMqDispatcher;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock
+    private JdbcTemplate jdbcTemplate;
 
     private QuestionServiceImpl questionService;
 
@@ -96,7 +99,8 @@ class QuestionServiceImplTest {
                 questionDuplicateService,
                 questionEmbeddingIndexService,
                 questionMqDispatcher,
-                agentBusinessActionNotifier);
+                agentBusinessActionNotifier,
+                jdbcTemplate);
         LoginUser loginUser = new LoginUser();
         loginUser.setUserId(1001L);
         LoginUserContext.setLoginUser(loginUser);

@@ -29,6 +29,7 @@ public interface V4ResumeCareerService {
     ResumeVersionVO rollbackVersion(Long resumeId, Long versionId);
     ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto);
     List<JobApplicationVO> listApplications(String status);
+    List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword);
     JobApplicationStatsVO getApplicationStats(LocalDateTime now);
     JobApplicationVO createApplication(JobApplicationSaveDTO dto);
     JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto);

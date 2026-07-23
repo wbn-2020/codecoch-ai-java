@@ -10,6 +10,10 @@ public class ProjectJdCoverageVO {
     private Long projectEvidenceId;
     private Long targetJobId;
     private Integer coverageScore;
+    private String sourceType;
+    private String confidenceLevel;
+    private Boolean fallback;
+    private List<String> warnings = new ArrayList<>();
     private List<String> jdSkills = new ArrayList<>();
     private List<String> coveredSkills = new ArrayList<>();
     private List<String> weakCoveredSkills = new ArrayList<>();

@@ -9,13 +9,17 @@ import com.codecoachai.ai.agent.domain.context.DailyPlanResult;
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult.FocusSkill;
 import com.codecoachai.ai.agent.domain.context.DailyPlanResult.PlanTask;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MemoryReference;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.PersonalKnowledgeReference;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentRunQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AdminAgentTaskQueryDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentContextUsageReferenceRecordDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentBusinessActionCompleteDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentCoachActionDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentMetricEventDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentRunFailureDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskCompleteDTO;
+import com.codecoachai.ai.agent.domain.dto.AgentTaskDeferDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskQueryDTO;
 import com.codecoachai.ai.agent.domain.dto.AgentTaskSkipDTO;
 import com.codecoachai.ai.agent.domain.dto.DailyPlanGenerateDTO;
@@ -24,7 +28,9 @@ import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.domain.enums.AgentRunStatusEnum;
+import com.codecoachai.ai.agent.domain.enums.AgentTaskPriorityEnum;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskStatusEnum;
+import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.domain.vo.ActivationHandoffVO;
 import com.codecoachai.ai.agent.domain.vo.AgentCoachActionVO;
 import com.codecoachai.ai.agent.domain.vo.AgentRunDetailVO;
@@ -45,12 +51,16 @@ import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.ai.agent.service.AgentContextBuilder;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
+import com.codecoachai.ai.agent.service.AgentConfirmedPlanEffectReconciler;
 import com.codecoachai.ai.agent.service.AgentMetricsService;
 import com.codecoachai.ai.agent.service.AgentOutputParser;
 import com.codecoachai.ai.agent.service.AgentOutputValidator;
 import com.codecoachai.ai.agent.service.AgentPromptBuilder;
+import com.codecoachai.ai.agent.service.AgentWeekPlanService;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
 import com.codecoachai.ai.agent.service.JobCoachAgentService;
+import com.codecoachai.ai.agent.service.support.AgentAdaptivePlanHashUtils;
 import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
@@ -95,6 +105,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String AGENT_TYPE = "JOB_COACH";
     private static final String REVIEW_SOURCE_RULE = "RULE";
     private static final String REVIEW_SOURCE_RULE_LABEL = "规则复盘";
+    private static final String REVIEW_TYPE_TASK = "TASK";
     private static final String TRIGGER_MANUAL = "MANUAL";
     private static final String REVIEW_SOURCE_LLM_LABEL = "AI复盘";
     private static final String REVIEW_SOURCE_FALLBACK_LABEL = "规则兜底";
@@ -120,6 +131,20 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String RESUME_OPTIMIZE_STATUS_SUCCESS = "SUCCESS";
     private static final int DEFAULT_TASK_COUNT = 3;
     private static final int DEFAULT_MAX_TOTAL_MINUTES = 120;
+    private static final int DEGRADED_PLAN_MINUTES = 15;
+    private static final String DEGRADED_PLAN_CANDIDATE_ID = "degraded-minimal-action";
+    private static final String DEGRADED_PLAN_SUMMARY =
+            "模型输出未通过计划结构校验，已生成一项降级的最小可执行计划。";
+    private static final String DEGRADED_PLAN_NO_EVIDENCE_SUMMARY =
+            "模型输出未通过计划结构校验，当前没有可引用的候选证据，已生成一项补充真实记录的最小计划。";
+    private static final String DEGRADED_PLAN_TASK_TITLE = "完成一项今日可执行任务";
+    private static final String DEGRADED_PLAN_TASK_DESCRIPTION =
+            "打开任务入口，完成当前准备动作，并记录可验证的真实结果。";
+    private static final String DEGRADED_PLAN_TASK_REASON =
+            "模型输出未通过结构校验，此任务直接使用当前候选任务，不新增或推断业务事实。";
+    private static final String DEGRADED_PLAN_NO_EVIDENCE_TASK_TITLE = "补充一条真实求职准备记录";
+    private static final String DEGRADED_PLAN_NO_EVIDENCE_TASK_REASON =
+            "模型输出未通过结构校验，当前没有可引用的候选证据；请先补充真实记录。";
     private static final String RUN_FORCE_REGENERATED = "AGENT_RUN_FORCE_REGENERATED";
     private static final String HANDOFF_CODE_TARGET_DIRECTION_ESTABLISHED = "ACT-001-TARGET-DIRECTION-ESTABLISHED";
     private static final String HANDOFF_CODE_FIRST_PLAN_GENERATED = "ACT-001-FIRST-PLAN-GENERATED";
@@ -127,6 +152,10 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String HANDOFF_STAGE_TARGET_DIRECTION = "target_direction_established";
     private static final String HANDOFF_STAGE_FIRST_PLAN = "first_plan_generated";
     private static final String HANDOFF_STAGE_FIRST_TASK_COMPLETED = "first_task_completed";
+    private static final String USAGE_SOURCE_MEMORY = "MEMORY";
+    private static final String USAGE_SOURCE_KNOWLEDGE_CHUNK = "KNOWLEDGE_CHUNK";
+    private static final String USAGE_CONSUMER_AGENT_RUN = "AGENT_RUN";
+    private static final String USAGE_SCENE_AGENT_CONTEXT = "AGENT_CONTEXT";
     private static final List<String> ACTIVE_PLAN_STATUSES = List.of(
             AgentRunStatusEnum.RUNNING.name(),
             AgentRunStatusEnum.SUCCESS.name());
@@ -144,6 +173,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private final AgentOutputParser agentOutputParser;
     private final AgentOutputValidator agentOutputValidator;
     private final AgentMetricsService agentMetricsService;
+    private final AgentContextUsageReferenceService usageReferenceService;
+    private final AgentConfirmedPlanEffectReconciler confirmedPlanEffectReconciler;
+    private final AgentWeekPlanService agentWeekPlanService;
     private final AiCallLogService aiCallLogService;
     private final QuestionPracticeEvidenceFeignClient questionPracticeEvidenceFeignClient;
     private final ResumeJobApplicationEvidenceFeignClient resumeJobApplicationEvidenceFeignClient;
@@ -272,17 +304,20 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             }
 
             RouteResult routeResult = callAi(userId, run, prompt);
-            DailyPlanResult planResult = agentOutputParser.parseDailyPlan(routeResult.getContent());
-            agentOutputValidator.validateDailyPlan(planResult, candidates, taskCount, maxTotalMinutes);
+            ResolvedDailyPlan resolvedPlan = resolveDailyPlanResult(userId, run, routeResult, candidates,
+                    taskCount, maxTotalMinutes);
             return transactionTemplate.execute(status -> {
                 if (!isRunStillRunning(userId, run.getId(), run.getExecutionToken())) {
                     return currentDailyPlan(userId, run.getId());
                 }
-                if (!markSuccess(run, planResult, routeResult, System.currentTimeMillis() - start)) {
+                if (!markSuccess(run, resolvedPlan.planResult(), routeResult, resolvedPlan.resultSource(),
+                        System.currentTimeMillis() - start)) {
                     return currentDailyPlan(userId, run.getId());
                 }
                 clearRunTasks(run);
-                saveTasks(userId, run, planResult, candidates);
+                saveTasks(userId, run, resolvedPlan.planResult(), resolvedPlan.candidates());
+                confirmedPlanEffectReconciler.reconcile(userId, run);
+                recordAgentContextUsage(userId, run, context);
                 return toDailyPlan(agentRunMapper.selectById(run.getId()));
             });
         } catch (BusinessException ex) {
@@ -321,8 +356,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     @Override
     public List<AgentTaskVO> todayTasks(Long userId, Long targetJobId, LocalDate date, String status) {
         LocalDate dueDate = date == null ? LocalDate.now() : date;
-        Long scopeTargetJobId = resolveTargetJobIdForScope(userId, targetJobId, dueDate);
-        AgentRun run = latestActiveRun(userId, scopeTargetJobId, dueDate);
+        // This is a read-only endpoint. Resolving a missing target through the full Agent context
+        // calls the resume service and can make the task list wait on unrelated remote work.
+        AgentRun run = latestActiveRunForTodayTasks(userId, targetJobId, dueDate);
         if (run == null) {
             return List.of();
         }
@@ -430,9 +466,13 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 wrapper -> wrapper
                         .set(AgentTask::getStartedAt, task.getStartedAt() == null ? now : task.getStartedAt())
                         .set(AgentTask::getCompletedAt, now)
+                        .set(AgentTask::getDeferredAt, null)
+                        .set(AgentTask::getDeferReason, null)
                         .set(AgentTask::getSkippedAt, null)
                         .set(AgentTask::getSkipReason, null));
         AgentTask latest = taskAfterTransitionEntity(userId, taskId, AgentTaskStatusEnum.DONE.name());
+        agentWeekPlanService.recordTaskAdjustment(userId, task, latest, "TASK_COMPLETED",
+                dto == null ? null : dto.getNote());
         AgentReview review = upsertTaskReview(latest, dto == null ? null : dto.getNote());
         List<ActivationHandoffVO> activationHandoffs = taskActivationHandoffs(latest);
         String requestId = activationHandoffs.isEmpty() ? null : activationHandoffs.get(0).getRequestId();
@@ -472,7 +512,31 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                         .set(AgentTask::getSkippedAt, LocalDateTime.now())
                         .set(AgentTask::getSkipReason, dto == null ? null : dto.getSkipReason()));
         AgentTask latest = taskAfterTransitionEntity(userId, taskId, AgentTaskStatusEnum.SKIPPED.name());
+        agentWeekPlanService.recordTaskAdjustment(userId, task, latest, "TASK_SKIPPED",
+                dto == null ? null : dto.getSkipReason());
         AgentReview review = upsertTaskReview(latest, dto == null ? null : dto.getSkipReason());
+        return applyTaskRunTrace(enrichTaskReview(AgentConvert.toTaskVO(latest), review), latest);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentTaskVO deferTask(Long userId, Long taskId, AgentTaskDeferDTO dto) {
+        AgentTask task = requireUserTask(userId, taskId);
+        if (AgentTaskStatusEnum.DEFERRED.name().equals(task.getStatus())) {
+            return toReviewedTaskVOWithRunTrace(task);
+        }
+        LocalDateTime deferredAt = dto == null || dto.getDeferAt() == null ? LocalDateTime.now() : dto.getDeferAt();
+        transitionTask(userId, taskId, AgentTaskStatusEnum.DEFERRED.name(),
+                List.of(AgentTaskStatusEnum.TODO.name(), AgentTaskStatusEnum.DOING.name(), AgentTaskStatusEnum.EXPIRED.name()),
+                wrapper -> wrapper
+                        .set(AgentTask::getDeferredAt, deferredAt)
+                        .set(AgentTask::getDeferReason, dto == null ? null : dto.getDeferReason())
+                        .set(AgentTask::getSkippedAt, null)
+                        .set(AgentTask::getSkipReason, null));
+        AgentTask latest = taskAfterTransitionEntity(userId, taskId, AgentTaskStatusEnum.DEFERRED.name());
+        agentWeekPlanService.recordTaskAdjustment(userId, task, latest, "TASK_DEFERRED",
+                dto == null ? null : dto.getDeferReason());
+        AgentReview review = upsertTaskReview(latest, dto == null ? null : dto.getDeferReason());
         return applyTaskRunTrace(enrichTaskReview(AgentConvert.toTaskVO(latest), review), latest);
     }
 
@@ -484,11 +548,16 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             return toReviewedTaskVOWithRunTrace(task);
         }
         transitionTask(userId, taskId, AgentTaskStatusEnum.TODO.name(),
-                List.of(AgentTaskStatusEnum.SKIPPED.name()),
+                List.of(AgentTaskStatusEnum.SKIPPED.name(), AgentTaskStatusEnum.DEFERRED.name()),
                 wrapper -> wrapper
+                        .set(AgentTask::getDeferredAt, null)
+                        .set(AgentTask::getDeferReason, null)
                         .set(AgentTask::getSkippedAt, null)
                         .set(AgentTask::getSkipReason, null));
-        return taskAfterTransition(userId, taskId, AgentTaskStatusEnum.TODO.name());
+        AgentTask latest = taskAfterTransitionEntity(userId, taskId, AgentTaskStatusEnum.TODO.name());
+        agentWeekPlanService.recordTaskAdjustment(userId, task, latest, "TASK_RESTORED",
+                firstText(task.getDeferReason(), task.getSkipReason(), "Task restored"));
+        return toReviewedTaskVOWithRunTrace(latest);
     }
 
     @Override
@@ -684,6 +753,132 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         return aiCallLogService.callAndLog(ctx);
     }
 
+    private ResolvedDailyPlan resolveDailyPlanResult(Long userId, AgentRun run, RouteResult routeResult,
+                                                     List<CandidateTask> candidates, int taskCount,
+                                                     int maxTotalMinutes) {
+        try {
+            DailyPlanResult planResult = agentOutputParser.parseDailyPlan(routeResult.getContent());
+            agentOutputValidator.validateDailyPlan(planResult, candidates, taskCount, maxTotalMinutes);
+            return new ResolvedDailyPlan(planResult, candidates, routeResult.getResultSource());
+        } catch (BusinessException ex) {
+            String errorCode = agentErrorCode(ex.getMessage());
+            if (!isOutputContractFailure(errorCode)) {
+                throw ex;
+            }
+            ResolvedDailyPlan degradedPlan = buildDegradedDailyPlan(candidates, maxTotalMinutes);
+            agentOutputValidator.validateDailyPlan(degradedPlan.planResult(), degradedPlan.candidates(),
+                    taskCount, maxTotalMinutes);
+            log.warn("Agent daily plan output contract failed, persisted degraded plan runId={} userId={} errorCode={}",
+                    run.getId(), userId, errorCode);
+            return degradedPlan;
+        }
+    }
+
+    private boolean isOutputContractFailure(String errorCode) {
+        return AgentErrorCode.OUTPUT_PARSE_FAILED.equals(errorCode)
+                || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(errorCode);
+    }
+
+    private ResolvedDailyPlan buildDegradedDailyPlan(List<CandidateTask> candidates, int maxTotalMinutes) {
+        List<CandidateTask> effectiveCandidates = new ArrayList<>();
+        if (candidates != null) {
+            for (CandidateTask candidate : candidates) {
+                if (candidate != null) {
+                    effectiveCandidates.add(candidate);
+                }
+            }
+        }
+        CandidateTask candidate = effectiveCandidates.stream()
+                .filter(this::isUsableDegradedCandidate)
+                .findFirst()
+                .orElse(null);
+        boolean candidateBacked = candidate != null;
+        if (!candidateBacked) {
+            candidate = degradedPlanCandidate(maxTotalMinutes);
+            effectiveCandidates.add(candidate);
+        }
+
+        DailyPlanResult result = new DailyPlanResult();
+        result.setSummary(candidateBacked ? DEGRADED_PLAN_SUMMARY : DEGRADED_PLAN_NO_EVIDENCE_SUMMARY);
+        result.setTasks(List.of(degradedPlanTask(candidate, maxTotalMinutes, candidateBacked)));
+        return new ResolvedDailyPlan(result, effectiveCandidates, AiResultSourceEnum.DEGRADED.name());
+    }
+
+    private boolean isUsableDegradedCandidate(CandidateTask candidate) {
+        if (candidate == null || !StringUtils.hasText(candidate.getCandidateId())
+                || !StringUtils.hasText(candidate.getType())) {
+            return false;
+        }
+        try {
+            AgentTaskTypeEnum.valueOf(normalizeCode(candidate.getType()));
+            return true;
+        } catch (IllegalArgumentException ex) {
+            return false;
+        }
+    }
+
+    private CandidateTask degradedPlanCandidate(int maxTotalMinutes) {
+        CandidateTask candidate = new CandidateTask();
+        candidate.setCandidateId(DEGRADED_PLAN_CANDIDATE_ID);
+        candidate.setType(AgentTaskTypeEnum.STUDY_TASK.name());
+        candidate.setTitle(DEGRADED_PLAN_NO_EVIDENCE_TASK_TITLE);
+        candidate.setDescription(DEGRADED_PLAN_TASK_DESCRIPTION);
+        candidate.setReason(DEGRADED_PLAN_NO_EVIDENCE_TASK_REASON);
+        candidate.setPriority(AgentTaskPriorityEnum.LOW.name());
+        candidate.setEstimatedMinutes(degradedPlanMinutes(null, maxTotalMinutes));
+        candidate.setActionUrl("/tools");
+        return candidate;
+    }
+
+    private PlanTask degradedPlanTask(CandidateTask candidate, int maxTotalMinutes, boolean candidateBacked) {
+        PlanTask task = new PlanTask();
+        task.setCandidateId(candidate.getCandidateId());
+        task.setType(degradedTaskType(candidate.getType()));
+        task.setTitle(candidateBacked ? DEGRADED_PLAN_TASK_TITLE : DEGRADED_PLAN_NO_EVIDENCE_TASK_TITLE);
+        task.setDescription(DEGRADED_PLAN_TASK_DESCRIPTION);
+        task.setReason(candidateBacked ? DEGRADED_PLAN_TASK_REASON : DEGRADED_PLAN_NO_EVIDENCE_TASK_REASON);
+        task.setPriority(degradedTaskPriority(candidate.getPriority()));
+        task.setEstimatedMinutes(degradedPlanMinutes(candidate.getEstimatedMinutes(), maxTotalMinutes));
+        task.setRelatedSkillCode(candidate.getRelatedSkillCode());
+        task.setRelatedSkillName(candidate.getRelatedSkillName());
+        task.setRelatedBizType(candidate.getRelatedBizType());
+        task.setRelatedBizId(candidate.getRelatedBizId());
+        task.setActionUrl(firstText(candidate.getActionUrl(), "/tools"));
+        return task;
+    }
+
+    private String degradedTaskType(String type) {
+        if (!StringUtils.hasText(type)) {
+            return AgentTaskTypeEnum.STUDY_TASK.name();
+        }
+        String normalized = normalizeCode(type);
+        try {
+            return AgentTaskTypeEnum.valueOf(normalized).name();
+        } catch (IllegalArgumentException ex) {
+            return AgentTaskTypeEnum.STUDY_TASK.name();
+        }
+    }
+
+    private String degradedTaskPriority(String priority) {
+        if (!StringUtils.hasText(priority)) {
+            return AgentTaskPriorityEnum.LOW.name();
+        }
+        String normalized = normalizeCode(priority);
+        try {
+            return AgentTaskPriorityEnum.valueOf(normalized).name();
+        } catch (IllegalArgumentException ex) {
+            return AgentTaskPriorityEnum.LOW.name();
+        }
+    }
+
+    private int degradedPlanMinutes(Integer candidateMinutes, int maxTotalMinutes) {
+        int minutes = candidateMinutes == null ? DEGRADED_PLAN_MINUTES : candidateMinutes;
+        if (minutes < 5 || minutes > 180) {
+            minutes = DEGRADED_PLAN_MINUTES;
+        }
+        return Math.min(minutes, maxTotalMinutes);
+    }
+
     private void clearRunTasks(AgentRun run) {
         agentTaskMapper.update(null, new LambdaUpdateWrapper<AgentTask>()
                 .eq(AgentTask::getAgentRunId, run.getId())
@@ -714,6 +909,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             task.setRelatedSkillName(firstText(candidate == null ? null : candidate.getRelatedSkillName(), item.getRelatedSkillName()));
             task.setRelatedBizType(firstText(candidate == null ? null : candidate.getRelatedBizType(), item.getRelatedBizType()));
             task.setRelatedBizId(candidate == null ? item.getRelatedBizId() : candidate.getRelatedBizId());
+            task.setPlanOriginType("AGENT_GENERATED");
+            task.setPlanOriginId(run.getId());
+            task.setUserConfirmed(false);
             task.setActionUrl(firstText(candidate == null ? null : candidate.getActionUrl(), item.getActionUrl()));
             task.setStatus(AgentTaskStatusEnum.TODO.name());
             task.setDueDate(run.getPlanDate());
@@ -797,17 +995,19 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         return target;
     }
 
-    private boolean markSuccess(AgentRun run, DailyPlanResult planResult, RouteResult routeResult, long durationMs) {
+    private boolean markSuccess(AgentRun run, DailyPlanResult planResult, RouteResult routeResult, String resultSource,
+                                long durationMs) {
         LocalDateTime finishedAt = LocalDateTime.now();
         String outputJson = maskAgentRunDiagnosticText(toJson(planResult));
         String rawOutputText = maskAgentRunDiagnosticText(routeResult.getContent());
+        String traceId = firstText(routeResult.getTraceId(), routeResult.getRouteTrace());
         run.setStatus(AgentRunStatusEnum.SUCCESS.name());
         run.setOutputJson(outputJson);
         run.setRawOutputText(rawOutputText);
         run.setModelName(routeResult.getModel());
-        run.setTraceId(routeResult.getRouteTrace());
+        run.setTraceId(traceId);
         run.setAiCallLogId(routeResult.getAiCallLogId());
-        run.setResultSource(routeResult.getResultSource());
+        run.setResultSource(resultSource);
         run.setTokenInput(routeResult.getPromptTokens());
         run.setTokenOutput(routeResult.getCompletionTokens());
         run.setDurationMs(durationMs);
@@ -823,9 +1023,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .set(AgentRun::getOutputJson, outputJson)
                 .set(AgentRun::getRawOutputText, rawOutputText)
                 .set(AgentRun::getModelName, routeResult.getModel())
-                .set(AgentRun::getTraceId, routeResult.getRouteTrace())
+                .set(AgentRun::getTraceId, traceId)
                 .set(AgentRun::getAiCallLogId, routeResult.getAiCallLogId())
-                .set(AgentRun::getResultSource, routeResult.getResultSource())
+                .set(AgentRun::getResultSource, resultSource)
                 .set(AgentRun::getTokenInput, routeResult.getPromptTokens())
                 .set(AgentRun::getTokenOutput, routeResult.getCompletionTokens())
                 .set(AgentRun::getDurationMs, durationMs)
@@ -834,6 +1034,64 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .set(AgentRun::getErrorMessage, null)
                 .set(AgentRun::getUpdatedAt, finishedAt));
         return rows > 0;
+    }
+
+    private void recordAgentContextUsage(Long userId, AgentRun run, JobCoachAgentContext context) {
+        if (run == null || run.getId() == null || context == null) {
+            return;
+        }
+        List<AgentContextUsageReferenceRecordDTO> records = new ArrayList<>();
+        if (context.getRecentMemoryReferences() != null) {
+            for (MemoryReference reference : context.getRecentMemoryReferences()) {
+                if (reference == null || reference.getId() == null) {
+                    continue;
+                }
+                AgentContextUsageReferenceRecordDTO record = baseUsageReference(userId, run, USAGE_SOURCE_MEMORY,
+                        reference.getId(), "");
+                record.setUsageStrength(memoryUsageStrength(reference));
+                record.setConfidence(reference.getConfidence());
+                record.setSnapshotHash(reference.getSnapshotHash());
+                records.add(record);
+            }
+        }
+        if (context.getPersonalKnowledgeReferences() != null) {
+            for (PersonalKnowledgeReference reference : context.getPersonalKnowledgeReferences()) {
+                if (reference == null || reference.getSourceId() == null) {
+                    continue;
+                }
+                AgentContextUsageReferenceRecordDTO record = baseUsageReference(userId, run,
+                        firstText(reference.getSourceType(), USAGE_SOURCE_KNOWLEDGE_CHUNK), reference.getSourceId(),
+                        reference.getSourceVersion());
+                record.setUsageStrength("MEDIUM");
+                record.setConfidence(reference.getConfidence());
+                record.setSnapshotHash(reference.getSnapshotHash());
+                records.add(record);
+            }
+        }
+        if (!records.isEmpty()) {
+            usageReferenceService.recordAll(records);
+        }
+    }
+
+    private AgentContextUsageReferenceRecordDTO baseUsageReference(Long userId, AgentRun run, String sourceType,
+                                                                   Long sourceId, String sourceVersion) {
+        AgentContextUsageReferenceRecordDTO record = new AgentContextUsageReferenceRecordDTO();
+        record.setUserId(userId);
+        record.setSourceType(sourceType);
+        record.setSourceId(sourceId);
+        record.setSourceVersion(sourceVersion);
+        record.setConsumerType(USAGE_CONSUMER_AGENT_RUN);
+        record.setConsumerId(run.getId());
+        record.setTraceId(run.getTraceId());
+        record.setUsageScene(USAGE_SCENE_AGENT_CONTEXT);
+        return record;
+    }
+
+    private String memoryUsageStrength(MemoryReference reference) {
+        if (reference == null || reference.getConfidence() == null) {
+            return "MEDIUM";
+        }
+        return reference.getConfidence().compareTo(java.math.BigDecimal.valueOf(0.8)) >= 0 ? "STRONG" : "MEDIUM";
     }
 
     private String maskAgentRunDiagnosticText(String text) {
@@ -1046,6 +1304,18 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .in(AgentRun::getStatus, ACTIVE_PLAN_STATUSES)
                 .orderByDesc(AgentRun::getCreatedAt)
                 .last("limit 1"));
+    }
+
+    private AgentRun latestActiveRunForTodayTasks(Long userId, Long targetJobId, LocalDate planDate) {
+        LambdaQueryWrapper<AgentRun> query = new LambdaQueryWrapper<AgentRun>()
+                .eq(AgentRun::getUserId, userId)
+                .eq(AgentRun::getAgentType, AGENT_TYPE)
+                .eq(AgentRun::getPlanDate, planDate)
+                .eq(targetJobId != null, AgentRun::getTargetJobId, targetJobId)
+                .in(AgentRun::getStatus, ACTIVE_PLAN_STATUSES)
+                .orderByDesc(AgentRun::getCreatedAt)
+                .last("limit 1");
+        return agentRunMapper.selectOne(query);
     }
 
     private Long resolveTargetJobIdForScope(Long userId, Long requestedTargetJobId, LocalDate planDate) {
@@ -1415,6 +1685,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private AgentTaskVO enrichTaskReview(AgentTaskVO vo, AgentTask task) {
         if (task == null
                 || (!AgentTaskStatusEnum.DONE.name().equals(task.getStatus())
+                && !AgentTaskStatusEnum.DEFERRED.name().equals(task.getStatus())
                 && !AgentTaskStatusEnum.SKIPPED.name().equals(task.getStatus()))) {
             return vo;
         }
@@ -1444,21 +1715,35 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             review.setTargetJobId(task.getTargetJobId());
             review.setReviewDate(task.getDueDate() == null ? LocalDate.now() : task.getDueDate());
             review.setAgentRunId(task.getAgentRunId());
+            applyTaskReviewIdentity(review, task);
             applyTaskReviewPayload(review, task, note, REVIEW_SOURCE_RULE, null, null);
             tryEnhanceReviewWithAi(review, task, note);
             agentReviewMapper.insert(review);
             return review;
         }
+        applyTaskReviewIdentity(review, task);
         applyTaskReviewPayload(review, task, note, REVIEW_SOURCE_RULE, null, null);
         tryEnhanceReviewWithAi(review, task, note);
         agentReviewMapper.updateById(review);
         return review;
     }
 
+    private void applyTaskReviewIdentity(AgentReview review, AgentTask task) {
+        review.setReviewType(REVIEW_TYPE_TASK);
+        review.setSourceTaskId(task.getId());
+        review.setIdempotencyKey(taskReviewIdempotencyKey(task.getUserId(), task.getId()));
+        review.setTargetScopeKey(AgentAdaptivePlanHashUtils.targetScopeKey(task.getTargetJobId()));
+    }
+
+    private String taskReviewIdempotencyKey(Long userId, Long taskId) {
+        return REVIEW_TYPE_TASK + ":" + userId + ":" + taskId;
+    }
+
     private void applyTaskReviewPayload(AgentReview review, AgentTask task, String note,
                                         String generatedSource, String aiFailureReason, String promptVersion) {
         String status = task.getStatus();
         boolean done = AgentTaskStatusEnum.DONE.name().equals(status);
+        boolean deferred = AgentTaskStatusEnum.DEFERRED.name().equals(status);
         boolean skipped = AgentTaskStatusEnum.SKIPPED.name().equals(status);
         review.setDoneCount(done ? 1 : 0);
         review.setSkippedCount(skipped ? 1 : 0);
@@ -1466,7 +1751,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         review.setCompletionRate(done ? java.math.BigDecimal.valueOf(100) : java.math.BigDecimal.ZERO);
         review.setReadinessScore(done ? 70 : 45);
         review.setSummary(taskReviewSummary(task, note));
-        List<String> nextActions = taskReviewNextActions(task, skipped);
+        List<String> nextActions = taskReviewNextActions(task, skipped || deferred);
         review.setNextActionsJson(toJson(nextActions));
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -1476,7 +1761,10 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         payload.put("title", task.getTitle());
         payload.put("relatedBizType", task.getRelatedBizType());
         payload.put("relatedBizId", task.getRelatedBizId());
-        payload.put("note", firstText(note, task.getSkipReason()));
+        payload.put("note", firstText(note, deferred ? task.getDeferReason() : task.getSkipReason()));
+        payload.put("deferred", deferred);
+        payload.put("deferAt", task.getDeferredAt() == null ? null : task.getDeferredAt().toString());
+        payload.put("deferReason", task.getDeferReason());
         payload.put("nextActions", nextActions);
         payload.put("generatedSource", generatedSource);
         payload.put("aiFailureReason", aiFailureReason);
@@ -1617,22 +1905,22 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         if (task == null || task.getId() == null || task.getUserId() == null) {
             return null;
         }
-        LocalDate reviewDate = task.getDueDate() == null ? LocalDate.now() : task.getDueDate();
         List<AgentReview> reviews = agentReviewMapper.selectList(new LambdaQueryWrapper<AgentReview>()
                 .eq(AgentReview::getUserId, task.getUserId())
-                .eq(AgentReview::getReviewDate, reviewDate)
-                .eq(task.getAgentRunId() != null, AgentReview::getAgentRunId, task.getAgentRunId())
-                .eq(task.getAgentRunId() == null && task.getTargetJobId() != null, AgentReview::getTargetJobId, task.getTargetJobId())
+                .eq(AgentReview::getReviewType, REVIEW_TYPE_TASK)
+                .eq(AgentReview::getSourceTaskId, task.getId())
                 .eq(AgentReview::getDeleted, 0)
-                .like(AgentReview::getReviewJson, "\"taskId\":" + task.getId())
                 .last("limit 1"));
         return reviews == null || reviews.isEmpty() ? null : reviews.get(0);
     }
 
     private String taskReviewSummary(AgentTask task, String note) {
         String title = firstText(task.getTitle(), task.getTaskType(), "Agent task");
+        if (AgentTaskStatusEnum.DEFERRED.name().equals(task.getStatus())) {
+            return "Deferred task: " + title + ". " + firstText(note, task.getDeferReason(), "Review why this action was deferred before the next plan.");
+        }
         if (AgentTaskStatusEnum.SKIPPED.name().equals(task.getStatus())) {
-            return "Skipped task: " + title + ". " + firstText(note, task.getSkipReason(), "Review why this action was deferred before the next plan.");
+            return "Skipped task: " + title + ". " + firstText(note, task.getSkipReason(), "Review why this action was skipped before the next plan.");
         }
         return "Completed task: " + title + ". " + firstText(note, "Keep the evidence and move to the next job-search action.");
     }
@@ -1690,13 +1978,22 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private String reviewSourceLabel(String source) {
-        if (AiResultSourceEnum.LLM.name().equals(source)) {
+        AiResultSourceEnum normalized = AiResultSourceEnum.normalize(source);
+        if (normalized == AiResultSourceEnum.LLM) {
             return REVIEW_SOURCE_LLM_LABEL;
         }
-        if (AiResultSourceEnum.FALLBACK.name().equals(source)) {
+        if (normalized == AiResultSourceEnum.FALLBACK || normalized == AiResultSourceEnum.DEGRADED) {
             return REVIEW_SOURCE_FALLBACK_LABEL;
         }
-        return REVIEW_SOURCE_RULE_LABEL;
+        if (normalized == AiResultSourceEnum.RULE) {
+            return REVIEW_SOURCE_RULE_LABEL;
+        }
+        return normalized.getLabel();
+    }
+
+    private boolean isFallbackOrDegradedSource(String source) {
+        AiResultSourceEnum normalized = AiResultSourceEnum.normalize(source);
+        return normalized == AiResultSourceEnum.FALLBACK || normalized == AiResultSourceEnum.DEGRADED;
     }
 
     private String readRequestId(String inputSnapshotJson) {
@@ -1864,7 +2161,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 nextActions.isEmpty() ? "Continue the next daily-plan task." : nextActions.get(0));
         AgentCoachActionVO vo = toCoachActionVO(task, request, result, null);
         vo.setResultSource(readReviewSource(review.getReviewJson()));
-        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
+        vo.setFallback(isFallbackOrDegradedSource(vo.getResultSource()));
         vo.setAiCallLogId(review.getAiCallLogId());
         return vo;
     }
@@ -1919,7 +2216,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setTraceId(request.traceId());
         vo.setIdempotencyKey(request.idempotencyKey());
         vo.setResultSource(routeResult == null ? AiResultSourceEnum.FALLBACK.name() : routeResult.getResultSource());
-        vo.setFallback(AiResultSourceEnum.FALLBACK.name().equals(vo.getResultSource()));
+        vo.setFallback(isFallbackOrDegradedSource(vo.getResultSource()));
         vo.setAiCallLogId(routeResult == null ? null : routeResult.getAiCallLogId());
         vo.setLatencyMs(routeResult == null ? null : routeResult.getElapsedMs());
         vo.setEstimatedCost(routeResult == null ? null : routeResult.getEstimatedCost());
@@ -2086,6 +2383,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private record AiReviewResult(String summary, List<String> nextActions) {
+    }
+
+    private record ResolvedDailyPlan(DailyPlanResult planResult, List<CandidateTask> candidates, String resultSource) {
     }
 
     private CandidateTask matchCandidate(String candidateId, List<CandidateTask> candidates) {

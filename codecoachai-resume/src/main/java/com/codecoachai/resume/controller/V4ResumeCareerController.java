@@ -5,17 +5,22 @@ import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationEventReviewGenerateDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCreateDTO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventStructuredReviewVO;
 import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
 import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import com.codecoachai.resume.service.JobApplicationEventReviewService;
+import io.swagger.v3.oas.annotations.Operation;
+import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class V4ResumeCareerController {
 
     private final V4ResumeCareerService v4ResumeCareerService;
+    private final JobApplicationEventReviewService jobApplicationEventReviewService;
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
     @PostMapping("/resumes/{resumeId}/versions")
@@ -117,9 +123,12 @@ public class V4ResumeCareerController {
     }
 
     @GetMapping("/applications")
-    public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status) {
+    public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status,
+                                                           @RequestParam(required = false) Integer page,
+                                                           @RequestParam(required = false) Integer size,
+                                                           @RequestParam(required = false) String keyword) {
         SecurityAssert.requireLoginUserId();
-        return Result.success(v4ResumeCareerService.listApplications(status));
+        return Result.success(v4ResumeCareerService.listApplications(status, page, size, keyword));
     }
 
     @GetMapping("/applications/stats")
@@ -151,5 +160,19 @@ public class V4ResumeCareerController {
                                                                @RequestBody JobApplicationEventSaveDTO dto) {
         SecurityAssert.requireLoginUserId();
         return Result.success(v4ResumeCareerService.createApplicationEvent(id, dto));
+    }
+
+    @OperationLog(module = "resume", action = "GENERATE_APPLICATION_EVENT_AI_REVIEW",
+            description = "生成真实求职事件 AI 复盘", logResponse = false)
+    @Operation(summary = "生成真实求职事件 AI 复盘")
+    @PostMapping("/applications/{applicationId}/events/{eventId}/ai-review")
+    public Result<JobApplicationEventStructuredReviewVO> generateApplicationEventReview(
+            @PathVariable Long applicationId,
+            @PathVariable Long eventId,
+            @Valid @RequestBody(required = false) JobApplicationEventReviewGenerateDTO request) {
+        SecurityAssert.requireLoginUserId();
+        JobApplicationEventReviewGenerateDTO actual =
+                request == null ? new JobApplicationEventReviewGenerateDTO() : request;
+        return Result.success(jobApplicationEventReviewService.generate(applicationId, eventId, actual));
     }
 }

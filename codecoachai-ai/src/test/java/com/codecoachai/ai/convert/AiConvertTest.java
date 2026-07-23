@@ -161,6 +161,30 @@ class AiConvertTest {
         assertFalse(vo.getFallback());
     }
 
+    @Test
+    void logVoMarksRuleResultAsRule() {
+        AiCallLog log = sampleLog("AGENT_REVIEW");
+        log.setModelName("rule-engine");
+        log.setRouteTrace("rule");
+
+        AiCallLogVO vo = AiConvert.toLogVO(log);
+
+        assertEquals("RULE", vo.getResultSource());
+        assertEquals("规则结果", vo.getResultSourceLabel());
+        assertFalse(vo.getFallback());
+    }
+
+    @Test
+    void logVoDoesNotAssumeLlmWhenProvenanceIsMissing() {
+        AiCallLog log = sampleLog("STATUS_CHECK");
+
+        AiCallLogVO vo = AiConvert.toLogVO(log);
+
+        assertEquals("UNKNOWN", vo.getResultSource());
+        assertEquals("未知来源", vo.getResultSourceLabel());
+        assertFalse(vo.getFallback());
+    }
+
     private AiCallLog sampleLog(String scene) {
         AiCallLog log = new AiCallLog();
         log.setId(1L);

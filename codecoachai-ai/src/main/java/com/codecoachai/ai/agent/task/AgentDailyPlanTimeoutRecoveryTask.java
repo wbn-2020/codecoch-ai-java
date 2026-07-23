@@ -2,11 +2,13 @@ package com.codecoachai.ai.agent.task;
 
 import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
@@ -145,7 +147,8 @@ public class AgentDailyPlanTimeoutRecoveryTask {
         LocalDateTime startedAt = toLocalDateTime(row.get("startedAt"));
         String executionToken = trimToNull(row.get("executionToken"));
         if (runId == null || userId == null || startedAt == null || !StringUtils.hasText(executionToken)) {
-            log.warn("Skip agent daily plan timeout recovery row because required fields are missing: {}", row);
+            log.warn("Skip agent daily plan timeout recovery row because required fields are missing: {}",
+                    safeRowSummary(row));
             return;
         }
         LocalDateTime finishedAt = LocalDateTime.now();
@@ -226,5 +229,39 @@ public class AgentDailyPlanTimeoutRecoveryTask {
         }
         String text = String.valueOf(value).trim();
         return text.isEmpty() ? null : text;
+    }
+
+    private Map<String, Object> safeRowSummary(Map<String, Object> row) {
+        if (row == null) {
+            return Map.of("fieldCount", 0);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("fieldCount", row.size());
+        summary.put("fields", row.keySet());
+        summary.put("runId", toLong(row.get("runId")));
+        summary.put("userId", toLong(row.get("userId")));
+        summary.put("startedAtPresent", row.get("startedAt") != null);
+        addTextMeta(summary, "executionToken", row.get("executionToken"));
+        summary.put("rowHash", shortHash(row.keySet() + "|"
+                + toLong(row.get("runId")) + "|"
+                + toLong(row.get("userId")) + "|"
+                + textMeta(row.get("executionToken"))));
+        return summary;
+    }
+
+    private void addTextMeta(Map<String, Object> summary, String field, Object value) {
+        String text = trimToNull(value);
+        summary.put(field + "Length", text == null ? 0 : text.length());
+        summary.put(field + "Hash", shortHash(text));
+    }
+
+    private String textMeta(Object value) {
+        String text = trimToNull(value);
+        return text == null ? "empty" : text.length() + ":" + shortHash(text);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 }

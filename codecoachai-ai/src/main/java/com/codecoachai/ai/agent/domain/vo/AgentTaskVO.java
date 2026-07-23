@@ -31,6 +31,10 @@ public class AgentTaskVO {
     private String relatedSkillName;
     private String relatedBizType;
     private Long relatedBizId;
+    private Long planChangeItemId;
+    private String planOriginType;
+    private Long planOriginId;
+    private Boolean userConfirmed;
     private String actionUrl;
     private String actionType;
     private String sourceType;
@@ -48,9 +52,11 @@ public class AgentTaskVO {
     private String reviewNote;
     private String status;
     private String skipReason;
+    private String deferReason;
     private LocalDate dueDate;
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
+    private LocalDateTime deferredAt;
     private LocalDateTime skippedAt;
     private Integer sortOrder;
     private LocalDateTime createdAt;

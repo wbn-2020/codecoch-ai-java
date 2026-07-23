@@ -2,6 +2,7 @@ package com.codecoachai.task.consumer;
 
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.constant.MqTopics;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -70,13 +71,14 @@ public class ResumeOptimizeConsumer implements RocketMQListener<MqMessage<Resume
 
             ResumeOptimizeSubmitVO result = response.getData();
             if ("FAILED".equalsIgnoreCase(result.getOptimizeStatus())) {
-                String reason = StringUtils.hasText(result.getErrorMessage())
+                String userReason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
                         : "resume optimize failed";
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), reason);
-                notifyFailed(payload, reason);
+                String safeReason = safeFailureReason(result.getErrorMessage(), "resume optimize failed");
+                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                notifyFailed(payload, userReason);
                 log.warn("Resume optimize task failed optimizeRecordId={} reason={}",
-                        payload.getOptimizeRecordId(), reason);
+                        payload.getOptimizeRecordId(), safeReason);
                 return;
             }
             if (!"SUCCESS".equalsIgnoreCase(result.getOptimizeStatus())) {
@@ -89,17 +91,23 @@ public class ResumeOptimizeConsumer implements RocketMQListener<MqMessage<Resume
                     "简历建议已生成", "你的简历建议已生成，可以回到简历页面查看。");
             log.info("Resume optimize task completed optimizeRecordId={}", payload.getOptimizeRecordId());
         } catch (TerminalTaskFailureException ex) {
-            log.warn("Resume optimize task terminal failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "resume optimize terminal failure");
+            log.warn("Resume optimize task terminal failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (NonRetryableMqException ex) {
-            log.error("Resume optimize task is not retryable messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markDead(envelope, ex.getMessage());
-            notifyFailed(envelope.getPayload(), ex.getMessage());
+            String safeReason = safeFailureReason(ex.getMessage(), "resume optimize non-retryable failure");
+            log.error("Resume optimize task is not retryable messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markDead(envelope, safeReason);
+            notifyFailed(envelope.getPayload(), safeReason);
         } catch (Exception ex) {
-            log.error("Resume optimize task failed messageId={}", envelope.getMessageId(), ex);
-            asyncTaskService.markFailed(envelope.getMessageId(), ex.getMessage());
-            throw new RuntimeException(ex);
+            String safeReason = safeFailureReason(ex.getMessage(), "resume optimize retryable failure");
+            log.error("Resume optimize task failed messageId={} failureType={} reason={}",
+                    envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
+            asyncTaskService.markFailed(envelope.getMessageId(), safeReason);
+            throw new RuntimeException("resume optimize retryable failure");
         } finally {
             MDC.remove("traceId");
         }
@@ -118,6 +126,19 @@ public class ResumeOptimizeConsumer implements RocketMQListener<MqMessage<Resume
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private String safeFailureReason(String reason, String fallback) {
+        String base = StringUtils.hasText(fallback) ? fallback : "resume optimize failure";
+        if (!StringUtils.hasText(reason)) {
+            return base;
+        }
+        return base + "; reasonLength=" + reason.length() + "; reasonHash=" + shortHash(reason);
+    }
+
+    private String shortHash(String value) {
+        String hash = TextFingerprintUtils.sha256Hex(value);
+        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 
     private static class TerminalTaskFailureException extends RuntimeException {

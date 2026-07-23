@@ -374,6 +374,47 @@ CREATE TABLE IF NOT EXISTS resume_project (
   KEY idx_resume_project_resume (resume_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS file_info (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  biz_type VARCHAR(32) NOT NULL,
+  original_filename VARCHAR(255) NOT NULL,
+  stored_filename VARCHAR(255) NOT NULL,
+  file_ext VARCHAR(16) NOT NULL,
+  mime_type VARCHAR(128) DEFAULT NULL,
+  file_size BIGINT NOT NULL,
+  storage_path VARCHAR(500) NOT NULL,
+  storage_provider VARCHAR(32) NOT NULL DEFAULT 'LOCAL',
+  status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_file_info_user (user_id),
+  KEY idx_file_info_biz_type (biz_type),
+  KEY idx_file_info_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS resume_analysis_record (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  resume_id BIGINT DEFAULT NULL,
+  file_id BIGINT NOT NULL,
+  source_type VARCHAR(32) NOT NULL DEFAULT 'FILE_UPLOAD',
+  parse_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+  raw_text MEDIUMTEXT DEFAULT NULL,
+  structured_json MEDIUMTEXT DEFAULT NULL,
+  error_message VARCHAR(1000) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_resume_analysis_user (user_id),
+  KEY idx_resume_analysis_file (file_id),
+  KEY idx_resume_analysis_status (parse_status),
+  KEY idx_resume_analysis_resume (resume_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS resume_optimize_record (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
@@ -647,6 +688,41 @@ CREATE TABLE IF NOT EXISTS ai_call_log (
   KEY idx_ai_call_trace (trace_id),
   KEY idx_ai_call_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS notification (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL COMMENT 'recipient user id; 0 means broadcast',
+  type VARCHAR(32) NOT NULL COMMENT 'notification type',
+  title VARCHAR(255) NOT NULL,
+  content TEXT DEFAULT NULL,
+  biz_type VARCHAR(64) DEFAULT NULL COMMENT 'related business type',
+  biz_id VARCHAR(64) DEFAULT NULL COMMENT 'related business id',
+  reminder_date DATE DEFAULT NULL COMMENT 'business date used to deduplicate daily reminders',
+  read_status TINYINT NOT NULL DEFAULT 0 COMMENT '0 unread, 1 read',
+  read_at DATETIME DEFAULT NULL,
+  resolved_status TINYINT NOT NULL DEFAULT 0 COMMENT '0 unresolved, 1 resolved',
+  resolved_at DATETIME DEFAULT NULL,
+  resolved_reason VARCHAR(64) DEFAULT NULL,
+  send_status VARCHAR(32) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS / FAILED / UNKNOWN',
+  send_error VARCHAR(1000) DEFAULT NULL,
+  sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_reminder_date DATE GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN reminder_date ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_notification_daily_reminder (
+    user_id, type, biz_type, biz_id, live_reminder_date
+  ),
+  KEY idx_notification_user_read (user_id, read_status, created_at),
+  KEY idx_notification_created_at (created_at),
+  KEY idx_notification_send_status (send_status, created_at),
+  KEY idx_notification_user_type_biz_resolved (
+    user_id, type, biz_type, biz_id, resolved_status
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='in-app notification';
 
 CREATE TABLE IF NOT EXISTS interview_session (
     id BIGINT NOT NULL AUTO_INCREMENT,
@@ -1233,3 +1309,600 @@ ON DUPLICATE KEY UPDATE
   value_type = VALUES(value_type),
   description = VALUES(description),
   status = VALUES(status);
+
+-- V7 opportunity lifecycle baseline. Forward migrations V4_079-V4_085
+-- independently repair upgrade and partially applied schemas.
+
+CREATE TABLE IF NOT EXISTS career_campaign (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  name VARCHAR(160) NOT NULL,
+  goal VARCHAR(2000) DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  started_at DATETIME DEFAULT NULL,
+  completed_at DATETIME DEFAULT NULL,
+  archived_at DATETIME DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_active_user_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 AND status = 'ACTIVE' THEN user_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_campaign_live_active_user (live_active_user_id),
+  KEY idx_career_campaign_user_status (user_id, status, deleted, updated_at),
+  KEY idx_career_campaign_user_time (user_id, started_at, completed_at, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 user career campaign';
+
+CREATE TABLE IF NOT EXISTS career_campaign_event (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  campaign_id BIGINT NOT NULL,
+  event_type VARCHAR(48) NOT NULL,
+  summary VARCHAR(1000) DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  occurred_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_campaign_event_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_campaign_event_timeline (user_id, campaign_id, deleted, occurred_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 career campaign event';
+
+CREATE TABLE IF NOT EXISTS career_interview_process (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+  current_round_no INT NOT NULL DEFAULT 0,
+  outcome VARCHAR(24) DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_application_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN application_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_interview_process_live_application (live_application_id),
+  KEY idx_career_interview_process_user (user_id, application_id, deleted, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 real recruiting interview process';
+
+CREATE TABLE IF NOT EXISTS career_interview_round (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  process_id BIGINT NOT NULL,
+  round_no INT NOT NULL,
+  round_type VARCHAR(32) NOT NULL DEFAULT 'OTHER',
+  title VARCHAR(200) NOT NULL,
+  timezone VARCHAR(64) NOT NULL,
+  scheduled_starts_at_utc DATETIME DEFAULT NULL,
+  scheduled_ends_at_utc DATETIME DEFAULT NULL,
+  calendar_event_id BIGINT DEFAULT NULL,
+  preparation_source_hash VARCHAR(80) DEFAULT NULL,
+  rescheduled_from_round_id BIGINT DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PLANNED',
+  result_summary VARCHAR(2000) DEFAULT NULL,
+  next_step VARCHAR(1000) DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_round_no INT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN round_no ELSE NULL END
+  ) STORED,
+  live_calendar_event_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN calendar_event_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_interview_round_live_no (process_id, live_round_no),
+  UNIQUE KEY uk_career_interview_round_live_calendar (live_calendar_event_id),
+  KEY idx_career_interview_round_schedule (
+    process_id, deleted, status, scheduled_starts_at_utc, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 real recruiting interview round';
+
+CREATE TABLE IF NOT EXISTS career_interview_round_event (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  process_id BIGINT NOT NULL,
+  round_id BIGINT NOT NULL,
+  event_type VARCHAR(48) NOT NULL,
+  previous_status VARCHAR(24) DEFAULT NULL,
+  current_status VARCHAR(24) DEFAULT NULL,
+  payload_json TEXT DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  occurred_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_interview_round_event_idempotency (
+    user_id, idempotency_key_hash
+  ),
+  KEY idx_career_interview_round_event_timeline (
+    user_id, round_id, deleted, occurred_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 real interview round event';
+
+CREATE TABLE IF NOT EXISTS career_offer (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  current_version_id BIGINT DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  lock_version INT NOT NULL DEFAULT 1,
+  next_version_no INT NOT NULL DEFAULT 1,
+  decision_deadline DATETIME DEFAULT NULL,
+  finalized_at DATETIME DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_application_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN application_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_live_application (live_application_id),
+  UNIQUE KEY uk_career_offer_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_offer_deadline (user_id, deleted, status, decision_deadline, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 Offer aggregate';
+
+CREATE TABLE IF NOT EXISTS career_offer_version (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  offer_id BIGINT NOT NULL,
+  version_no INT NOT NULL,
+  campaign_id_at_creation BIGINT DEFAULT NULL,
+  currency VARCHAR(16) DEFAULT NULL,
+  annual_base_salary DECIMAL(19,4) DEFAULT NULL,
+  annual_bonus DECIMAL(19,4) DEFAULT NULL,
+  sign_on_bonus DECIMAL(19,4) DEFAULT NULL,
+  annual_equity_value DECIMAL(19,4) DEFAULT NULL,
+  other_annual_compensation DECIMAL(19,4) DEFAULT NULL,
+  paid_leave_days INT DEFAULT NULL,
+  location VARCHAR(160) DEFAULT NULL,
+  work_mode VARCHAR(32) DEFAULT NULL,
+  start_date DATE DEFAULT NULL,
+  decision_deadline DATETIME DEFAULT NULL,
+  terms_json JSON DEFAULT NULL,
+  note VARCHAR(2000) DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_version_no (offer_id, version_no),
+  UNIQUE KEY uk_career_offer_version_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_offer_version_offer (user_id, offer_id, deleted, version_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable Offer terms version';
+
+CREATE TABLE IF NOT EXISTS career_offer_event (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  offer_id BIGINT NOT NULL,
+  version_id BIGINT DEFAULT NULL,
+  event_type VARCHAR(48) NOT NULL,
+  previous_status VARCHAR(24) DEFAULT NULL,
+  current_status VARCHAR(24) DEFAULT NULL,
+  occurred_at DATETIME NOT NULL,
+  summary VARCHAR(1000) DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_event_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_offer_event_timeline (user_id, offer_id, deleted, occurred_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Offer status and terms event';
+
+CREATE TABLE IF NOT EXISTS career_offer_decision (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  campaign_id BIGINT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  current_snapshot_id BIGINT DEFAULT NULL,
+  selected_offer_id BIGINT DEFAULT NULL,
+  outcome VARCHAR(24) DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 1,
+  confirmed_at DATETIME DEFAULT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_campaign_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN campaign_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_decision_live_campaign (live_campaign_id),
+  UNIQUE KEY uk_career_offer_decision_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_offer_decision_user_status (user_id, status, deleted, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Offer decision aggregate';
+
+CREATE TABLE IF NOT EXISTS career_offer_decision_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  decision_id BIGINT NOT NULL,
+  campaign_id BIGINT NOT NULL,
+  snapshot_no INT NOT NULL,
+  comparison_currency VARCHAR(16) DEFAULT NULL,
+  comparable TINYINT NOT NULL DEFAULT 0,
+  weights_json JSON DEFAULT NULL,
+  rule_result_json JSON DEFAULT NULL,
+  missing_items_json JSON DEFAULT NULL,
+  limitations_json JSON DEFAULT NULL,
+  exchange_rates_json JSON DEFAULT NULL,
+  exchange_rate_source VARCHAR(255) DEFAULT NULL,
+  exchange_rate_date DATE DEFAULT NULL,
+  ai_explanation TEXT DEFAULT NULL,
+  ai_call_log_id BIGINT DEFAULT NULL,
+  fallback TINYINT NOT NULL DEFAULT 0,
+  fallback_reason VARCHAR(500) DEFAULT NULL,
+  input_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  generation_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_decision_snapshot_no (decision_id, snapshot_no),
+  UNIQUE KEY uk_career_offer_decision_snapshot_fingerprint (
+    decision_id, generation_fingerprint
+  ),
+  KEY idx_career_offer_decision_snapshot_user (
+    user_id, decision_id, deleted, snapshot_no
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable Offer comparison snapshot';
+
+CREATE TABLE IF NOT EXISTS career_offer_decision_item (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  snapshot_id BIGINT NOT NULL,
+  offer_id BIGINT NOT NULL,
+  offer_version_id BIGINT NOT NULL,
+  comparable_annual_value DECIMAL(19,4) DEFAULT NULL,
+  weighted_score DECIMAL(19,6) DEFAULT NULL,
+  rank_no INT DEFAULT NULL,
+  rule_result_json JSON DEFAULT NULL,
+  missing_items_json JSON DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_offer_decision_item_offer (snapshot_id, offer_id),
+  KEY idx_career_offer_decision_item_rank (snapshot_id, rank_no, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Offer comparison item';
+
+CREATE TABLE IF NOT EXISTS career_contact (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  display_name VARCHAR(160) NOT NULL,
+  role_type VARCHAR(32) NOT NULL DEFAULT 'OTHER',
+  channel_type VARCHAR(32) DEFAULT NULL,
+  masked_contact_hint VARCHAR(160) DEFAULT NULL,
+  relationship_summary VARCHAR(1000) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_career_contact_user (user_id, deleted, updated_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 privacy-bounded career contact';
+
+CREATE TABLE IF NOT EXISTS career_contact_application (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  contact_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  relationship_type VARCHAR(32) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_application_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN application_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_contact_application_live (contact_id, live_application_id),
+  KEY idx_career_contact_application_lookup (
+    user_id, application_id, deleted, contact_id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Career contact to application relation';
+
+CREATE TABLE IF NOT EXISTS career_activity (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  contact_id BIGINT DEFAULT NULL,
+  activity_type VARCHAR(48) NOT NULL,
+  channel_type VARCHAR(32) DEFAULT NULL,
+  subject VARCHAR(255) DEFAULT NULL,
+  summary VARCHAR(2000) NOT NULL,
+  occurred_at DATETIME DEFAULT NULL,
+  next_follow_up_at DATETIME DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_activity_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_activity_timeline (
+    user_id, application_id, deleted, occurred_at, id
+  ),
+  KEY idx_career_activity_follow_up (
+    user_id, deleted, status, next_follow_up_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Privacy-bounded career activity';
+
+CREATE TABLE IF NOT EXISTS career_activity_event (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  activity_id BIGINT NOT NULL,
+  event_type VARCHAR(48) NOT NULL,
+  event_time DATETIME NOT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_activity_event_idempotency (user_id, idempotency_key_hash),
+  KEY idx_career_activity_event_timeline (
+    user_id, activity_id, deleted, event_time, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Career activity event';
+
+CREATE TABLE IF NOT EXISTS career_interview_round_contact (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  interview_round_id BIGINT NOT NULL,
+  contact_id BIGINT NOT NULL,
+  relationship_type VARCHAR(32) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_contact_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN contact_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_round_contact_live (interview_round_id, live_contact_id),
+  KEY idx_career_round_contact_lookup (
+    user_id, contact_id, deleted, interview_round_id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Real interview round contact relation';
+
+CREATE TABLE IF NOT EXISTS career_research_source (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  source_type VARCHAR(40) NOT NULL,
+  title VARCHAR(200) NOT NULL,
+  official_url VARCHAR(1000) DEFAULT NULL,
+  external_ref VARCHAR(255) DEFAULT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+  current_version_id BIGINT DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_career_research_source_application (
+    user_id, application_id, status, deleted, updated_at
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 user-owned research source';
+
+CREATE TABLE IF NOT EXISTS career_research_source_version (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  source_id BIGINT NOT NULL,
+  version_token VARCHAR(64) NOT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  content_summary VARCHAR(2000) DEFAULT NULL,
+  content_text MEDIUMTEXT NOT NULL,
+  captured_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_research_source_version_token (source_id, version_token),
+  UNIQUE KEY uk_career_research_source_content_hash (source_id, content_hash),
+  KEY idx_career_research_source_version_user (
+    user_id, source_id, deleted, captured_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable research source content version';
+
+CREATE TABLE IF NOT EXISTS career_research_report (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  current_snapshot_id BIGINT DEFAULT NULL,
+  generation_status VARCHAR(24) NOT NULL DEFAULT 'IDLE',
+  generation_claim_token VARCHAR(64) DEFAULT NULL,
+  generation_claimed_at DATETIME DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_application_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN application_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_research_report_live_application (live_application_id),
+  KEY idx_career_research_report_generation (
+    user_id, generation_status, generation_claimed_at, deleted
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Research generation aggregate';
+
+CREATE TABLE IF NOT EXISTS career_research_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  report_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  source_set_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  generation_claim_token VARCHAR(64) NOT NULL,
+  snapshot_json MEDIUMTEXT NOT NULL,
+  confidence_level VARCHAR(16) NOT NULL DEFAULT 'LOW',
+  fallback VARCHAR(64) DEFAULT NULL,
+  ai_call_log_id BIGINT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_research_snapshot_claim (
+    report_id, generation_claim_token
+  ),
+  UNIQUE KEY uk_career_research_snapshot_source_set (
+    report_id, source_set_hash
+  ),
+  KEY idx_career_research_snapshot_application (
+    user_id, application_id, deleted, created_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable research snapshot';
+
+CREATE TABLE IF NOT EXISTS career_research_snapshot_source (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  snapshot_id BIGINT NOT NULL,
+  source_id BIGINT NOT NULL,
+  source_version_id BIGINT NOT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_research_snapshot_source (
+    snapshot_id, source_version_id
+  ),
+  KEY idx_career_research_snapshot_source_lookup (
+    user_id, source_id, source_version_id, deleted
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Research snapshot source audit';
+
+CREATE TABLE IF NOT EXISTS career_campaign_review (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  campaign_id BIGINT NOT NULL,
+  current_snapshot_id BIGINT DEFAULT NULL,
+  review_status VARCHAR(24) NOT NULL DEFAULT 'NOT_GENERATED',
+  snapshot_version INT NOT NULL DEFAULT 0,
+  generation_claim_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  generation_claim_token VARCHAR(64) DEFAULT NULL,
+  generation_claim_idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  generation_claim_payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  generation_claimed_at DATETIME DEFAULT NULL,
+  lock_version INT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_campaign_id BIGINT GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 THEN campaign_id ELSE NULL END
+  ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_campaign_review_live_campaign (live_campaign_id),
+  KEY idx_career_campaign_review_generation (
+    user_id, review_status, generation_claimed_at, deleted
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V7 campaign review aggregate';
+
+CREATE TABLE IF NOT EXISTS career_campaign_review_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  review_id BIGINT NOT NULL,
+  campaign_id BIGINT NOT NULL,
+  snapshot_version INT NOT NULL,
+  data_cutoff_at DATETIME NOT NULL,
+  input_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  generation_fingerprint CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  idempotency_payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  facts_json MEDIUMTEXT NOT NULL,
+  coverage_json TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  signals_json MEDIUMTEXT NOT NULL,
+  memory_candidates_json MEDIUMTEXT NOT NULL,
+  experiment_candidates_json MEDIUMTEXT NOT NULL,
+  next_cycle_actions_json MEDIUMTEXT NOT NULL,
+  summary VARCHAR(2000) DEFAULT NULL,
+  confidence_level VARCHAR(16) NOT NULL,
+  result_source VARCHAR(24) NOT NULL DEFAULT 'RULE',
+  fallback TINYINT NOT NULL DEFAULT 0,
+  fallback_reason VARCHAR(500) DEFAULT NULL,
+  ai_call_log_id BIGINT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_campaign_review_snapshot_version (
+    review_id, snapshot_version
+  ),
+  UNIQUE KEY uk_career_campaign_review_snapshot_input (review_id, input_hash),
+  UNIQUE KEY uk_career_campaign_review_snapshot_generation (
+    review_id, generation_fingerprint
+  ),
+  UNIQUE KEY uk_career_campaign_review_snapshot_idempotency (
+    user_id, idempotency_key_hash
+  ),
+  KEY idx_career_campaign_review_snapshot_cutoff (
+    user_id, campaign_id, deleted, data_cutoff_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Immutable campaign review snapshot';
+
+CREATE TABLE IF NOT EXISTS career_campaign_review_source (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  snapshot_id BIGINT NOT NULL,
+  source_type VARCHAR(64) NOT NULL,
+  source_id BIGINT DEFAULT NULL,
+  source_time DATETIME DEFAULT NULL,
+  source_updated_at DATETIME DEFAULT NULL,
+  inclusion_status VARCHAR(16) NOT NULL,
+  exclude_reason VARCHAR(64) DEFAULT NULL,
+  source_hash VARCHAR(80) DEFAULT NULL,
+  safe_summary VARCHAR(500) DEFAULT NULL,
+  metadata_json TEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  KEY idx_career_campaign_review_source_snapshot (
+    snapshot_id, inclusion_status, source_type, deleted
+  ),
+  KEY idx_career_campaign_review_source_lookup (
+    user_id, source_type, source_id, deleted, created_at
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Campaign review source audit';
+
+CREATE TABLE IF NOT EXISTS career_campaign_review_memory_candidate (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  review_id BIGINT NOT NULL,
+  snapshot_id BIGINT NOT NULL,
+  candidate_key VARCHAR(128) NOT NULL,
+  semantic_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  content VARCHAR(2000) NOT NULL,
+  source_ref VARCHAR(255) DEFAULT NULL,
+  confidence_level VARCHAR(16) NOT NULL DEFAULT 'LOW',
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  validity_days INT DEFAULT NULL,
+  expires_at DATETIME DEFAULT NULL,
+  confirmed_at DATETIME DEFAULT NULL,
+  decision_idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  live_semantic_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin
+    GENERATED ALWAYS AS (
+      CASE WHEN deleted = 0 THEN semantic_hash ELSE NULL END
+    ) STORED,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_campaign_review_memory_candidate_key (review_id, candidate_key),
+  UNIQUE KEY uk_campaign_review_memory_live_semantic (user_id, live_semantic_hash),
+  KEY idx_campaign_review_memory_status (
+    user_id, status, deleted, expires_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Governed campaign review memory candidate';

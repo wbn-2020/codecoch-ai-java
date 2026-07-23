@@ -4,6 +4,7 @@ import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.common.core.domain.Result;
 import java.util.List;
@@ -34,6 +35,11 @@ public interface ResumeAgentContextFeignClient {
 
     @GetMapping("/inner/project-evidence/users/{userId}/agent-context")
     Result<List<ProjectEvidenceAgentContextVO>> listProjectEvidenceAgentContext(@PathVariable("userId") Long userId);
+
+    @GetMapping("/inner/job-requirements/users/{userId}/targets/{targetJobId}/agent-context")
+    Result<RequirementReadinessAgentContextVO> requirementReadinessContext(
+            @PathVariable("userId") Long userId,
+            @PathVariable("targetJobId") Long targetJobId);
 
     @GetMapping("/inner/job-experiments/users/{userId}/agent-context")
     Result<List<JobExperimentAgentContextVO>> listJobExperimentAgentContext(

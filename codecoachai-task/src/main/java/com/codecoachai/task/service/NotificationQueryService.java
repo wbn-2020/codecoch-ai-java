@@ -148,7 +148,8 @@ public class NotificationQueryService {
                     candidate.getTitle(),
                     candidate.getContent(),
                     candidate.getBizType(),
-                    candidate.getBizId());
+                    candidate.getBizId(),
+                    candidate.getPlanDate());
         }
     }
 

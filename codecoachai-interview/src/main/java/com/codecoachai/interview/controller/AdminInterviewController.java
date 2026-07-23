@@ -50,7 +50,14 @@ public class AdminInterviewController {
     @GetMapping("/admin/interviews/{id}")
     public Result<Map<String, Object>> interviewDetail(@PathVariable Long id) {
         adminPermissionGuard.require(PERM_INTERVIEW_LIST);
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList("SELECT * FROM interview_session WHERE deleted = 0 AND id = ?", id);
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT id, user_id, resume_id, target_job_id, skill_profile_id, match_report_id,
+                       application_id, title, mode, target_position, difficulty, status, report_status,
+                       total_score, max_question_count, answered_question_count, start_time, end_time,
+                       created_at, updated_at
+                FROM interview_session
+                WHERE deleted = 0 AND id = ?
+                """, id);
         return Result.success(rows.isEmpty() ? null : rows.get(0));
     }
 
@@ -95,8 +102,9 @@ public class AdminInterviewController {
     public Result<Map<String, Object>> reportDetail(@PathVariable Long id) {
         adminPermissionGuard.require(PERM_INTERVIEW_REPORT);
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-                SELECT r.*, r.id AS reportId, r.session_id AS sessionId, r.session_id AS interviewId,
+                SELECT r.id, r.id AS reportId, r.session_id, r.session_id AS sessionId, r.session_id AS interviewId,
                        r.user_id AS userId, r.status AS reportStatus, r.total_score AS totalScore,
+                       r.summary,
                        r.generated_at AS generatedAt, r.created_at AS createdAt, r.updated_at AS updatedAt,
                        r.failure_reason AS failureReason,
                        s.target_job_id, s.target_job_id AS targetJobId,

@@ -23,6 +23,8 @@ import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchResultVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeSearchTraceVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeStatsVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
+import com.codecoachai.ai.agent.domain.vo.impact.AgentContextImpactPreviewVO;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.KnowledgeEvaluationService;
 import com.codecoachai.common.core.domain.PageResult;
@@ -67,6 +69,8 @@ public class AgentKnowledgeController {
     private static final String KNOWLEDGE_OP_DELETE_EVAL_CASE = "KNOWLEDGE_DELETE_EVAL_CASE";
 
     private final AgentV4OpsService agentV4OpsService;
+
+    private final AgentContextUsageReferenceService usageReferenceService;
 
     private final KnowledgeEvaluationService knowledgeEvaluationService;
 
@@ -142,6 +146,12 @@ public class AgentKnowledgeController {
         return Result.success(agentV4OpsService.getKnowledgeDocument(userId, id));
     }
 
+    @GetMapping("/documents/{id}/impact-preview")
+    public Result<AgentContextImpactPreviewVO> documentImpactPreview(@PathVariable Long id) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(usageReferenceService.previewKnowledgeDocument(userId, id));
+    }
+
     @GetMapping("/documents/{id}/versions")
     public Result<List<KnowledgeDocumentVersionVO>> documentVersions(@PathVariable Long id) {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -181,6 +191,12 @@ public class AgentKnowledgeController {
     public Result<KnowledgeChunkVO> chunk(@PathVariable Long chunkId) {
         Long userId = SecurityAssert.requireLoginUserId();
         return Result.success(agentV4OpsService.getKnowledgeChunk(userId, chunkId));
+    }
+
+    @GetMapping("/chunks/{chunkId}/impact-preview")
+    public Result<AgentContextImpactPreviewVO> chunkImpactPreview(@PathVariable Long chunkId) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        return Result.success(usageReferenceService.previewKnowledgeChunk(userId, chunkId));
     }
 
     @GetMapping("/chunks/{chunkId}/similar")

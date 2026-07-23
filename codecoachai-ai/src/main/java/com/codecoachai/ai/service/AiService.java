@@ -3,7 +3,11 @@ package com.codecoachai.ai.service;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
+import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
+import com.codecoachai.ai.domain.dto.GenerateAgentWeeklyReportDTO;
+import com.codecoachai.ai.domain.dto.GenerateApplicationEventReviewDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
+import com.codecoachai.ai.domain.dto.GenerateInterviewPreparationDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionRecommendationDTO;
@@ -17,7 +21,11 @@ import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
+import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
+import com.codecoachai.ai.domain.vo.GenerateAgentWeeklyReportVO;
+import com.codecoachai.ai.domain.vo.GenerateApplicationEventReviewVO;
 import com.codecoachai.ai.domain.vo.GenerateFollowUpVO;
+import com.codecoachai.ai.domain.vo.GenerateInterviewPreparationVO;
 import com.codecoachai.ai.domain.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.ai.domain.vo.GenerateLearningPlanVO;
 import com.codecoachai.ai.domain.vo.GenerateQuestionRecommendationVO;
@@ -59,4 +67,12 @@ public interface AiService {
     AnalyzeResumeJobMatchVO analyzeResumeJobMatch(AnalyzeResumeJobMatchDTO dto);
 
     AnalyzeSkillGapVO analyzeSkillGap(AnalyzeSkillGapDTO dto);
+
+    GenerateAgentReviewVO generateAgentReview(GenerateAgentReviewDTO dto);
+
+    GenerateApplicationEventReviewVO generateApplicationEventReview(GenerateApplicationEventReviewDTO dto);
+
+    GenerateInterviewPreparationVO generateInterviewPreparation(GenerateInterviewPreparationDTO dto);
+
+    GenerateAgentWeeklyReportVO generateWeeklyCareerReport(GenerateAgentWeeklyReportDTO dto);
 }

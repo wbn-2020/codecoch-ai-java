@@ -10,6 +10,7 @@ import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.mq.payload.ResumeOptimizePayload;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.resume.config.ResumeTextExtractProperties;
 import com.codecoachai.resume.convert.ResumeConvert;
 import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ParsedResumeStructuredDTO;
@@ -36,7 +37,9 @@ import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
+import com.codecoachai.resume.domain.vo.ResumeSearchReindexVO;
 import com.codecoachai.resume.domain.vo.ResumeUploadVO;
+import com.codecoachai.resume.export.ResumeUploadAdmissionGuard;
 import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
@@ -49,20 +52,26 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeMqDispatcher;
 import com.codecoachai.resume.service.ResumeService;
+import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -86,7 +95,6 @@ public class ResumeServiceImpl implements ResumeService {
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
     private static final Charset GB18030 = Charset.forName("GB18030");
     private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "doc", "docx", "md", "txt");
-    private static final long MAX_UPLOAD_SIZE_BYTES = 10L * 1024L * 1024L;
     private static final Set<String> PATCHABLE_RESUME_FIELDS = Set.of(
             "title", "resumeName", "realName", "email", "phone", "targetPosition",
             "skillStack", "workExperience", "educationExperience", "summary");
@@ -102,18 +110,26 @@ public class ResumeServiceImpl implements ResumeService {
     private final TransactionTemplate transactionTemplate;
     private final Optional<ResumeMqDispatcher> resumeMqDispatcher;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
+    private final ResumeTextExtractProperties textExtractProperties;
+    private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
+    private final ResumeUploadAdmissionGuard uploadAdmissionGuard;
 
     @Override
     public List<ResumeListVO> listResumes() {
+        return listResumes(null, null, null);
+    }
+
+    @Override
+    public List<ResumeListVO> listResumes(Integer page, Integer size, String keyword) {
         Long userId = requireCurrentUserId();
-        return resumeMapper.selectList(new LambdaQueryWrapper<Resume>()
-                        .eq(Resume::getUserId, userId)
-                        .eq(Resume::getDeleted, CommonConstants.NO)
-                        .orderByDesc(Resume::getIsDefault)
-                        .orderByDesc(Resume::getUpdatedAt))
-                .stream()
-                .map(resume -> ResumeConvert.toListVO(resume, projectCount(resume.getId())))
-                .toList();
+        Integer limit = null;
+        Long offset = null;
+        if (page != null || size != null) {
+            int effectivePage = page == null || page < 1 ? 1 : page;
+            limit = size == null || size < 1 ? 20 : Math.min(size, 100);
+            offset = (long) (effectivePage - 1) * limit;
+        }
+        return resumeMapper.selectResumeList(userId, likePattern(keyword), offset, limit);
     }
 
     @Override
@@ -127,6 +143,9 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setIsDefault(count == null || count == 0 ? CommonConstants.YES : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
+        if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
+            selectDefaultResumeForUser(userId, resume.getId());
+        }
         syncResumeSearchAfterCommit(resume.getId(), userId, true);
         return toDetailVO(resume);
     }
@@ -136,10 +155,23 @@ public class ResumeServiceImpl implements ResumeService {
     public ResumeUploadVO uploadResume(MultipartFile file) {
         Long userId = requireCurrentUserId();
         validateUploadFile(file);
-        InnerFileUploadVO uploadedFile = FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId));
+        long size = file.getSize();
+        long startedAt = System.nanoTime();
+        InnerFileUploadVO uploadedFile;
+        try {
+            uploadedFile = uploadAdmissionGuard.execute(size,
+                    () -> FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId)));
+            log.debug("Resume upload completed userId={} fileSize={} durationMs={}",
+                    userId, size, elapsedMillis(startedAt));
+        } catch (RuntimeException ex) {
+            logUploadFailure("Resume upload failed", userId, size, startedAt, ex);
+            throw ex;
+        }
         if (uploadedFile == null || uploadedFile.getFileId() == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历文件上传失败，请稍后重试");
         }
+
+        registerUploadedFileRollbackCleanup(uploadedFile, userId);
 
         ResumeAnalysisRecord record = new ResumeAnalysisRecord();
         record.setUserId(userId);
@@ -147,8 +179,9 @@ public class ResumeServiceImpl implements ResumeService {
         record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
         record.setParseStatus(ResumeParseStatus.PENDING.getCode());
         analysisRecordMapper.insert(record);
-        MqDispatchReceipt receipt = dispatchResumeParse(record, uploadedFile);
-        boolean dispatched = receipt != null;
+        dispatchResumeParseAfterCommit(record, uploadedFile);
+        MqDispatchReceipt receipt = null;
+        boolean dispatched = true;
 
         ResumeUploadVO vo = new ResumeUploadVO();
         vo.setFileId(uploadedFile.getFileId());
@@ -185,6 +218,85 @@ public class ResumeServiceImpl implements ResumeService {
             analysisRecordMapper.updateById(record);
         }
         return receipt;
+    }
+
+    private void dispatchResumeParseAfterCommit(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+        Runnable action = () -> dispatchResumeParseSafely(record, uploadedFile);
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
+    }
+
+    private void dispatchResumeParseSafely(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
+        try {
+            MqDispatchReceipt receipt = dispatchResumeParse(record, uploadedFile);
+            if (receipt == null) {
+                log.warn("Resume parse dispatch deferred recordId={} fileId={} reason=no_dispatch_receipt",
+                        record == null ? null : record.getId(),
+                        uploadedFile == null ? null : uploadedFile.getFileId());
+            }
+        } catch (RuntimeException ex) {
+            if (record != null && record.getId() != null) {
+                record.setErrorMessage("Resume parse dispatch failed after commit; waiting for compensation retry");
+                analysisRecordMapper.updateById(record);
+            }
+            log.error("Resume parse after-commit dispatch failed recordId={} fileId={} failureType={}",
+                    record == null ? null : record.getId(),
+                    uploadedFile == null ? null : uploadedFile.getFileId(),
+                    ex.getClass().getSimpleName());
+        }
+    }
+
+    private void registerUploadedFileRollbackCleanup(InnerFileUploadVO uploadedFile, Long userId) {
+        if (uploadedFile == null || uploadedFile.getFileId() == null || userId == null
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    deleteUploadedFileQuietly(uploadedFile, userId, "resume_upload_tx_rollback");
+                }
+            }
+        });
+    }
+
+    private void deleteUploadedFileQuietly(InnerFileUploadVO uploadedFile, Long userId, String reason) {
+        if (uploadedFile == null || uploadedFile.getFileId() == null || userId == null) {
+            return;
+        }
+        try {
+            fileFeignClient.delete(uploadedFile.getFileId(), userId, BIZ_TYPE_RESUME);
+            log.warn("Resume uploaded file cleaned after rollback fileId={} userId={} reason={}",
+                    uploadedFile.getFileId(), userId, reason);
+        } catch (Exception ex) {
+            log.error("Resume uploaded file cleanup failed fileId={} userId={} reason={} failureType={}",
+                    uploadedFile.getFileId(), userId, reason, ex.getClass().getSimpleName());
+        }
+    }
+
+    private void logUploadFailure(String event, Long userId, long size, long startedAt, RuntimeException ex) {
+        long durationMs = elapsedMillis(startedAt);
+        if (ex instanceof BusinessException businessException
+                && Objects.equals(businessException.getCode(), ErrorCode.RESUME_UPLOAD_BUSY.getCode())) {
+            log.debug("{} userId={} fileSize={} durationMs={} exceptionType={}",
+                    event, userId, size, durationMs, ex.getClass().getSimpleName());
+            return;
+        }
+        log.warn("{} userId={} fileSize={} durationMs={} exceptionType={}",
+                event, userId, size, durationMs, ex.getClass().getSimpleName());
+    }
+
+    private long elapsedMillis(long startedAt) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private MqDispatchReceipt dispatchResumeOptimize(ResumeOptimizeRecord record) {
@@ -295,6 +407,9 @@ public class ResumeServiceImpl implements ResumeService {
         ParsedResumeStructuredDTO structuredResume = parseStructuredResume(record.getStructuredJson());
         Resume resume = buildResumeFromStructured(record, structuredResume);
         resumeMapper.insert(resume);
+        if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
+            selectDefaultResumeForUser(userId, resume.getId());
+        }
         insertProjects(resume.getId(), structuredResume.getProjectExperiences());
 
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
@@ -426,10 +541,11 @@ public class ResumeServiceImpl implements ResumeService {
 
     @Override
     public ResumeDetailVO getResume(Long id) {
-        return toDetailVO(getOwnedResume(id));
+        return toDetailVO(getOwnedResumeForRead(id));
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeDetailVO updateResume(Long id, ResumeSaveDTO dto) {
         Resume resume = getOwnedResume(id);
         applyResume(resume, dto);
@@ -442,6 +558,7 @@ public class ResumeServiceImpl implements ResumeService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteResume(Long id) {
         Resume resume = getOwnedResume(id);
+        lockOwnedResume(resume);
         projectMapper.delete(new LambdaQueryWrapper<ResumeProject>().eq(ResumeProject::getResumeId, id));
         resumeMapper.deleteById(resume.getId());
         syncResumeSearchAfterCommit(resume.getId(), resume.getUserId(), false);
@@ -452,19 +569,34 @@ public class ResumeServiceImpl implements ResumeService {
     public ResumeDetailVO setDefault(Long id) {
         Resume resume = getOwnedResume(id);
         Long userId = requireCurrentUserId();
-        List<Resume> resumes = resumeMapper.selectList(new LambdaQueryWrapper<Resume>().eq(Resume::getUserId, userId));
-        for (Resume item : resumes) {
-            item.setIsDefault(item.getId().equals(id) ? CommonConstants.YES : CommonConstants.NO);
-            resumeMapper.updateById(item);
+        return toDetailVO(selectDefaultResumeForUser(userId, resume.getId()));
+    }
+
+    private Resume selectDefaultResumeForUser(Long userId, Long resumeId) {
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .set(Resume::getIsDefault, CommonConstants.NO)
+                .eq(Resume::getUserId, userId)
+                .eq(Resume::getDeleted, CommonConstants.NO)
+                .eq(Resume::getIsDefault, CommonConstants.YES)
+                .ne(Resume::getId, resumeId));
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .set(Resume::getIsDefault, CommonConstants.YES)
+                .eq(Resume::getId, resumeId)
+                .eq(Resume::getUserId, userId)
+                .eq(Resume::getDeleted, CommonConstants.NO));
+        Resume latest = getOwnedResume(resumeId, userId);
+        if (!Objects.equals(latest.getIsDefault(), CommonConstants.YES)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "默认简历设置失败，请稍后重试");
         }
-        resume.setIsDefault(CommonConstants.YES);
-        return toDetailVO(resume);
+        return latest;
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeProjectVO createProject(Long resumeId, ResumeProjectSaveDTO dto) {
         Long userId = requireCurrentUserId();
-        getOwnedResume(resumeId, userId);
+        Resume resume = getOwnedResume(resumeId, userId);
+        lockOwnedResume(resume);
         ResumeProject project = new ResumeProject();
         project.setResumeId(resumeId);
         applyProject(project, dto);
@@ -474,9 +606,11 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeProjectVO updateProject(Long resumeId, Long projectId, ResumeProjectSaveDTO dto) {
         Long userId = requireCurrentUserId();
-        getOwnedResume(resumeId, userId);
+        Resume resume = getOwnedResume(resumeId, userId);
+        lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
@@ -485,6 +619,7 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public ResumeProjectVO updateProject(Long projectId, ResumeProjectSaveDTO dto) {
         ResumeProject project = getOwnedProject(projectId);
         applyProject(project, dto);
@@ -494,18 +629,86 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteProject(Long resumeId, Long projectId) {
-        getOwnedResume(resumeId);
+        Resume resume = getOwnedResume(resumeId);
+        lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         projectMapper.deleteById(project.getId());
         syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deleteProject(Long projectId) {
         ResumeProject project = getOwnedProject(projectId);
         projectMapper.deleteById(project.getId());
         syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
+    }
+
+    @Override
+    public Map<String, Object> getSearchDocument(Long id) {
+        Resume resume = resumeMapper.selectById(id);
+        if (resume == null || Objects.equals(resume.getDeleted(), CommonConstants.YES)) {
+            return null;
+        }
+        List<ResumeProjectVO> resumeProjects = projects(id);
+        List<String> projectHighlights = resumeProjects.stream()
+                .map(project -> firstText(
+                        project.getHighlights(),
+                        project.getDescription(),
+                        project.getResponsibility(),
+                        project.getProjectName()))
+                .filter(StringUtils::hasText)
+                .toList();
+        List<String> skills = splitSearchValues(resume.getSkillStack());
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("docId", String.valueOf(resume.getId()));
+        doc.put("userId", String.valueOf(resume.getUserId()));
+        doc.put("title", resume.getTitle());
+        doc.put("name", firstText(resume.getTitle(), resume.getRealName()));
+        doc.put("summary", resume.getSummary());
+        doc.put("skills", skills);
+        doc.put("targetPosition", resume.getTargetPosition());
+        doc.put("education", resume.getEducationExperience());
+        doc.put("workExperience", resume.getWorkExperience());
+        doc.put("projectHighlights", projectHighlights);
+        doc.put("status", resume.getStatus() == null ? null : String.valueOf(resume.getStatus()));
+        doc.put("createdAt", toEpochMillis(resume.getCreatedAt()));
+        doc.put("updatedAt", toEpochMillis(resume.getUpdatedAt()));
+        doc.put("syncedAt", System.currentTimeMillis());
+        doc.put("content", String.join("\n", nonBlankValues(
+                resume.getTitle(),
+                resume.getRealName(),
+                resume.getTargetPosition(),
+                resume.getSkillStack(),
+                resume.getWorkExperience(),
+                resume.getEducationExperience(),
+                resume.getSummary(),
+                String.join("\n", projectHighlights))));
+        return doc;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeSearchReindexVO reindexSearchDocuments(Long afterId, Integer batchSize) {
+        long cursor = afterId == null || afterId < 0 ? 0L : afterId;
+        int effectiveBatchSize = batchSize == null || batchSize < 1 ? 100 : Math.min(batchSize, 500);
+        List<Resume> rows = resumeMapper.selectActiveAfter(cursor, effectiveBatchSize + 1);
+        List<Resume> batch = rows == null
+                ? List.of()
+                : rows.stream().limit(effectiveBatchSize).toList();
+        for (Resume resume : batch) {
+            resumeSearchSyncOutboxService.enqueue(
+                    resume.getId(), resume.getUserId(), ResumeSearchSyncOutboxService.OP_UPSERT);
+        }
+        ResumeSearchReindexVO vo = new ResumeSearchReindexVO();
+        vo.setAfterId(cursor);
+        vo.setBatchSize(effectiveBatchSize);
+        vo.setQueued(batch.size());
+        vo.setHasMore(rows != null && rows.size() > effectiveBatchSize);
+        vo.setNextAfterId(batch.isEmpty() ? cursor : batch.get(batch.size() - 1).getId());
+        return vo;
     }
 
     @Override
@@ -694,44 +897,10 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private void syncResumeSearchAfterCommit(Long resumeId, Long userId, boolean upsert) {
-        String op = upsert ? "UPSERT" : "DELETE";
-        Runnable action = () -> {
-            if (upsert) {
-                resumeMqDispatcher.ifPresent(dispatcher -> {
-                    if (!dispatcher.dispatchResumeSearchUpsert(resumeId, userId)) {
-                        log.warn("Resume after-commit sync returned false syncType=resume_search_sync resumeId={} op={}",
-                                resumeId, op);
-                    }
-                });
-            } else {
-                resumeMqDispatcher.ifPresent(dispatcher -> {
-                    if (!dispatcher.dispatchResumeSearchDelete(resumeId, userId)) {
-                        log.warn("Resume after-commit sync returned false syncType=resume_search_sync resumeId={} op={}",
-                                resumeId, op);
-                    }
-                });
-            }
-        };
-        Runnable safeAction = () -> runAfterCommitSafely("resume_search_sync", resumeId, op, action);
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            safeAction.run();
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                safeAction.run();
-            }
-        });
-    }
-
-    private void runAfterCommitSafely(String syncType, Long resumeId, String op, Runnable action) {
-        try {
-            action.run();
-        } catch (Exception ex) {
-            log.error("Resume after-commit sync failed syncType={} resumeId={} op={} reason={}",
-                    syncType, resumeId, op, ex.getMessage(), ex);
-        }
+        resumeSearchSyncOutboxService.enqueue(
+                resumeId,
+                userId,
+                upsert ? ResumeSearchSyncOutboxService.OP_UPSERT : ResumeSearchSyncOutboxService.OP_DELETE);
     }
 
     private ParsedResumeStructuredDTO parseStructuredResume(String structuredJson) {
@@ -1574,8 +1743,9 @@ public class ResumeServiceImpl implements ResumeService {
         if (!ALLOWED_EXTENSIONS.contains(ext)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件仅支持 pdf/doc/docx/md/txt");
         }
-        if (file.getSize() > MAX_UPLOAD_SIZE_BYTES) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历文件大小不能超过 10MB");
+        if (file.getSize() > textExtractProperties.maxSourceFileBytes()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Resume file size cannot exceed " + textExtractProperties.effectiveMaxSourceFileSizeMb() + "MB");
         }
     }
 
@@ -1602,14 +1772,46 @@ public class ResumeServiceImpl implements ResumeService {
         return getOwnedResume(id, requireCurrentUserId());
     }
 
+    private Resume getOwnedResumeForRead(Long id) {
+        if (id == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume id is required");
+        }
+        Long userId = requireCurrentUserId();
+        Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
+                .eq(Resume::getId, id)
+                .eq(Resume::getDeleted, CommonConstants.NO)
+                .last("limit 1"));
+        if (resume == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "简历不存在或已不可用");
+        }
+        if (!Objects.equals(resume.getUserId(), userId)) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "无权访问该简历");
+        }
+        return resume;
+    }
+
     private Resume getOwnedResume(Long id, Long userId) {
+        return requireOwnedResume(id, userId, ErrorCode.PARAM_ERROR);
+    }
+
+    private void lockOwnedResume(Resume resume) {
+        Long lockedId = resumeMapper.lockOwnedResume(resume.getId(), resume.getUserId());
+        if (!Objects.equals(resume.getId(), lockedId)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
+        }
+    }
+
+    private Resume requireOwnedResume(Long id, Long userId, ErrorCode missingErrorCode) {
+        if (id == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume id is required");
+        }
         Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
                 .eq(Resume::getId, id)
                 .eq(Resume::getUserId, userId)
                 .eq(Resume::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历不存在或已不可用");
+            throw new BusinessException(missingErrorCode, "简历不存在或已不可用");
         }
         return resume;
     }
@@ -1640,7 +1842,8 @@ public class ResumeServiceImpl implements ResumeService {
         if (project == null || CommonConstants.YES.equals(project.getDeleted())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历项目经历不存在或已不可用");
         }
-        getOwnedResume(project.getResumeId());
+        Resume resume = getOwnedResume(project.getResumeId());
+        lockOwnedResume(resume);
         return project;
     }
 
@@ -1673,6 +1876,42 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return userId;
+    }
+
+    private String likePattern(String keyword) {
+        if (!StringUtils.hasText(keyword)) {
+            return null;
+        }
+        String escaped = keyword.trim()
+                .replace("!", "!!")
+                .replace("%", "!%")
+                .replace("_", "!_");
+        return "%" + escaped + "%";
+    }
+
+    private List<String> splitSearchValues(String value) {
+        if (!StringUtils.hasText(value)) {
+            return List.of();
+        }
+        return Arrays.stream(value.split("[,，;；|\\r\\n]+"))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(100)
+                .toList();
+    }
+
+    private List<String> nonBlankValues(String... values) {
+        if (values == null) {
+            return List.of();
+        }
+        return Arrays.stream(values)
+                .filter(StringUtils::hasText)
+                .toList();
+    }
+
+    private Long toEpochMillis(LocalDateTime value) {
+        return value == null ? null : value.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
     }
 
     private String firstText(String... values) {

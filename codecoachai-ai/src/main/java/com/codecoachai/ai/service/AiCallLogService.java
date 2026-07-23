@@ -118,6 +118,8 @@ public class AiCallLogService {
             aiCallLogMapper.insert(logEntry);
             if (result != null) {
                 result.setAiCallLogId(logEntry.getId());
+                result.setTraceId(logEntry.getTraceId());
+                result.setRequestId(logEntry.getRequestId());
             }
         } catch (Exception ex) {
             log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);

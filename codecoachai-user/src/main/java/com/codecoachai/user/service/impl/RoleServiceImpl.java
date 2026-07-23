@@ -178,15 +178,44 @@ public class RoleServiceImpl implements RoleService {
         List<Long> normalizedRoleIds = normalizeRoleIds(roleIds);
         List<SysRole> assignableRoles = loadEnabledRolesOrThrow(normalizedRoleIds);
         ensureNotRemovingLastAdmin(userId, assignableRoles);
-        sysUserRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
-                .eq(SysUserRole::getUserId, userId));
+        deactivateUserRolesNotIn(userId, normalizedRoleIds);
         for (Long roleId : normalizedRoleIds) {
-            SysUserRole ur = new SysUserRole();
-            ur.setUserId(userId);
-            ur.setRoleId(roleId);
-            sysUserRoleMapper.insert(ur);
+            upsertUserRole(userId, roleId);
         }
         adminPermissionCache.invalidateUserPermissions(userId);
+    }
+
+    private void deactivateUserRolesNotIn(Long userId, List<Long> roleIds) {
+        if (CollectionUtils.isEmpty(roleIds)) {
+            jdbcTemplate.update("""
+                    UPDATE sys_user_role
+                    SET deleted = 1, updated_at = NOW()
+                    WHERE user_id = ?
+                      AND deleted = 0
+                    """, userId);
+            return;
+        }
+        String placeholders = String.join(", ", Collections.nCopies(roleIds.size(), "?"));
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        args.addAll(roleIds);
+        jdbcTemplate.update("""
+                UPDATE sys_user_role
+                SET deleted = 1, updated_at = NOW()
+                WHERE user_id = ?
+                  AND deleted = 0
+                  AND role_id NOT IN (%s)
+                """.formatted(placeholders), args.toArray());
+    }
+
+    private void upsertUserRole(Long userId, Long roleId) {
+        jdbcTemplate.update("""
+                INSERT INTO sys_user_role (user_id, role_id, deleted)
+                VALUES (?, ?, 0)
+                ON DUPLICATE KEY UPDATE
+                  deleted = 0,
+                  updated_at = NOW()
+                """, userId, roleId);
     }
 
     private List<Long> normalizeRoleIds(List<Long> roleIds) {

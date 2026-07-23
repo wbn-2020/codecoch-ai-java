@@ -9,5 +9,7 @@ public class InnerResumeJobMatchReportVO {
     private Long userId;
     private Long resumeId;
     private Long targetJobId;
+    private Long resumeVersionId;
+    private Long jdAnalysisId;
     private String status;
 }

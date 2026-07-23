@@ -41,14 +41,20 @@ public final class AgentConvert {
         vo.setRelatedSkillName(task.getRelatedSkillName());
         vo.setRelatedBizType(task.getRelatedBizType());
         vo.setRelatedBizId(task.getRelatedBizId());
+        vo.setPlanChangeItemId(task.getPlanChangeItemId());
+        vo.setPlanOriginType(task.getPlanOriginType());
+        vo.setPlanOriginId(task.getPlanOriginId());
+        vo.setUserConfirmed(task.getUserConfirmed());
         vo.setActionUrl(task.getActionUrl());
         vo.setActionType(taskActionType(task));
         applyTaskTrustEvidence(vo, task);
         vo.setStatus(task.getStatus());
         vo.setSkipReason(task.getSkipReason());
+        vo.setDeferReason(task.getDeferReason());
         vo.setDueDate(task.getDueDate());
         vo.setStartedAt(task.getStartedAt());
         vo.setCompletedAt(task.getCompletedAt());
+        vo.setDeferredAt(task.getDeferredAt());
         vo.setSkippedAt(task.getSkippedAt());
         vo.setSortOrder(task.getSortOrder());
         vo.setCreatedAt(task.getCreatedAt());
@@ -97,7 +103,8 @@ public final class AgentConvert {
         boolean hasReason = StringUtils.hasText(task.getReason());
         boolean hasBusinessEvidence = StringUtils.hasText(task.getRelatedBizType()) || task.getRelatedBizId() != null;
         boolean hasAction = StringUtils.hasText(task.getActionUrl());
-        boolean degradedStatus = "SKIPPED".equalsIgnoreCase(task.getStatus()) || "EXPIRED".equalsIgnoreCase(task.getStatus());
+        boolean degradedStatus = "DEFERRED".equalsIgnoreCase(task.getStatus())
+                || "SKIPPED".equalsIgnoreCase(task.getStatus()) || "EXPIRED".equalsIgnoreCase(task.getStatus());
 
         String trustStatus;
         if (degradedStatus || (!hasRun && !hasReason && !hasBusinessEvidence && !hasAction)) {
@@ -319,21 +326,18 @@ public final class AgentConvert {
     }
 
     public static boolean isFallbackAiResultSource(String source) {
-        return AiResultSourceEnum.FALLBACK.name().equals(source);
+        AiResultSourceEnum resultSource = AiResultSourceEnum.normalize(source);
+        return resultSource == AiResultSourceEnum.FALLBACK || resultSource == AiResultSourceEnum.DEGRADED;
     }
 
     public static boolean isMockAiResultSource(String source) {
-        return AiResultSourceEnum.MOCK.name().equals(source);
+        return AiResultSourceEnum.normalize(source) == AiResultSourceEnum.MOCK;
     }
 
     private static AiResultSourceEnum aiResultSourceEnum(String source) {
         if (!StringUtils.hasText(source)) {
             return null;
         }
-        try {
-            return AiResultSourceEnum.valueOf(source.trim());
-        } catch (IllegalArgumentException ex) {
-            return null;
-        }
+        return AiResultSourceEnum.normalize(source);
     }
 }

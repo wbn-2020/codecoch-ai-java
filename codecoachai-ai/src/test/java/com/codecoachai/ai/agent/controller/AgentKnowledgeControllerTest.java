@@ -14,6 +14,7 @@ import com.codecoachai.ai.agent.config.V4FeatureGate;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDocumentVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeDuplicateCleanupVO;
 import com.codecoachai.ai.agent.domain.vo.knowledge.KnowledgeVectorRebuildVO;
+import com.codecoachai.ai.agent.service.AgentContextUsageReferenceService;
 import com.codecoachai.ai.agent.service.AgentV4OpsService;
 import com.codecoachai.ai.agent.service.KnowledgeEvaluationService;
 import com.codecoachai.common.core.domain.PageResult;
@@ -40,6 +41,8 @@ class AgentKnowledgeControllerTest {
     @Mock
     private AgentV4OpsService agentV4OpsService;
     @Mock
+    private AgentContextUsageReferenceService usageReferenceService;
+    @Mock
     private KnowledgeEvaluationService knowledgeEvaluationService;
     @Mock
     private VectorIndexJobService vectorIndexJobService;
@@ -58,6 +61,7 @@ class AgentKnowledgeControllerTest {
                 .build());
         controller = new AgentKnowledgeController(
                 agentV4OpsService,
+                usageReferenceService,
                 knowledgeEvaluationService,
                 vectorIndexJobService,
                 v4FeatureGate,

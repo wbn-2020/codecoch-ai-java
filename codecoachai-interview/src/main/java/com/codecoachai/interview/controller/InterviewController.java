@@ -94,8 +94,11 @@ public class InterviewController {
 
     @GetMapping
     public Result<PageResult<InterviewListVO>> list(@RequestParam(required = false) Long pageNo,
-                                                    @RequestParam(required = false) Long pageSize) {
-        return Result.success(interviewService.list(pageNo, pageSize));
+                                                    @RequestParam(required = false) Long pageSize,
+                                                    @RequestParam(required = false) String status,
+                                                    @RequestParam(required = false) String reportStatus,
+                                                    @RequestParam(required = false) String keyword) {
+        return Result.success(interviewService.list(pageNo, pageSize, status, reportStatus, keyword));
     }
 
     @GetMapping("/{id}")

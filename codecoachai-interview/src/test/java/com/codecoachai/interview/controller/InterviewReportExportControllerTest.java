@@ -1,6 +1,7 @@
 package com.codecoachai.interview.controller;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
@@ -8,6 +9,7 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -92,6 +94,19 @@ class InterviewReportExportControllerTest {
         when(sessionMapper.selectById(1L)).thenReturn(session);
         when(reportMapper.selectOne(any())).thenReturn(null);
 
-        assertThrows(BusinessException.class, () -> controller.radarChart(1L));
+        BusinessException error = assertThrows(BusinessException.class, () -> controller.radarChart(1L));
+
+        assertEquals(ErrorCode.SEMANTIC_VALIDATION_ERROR.getCode(), error.getCode());
+    }
+
+    @Test
+    void reportExportRejectsMissingOrForeignSessionAsResourceNotFound() {
+        when(sessionMapper.selectById(404L)).thenReturn(null);
+
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> controller.radarChart(404L));
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND.getCode(), error.getCode());
     }
 }

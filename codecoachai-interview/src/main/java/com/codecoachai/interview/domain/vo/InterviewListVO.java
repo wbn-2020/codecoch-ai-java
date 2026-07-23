@@ -3,12 +3,16 @@ package com.codecoachai.interview.domain.vo;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Data;
+import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
 
 @Data
 public class InterviewListVO {
 
     private Long id;
     private Long applicationId;
+    private Long applicationPackageId;
+    private Long jdAnalysisId;
+    private Long resumeVersionId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;
@@ -29,6 +33,14 @@ public class InterviewListVO {
     private String followUpIntensity;
     private String status;
     private String reportStatus;
+    private Long reportId;
+    private Integer totalScore;
+    private Boolean comparisonAvailable;
+    private String comparisonUnavailableReason;
+    private String comparisonRubricVersion;
+    private String comparisonNormalizationSource;
+    private List<InterviewComparisonReasonVO> comparisonWarnings;
     private Integer answeredQuestionCount;
+    private VoiceDeliverySummaryVO voiceDeliverySummary;
     private LocalDateTime updatedAt;
 }

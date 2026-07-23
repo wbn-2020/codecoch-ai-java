@@ -21,6 +21,7 @@ import com.codecoachai.resume.domain.entity.ProjectEvidence;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.entity.TargetJob;
+import com.codecoachai.resume.domain.entity.UserAbilityProfile;
 import com.codecoachai.resume.domain.vo.JobExperimentAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentDetailVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentListVO;
@@ -38,6 +39,7 @@ import com.codecoachai.resume.mapper.ProjectEvidenceMapper;
 import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
 import com.codecoachai.resume.service.JobSearchExperimentService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -50,6 +52,8 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -74,6 +78,8 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     private final JobApplicationMapper jobApplicationMapper;
     private final JobApplicationEventMapper jobApplicationEventMapper;
     private final ProjectEvidenceMapper projectEvidenceMapper;
+    private final UserAbilityProfileMapper userAbilityProfileMapper;
+    private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -905,9 +911,75 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                 if (evidence == null) throw relationNotFound(type);
                 yield new RelationSummary(evidence.getTitle(), Map.of("completeness", firstText(evidence.getCompletenessStatus(), "")));
             }
-            case "INTERVIEW_REPORT", "INTERVIEW_SESSION", "ABILITY_PROFILE", "AGENT_TASK" -> throw relationNotFound(type);
+            case "ABILITY_PROFILE" -> {
+                UserAbilityProfile profile = userAbilityProfileMapper.selectOne(new LambdaQueryWrapper<UserAbilityProfile>()
+                        .eq(UserAbilityProfile::getId, relationId)
+                        .eq(UserAbilityProfile::getUserId, userId)
+                        .eq(UserAbilityProfile::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+                if (profile == null) throw relationNotFound(type);
+                yield new RelationSummary(firstText(profile.getSkillCode(), "Ability profile") + " / "
+                                + firstText(profile.getStatus(), "UNKNOWN"),
+                        Map.of("skillCode", firstText(profile.getSkillCode(), ""),
+                                "status", firstText(profile.getStatus(), ""),
+                                "confidence", firstText(profile.getConfidence(), "")));
+            }
+            case "INTERVIEW_REPORT", "INTERVIEW_SESSION", "AGENT_TASK" -> verifyExternalRelation(userId, type, relationId);
             default -> throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported relation type");
         };
+    }
+
+    private RelationSummary verifyExternalRelation(Long userId, String type, Long relationId) {
+        try {
+            List<RelationSummary> rows = switch (type) {
+                case "INTERVIEW_REPORT" -> jdbcTemplate.query("""
+                                SELECT r.id, r.session_id, r.status, r.summary, s.title AS session_title
+                                FROM interview_report r
+                                LEFT JOIN interview_session s ON s.id = r.session_id AND s.deleted = 0
+                                WHERE r.id = ? AND r.user_id = ? AND r.deleted = 0
+                                LIMIT 1
+                                """,
+                        (rs, rowNum) -> new RelationSummary(
+                                firstText(rs.getString("summary"), "Interview report #" + relationId),
+                                Map.of("status", firstText(rs.getString("status"), ""),
+                                        "sessionId", rs.getLong("session_id"),
+                                        "sessionTitle", firstText(rs.getString("session_title"), ""))),
+                        relationId, userId);
+                case "INTERVIEW_SESSION" -> jdbcTemplate.query("""
+                                SELECT id, title, status, report_status, target_position
+                                FROM interview_session
+                                WHERE id = ? AND user_id = ? AND deleted = 0
+                                LIMIT 1
+                                """,
+                        (rs, rowNum) -> new RelationSummary(
+                                firstText(rs.getString("title"), rs.getString("target_position"), "Interview session #" + relationId),
+                                Map.of("status", firstText(rs.getString("status"), ""),
+                                        "reportStatus", firstText(rs.getString("report_status"), ""),
+                                        "targetPosition", firstText(rs.getString("target_position"), ""))),
+                        relationId, userId);
+                case "AGENT_TASK" -> jdbcTemplate.query("""
+                                SELECT id, title, status, task_type, target_job_id, related_biz_type, related_biz_id
+                                FROM agent_task
+                                WHERE id = ? AND user_id = ? AND deleted = 0
+                                LIMIT 1
+                                """,
+                        (rs, rowNum) -> new RelationSummary(
+                                firstText(rs.getString("title"), rs.getString("task_type"), "Agent task #" + relationId),
+                                Map.of("status", firstText(rs.getString("status"), ""),
+                                        "taskType", firstText(rs.getString("task_type"), ""),
+                                        "targetJobId", rs.getLong("target_job_id"),
+                                        "relatedBizType", firstText(rs.getString("related_biz_type"), ""),
+                                        "relatedBizId", rs.getLong("related_biz_id"))),
+                        relationId, userId);
+                default -> List.of();
+            };
+            if (!rows.isEmpty()) {
+                return rows.get(0);
+            }
+        } catch (DataAccessException ignored) {
+            // Cross-module evidence lives in shared business tables; missing schema or rows fail closed.
+        }
+        throw relationNotFound(type);
     }
 
     private <T> List<T> safeList(List<T> values) {

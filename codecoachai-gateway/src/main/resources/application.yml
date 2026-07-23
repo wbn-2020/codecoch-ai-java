@@ -12,7 +12,9 @@ spring:
       discovery:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         group: DEFAULT_GROUP
+        namespace: ${NACOS_NAMESPACE}
       config:
         server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
         group: DEFAULT_GROUP
         file-extension: yml
+        namespace: ${NACOS_NAMESPACE}

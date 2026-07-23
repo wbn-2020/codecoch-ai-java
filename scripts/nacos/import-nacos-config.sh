@@ -7,51 +7,72 @@ NACOS_NAMESPACE="${NACOS_NAMESPACE:-}"
 NACOS_USERNAME="${NACOS_USERNAME:-}"
 NACOS_PASSWORD="${NACOS_PASSWORD:-}"
 NACOS_ACCESS_TOKEN="${NACOS_ACCESS_TOKEN:-}"
+NACOS_TARGET="${NACOS_TARGET:-auto}"
+NACOS_AUDIT_DIR="${NACOS_AUDIT_DIR:-}"
+NACOS_DATA_IDS="${NACOS_DATA_IDS:-}"
 CONFIRM_WRITE="${CONFIRM_WRITE:-false}"
+ALLOW_CREATE_CONFIG="${ALLOW_CREATE_CONFIG:-false}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# Official Nacos source directory. config/nacos is kept only as historical/manual templates.
 CONFIG_DIR="${ROOT_DIR}/docs/nacos"
+GUARD_SCRIPT="${ROOT_DIR}/scripts/nacos/nacos_config_guard.py"
 
-token="${NACOS_ACCESS_TOKEN}"
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  for candidate in python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 &&
+      "${candidate}" -c 'import sys; raise SystemExit(sys.version_info < (3, 9))' >/dev/null 2>&1; then
+      PYTHON_BIN="${candidate}"
+      break
+    fi
+  done
+fi
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "Python 3 is required to run ${GUARD_SCRIPT}" >&2
+  exit 1
+fi
+
+mode="audit"
 if [[ "${CONFIRM_WRITE}" != "true" ]]; then
-  echo "DRY-RUN: no config will be written to Nacos."
-  echo "Target: ${NACOS_ADDR}, group: ${NACOS_GROUP}, namespace: ${NACOS_NAMESPACE}"
-  echo "Run again with CONFIRM_WRITE=true only after confirming the target environment."
+  echo "DRY-RUN: exact namespace audit only; no Nacos config will be written."
+else
+  mode="publish"
+  if [[ -z "${NACOS_AUDIT_DIR}" ]]; then
+    NACOS_AUDIT_DIR="/tmp/codecoachai-nacos-audit-$(date +%Y%m%d-%H%M%S)"
+  fi
+  echo "WRITE ENABLED: CAS publish with exact namespace readback."
+  echo "Audit directory: ${NACOS_AUDIT_DIR}"
 fi
 
-if [[ "${CONFIRM_WRITE}" == "true" && -z "${token}" && -n "${NACOS_USERNAME}" && -n "${NACOS_PASSWORD}" ]]; then
-  token="$(curl -sS -X POST "${NACOS_ADDR}/nacos/v1/auth/users/login" \
-    --data-urlencode "username=${NACOS_USERNAME}" \
-    --data-urlencode "password=${NACOS_PASSWORD}" | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')"
+echo "Target: ${NACOS_ADDR}, group: ${NACOS_GROUP}, selector: ${NACOS_TARGET}, namespaceId: ${NACOS_NAMESPACE}"
+
+args=(
+  "${GUARD_SCRIPT}"
+  "${mode}"
+  --nacos-addr "${NACOS_ADDR}"
+  --group "${NACOS_GROUP}"
+  --config-dir "${CONFIG_DIR}"
+  --target "${NACOS_TARGET}"
+)
+if [[ -n "${NACOS_NAMESPACE}" ]]; then
+  args+=(--namespace-id "${NACOS_NAMESPACE}")
+fi
+if [[ -n "${NACOS_AUDIT_DIR}" ]]; then
+  args+=(--audit-dir "${NACOS_AUDIT_DIR}")
+fi
+if [[ -n "${NACOS_DATA_IDS}" ]]; then
+  IFS=',' read -r -a selected_data_ids <<< "${NACOS_DATA_IDS}"
+  for data_id in "${selected_data_ids[@]}"; do
+    if [[ -n "${data_id}" ]]; then
+      args+=(--data-id "${data_id}")
+    fi
+  done
+fi
+if [[ "${CONFIRM_WRITE}" == "true" ]]; then
+  args+=(--confirm-write)
+fi
+if [[ "${ALLOW_CREATE_CONFIG}" == "true" ]]; then
+  args+=(--allow-create-config)
 fi
 
-for file in "${CONFIG_DIR}"/*.yml; do
-  data_id="$(basename "${file}")"
-  if [[ "${CONFIRM_WRITE}" != "true" ]]; then
-    echo "DRY-RUN ${data_id}"
-    continue
-  fi
-
-  args=(
-    -sS
-    -X POST "${NACOS_ADDR}/nacos/v1/cs/configs"
-    --data-urlencode "dataId=${data_id}"
-    --data-urlencode "group=${NACOS_GROUP}"
-    --data-urlencode "content@${file}"
-    --data-urlencode "type=yaml"
-  )
-  if [[ -n "${NACOS_NAMESPACE}" ]]; then
-    args+=(--data-urlencode "tenant=${NACOS_NAMESPACE}")
-  fi
-  if [[ -n "${token}" ]]; then
-    args+=(--data-urlencode "accessToken=${token}")
-  fi
-  result="$(curl "${args[@]}")"
-  if [[ "${result}" == "true" ]]; then
-    echo "SUCCESS ${data_id}"
-  else
-    echo "FAILED  ${data_id}: ${result}" >&2
-    exit 1
-  fi
-done
+exec "${PYTHON_BIN}" "${args[@]}"

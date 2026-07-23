@@ -23,6 +23,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class TraceIdFilter extends OncePerRequestFilter {
 
+    public static final String TRACE_ID_REQUEST_ATTRIBUTE =
+            TraceIdFilter.class.getName() + ".traceId";
+
     private static final String HEADER_TRACE_ID = "X-Trace-Id";
     private static final String MDC_KEY = "traceId";
 
@@ -32,8 +35,11 @@ public class TraceIdFilter extends OncePerRequestFilter {
         String traceId = request.getHeader(HEADER_TRACE_ID);
         if (!StringUtils.hasText(traceId)) {
             traceId = generateTraceId();
+        } else {
+            traceId = traceId.trim();
         }
 
+        request.setAttribute(TRACE_ID_REQUEST_ATTRIBUTE, traceId);
         MDC.put(MDC_KEY, traceId);
         response.setHeader(HEADER_TRACE_ID, traceId);
 

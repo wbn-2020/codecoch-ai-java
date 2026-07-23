@@ -27,12 +27,14 @@ class AgentDailyPlanScheduleTaskTest {
     void runDailyPlanBatchSkipsConcurrentSchedulerInvocation() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch concurrentAttemptSkipped = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         AtomicBoolean locked = new AtomicBoolean(false);
         AgentV4OpsService service = mock(AgentV4OpsService.class);
         DistributedLockHelper lockHelper = mock(DistributedLockHelper.class);
         when(lockHelper.tryLockAndRun(anyString(), anyLong(), anyLong(), any(Runnable.class))).thenAnswer(invocation -> {
             if (!locked.compareAndSet(false, true)) {
+                concurrentAttemptSkipped.countDown();
                 return false;
             }
             try {
@@ -57,7 +59,8 @@ class AgentDailyPlanScheduleTaskTest {
         first.start();
         assertEquals(true, entered.await(3, TimeUnit.SECONDS), "first scheduler invocation should start");
         second.start();
-        Thread.sleep(200L);
+        assertEquals(true, concurrentAttemptSkipped.await(3, TimeUnit.SECONDS),
+                "second scheduler invocation should reach the lock while the first is active");
         release.countDown();
         first.join(3000L);
         second.join(3000L);

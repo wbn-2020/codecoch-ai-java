@@ -29,4 +29,8 @@ public interface InterviewFeignClient {
 
     @PostMapping("/inner/study-plans/{planId}/execute")
     Result<StudyPlanGenerateVO> executeStudyPlan(@PathVariable("planId") Long planId);
+
+    @PostMapping("/inner/study-plans/users/{userId}/plans/{planId}/execute")
+    Result<StudyPlanGenerateVO> executeStudyPlan(@PathVariable("userId") Long userId,
+                                                 @PathVariable("planId") Long planId);
 }

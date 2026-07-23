@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
@@ -95,6 +96,7 @@ class InnerInterviewReportControllerTest {
         current.setStatus(ReportStatusEnum.GENERATING.name());
         current.setGenerationToken("token-current");
         when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
         InnerInterviewReportController.CompleteReportDTO dto =
                 new InnerInterviewReportController.CompleteReportDTO();
         dto.setReportId(88L);
@@ -106,7 +108,7 @@ class InnerInterviewReportControllerTest {
         controller.completeReport(1L, dto);
 
         ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
-        verify(reportMapper).updateById(reportCaptor.capture());
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
         InterviewReport persisted = reportCaptor.getValue();
         assertEquals("ok", persisted.getSummary());
         assertEquals("[\"system design\"]", persisted.getWeakPoints());
@@ -115,8 +117,37 @@ class InnerInterviewReportControllerTest {
         assertEquals("[\"review by topic\"]", persisted.getReviewSuggestions());
         assertEquals("[\"keep practicing\"]", persisted.getSuggestions());
         assertEquals("[{\"question\":\"Q1\"}]", persisted.getQaReview());
+        assertEquals("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]", persisted.getRubricScores());
         assertEquals("full report body", persisted.getReportContent());
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportFailsIncompleteScoringContractAndSkipsAgentTaskCompletion() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("{\"summary\":\"ok\",\"reportContent\":\"full report body\"}");
+        dto.setTotalScore(82);
+
+        controller.completeReport(1L, dto);
+
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals(ReportStatusEnum.FAILED.name(), persisted.getStatus());
+        assertEquals(null, persisted.getTotalScore());
+        assertTrue(persisted.getFailureReason().contains("RUBRIC_DATA_MISSING"));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
 
     @Test
@@ -187,7 +218,6 @@ class InnerInterviewReportControllerTest {
     @Test
     void weaknessSummaryReturnsEmptyTopWeaknessesWhenUserHasNoReports() {
         when(sessionMapper.selectCount(any())).thenReturn(2L);
-        when(reportMapper.selectCount(any())).thenReturn(0L);
         when(reportMapper.selectList(any())).thenReturn(List.of());
 
         Result<InterviewWeaknessSummaryVO> result = controller.weaknessSummary(10L, null);
@@ -203,14 +233,13 @@ class InnerInterviewReportControllerTest {
     @Test
     void weaknessSummaryUsesGeneratedAtWindowForReports() {
         when(sessionMapper.selectCount(any())).thenReturn(1L);
-        when(reportMapper.selectCount(any())).thenReturn(1L);
         when(reportMapper.selectList(any())).thenReturn(List.of(generatedReport()));
 
         controller.weaknessSummary(10L, 30);
 
         ArgumentCaptor<LambdaQueryWrapper<InterviewReport>> queryCaptor =
                 ArgumentCaptor.forClass(LambdaQueryWrapper.class);
-        verify(reportMapper).selectCount(queryCaptor.capture());
+        verify(reportMapper).selectList(queryCaptor.capture());
         String sqlSegment = queryCaptor.getValue().getSqlSegment().replaceAll("\\s+", " ").toLowerCase();
         assertTrue(sqlSegment.contains("generated_at"), sqlSegment);
         assertTrue(sqlSegment.contains("created_at"), sqlSegment);
@@ -220,7 +249,6 @@ class InnerInterviewReportControllerTest {
     @Test
     void weaknessSummaryExtractsWeaknessesFromStructuredReportFields() {
         when(sessionMapper.selectCount(any())).thenReturn(3L);
-        when(reportMapper.selectCount(any())).thenReturn(2L);
         InterviewReport report = generatedReport();
         report.setWeakPoints("[\"Redis 缓存一致性\", \"JVM 调优\"]");
         report.setMainProblems("[\"SQL 索引设计\"]");
@@ -238,7 +266,6 @@ class InnerInterviewReportControllerTest {
     @Test
     void weaknessSummaryDeduplicatesSameWeaknessWithinOneReportBeforeCounting() {
         when(sessionMapper.selectCount(any())).thenReturn(2L);
-        when(reportMapper.selectCount(any())).thenReturn(2L);
         InterviewReport first = generatedReport();
         first.setWeakPoints("[\"Redis\", \" Redis \", \"SQL\"]");
         InterviewReport second = generatedReport();
@@ -258,7 +285,6 @@ class InnerInterviewReportControllerTest {
     @Test
     void weaknessSummaryLimitsTopWeaknessesToFiveItems() {
         when(sessionMapper.selectCount(any())).thenReturn(1L);
-        when(reportMapper.selectCount(any())).thenReturn(1L);
         InterviewReport report = generatedReport();
         report.setWeakPoints("[\"A\", \"B\", \"C\", \"D\", \"E\", \"F\"]");
         when(reportMapper.selectList(any())).thenReturn(List.of(report));
@@ -289,6 +315,9 @@ class InnerInterviewReportControllerTest {
         report.setSessionId(1L);
         report.setUserId(10L);
         report.setStatus(ReportStatusEnum.GENERATED.name());
+        report.setTotalScore(82);
+        report.setSummary("可信面试报告摘要");
+        report.setReportContent("可信面试报告正文");
         report.setGeneratedAt(LocalDateTime.now().minusDays(1));
         return report;
     }
@@ -303,6 +332,7 @@ class InnerInterviewReportControllerTest {
                 "reviewSuggestions", "[\"review by topic\"]",
                 "suggestions", "[\"keep practicing\"]",
                 "qaReview", "[{\"question\":\"Q1\"}]",
+                "rubricScores", "[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]",
                 "reportContent", "full report body");
     }
 }
