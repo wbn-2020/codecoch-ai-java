@@ -14,7 +14,7 @@ public class CareerCampaignArchiveProperties {
     private long maxEntryBytes = 2L * 1024L * 1024L;
     private long maxTotalUncompressedBytes = 8L * 1024L * 1024L;
     private long maxArchiveBytes = 10L * 1024L * 1024L;
-    private int maxEntries = 13;
+    private int maxEntries = 15;
     private int maxRowsPerSection = 5000;
     private int maxErrorMessageChars = 1000;
 
@@ -35,7 +35,7 @@ public class CareerCampaignArchiveProperties {
     }
 
     public int effectiveMaxEntries() {
-        return maxEntries < 13 ? 13 : Math.min(maxEntries, 64);
+        return maxEntries < 15 ? 15 : Math.min(maxEntries, 64);
     }
 
     public int effectiveMaxRowsPerSection() {

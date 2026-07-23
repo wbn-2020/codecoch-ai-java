@@ -39,7 +39,7 @@ codecoachai:
       max-entry-bytes: ${CAMPAIGN_ARCHIVE_MAX_ENTRY_BYTES:2097152}
       max-total-uncompressed-bytes: ${CAMPAIGN_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:8388608}
       max-archive-bytes: ${CAMPAIGN_ARCHIVE_MAX_BYTES:10485760}
-      max-entries: ${CAMPAIGN_ARCHIVE_MAX_ENTRIES:13}
+      max-entries: ${CAMPAIGN_ARCHIVE_MAX_ENTRIES:15}
       max-rows-per-section: ${CAMPAIGN_ARCHIVE_MAX_ROWS_PER_SECTION:5000}
       max-error-message-chars: ${CAMPAIGN_ARCHIVE_MAX_ERROR_MESSAGE_CHARS:1000}
   features:
@@ -49,3 +49,7 @@ codecoachai:
       campaign-plan: ${CODECOACHAI_V8_CAMPAIGN_PLAN:false}
       campaign-portfolio: ${CODECOACHAI_V8_CAMPAIGN_PORTFOLIO:false}
       campaign-export: ${CODECOACHAI_V8_CAMPAIGN_EXPORT:false}
+    v9:
+      evidence-usage: ${CODECOACHAI_V9_EVIDENCE_USAGE:false}
+      evidence-feedback: ${CODECOACHAI_V9_EVIDENCE_FEEDBACK:false}
+      evidence-assets-view: ${CODECOACHAI_V9_EVIDENCE_ASSETS_VIEW:false}

@@ -17,11 +17,15 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.math.BigDecimal;
 import java.util.Locale;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -177,6 +181,13 @@ public class CareerCampaignReviewPersistenceServiceImpl
             candidate.setUserId(userId);
             candidate.setReviewId(locked.getId());
             candidate.setSnapshotId(snapshot.getId());
+            candidate.setCandidateScopeType("CAMPAIGN");
+            candidate.setCandidateScopeKey(String.valueOf(locked.getCampaignId()));
+            candidate.setCandidateType("CAMPAIGN_REVIEW");
+            candidate.setUsageSourceHash(inputHash);
+            candidate.setEvidenceCount(result.getFacts() == null ? 0 : result.getFacts().size());
+            candidate.setSampleCount(0);
+            candidate.setLimitsJson(write(result.getLimits()));
             candidate.setCandidateKey(seed.getSemanticKey());
             candidate.setSemanticHash(AgentAdaptivePlanHashUtils.sha256(
                     seed.getTitle() + "|" + seed.getDescription()));
@@ -184,6 +195,7 @@ public class CareerCampaignReviewPersistenceServiceImpl
             candidate.setContent(seed.getDescription());
             candidate.setSourceRef(seed.getSourceRef());
             candidate.setConfidenceLevel(seed.getConfidenceLevel());
+            candidate.setStatus("PENDING_CONFIRMATION");
             candidate.setValidityDays(seed.getValidityDays());
             candidate.setExpiresAt(seed.getValidityDays() == null ? null
                     : LocalDateTime.now().plusDays(seed.getValidityDays()));
@@ -215,7 +227,7 @@ public class CareerCampaignReviewPersistenceServiceImpl
             throw new BusinessException(ErrorCode.PARAM_ERROR, "记忆候选不存在");
         }
         String requestedStatus = confirmed ? "CONFIRMED" : "REJECTED";
-        if (!"PENDING".equals(candidate.getStatus())) {
+        if (!List.of("PENDING", "PENDING_CONFIRMATION").contains(candidate.getStatus())) {
             if (requestedStatus.equals(candidate.getStatus())) {
                 return candidate;
             }
@@ -233,34 +245,138 @@ public class CareerCampaignReviewPersistenceServiceImpl
         candidate.setConfirmedAt(confirmed ? now : null);
         candidate.setDecisionIdempotencyKeyHash(idempotencyKeyHash);
         if (confirmed) {
-            publishConfirmedMemory(candidate);
+            publishMemoryDraft(candidate);
         }
         return candidate;
     }
 
-    private void publishConfirmedMemory(CareerCampaignReviewMemoryCandidate candidate) {
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CareerCampaignReviewMemoryCandidate decideCandidate(
+            Long userId, Long candidateId, String decisionCode,
+            String idempotencyKeyHash, String payloadHash, String editedContent) {
+        CareerCampaignReviewMemoryCandidate candidate =
+                candidateMapper.selectOwnedForUpdate(userId, candidateId);
+        if (candidate == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习候选不存在");
+        }
+        String code = decisionCode == null ? "" : decisionCode.trim().toUpperCase(Locale.ROOT);
+        if (!Set.of("KEEP", "EDIT", "CONTINUE", "REJECT").contains(code)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的候选决策");
+        }
+        if ("EDIT".equals(code) && (editedContent == null || editedContent.trim().isEmpty())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "EDIT 决策必须提供修改后的内容");
+        }
+        Map<String, DecisionHistoryEntry> decisionHistory =
+                readDecisionHistory(candidate.getDecisionHistoryJson());
+        DecisionHistoryEntry replay = decisionHistory.get(idempotencyKeyHash);
+        if (replay != null) {
+            if (payloadHash != null && payloadHash.equals(replay.payloadHash())
+                    && code.equals(replay.decisionCode())) {
+                return candidate;
+            }
+            throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "同一幂等键不能用于不同的候选决策");
+        }
+        if (candidate.getDecisionIdempotencyKeyHash() != null
+                && candidate.getDecisionIdempotencyKeyHash().equals(idempotencyKeyHash)) {
+            if (payloadHash != null && payloadHash.equals(candidate.getDecisionPayloadHash())
+                    && code.equals(candidate.getDecisionCode())) {
+                return candidate;
+            }
+            throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "同一幂等键不能用于不同的候选决策");
+        }
+        if (Set.of("CONFIRMED", "CONFIRMED_BY_USER", "REJECTED", "EXPIRED")
+                .contains(candidate.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "候选已结束，不能再次决策");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (candidate.getExpiresAt() != null && !candidate.getExpiresAt().isAfter(now)) {
+            candidateMapper.expire(userId, candidateId, now);
+            throw new BusinessException(ErrorCode.STALE_SOURCE_VERSION, "候选已过期");
+        }
+        String nextStatus = switch (code) {
+            case "REJECT" -> "REJECTED";
+            case "CONTINUE" -> "WEAK_OBSERVATION";
+            default -> "CONFIRMED_BY_USER";
+        };
+        String content = "EDIT".equals(code) ? editedContent.trim() : candidate.getContent();
+        LocalDateTime expiresAt = "CONTINUE".equals(code)
+                ? now.plusDays(candidate.getValidityDays() == null
+                || candidate.getValidityDays() < 1 ? 30 : candidate.getValidityDays())
+                : candidate.getExpiresAt();
+        decisionHistory.put(idempotencyKeyHash,
+                new DecisionHistoryEntry(code, payloadHash, now.toString()));
+        String decisionHistoryJson = write(decisionHistory);
+        int updated = candidateMapper.decideV9(
+                userId, candidateId, nextStatus, content, code, payloadHash,
+                decisionHistoryJson, idempotencyKeyHash, now,
+                "KEEP".equals(code) || "EDIT".equals(code) ? now : null,
+                expiresAt);
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.STALE_SOURCE_VERSION, "候选状态已变化");
+        }
+        candidate.setStatus(nextStatus);
+        candidate.setContent(content);
+        candidate.setDecisionCode(code);
+        candidate.setDecisionPayloadHash(payloadHash);
+        candidate.setDecisionHistoryJson(decisionHistoryJson);
+        candidate.setDecisionIdempotencyKeyHash(idempotencyKeyHash);
+        candidate.setDecisionAt(now);
+        candidate.setConfirmedAt(
+                "KEEP".equals(code) || "EDIT".equals(code) ? now : null);
+        candidate.setExpiresAt(expiresAt);
+        if ("KEEP".equals(code) || "EDIT".equals(code)) {
+            publishMemoryDraft(candidate);
+        }
+        return candidate;
+    }
+
+    private void publishMemoryDraft(CareerCampaignReviewMemoryCandidate candidate) {
         if (agentMemoryMapper == null || candidate == null || candidate.getId() == null) {
             return;
         }
+        String promotionKeyHash = AgentAdaptivePlanHashUtils.sha256(
+                "v9-evidence-learning|" + candidate.getUserId() + "|" + candidate.getId()
+                        + "|" + candidate.getSemanticHash());
         AgentMemory existing = agentMemoryMapper.selectOne(new LambdaQueryWrapper<AgentMemory>()
                 .eq(AgentMemory::getUserId, candidate.getUserId())
-                .eq(AgentMemory::getSourceType, "USER_CONFIRMED_CAREER_CAMPAIGN_REVIEW")
-                .eq(AgentMemory::getSourceId, candidate.getId())
+                .eq(AgentMemory::getPromotionKeyHash, promotionKeyHash)
                 .eq(AgentMemory::getDeleted, 0)
                 .last("LIMIT 1"));
         if (existing != null) {
+            candidate.setPromotedMemoryId(existing.getId());
             return;
         }
         AgentMemory memory = new AgentMemory();
         memory.setUserId(candidate.getUserId());
         memory.setMemoryType("CAREER_LEARNING");
         memory.setContent(candidate.getContent());
-        memory.setSourceType("USER_CONFIRMED_CAREER_CAMPAIGN_REVIEW");
+        memory.setSourceType("EVIDENCE_LEARNING_CANDIDATE");
         memory.setSourceId(candidate.getId());
+        memory.setPromotionKeyHash(promotionKeyHash);
         memory.setConfidence(confidence(candidate.getConfidenceLevel()));
-        memory.setEnabled(1);
+        memory.setEnabled(0);
         memory.setDeleted(0);
-        agentMemoryMapper.insert(memory);
+        try {
+            agentMemoryMapper.insert(memory);
+        } catch (DuplicateKeyException ex) {
+            existing = agentMemoryMapper.selectOne(new LambdaQueryWrapper<AgentMemory>()
+                    .eq(AgentMemory::getUserId, candidate.getUserId())
+                    .eq(AgentMemory::getPromotionKeyHash, promotionKeyHash)
+                    .eq(AgentMemory::getDeleted, 0)
+                    .last("LIMIT 1"));
+            if (existing == null) {
+                throw ex;
+            }
+            memory = existing;
+        }
+        candidate.setPromotedMemoryId(memory.getId());
+        if (candidate.getId() != null && memory.getId() != null) {
+            candidateMapper.updatePromotedMemory(
+                    candidate.getUserId(), candidate.getId(), memory.getId());
+        }
     }
 
     private BigDecimal confidence(String value) {
@@ -281,6 +397,51 @@ public class CareerCampaignReviewPersistenceServiceImpl
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("周期复盘 JSON 序列化失败", ex);
         }
+    }
+
+    private Map<String, DecisionHistoryEntry> readDecisionHistory(String value) {
+        Map<String, DecisionHistoryEntry> history = new LinkedHashMap<>();
+        if (value == null || value.isBlank()) {
+            return history;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(value);
+            if (!root.isObject()) {
+                return history;
+            }
+            root.fields().forEachRemaining(entry -> {
+                JsonNode item = entry.getValue();
+                String decisionCode = item.path("decisionCode").asText(null);
+                String payloadHash = item.path("payloadHash").asText(null);
+                String decidedAt = decisionHistoryTimestamp(item.get("decidedAt"));
+                if (decisionCode != null && payloadHash != null) {
+                    history.put(entry.getKey(), new DecisionHistoryEntry(
+                            decisionCode, payloadHash, decidedAt));
+                }
+            });
+            return history;
+        } catch (Exception exception) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "候选决策历史无法解析");
+        }
+    }
+
+    private String decisionHistoryTimestamp(JsonNode value) {
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (value.isTextual()) {
+            return value.asText();
+        }
+        try {
+            return objectMapper.treeToValue(value, LocalDateTime.class).toString();
+        } catch (Exception exception) {
+            return value.toString();
+        }
+    }
+
+    private record DecisionHistoryEntry(
+            String decisionCode, String payloadHash, String decidedAt) {
     }
 
     private String markdown(CareerCampaignReviewVO result) {

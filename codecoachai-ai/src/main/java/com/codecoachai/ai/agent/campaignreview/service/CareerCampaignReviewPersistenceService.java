@@ -44,6 +44,13 @@ public interface CareerCampaignReviewPersistenceService {
                                                          String idempotencyKeyHash,
                                                          boolean confirmed);
 
+    CareerCampaignReviewMemoryCandidate decideCandidate(Long userId,
+                                                        Long candidateId,
+                                                        String decisionCode,
+                                                        String idempotencyKeyHash,
+                                                        String payloadHash,
+                                                        String editedContent);
+
     record GenerationClaim(CareerCampaignReview review,
                            CareerCampaignReviewSnapshot replay,
                            String claimToken,

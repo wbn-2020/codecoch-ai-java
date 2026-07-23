@@ -26,9 +26,11 @@ import com.codecoachai.resume.experimentv2.entity.ExperimentAttribution;
 import com.codecoachai.resume.experimentv2.entity.ExperimentCohort;
 import com.codecoachai.resume.experimentv2.entity.ExperimentHypothesis;
 import com.codecoachai.resume.experimentv2.entity.ExperimentVariant;
+import com.codecoachai.resume.domain.entity.CareerEvidenceUsage;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.JobSearchExperimentMapper;
+import com.codecoachai.resume.mapper.CareerEvidenceUsageMapper;
 import com.codecoachai.resume.mapper.experimentv2.ExperimentAssignmentMapper;
 import com.codecoachai.resume.mapper.experimentv2.ExperimentAttributionMapper;
 import com.codecoachai.resume.mapper.experimentv2.ExperimentCohortMapper;
@@ -57,6 +59,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.dao.DuplicateKeyException;
@@ -64,7 +67,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class ExperimentV2ServiceImpl implements ExperimentV2Service {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
@@ -78,7 +81,7 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
     private static final int MAX_RELATION_LIST_LIMIT = 1000;
     private static final int MAX_ATTRIBUTION_ASSIGNMENTS = 5000;
     private static final long MAX_COHORT_WINDOW_DAYS = 366L;
-    private static final long ATTRIBUTION_REUSE_SECONDS = 30L;
+    private static final String ATTRIBUTION_ALGORITHM_VERSION = "V9_EXPERIMENT_ATTRIBUTION_V1";
     private final ExperimentHypothesisMapper hypothesisMapper;
     private final JobSearchExperimentMapper legacyExperimentMapper;
     private final ExperimentVariantMapper variantMapper;
@@ -87,8 +90,33 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
     private final ExperimentAttributionMapper attributionMapper;
     private final JobApplicationMapper applicationMapper;
     private final JobApplicationEventMapper applicationEventMapper;
+    private final CareerEvidenceUsageMapper evidenceUsageMapper;
     private final ExperimentAttributionCalculator attributionCalculator;
     private final ObjectMapper objectMapper;
+
+    public ExperimentV2ServiceImpl(
+            ExperimentHypothesisMapper hypothesisMapper,
+            JobSearchExperimentMapper legacyExperimentMapper,
+            ExperimentVariantMapper variantMapper,
+            ExperimentAssignmentMapper assignmentMapper,
+            ExperimentCohortMapper cohortMapper,
+            ExperimentAttributionMapper attributionMapper,
+            JobApplicationMapper applicationMapper,
+            JobApplicationEventMapper applicationEventMapper,
+            ExperimentAttributionCalculator attributionCalculator,
+            ObjectMapper objectMapper) {
+        this.hypothesisMapper = hypothesisMapper;
+        this.legacyExperimentMapper = legacyExperimentMapper;
+        this.variantMapper = variantMapper;
+        this.assignmentMapper = assignmentMapper;
+        this.cohortMapper = cohortMapper;
+        this.attributionMapper = attributionMapper;
+        this.applicationMapper = applicationMapper;
+        this.applicationEventMapper = applicationEventMapper;
+        this.evidenceUsageMapper = null;
+        this.attributionCalculator = attributionCalculator;
+        this.objectMapper = objectMapper;
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -345,10 +373,6 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
         Long userId = SecurityAssert.requireLoginUserId();
         ExperimentCohort cohort = ownedCohort(cohortId, userId);
         LocalDateTime asOf = requestedAsOf == null ? LocalDateTime.now(ZoneOffset.UTC) : requestedAsOf;
-        AttributionView reusable = findReusableAttribution(cohortId, userId, requestedAsOf, asOf);
-        if (reusable != null) {
-            return reusable;
-        }
         ExperimentHypothesis hypothesis = ownedHypothesis(cohort.getHypothesisId());
         List<ExperimentVariant> variants = listVariantEntities(hypothesis);
         List<ExperimentAssignment> assignments = assignmentMapper.selectList(
@@ -358,6 +382,7 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                         .eq(ExperimentAssignment::getDeleted, CommonConstants.NO)
                         .ge(ExperimentAssignment::getAssignedAt, cohort.getWindowStart())
                         .lt(ExperimentAssignment::getAssignedAt, cohort.getWindowEnd())
+                        .le(ExperimentAssignment::getAssignedAt, asOf)
                         .eq(StringUtils.hasText(cohort.getJobFamily()), ExperimentAssignment::getJobFamily,
                                 cohort.getJobFamily())
                         .eq(StringUtils.hasText(cohort.getChannel()), ExperimentAssignment::getChannel,
@@ -368,11 +393,23 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                     "Attribution sample exceeds the maximum supported size");
         }
         Map<Long, JobApplication> applications = loadApplications(assignments, userId);
-        Map<Long, List<JobApplicationEvent>> events = loadEvents(assignments, userId);
+        Map<Long, List<JobApplicationEvent>> events = loadEvents(assignments, userId, asOf);
+        List<CareerEvidenceUsage> evidenceUsages =
+                loadEvidenceUsages(assignments, applications, hypothesis.getId(), userId, asOf);
         List<DataPoint> points = assignments.stream()
                 .map(assignment -> toDataPoint(assignment, applications.get(assignment.getApplicationId()),
                         events.getOrDefault(assignment.getApplicationId(), List.of()), cohort, hypothesis, asOf))
                 .toList();
+        String sourceWatermark = sourceWatermark(assignments, applications, events, evidenceUsages);
+        Map<String, Integer> evidenceVersionUsageCounts = evidenceVersionUsageCounts(evidenceUsages);
+        String inputHash = attributionInputHash(
+                hypothesis, cohort, variants, points, sourceWatermark, asOf);
+        ExperimentAttribution existing = attributionMapper.selectByIdentity(
+                userId, cohortId, inputHash, ATTRIBUTION_ALGORITHM_VERSION);
+        if (existing != null) {
+            return toAttributionView(existing);
+        }
+        int completedInterviewCount = completedInterviewCount(events);
         CalculationInput input = new CalculationInput(
                 hypothesis.getId(),
                 cohort.getId(),
@@ -382,14 +419,28 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                         .map(variant -> new VariantSpec(variant.getId(), variant.getVariantCode(),
                                 Integer.valueOf(CommonConstants.YES).equals(variant.getControlFlag())))
                         .toList(),
-                points);
+                points,
+                completedInterviewCount,
+                evidenceVersionUsageCounts);
         AttributionView result = attributionCalculator.calculate(input);
+        result.setDataCutoffAt(asOf);
+        result.setInputHash(inputHash);
+        result.setAlgorithmVersion(ATTRIBUTION_ALGORITHM_VERSION);
+        result.setSourceWatermark(sourceWatermark);
+        result.setResultSource("RULE");
+        result.setFallback(false);
 
         ExperimentAttribution snapshot = new ExperimentAttribution();
         snapshot.setUserId(userId);
         snapshot.setHypothesisId(hypothesis.getId());
         snapshot.setCohortId(cohort.getId());
         snapshot.setAsOf(asOf);
+        snapshot.setDataCutoffAt(asOf);
+        snapshot.setInputHash(inputHash);
+        snapshot.setAlgorithmVersion(ATTRIBUTION_ALGORITHM_VERSION);
+        snapshot.setSourceWatermark(sourceWatermark);
+        snapshot.setResultSource("RULE");
+        snapshot.setFallback(CommonConstants.NO);
         snapshot.setMethod(result.getMethod());
         snapshot.setComparableFlag(Boolean.TRUE.equals(result.getComparable()) ? CommonConstants.YES : CommonConstants.NO);
         snapshot.setSampleCount(result.getEligibleSampleCount());
@@ -397,7 +448,16 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
         snapshot.setIncomparableReasonsJson(writeJson(result.getIncomparableReasons()));
         snapshot.setLimitationsJson(writeJson(result.getLimitations()));
         snapshot.setResultJson(writeJson(result));
-        attributionMapper.insert(snapshot);
+        try {
+            attributionMapper.insert(snapshot);
+        } catch (DuplicateKeyException ex) {
+            ExperimentAttribution winner = attributionMapper.selectByIdentity(
+                    userId, cohortId, inputHash, ATTRIBUTION_ALGORITHM_VERSION);
+            if (winner != null) {
+                return toAttributionView(winner);
+            }
+            throw ex;
+        }
         result.setSnapshotId(snapshot.getId());
         return result;
     }
@@ -507,7 +567,8 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                 .stream().collect(Collectors.toMap(JobApplication::getId, Function.identity()));
     }
 
-    private Map<Long, List<JobApplicationEvent>> loadEvents(List<ExperimentAssignment> assignments, Long userId) {
+    private Map<Long, List<JobApplicationEvent>> loadEvents(
+            List<ExperimentAssignment> assignments, Long userId, LocalDateTime dataCutoffAt) {
         List<Long> ids = assignments.stream().map(ExperimentAssignment::getApplicationId).distinct().toList();
         if (ids.isEmpty()) {
             return Map.of();
@@ -515,6 +576,8 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
         return applicationEventMapper.selectList(new LambdaQueryWrapper<JobApplicationEvent>()
                         .eq(JobApplicationEvent::getUserId, userId)
                         .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
+                        .isNotNull(JobApplicationEvent::getEventTime)
+                        .le(JobApplicationEvent::getEventTime, dataCutoffAt)
                         .in(JobApplicationEvent::getApplicationId, ids))
                 .stream().collect(Collectors.groupingBy(JobApplicationEvent::getApplicationId));
     }
@@ -725,26 +788,221 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                 .eq(ExperimentAttribution::getDeleted, CommonConstants.NO);
     }
 
-    private AttributionView findReusableAttribution(Long cohortId, Long userId,
-                                                    LocalDateTime requestedAsOf, LocalDateTime resolvedAsOf) {
-        LambdaQueryWrapper<ExperimentAttribution> query = attributionQuery(userId, cohortId);
-        if (requestedAsOf != null) {
-            query.eq(ExperimentAttribution::getAsOf, requestedAsOf);
-        } else {
-            query.ge(ExperimentAttribution::getCreatedAt,
-                    resolvedAsOf.minusSeconds(ATTRIBUTION_REUSE_SECONDS));
+    private int completedInterviewCount(Map<Long, List<JobApplicationEvent>> events) {
+        return (int) events.values().stream()
+                .flatMap(List::stream)
+                .map(JobApplicationEvent::getEventType)
+                .filter(StringUtils::hasText)
+                .map(value -> value.trim().toUpperCase(Locale.ROOT))
+                .filter(value -> value.contains("INTERVIEW") && value.contains("COMPLETED"))
+                .count();
+    }
+
+    private String sourceWatermark(List<ExperimentAssignment> assignments,
+                                   Map<Long, JobApplication> applications,
+                                   Map<Long, List<JobApplicationEvent>> events,
+                                   List<CareerEvidenceUsage> evidenceUsages) {
+        Map<String, Object> watermark = new LinkedHashMap<>();
+        watermark.put("assignments", assignments.stream()
+                .sorted(Comparator.comparing(ExperimentAssignment::getId,
+                        Comparator.nullsLast(Long::compareTo)))
+                .map(assignment -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", assignment.getId());
+                    row.put("variantId", assignment.getVariantId());
+                    row.put("applicationId", assignment.getApplicationId());
+                    row.put("assignedAt", assignment.getAssignedAt());
+                    row.put("jobFamily", assignment.getJobFamily());
+                    row.put("channel", assignment.getChannel());
+                    row.put("timeBucket", assignment.getTimeBucket());
+                    row.put("updatedAt", assignment.getUpdatedAt());
+                    return row;
+                }).toList());
+        watermark.put("applications", applications.values().stream()
+                .sorted(Comparator.comparing(JobApplication::getId,
+                        Comparator.nullsLast(Long::compareTo)))
+                .map(application -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", application.getId());
+                    row.put("status", application.getStatus());
+                    row.put("resumeVersionId", application.getResumeVersionId());
+                    row.put("updatedAt", application.getUpdatedAt());
+                    return row;
+                }).toList());
+        watermark.put("events", events.values().stream()
+                .flatMap(List::stream)
+                .sorted(Comparator.comparing(JobApplicationEvent::getId,
+                        Comparator.nullsLast(Long::compareTo)))
+                .map(event -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", event.getId());
+                    row.put("applicationId", event.getApplicationId());
+                    row.put("eventType", event.getEventType());
+                    row.put("eventTime", event.getEventTime());
+                    row.put("updatedAt", event.getUpdatedAt());
+                    return row;
+                }).toList());
+        watermark.put("evidenceUsages", evidenceUsages.stream()
+                .sorted(Comparator.comparing(CareerEvidenceUsage::getId,
+                        Comparator.nullsLast(Long::compareTo)))
+                .map(usage -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", usage.getId());
+                    row.put("applicationId", usage.getApplicationId());
+                    row.put("assignmentId", usage.getAssignmentId());
+                    row.put("assetType", usage.getAssetType());
+                    row.put("assetId", usage.getAssetId());
+                    row.put("assetVersion", usage.getAssetVersion());
+                    row.put("sourceHash", usage.getSourceHash());
+                    row.put("contentHash", usage.getContentHash());
+                    row.put("usedAt", usage.getUsedAt());
+                    row.put("status", usage.getStatus());
+                    row.put("stale", usage.getStale());
+                    row.put("updatedAt", usage.getUpdatedAt());
+                    return row;
+                }).toList());
+        return sha256(writeJson(watermark));
+    }
+
+    private List<CareerEvidenceUsage> loadEvidenceUsages(
+            List<ExperimentAssignment> assignments,
+            Map<Long, JobApplication> applications,
+            Long hypothesisId,
+            Long userId,
+            LocalDateTime asOf) {
+        if (evidenceUsageMapper == null || assignments == null || assignments.isEmpty()) {
+            return List.of();
         }
-        ExperimentAttribution snapshot = attributionMapper.selectOne(query
-                .orderByDesc(ExperimentAttribution::getCreatedAt)
-                .orderByDesc(ExperimentAttribution::getId)
-                .last("limit 1"));
-        return snapshot == null ? null : toAttributionView(snapshot);
+        List<Long> assignmentIds = assignments.stream()
+                .map(ExperimentAssignment::getId)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        List<Long> applicationIds = applications.keySet().stream()
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        Map<Long, CareerEvidenceUsage> byId = new LinkedHashMap<>();
+        if (!assignmentIds.isEmpty()) {
+            evidenceUsageMapper.selectList(new LambdaQueryWrapper<CareerEvidenceUsage>()
+                            .eq(CareerEvidenceUsage::getUserId, userId)
+                            .eq(CareerEvidenceUsage::getDeleted, CommonConstants.NO)
+                            .eq(CareerEvidenceUsage::getStale, CommonConstants.NO)
+                            .eq(CareerEvidenceUsage::getStatus, "CAPTURED")
+                            .in(CareerEvidenceUsage::getAssignmentId, assignmentIds)
+                            .le(CareerEvidenceUsage::getUsedAt, asOf)
+                            .last("LIMIT 10000"))
+                    .forEach(row -> byId.put(row.getId(), row));
+        }
+        if (hypothesisId != null && !applicationIds.isEmpty()) {
+            evidenceUsageMapper.selectList(new LambdaQueryWrapper<CareerEvidenceUsage>()
+                            .eq(CareerEvidenceUsage::getUserId, userId)
+                            .eq(CareerEvidenceUsage::getDeleted, CommonConstants.NO)
+                            .eq(CareerEvidenceUsage::getStale, CommonConstants.NO)
+                            .eq(CareerEvidenceUsage::getStatus, "CAPTURED")
+                            .eq(CareerEvidenceUsage::getHypothesisId, hypothesisId)
+                            .in(CareerEvidenceUsage::getApplicationId, applicationIds)
+                            .le(CareerEvidenceUsage::getUsedAt, asOf)
+                            .last("LIMIT 10000"))
+                    .forEach(row -> byId.put(row.getId(), row));
+        }
+        return byId.values().stream().toList();
+    }
+
+    private Map<String, Integer> evidenceVersionUsageCounts(List<CareerEvidenceUsage> usages) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        if (usages == null) {
+            return counts;
+        }
+        for (CareerEvidenceUsage usage : usages) {
+            String key = String.join(":",
+                    String.valueOf(usage.getAssetType()),
+                    String.valueOf(usage.getAssetId()),
+                    String.valueOf(usage.getAssetVersion()));
+            counts.merge(key, 1, Integer::sum);
+        }
+        return counts;
+    }
+
+    private String attributionInputHash(ExperimentHypothesis hypothesis,
+                                        ExperimentCohort cohort,
+                                        List<ExperimentVariant> variants,
+                                        List<DataPoint> points,
+                                        String sourceWatermark,
+                                        LocalDateTime dataCutoffAt) {
+        Map<String, Object> input = new LinkedHashMap<>();
+        input.put("algorithmVersion", ATTRIBUTION_ALGORITHM_VERSION);
+        input.put("hypothesisId", hypothesis.getId());
+        input.put("primaryMetric", hypothesis.getPrimaryMetric());
+        input.put("attributionWindowDays", hypothesis.getAttributionWindowDays());
+        input.put("cohortId", cohort.getId());
+        input.put("dataCutoffAt", dataCutoffAt);
+        input.put("outcomeType", cohort.getOutcomeType());
+        input.put("minSamplePerVariant", cohort.getMinSamplePerVariant());
+        input.put("variants", variants.stream()
+                .sorted(Comparator.comparing(ExperimentVariant::getId,
+                        Comparator.nullsLast(Long::compareTo)))
+                .map(variant -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("id", variant.getId());
+                    row.put("code", variant.getVariantCode());
+                    row.put("control", Integer.valueOf(CommonConstants.YES)
+                            .equals(variant.getControlFlag()));
+                    return row;
+                }).toList());
+        input.put("points", points.stream()
+                .sorted(Comparator
+                        .comparing(DataPoint::variantId, Comparator.nullsLast(Long::compareTo))
+                        .thenComparing(DataPoint::jobFamily,
+                                Comparator.nullsLast(String::compareTo))
+                        .thenComparing(DataPoint::channel,
+                                Comparator.nullsLast(String::compareTo))
+                        .thenComparing(DataPoint::timeBucket,
+                                Comparator.nullsLast(LocalDate::compareTo))
+                        .thenComparing(DataPoint::mature)
+                        .thenComparing(DataPoint::outcome))
+                .toList());
+        input.put("sourceWatermark", sourceWatermark);
+        return sha256(writeJson(input));
+    }
+
+    private String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) {
+                result.append(String.format(Locale.ROOT, "%02x", item & 0xff));
+            }
+            return result.toString();
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
     }
 
     private AttributionView toAttributionView(ExperimentAttribution snapshot) {
         try {
             AttributionView view = objectMapper.readValue(snapshot.getResultJson(), AttributionView.class);
             view.setSnapshotId(snapshot.getId());
+            view.setDataCutoffAt(snapshot.getDataCutoffAt() == null
+                    ? snapshot.getAsOf() : snapshot.getDataCutoffAt());
+            if (StringUtils.hasText(snapshot.getInputHash())) {
+                view.setInputHash(snapshot.getInputHash());
+            }
+            if (StringUtils.hasText(snapshot.getAlgorithmVersion())) {
+                view.setAlgorithmVersion(snapshot.getAlgorithmVersion());
+            }
+            if (StringUtils.hasText(snapshot.getSourceWatermark())) {
+                view.setSourceWatermark(snapshot.getSourceWatermark());
+            }
+            if (StringUtils.hasText(snapshot.getResultSource())) {
+                view.setResultSource(snapshot.getResultSource());
+            } else if (!StringUtils.hasText(view.getResultSource())) {
+                view.setResultSource("RULE");
+            }
+            if (snapshot.getFallback() != null) {
+                view.setFallback(CommonConstants.YES.equals(snapshot.getFallback()));
+            } else if (view.getFallback() == null) {
+                view.setFallback(false);
+            }
             return view;
         } catch (JsonProcessingException ex) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Attribution snapshot is invalid");

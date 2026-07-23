@@ -85,7 +85,7 @@ spring:
         - id: codecoachai-resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/evidence-assets/overview,/evidence-assets/overview/**,/evidence-assets/usages,/evidence-assets/usages/**,/evidence-assets/results,/evidence-assets/results/**,/evidence-usages,/evidence-usages/**,/evidence-usage-results,/evidence-usage-results/**,/ai/sse/resume/**
         # Kept separate from the large resume route because the current Gateway runtime
         # does not reliably register this token when it is part of that aggregate predicate.
         - id: codecoachai-resume-claim-audits
@@ -135,7 +135,7 @@ spring:
         - id: codecoachai-ai-admin
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**
+            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
         - id: codecoachai-file-admin
           uri: lb://codecoachai-file
           predicates:

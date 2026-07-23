@@ -270,6 +270,12 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         if (enabled && requiresUserConfirmation(memory)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "候选记忆需要用户确认后才能启用");
         }
+        if (enabled && isV9EvidenceLearningMemory(memory)
+                && (memory.getConfidence() == null
+                || memory.getConfidence().compareTo(MIN_STRONG_MEMORY_CONFIDENCE) < 0)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "低置信证据学习草稿不能进入 Agent 上下文");
+        }
         memory.setEnabled(enabled ? 1 : 0);
         agentMemoryMapper.updateById(memory);
         return toMemoryVO(agentMemoryMapper.selectById(id));
@@ -278,10 +284,11 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     @Override
     public AgentMemoryVO confirmMemory(Long userId, Long id) {
         AgentMemory memory = ownedMemory(userId, id);
+        boolean v9EvidenceLearningDraft = isV9EvidenceLearningMemory(memory);
         if (!isManualMemorySource(memory.getSourceType()) && !isUserConfirmedMemorySource(memory.getSourceType())) {
             memory.setSourceType(USER_CONFIRMED_MEMORY_SOURCE_PREFIX + normalizeMemorySourceTag(memory.getSourceType()));
         }
-        memory.setEnabled(1);
+        memory.setEnabled(v9EvidenceLearningDraft ? 0 : 1);
         memory.setUpdatedAt(timeProvider.now());
         agentMemoryMapper.updateById(memory);
         return toMemoryVO(agentMemoryMapper.selectById(id));
@@ -844,6 +851,15 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
             return;
         }
         if (!enabled) {
+            if (confirmed) {
+                vo.setMemoryStatus("CONFIRMED_DISABLED");
+                vo.setEvidenceTrustStatus("DISABLED");
+                vo.setCanBeEvidence(false);
+                vo.setDisabledReason("WAITING_USER_ENABLE");
+                vo.setConfirmedAt(firstTime(
+                        memory.getUpdatedAt(), memory.getCreatedAt(), timeProvider.now()));
+                return;
+            }
             vo.setMemoryStatus("DISABLED");
             vo.setEvidenceTrustStatus("DISABLED");
             vo.setCanBeEvidence(false);
@@ -869,7 +885,8 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
 
     private boolean isCandidateMemorySource(String sourceType) {
         String normalized = sourceType == null ? null : sourceType.trim().toUpperCase(Locale.ROOT);
-        return Set.of("AGENT_REVIEW", "AGENT_FEEDBACK", "JOB_EXPERIMENT", "RESUME_JOB_MATCH", "AI_SUMMARY", "SYSTEM")
+        return Set.of("AGENT_REVIEW", "AGENT_FEEDBACK", "JOB_EXPERIMENT", "RESUME_JOB_MATCH",
+                        "AI_SUMMARY", "SYSTEM", "EVIDENCE_LEARNING_CANDIDATE")
                 .contains(normalized);
     }
 
@@ -887,6 +904,15 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         return memory != null
                 && !isManualMemorySource(memory.getSourceType())
                 && !isUserConfirmedMemorySource(memory.getSourceType());
+    }
+
+    private boolean isV9EvidenceLearningMemory(AgentMemory memory) {
+        if (memory == null || !StringUtils.hasText(memory.getSourceType())) {
+            return false;
+        }
+        String sourceType = memory.getSourceType().trim().toUpperCase(Locale.ROOT);
+        return "EVIDENCE_LEARNING_CANDIDATE".equals(sourceType)
+                || "USER_CONFIRMED_EVIDENCE_LEARNING_CANDIDATE".equals(sourceType);
     }
 
     private LocalDateTime firstTime(LocalDateTime... values) {

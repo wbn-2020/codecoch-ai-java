@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
@@ -39,6 +41,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -47,6 +51,7 @@ import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 
 @ExtendWith(MockitoExtension.class)
 class JobSearchExperimentServiceImplTest {
@@ -130,9 +135,13 @@ class JobSearchExperimentServiceImplTest {
         assertTrue(review.getSampleWarning().contains("投递少于 5"));
         assertTrue(review.getInsightSummary().contains("只展示事实"));
         assertTrue(review.getUnsupportedConclusion().contains("不能判断策略有效性"));
-        assertTrue(review.getUnsupportedConclusion().contains("不比较简历版本优劣"));
+        assertTrue(review.getUnsupportedConclusion().contains("每个证据或简历版本使用少于 3 次"));
         assertTrue(review.getNextAction().contains("只展示事实"));
         assertTrue(review.getFactSummary().contains("投递数：3"));
+        Map<?, ?> qualityGate = (Map<?, ?>) review.getStrategy().get("qualityGate");
+        assertEquals("BLOCKED", qualityGate.get("gateStatus"));
+        assertEquals(5, qualityGate.get("minSampleSize"));
+        assertEquals(false, qualityGate.get("strongRecommendationAllowed"));
     }
 
     @Test
@@ -157,18 +166,22 @@ class JobSearchExperimentServiceImplTest {
         JobSearchExperimentReviewVO review = service.generateReview(7L);
 
         assertEquals("LOW", review.getConfidenceLevel());
-        assertTrue(review.getSampleWarning().contains("5-9"));
-        assertTrue(review.getInsightSummary().contains("弱建议"));
-        assertTrue(review.getNextAction().contains("低置信度"));
+        assertTrue(review.getSampleWarning().contains("5-14"));
+        assertTrue(review.getInsightSummary().contains("弱观察"));
+        assertTrue(review.getNextAction().contains("15 条"));
         assertFalse(review.getUnsupportedConclusion().isBlank());
+        Map<?, ?> qualityGate = (Map<?, ?>) review.getStrategy().get("qualityGate");
+        assertEquals("WARN", qualityGate.get("gateStatus"));
+        assertEquals(15, qualityGate.get("minSampleSize"));
+        assertEquals(false, qualityGate.get("strongRecommendationAllowed"));
     }
 
     @Test
     void generateReviewUsesMediumConfidenceForEnoughApplicationsButTooFewCompletedInterviews() {
         JobSearchExperiment experiment = experiment();
         when(experimentMapper.selectOne(any())).thenReturn(experiment);
-        when(relationMapper.selectList(any())).thenReturn(applicationRelations(10));
-        when(jobApplicationMapper.selectList(any())).thenReturn(applications(10, List.of(1L, 2L)));
+        when(relationMapper.selectList(any())).thenReturn(applicationRelations(15));
+        when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L, 2L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(2));
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
@@ -181,16 +194,21 @@ class JobSearchExperimentServiceImplTest {
         assertEquals("MEDIUM", review.getConfidenceLevel());
         assertTrue(review.getSampleWarning().contains("面试样本不足"));
         assertTrue(review.getInsightSummary().contains("趋势观察"));
-        assertTrue(review.getUnsupportedConclusion().contains("不判断面试能力变化"));
+        assertTrue(review.getUnsupportedConclusion().contains("不能判断面试能力变化"));
         assertTrue(review.getNextAction().contains("面试复盘样本"));
+        Map<?, ?> qualityGate = (Map<?, ?>) review.getStrategy().get("qualityGate");
+        assertEquals("WARN", qualityGate.get("gateStatus"));
+        assertEquals(15, qualityGate.get("minSampleSize"));
+        assertEquals(false, qualityGate.get("strongRecommendationAllowed"));
     }
 
     @Test
     void generateReviewUsesHighConfidenceWhenApplicationsAndCompletedInterviewsAreEnough() {
         JobSearchExperiment experiment = experiment();
         when(experimentMapper.selectOne(any())).thenReturn(experiment);
-        when(relationMapper.selectList(any())).thenReturn(resumeVersionRelations(1L, 2L, 3L, 4L));
-        when(jobApplicationMapper.selectList(any())).thenReturn(applications(12, List.of(1L, 2L, 3L, 4L)));
+        when(relationMapper.selectList(any())).thenReturn(
+                resumeVersionRelationsWithApplications(15, 1L, 2L, 3L, 4L));
+        when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L, 2L, 3L, 4L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(3));
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
@@ -202,16 +220,21 @@ class JobSearchExperimentServiceImplTest {
 
         assertEquals("HIGH", review.getConfidenceLevel());
         assertTrue(review.getSampleWarning().contains("影响因素"));
-        assertTrue(review.getUnsupportedConclusion().contains("不能完全归因"));
+        assertTrue(review.getUnsupportedConclusion().contains("不能把结果归因到单一因素"));
         assertTrue(review.getNextAction().contains("下一轮实验"));
+        Map<?, ?> qualityGate = (Map<?, ?>) review.getStrategy().get("qualityGate");
+        assertEquals("PASS", qualityGate.get("gateStatus"));
+        assertEquals(15, qualityGate.get("minSampleSize"));
+        assertEquals(true, qualityGate.get("strongRecommendationAllowed"));
     }
 
     @Test
     void generateReviewDoesNotCompareResumeVersionsWhenVersionSampleIsInsufficient() {
         JobSearchExperiment experiment = experiment();
         when(experimentMapper.selectOne(any())).thenReturn(experiment);
-        when(relationMapper.selectList(any())).thenReturn(resumeVersionRelations(1L));
-        when(jobApplicationMapper.selectList(any())).thenReturn(applications(10, List.of(1L)));
+        when(relationMapper.selectList(any())).thenReturn(
+                resumeVersionRelationsWithApplications(15, 1L));
+        when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(3));
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
@@ -222,7 +245,7 @@ class JobSearchExperimentServiceImplTest {
         JobSearchExperimentReviewVO review = service.generateReview(7L);
 
         assertEquals("HIGH", review.getConfidenceLevel());
-        assertTrue(review.getUnsupportedConclusion().contains("不比较简历版本优劣"));
+        assertTrue(review.getUnsupportedConclusion().contains("每个证据或简历版本使用少于 3 次"));
         assertTrue(review.getSampleWarning().contains("简历版本"));
     }
 
@@ -343,6 +366,54 @@ class JobSearchExperimentServiceImplTest {
     }
 
     @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void listReviewsRefreshesV9EvidenceProjectionWithoutChangingStrategyJson() throws Exception {
+        JobSearchExperiment experiment = experiment();
+        JobSearchExperimentReview stored = new JobSearchExperimentReview();
+        stored.setId(901L);
+        stored.setUserId(10L);
+        stored.setExperimentId(7L);
+        stored.setFactSummary("已保存事实");
+        stored.setStrategyJson("{\"facts\":[\"旧接口事实\"]}");
+        stored.setConfidenceLevel("LOW");
+        when(experimentMapper.selectOne(any())).thenReturn(experiment);
+        when(reviewMapper.selectList(any())).thenReturn(List.of(stored));
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    RowMapper mapper = invocation.getArgument(1);
+                    if (sql.contains("career_evidence_usage u")) {
+                        ResultSet resultSet = mock(ResultSet.class);
+                        when(resultSet.getLong("id")).thenReturn(501L);
+                        when(resultSet.getString("source_hash")).thenReturn("usage-source");
+                        when(resultSet.getString("content_hash")).thenReturn("usage-content");
+                        when(resultSet.getString("asset_version")).thenReturn("2");
+                        when(resultSet.getTimestamp("used_at")).thenReturn(
+                                Timestamp.valueOf("2026-07-22 10:00:00"));
+                        when(resultSet.getObject("result_id", Long.class)).thenReturn(601L);
+                        when(resultSet.getString("result_status")).thenReturn("CONFIRMED");
+                        return List.of(mapper.mapRow(resultSet, 0));
+                    }
+                    if (sql.contains("job_experiment_attribution a")) {
+                        return List.of(701L);
+                    }
+                    return List.of();
+                });
+
+        JobSearchExperimentReviewVO review = service.listReviews(7L).get(0);
+
+        assertEquals(1L, review.getEvidenceUsageCount());
+        assertEquals(1L, review.getOutcomeSampleCount());
+        assertEquals(64, review.getUsageSourceHash().length());
+        assertEquals(701L, review.getAttributionSnapshotId());
+        assertEquals(List.of("旧接口事实"), review.getFacts());
+        assertFalse(review.getStrategy().containsKey("evidenceUsageCount"));
+        assertFalse(review.getStrategy().containsKey("outcomeSampleCount"));
+        assertFalse(review.getStrategy().containsKey("usageSourceHash"));
+        assertFalse(review.getStrategy().containsKey("attributionSnapshotId"));
+    }
+
+    @Test
     void listAgentContextForUserReturnsSafeNonDemoExperimentSummaries() {
         JobSearchExperiment experiment = experiment();
         experiment.setTitle("Redis 方向投递实验");
@@ -460,7 +531,12 @@ class JobSearchExperimentServiceImplTest {
     }
 
     private static List<JobSearchExperimentRelation> resumeVersionRelations(Long... resumeVersionIds) {
-        List<JobSearchExperimentRelation> relations = applicationRelations(10);
+        return resumeVersionRelationsWithApplications(10, resumeVersionIds);
+    }
+
+    private static List<JobSearchExperimentRelation> resumeVersionRelationsWithApplications(
+            int applicationCount, Long... resumeVersionIds) {
+        List<JobSearchExperimentRelation> relations = applicationRelations(applicationCount);
         long relationId = 1_000L;
         for (Long resumeVersionId : resumeVersionIds) {
             JobSearchExperimentRelation relation = relation(relationId++);

@@ -1,10 +1,14 @@
 package com.codecoachai.resume.experimentv2;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -16,6 +20,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.entity.JobApplication;
+import com.codecoachai.resume.domain.entity.JobApplicationEvent;
 import com.codecoachai.resume.domain.entity.JobSearchExperiment;
 import com.codecoachai.resume.experimentv2.ExperimentV2Models.AssignmentCreate;
 import com.codecoachai.resume.experimentv2.ExperimentV2Models.AttributionView;
@@ -81,6 +86,8 @@ class ExperimentV2ServiceImplTest {
         initTableInfo(ExperimentCohort.class);
         initTableInfo(ExperimentAttribution.class);
         initTableInfo(ExperimentAssignment.class);
+        initTableInfo(JobApplication.class);
+        initTableInfo(JobApplicationEvent.class);
         initTableInfo(JobSearchExperiment.class);
         LoginUserContext.setLoginUser(LoginUser.builder()
                 .userId(USER_ID)
@@ -336,20 +343,144 @@ class ExperimentV2ServiceImplTest {
     }
 
     @Test
-    void repeatedAttributionWithinReuseWindowReturnsStoredSnapshot() {
+    void repeatedAttributionWithSameInputHashReturnsStoredSnapshot() {
         when(cohortMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cohort(9L, 7L));
+        when(hypothesisMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(hypothesis(7L, "RUNNING"));
+        when(variantMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(variant(3L, "CONTROL"), variant(4L, "TREATMENT")));
+        when(assignmentMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
         ExperimentAttribution snapshot = snapshot(33L, 9L);
         snapshot.setResultJson("{\"cohortId\":9,\"eligibleSampleCount\":4}");
-        snapshot.setCreatedAt(LocalDateTime.now().minusSeconds(5));
-        when(attributionMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(snapshot);
+        when(attributionMapper.selectByIdentity(
+                eq(USER_ID), eq(9L), anyString(), eq("V9_EXPERIMENT_ATTRIBUTION_V1")))
+                .thenReturn(snapshot);
 
         AttributionView result = service.attribute(9L, null);
 
         assertEquals(33L, result.getSnapshotId());
         assertEquals(4, result.getEligibleSampleCount());
-        verifyNoInteractions(hypothesisMapper, assignmentMapper, applicationMapper,
-                applicationEventMapper, attributionCalculator);
+        verify(assignmentMapper).selectList(any(LambdaQueryWrapper.class));
+        verifyNoInteractions(applicationMapper, applicationEventMapper, attributionCalculator);
+        verify(attributionMapper).selectByIdentity(
+                eq(USER_ID), eq(9L), anyString(), eq("V9_EXPERIMENT_ATTRIBUTION_V1"));
+        verify(attributionMapper, never()).selectOne(any(LambdaQueryWrapper.class));
         verify(attributionMapper, never()).insert(any(ExperimentAttribution.class));
+    }
+
+    @Test
+    void changedAttributionInputCalculatesAndPersistsNewSnapshot() {
+        when(cohortMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cohort(9L, 7L));
+        when(hypothesisMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(hypothesis(7L, "RUNNING"));
+        when(variantMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(variant(3L, "CONTROL"), variant(4L, "TREATMENT")));
+        when(assignmentMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        AttributionView calculated = new AttributionView();
+        calculated.setCohortId(9L);
+        calculated.setMethod("STANDARDIZED_STRATIFIED_RATE");
+        calculated.setComparable(false);
+        calculated.setEligibleSampleCount(0);
+        calculated.setCommonStrataCount(0);
+        when(attributionMapper.selectByIdentity(
+                eq(USER_ID), eq(9L), anyString(), eq("V9_EXPERIMENT_ATTRIBUTION_V1")))
+                .thenReturn(null);
+        when(attributionCalculator.calculate(any(ExperimentAttributionCalculator.CalculationInput.class)))
+                .thenReturn(calculated);
+        when(attributionMapper.insert(any(ExperimentAttribution.class))).thenAnswer(invocation -> {
+            ExperimentAttribution saved = invocation.getArgument(0);
+            saved.setId(44L);
+            return 1;
+        });
+
+        LocalDateTime dataCutoffAt = LocalDateTime.of(2026, 7, 23, 0, 0);
+        AttributionView result = service.attribute(9L, dataCutoffAt);
+
+        assertEquals(44L, result.getSnapshotId());
+        assertEquals("V9_EXPERIMENT_ATTRIBUTION_V1", result.getAlgorithmVersion());
+        assertEquals("RULE", result.getResultSource());
+        assertEquals(false, result.getFallback());
+        ArgumentCaptor<ExperimentAttribution> snapshotCaptor =
+                ArgumentCaptor.forClass(ExperimentAttribution.class);
+        verify(attributionMapper).insert(snapshotCaptor.capture());
+        ExperimentAttribution saved = snapshotCaptor.getValue();
+        assertTrue(saved.getInputHash() != null && saved.getInputHash().length() == 64);
+        assertEquals("V9_EXPERIMENT_ATTRIBUTION_V1", saved.getAlgorithmVersion());
+        assertEquals("RULE", saved.getResultSource());
+        assertEquals(0, saved.getFallback());
+        ArgumentCaptor<LambdaQueryWrapper<ExperimentAssignment>> assignmentQueryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(assignmentMapper).selectList(assignmentQueryCaptor.capture());
+        String assignmentSql = assignmentQueryCaptor.getValue().getSqlSegment();
+        assertTrue(assignmentSql.contains("assigned_at") && assignmentSql.contains("<="), assignmentSql);
+        assertTrue(assignmentQueryCaptor.getValue().getParamNameValuePairs().containsValue(dataCutoffAt));
+    }
+
+    @Test
+    void attributionIdentityChangesWhenOnlyDataCutoffChanges() {
+        when(cohortMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cohort(9L, 7L));
+        when(hypothesisMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(hypothesis(7L, "RUNNING"));
+        when(variantMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(variant(3L, "CONTROL"), variant(4L, "TREATMENT")));
+        when(assignmentMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of());
+        when(attributionMapper.selectByIdentity(
+                eq(USER_ID), eq(9L), anyString(), eq("V9_EXPERIMENT_ATTRIBUTION_V1")))
+                .thenReturn(null);
+        when(attributionCalculator.calculate(any(ExperimentAttributionCalculator.CalculationInput.class)))
+                .thenAnswer(invocation -> {
+                    AttributionView calculated = new AttributionView();
+                    calculated.setCohortId(9L);
+                    calculated.setMethod("STANDARDIZED_STRATIFIED_RATE");
+                    calculated.setComparable(false);
+                    calculated.setEligibleSampleCount(0);
+                    calculated.setCommonStrataCount(0);
+                    return calculated;
+                });
+        when(attributionMapper.insert(any(ExperimentAttribution.class))).thenReturn(1);
+
+        service.attribute(9L, LocalDateTime.of(2026, 7, 22, 0, 0));
+        service.attribute(9L, LocalDateTime.of(2026, 7, 23, 0, 0));
+
+        ArgumentCaptor<String> inputHashCaptor = ArgumentCaptor.forClass(String.class);
+        verify(attributionMapper, times(2)).selectByIdentity(
+                eq(USER_ID), eq(9L), inputHashCaptor.capture(), eq("V9_EXPERIMENT_ATTRIBUTION_V1"));
+        assertEquals(2, inputHashCaptor.getAllValues().size());
+        assertNotEquals(inputHashCaptor.getAllValues().get(0), inputHashCaptor.getAllValues().get(1));
+    }
+
+    @Test
+    void attributionEventQueryExcludesFactsAfterDataCutoff() {
+        LocalDateTime dataCutoffAt = LocalDateTime.of(2026, 7, 23, 0, 0);
+        when(cohortMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(cohort(9L, 7L));
+        when(hypothesisMapper.selectOne(any(LambdaQueryWrapper.class)))
+                .thenReturn(hypothesis(7L, "RUNNING"));
+        when(variantMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(variant(3L, "CONTROL"), variant(4L, "TREATMENT")));
+        ExperimentAssignment assignment = assignment(17L, 3L);
+        assignment.setAssignedAt(LocalDateTime.of(2026, 7, 2, 0, 0));
+        when(assignmentMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(assignment));
+        JobApplication application = new JobApplication();
+        application.setId(41L);
+        application.setUserId(USER_ID);
+        application.setStatus("APPLIED");
+        application.setUpdatedAt(dataCutoffAt.minusHours(1));
+        when(applicationMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of(application));
+        when(applicationEventMapper.selectList(any(LambdaQueryWrapper.class)))
+                .thenReturn(List.of());
+        ExperimentAttribution snapshot = snapshot(33L, 9L);
+        snapshot.setResultJson("{\"cohortId\":9,\"eligibleSampleCount\":1}");
+        when(attributionMapper.selectByIdentity(
+                eq(USER_ID), eq(9L), anyString(), eq("V9_EXPERIMENT_ATTRIBUTION_V1")))
+                .thenReturn(snapshot);
+
+        service.attribute(9L, dataCutoffAt);
+
+        ArgumentCaptor<LambdaQueryWrapper<JobApplicationEvent>> eventQueryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(applicationEventMapper).selectList(eventQueryCaptor.capture());
+        String eventSql = eventQueryCaptor.getValue().getSqlSegment();
+        assertTrue(eventSql.contains("event_time") && eventSql.contains("<="), eventSql);
+        assertTrue(eventQueryCaptor.getValue().getParamNameValuePairs().containsValue(dataCutoffAt));
     }
 
     @Test
@@ -387,6 +518,10 @@ class ExperimentV2ServiceImplTest {
         cohort.setId(id);
         cohort.setUserId(USER_ID);
         cohort.setHypothesisId(hypothesisId);
+        cohort.setWindowStart(LocalDateTime.of(2026, 7, 1, 0, 0));
+        cohort.setWindowEnd(LocalDateTime.of(2026, 7, 31, 0, 0));
+        cohort.setOutcomeType("INTERVIEW");
+        cohort.setMinSamplePerVariant(10);
         return cohort;
     }
 
@@ -436,6 +571,7 @@ class ExperimentV2ServiceImplTest {
         variant.setHypothesisId(7L);
         variant.setVariantCode(code);
         variant.setAllocationWeight(1);
+        variant.setControlFlag("CONTROL".equals(code) ? 1 : 0);
         return variant;
     }
 

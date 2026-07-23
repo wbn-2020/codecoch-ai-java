@@ -1,4 +1,7 @@
 codecoachai:
+  features:
+    v9:
+      evidence-learning: true
   v4:
     features:
       growth-enabled: true

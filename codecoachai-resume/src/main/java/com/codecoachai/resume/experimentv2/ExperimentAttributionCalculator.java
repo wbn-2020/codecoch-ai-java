@@ -2,9 +2,10 @@ package com.codecoachai.resume.experimentv2;
 
 import com.codecoachai.resume.experimentv2.ExperimentV2Models.AttributionView;
 import com.codecoachai.resume.experimentv2.ExperimentV2Models.VariantAttributionView;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy.QualityDecision;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -13,11 +14,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 @Component
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class ExperimentAttributionCalculator {
+
+    private final ExperimentQualityGatePolicy qualityGatePolicy;
+
+    public ExperimentAttributionCalculator() {
+        this(new ExperimentQualityGatePolicy());
+    }
 
     public AttributionView calculate(CalculationInput input) {
         AttributionView result = new AttributionView();
@@ -28,6 +38,16 @@ public class ExperimentAttributionCalculator {
 
         List<VariantSpec> variants = input.variants() == null ? List.of() : input.variants();
         List<DataPoint> points = input.points() == null ? List.of() : input.points();
+        QualityDecision qualityGate = qualityGatePolicy.evaluate(
+                points.stream().filter(DataPoint::mature).count(),
+                input.completedInterviewCount(),
+                input.evidenceVersionUsageCounts());
+        result.setQualityGate(qualityGate.gateStatus());
+        result.setSampleLevel(qualityGate.observationLevel());
+        result.setConfidenceLevel(qualityGate.confidenceLevel());
+        result.getUnsupportedConclusions().addAll(qualityGate.unsupportedConclusions());
+        result.getWeakObservations().addAll(qualityGate.weakObservations());
+        result.getSampleBoundary().putAll(qualityGate.sampleBoundary());
         Map<Long, VariantSpec> variantsById = variants.stream()
                 .collect(Collectors.toMap(VariantSpec::id, Function.identity(), (left, right) -> left, LinkedHashMap::new));
         Map<Long, List<DataPoint>> pointsByVariant = points.stream()
@@ -99,7 +119,9 @@ public class ExperimentAttributionCalculator {
             view.setCommonStrataSampleCount(variantCommon.size());
             view.setOutcomeCount(outcomes);
             view.setRawRate(rate(outcomes, variantMature.size()));
-            BigDecimal adjustedRate = adjustedRate(variantCommon, pooledStrataCounts, pooledTotal);
+            BigDecimal adjustedRate = qualityGate.strongConclusionAllowed()
+                    ? adjustedRate(variantCommon, pooledStrataCounts, pooledTotal)
+                    : null;
             view.setAdjustedRate(adjustedRate);
             adjustedRates.put(variant.id(), adjustedRate);
             result.getVariants().add(view);
@@ -118,7 +140,8 @@ public class ExperimentAttributionCalculator {
                 }
             }
         }
-        result.setComparable(result.getIncomparableReasons().isEmpty());
+        result.setComparable(result.getIncomparableReasons().isEmpty()
+                && qualityGate.strongConclusionAllowed());
         return result;
     }
 
@@ -189,6 +212,23 @@ public class ExperimentAttributionCalculator {
     }
 
     public record CalculationInput(Long hypothesisId, Long cohortId, java.time.LocalDateTime asOf,
-                                   int minSamplePerVariant, List<VariantSpec> variants, List<DataPoint> points) {
+                                   int minSamplePerVariant, List<VariantSpec> variants, List<DataPoint> points,
+                                   int completedInterviewCount,
+                                   Map<String, Integer> evidenceVersionUsageCounts) {
+
+        public CalculationInput(Long hypothesisId, Long cohortId, java.time.LocalDateTime asOf,
+                                int minSamplePerVariant, List<VariantSpec> variants, List<DataPoint> points) {
+            this(hypothesisId, cohortId, asOf, minSamplePerVariant, variants, points,
+                    points == null ? 0 : (int) points.stream().filter(DataPoint::outcome).count(),
+                    Map.of());
+        }
+
+        public CalculationInput(Long hypothesisId, Long cohortId, java.time.LocalDateTime asOf,
+                                int minSamplePerVariant, List<VariantSpec> variants, List<DataPoint> points,
+                                int completedInterviewCount) {
+            this(hypothesisId, cohortId, asOf, minSamplePerVariant, variants, points,
+                    completedInterviewCount, Map.of());
+        }
     }
+
 }

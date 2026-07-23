@@ -276,4 +276,62 @@ public interface CareerCampaignArchiveMapper extends BaseMapper<CareerCampaignAr
             @Param("campaignId") Long campaignId,
             @Param("dataCutoffAt") LocalDateTime dataCutoffAt,
             @Param("limit") int limit);
+
+    @Select("""
+            SELECT u.id, u.application_id, u.target_job_id, u.asset_type, u.asset_id,
+                   u.asset_version, u.package_snapshot_id, u.source_hash, u.content_hash,
+                   u.usage_scene, u.used_at, u.hypothesis_id, u.variant_id, u.assignment_id,
+                   u.created_at
+              FROM career_evidence_usage u
+             WHERE u.user_id = #{userId}
+               AND u.campaign_id = #{campaignId}
+               AND u.deleted = 0
+               AND u.used_at <= #{dataCutoffAt}
+               AND u.created_at <= #{dataCutoffAt}
+             ORDER BY u.used_at, u.id
+             LIMIT #{limit}
+            """)
+    List<CareerCampaignArchiveModels.EvidenceUsageRow> selectEvidenceUsages(
+            @Param("userId") Long userId,
+            @Param("campaignId") Long campaignId,
+            @Param("dataCutoffAt") LocalDateTime dataCutoffAt,
+            @Param("limit") int limit);
+
+    @Select("""
+            SELECT r.id, r.usage_id, r.application_id, r.event_type, r.event_id,
+                   s.status AS status,
+                   s.id AS snapshot_id, s.snapshot_version, s.outcome_code, s.known_facts_json,
+                   s.external_feedback_text, s.user_interpretation_text, s.unknowns_json,
+                   s.limits_json, s.source_type, s.source_id, s.source_version, s.source_hash,
+                   s.occurred_at, s.confirmed_at, s.content_hash, s.supersedes_snapshot_id,
+                   s.created_at AS snapshot_created_at, r.created_at
+              FROM career_evidence_usage_result r
+              JOIN career_evidence_usage u ON u.id = r.usage_id
+               AND u.user_id = #{userId}
+               AND u.campaign_id = #{campaignId}
+               AND u.application_id = r.application_id
+               AND u.deleted = 0
+               AND u.used_at <= #{dataCutoffAt}
+               AND u.created_at <= #{dataCutoffAt}
+              JOIN career_evidence_usage_result_snapshot s
+                ON s.id = (
+                     SELECT s2.id
+                       FROM career_evidence_usage_result_snapshot s2
+                      WHERE s2.result_id = r.id
+                        AND s2.user_id = #{userId}
+                        AND s2.created_at <= #{dataCutoffAt}
+                      ORDER BY s2.snapshot_version DESC, s2.id DESC
+                      LIMIT 1
+                   )
+             WHERE r.user_id = #{userId}
+               AND r.deleted = 0
+               AND r.created_at <= #{dataCutoffAt}
+             ORDER BY COALESCE(s.occurred_at, r.created_at), r.id
+             LIMIT #{limit}
+            """)
+    List<CareerCampaignArchiveModels.EvidenceUsageResultRow> selectEvidenceUsageResults(
+            @Param("userId") Long userId,
+            @Param("campaignId") Long campaignId,
+            @Param("dataCutoffAt") LocalDateTime dataCutoffAt,
+            @Param("limit") int limit);
 }

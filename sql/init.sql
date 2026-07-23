@@ -1950,31 +1950,51 @@ CREATE TABLE IF NOT EXISTS career_campaign_review_source (
 CREATE TABLE IF NOT EXISTS career_campaign_review_memory_candidate (
   id BIGINT NOT NULL AUTO_INCREMENT,
   user_id BIGINT NOT NULL,
-  review_id BIGINT NOT NULL,
-  snapshot_id BIGINT NOT NULL,
+  review_id BIGINT DEFAULT NULL,
+  snapshot_id BIGINT DEFAULT NULL,
+  candidate_scope_type VARCHAR(32) DEFAULT NULL,
+  candidate_scope_key VARCHAR(128) DEFAULT NULL,
+  candidate_type VARCHAR(32) DEFAULT NULL,
+  usage_source_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  evidence_count INT NOT NULL DEFAULT 0,
+  sample_count INT NOT NULL DEFAULT 0,
+  limits_json TEXT DEFAULT NULL,
   candidate_key VARCHAR(128) NOT NULL,
   semantic_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
   title VARCHAR(255) NOT NULL,
   content VARCHAR(2000) NOT NULL,
   source_ref VARCHAR(255) DEFAULT NULL,
   confidence_level VARCHAR(16) NOT NULL DEFAULT 'LOW',
+  -- Legacy database writes keep PENDING; the V9 mapper supplies PENDING_CONFIRMATION explicitly.
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
   validity_days INT DEFAULT NULL,
   expires_at DATETIME DEFAULT NULL,
   confirmed_at DATETIME DEFAULT NULL,
   decision_idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  decision_code VARCHAR(16) DEFAULT NULL,
+  decision_payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  decision_history_json TEXT DEFAULT NULL,
+  decision_at DATETIME DEFAULT NULL,
+  promoted_memory_id BIGINT DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
   live_semantic_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin
     GENERATED ALWAYS AS (
-      CASE WHEN deleted = 0 THEN semantic_hash ELSE NULL END
+      CASE
+        WHEN deleted = 0 AND status NOT IN ('REJECTED', 'EXPIRED')
+        THEN semantic_hash
+        ELSE NULL
+      END
     ) STORED,
   PRIMARY KEY (id),
   UNIQUE KEY uk_campaign_review_memory_candidate_key (review_id, candidate_key),
   UNIQUE KEY uk_campaign_review_memory_live_semantic (user_id, live_semantic_hash),
   KEY idx_campaign_review_memory_status (
     user_id, status, deleted, expires_at, id
+  ),
+  KEY idx_campaign_review_memory_scope (
+    user_id, candidate_scope_type, candidate_scope_key, status, deleted, id
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Governed campaign review memory candidate';
 
@@ -2184,3 +2204,264 @@ CREATE TABLE IF NOT EXISTS career_campaign_archive_export (
     user_id, status, deleted, updated_at, id
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V8 career campaign archive export';
+
+CREATE TABLE IF NOT EXISTS project_evidence_version (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  project_evidence_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  version_no INT NOT NULL,
+  snapshot_json MEDIUMTEXT NOT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL',
+  source_id BIGINT DEFAULT NULL,
+  confirmed_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_project_evidence_version_no (
+    project_evidence_id, version_no
+  ),
+  UNIQUE KEY uk_project_evidence_version_content (
+    project_evidence_id, content_hash
+  ),
+  KEY idx_project_evidence_version_owner (
+    user_id, project_evidence_id, created_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V9 immutable project evidence version';
+
+CREATE TABLE IF NOT EXISTS job_application_package (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  package_no VARCHAR(64) NOT NULL,
+  target_job_id BIGINT DEFAULT NULL,
+  jd_analysis_id BIGINT DEFAULT NULL,
+  resume_id BIGINT DEFAULT NULL,
+  resume_version_id BIGINT DEFAULT NULL,
+  match_report_id BIGINT DEFAULT NULL,
+  application_id BIGINT DEFAULT NULL,
+  company_name VARCHAR(120) DEFAULT NULL,
+  job_title VARCHAR(160) DEFAULT NULL,
+  readiness_level VARCHAR(32) DEFAULT NULL,
+  readiness_score INT DEFAULT NULL,
+  readiness_reason VARCHAR(1000) DEFAULT NULL,
+  package_status VARCHAR(32) NOT NULL DEFAULT 'DRAFT',
+  snapshot_json MEDIUMTEXT DEFAULT NULL,
+  checklist_json MEDIUMTEXT DEFAULT NULL,
+  actions_json MEDIUMTEXT DEFAULT NULL,
+  project_evidence_ids_json TEXT DEFAULT NULL,
+  trace_id VARCHAR(128) DEFAULT NULL,
+  result_source VARCHAR(32) NOT NULL DEFAULT 'REAL',
+  fallback TINYINT NOT NULL DEFAULT 0,
+  fallback_reason VARCHAR(1000) DEFAULT NULL,
+  snapshot_version INT NOT NULL DEFAULT 1,
+  current_snapshot_id BIGINT DEFAULT NULL,
+  refreshed_at DATETIME DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_job_application_package_no_live (package_no, deleted),
+  KEY idx_job_application_package_user_status (
+    user_id, deleted, package_status, updated_at
+  ),
+  KEY idx_job_application_package_target_job (target_job_id, deleted),
+  KEY idx_job_application_package_jd_analysis (jd_analysis_id, deleted),
+  KEY idx_job_application_package_resume_version (resume_version_id, deleted),
+  KEY idx_job_application_package_match_report (match_report_id, deleted),
+  KEY idx_job_application_package_application (application_id, deleted),
+  KEY idx_job_application_package_trace (trace_id, deleted),
+  KEY idx_job_application_package_current_snapshot (current_snapshot_id, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Persistent job application package';
+
+CREATE TABLE IF NOT EXISTS job_application_package_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  package_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  snapshot_version INT NOT NULL,
+  snapshot_json MEDIUMTEXT NOT NULL,
+  checklist_json MEDIUMTEXT DEFAULT NULL,
+  actions_json MEDIUMTEXT DEFAULT NULL,
+  project_evidence_ids_json TEXT DEFAULT NULL,
+  resume_version_id BIGINT DEFAULT NULL,
+  match_report_id BIGINT DEFAULT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  captured_at DATETIME NOT NULL,
+  capture_source VARCHAR(32) NOT NULL DEFAULT 'SAVE',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_application_package_snapshot_version (
+    package_id, snapshot_version
+  ),
+  UNIQUE KEY uk_application_package_snapshot_content (
+    package_id, content_hash
+  ),
+  KEY idx_application_package_snapshot_owner (
+    user_id, package_id, captured_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V9 immutable application package snapshot';
+
+CREATE TABLE IF NOT EXISTS career_evidence_usage (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  campaign_id BIGINT DEFAULT NULL,
+  application_id BIGINT NOT NULL,
+  target_job_id BIGINT DEFAULT NULL,
+  asset_type VARCHAR(48) NOT NULL,
+  asset_id BIGINT NOT NULL,
+  asset_version VARCHAR(64) NOT NULL,
+  package_snapshot_id BIGINT DEFAULT NULL,
+  source_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  usage_scene VARCHAR(32) NOT NULL,
+  used_at DATETIME NOT NULL,
+  hypothesis_id BIGINT DEFAULT NULL,
+  variant_id BIGINT DEFAULT NULL,
+  assignment_id BIGINT DEFAULT NULL,
+  usage_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'CAPTURED',
+  stale TINYINT NOT NULL DEFAULT 0,
+  stale_reason VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_career_evidence_usage_fact (user_id, usage_key_hash),
+  UNIQUE KEY uk_career_evidence_usage_idempotency (
+    user_id, idempotency_key_hash
+  ),
+  KEY idx_career_evidence_usage_application (
+    user_id, application_id, status, used_at, id
+  ),
+  KEY idx_career_evidence_usage_campaign (
+    user_id, campaign_id, used_at, id
+  ),
+  KEY idx_career_evidence_usage_asset (
+    user_id, asset_type, asset_id, asset_version, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V9 immutable evidence usage fact';
+
+CREATE TABLE IF NOT EXISTS career_evidence_usage_result (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  usage_id BIGINT NOT NULL,
+  application_id BIGINT NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  event_id BIGINT DEFAULT NULL,
+  event_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  current_snapshot_id BIGINT DEFAULT NULL,
+  snapshot_version INT NOT NULL DEFAULT 0,
+  status VARCHAR(24) NOT NULL DEFAULT 'RECORDED',
+  lock_version INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_evidence_usage_result_event (
+    user_id, usage_id, event_key_hash
+  ),
+  KEY idx_evidence_usage_result_usage (
+    user_id, usage_id, status, updated_at, id
+  ),
+  KEY idx_evidence_usage_result_application (
+    user_id, application_id, status, updated_at, id
+  ),
+  KEY idx_evidence_usage_result_snapshot (current_snapshot_id, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V9 evidence usage result root';
+
+CREATE TABLE IF NOT EXISTS career_evidence_usage_result_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  result_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  snapshot_version INT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'RECORDED',
+  outcome_code VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
+  known_facts_json MEDIUMTEXT NOT NULL,
+  external_feedback_text MEDIUMTEXT DEFAULT NULL,
+  user_interpretation_text MEDIUMTEXT DEFAULT NULL,
+  unknowns_json TEXT NOT NULL,
+  limits_json TEXT NOT NULL,
+  source_type VARCHAR(40) NOT NULL,
+  source_id BIGINT DEFAULT NULL,
+  source_version VARCHAR(64) DEFAULT NULL,
+  source_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  occurred_at DATETIME DEFAULT NULL,
+  confirmed_at DATETIME DEFAULT NULL,
+  content_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  idempotency_payload_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  supersedes_snapshot_id BIGINT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_evidence_usage_result_snapshot_version (
+    result_id, snapshot_version
+  ),
+  UNIQUE KEY uk_evidence_usage_result_snapshot_idempotency (
+    result_id, idempotency_key_hash
+  ),
+  KEY idx_evidence_usage_result_snapshot_owner (
+    user_id, result_id, created_at, id
+  ),
+  KEY idx_evidence_usage_result_snapshot_cutoff (
+    user_id, occurred_at, created_at, id
+  )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V9 immutable evidence usage result snapshot';
+
+CREATE TABLE IF NOT EXISTS job_experiment_attribution (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  hypothesis_id BIGINT NOT NULL,
+  cohort_id BIGINT NOT NULL,
+  as_of DATETIME NOT NULL,
+  data_cutoff_at DATETIME DEFAULT NULL,
+  input_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  algorithm_version VARCHAR(32) DEFAULT NULL,
+  source_watermark TEXT DEFAULT NULL,
+  result_source VARCHAR(24) NOT NULL DEFAULT 'RULE',
+  fallback TINYINT NOT NULL DEFAULT 0,
+  method VARCHAR(64) NOT NULL,
+  comparable_flag TINYINT NOT NULL DEFAULT 0,
+  sample_count INT NOT NULL DEFAULT 0,
+  common_strata_count INT NOT NULL DEFAULT 0,
+  incomparable_reasons_json TEXT DEFAULT NULL,
+  limitations_json TEXT DEFAULT NULL,
+  result_json MEDIUMTEXT NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_job_experiment_attribution_input (
+    user_id, cohort_id, input_hash, algorithm_version
+  ),
+  KEY idx_jeat_cohort_asof (user_id, cohort_id, as_of, deleted),
+  KEY idx_jeat_hypothesis (hypothesis_id, created_at, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Auditable stratified corrected attribution snapshot';
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  memory_type VARCHAR(50) NOT NULL,
+  content VARCHAR(1000) NOT NULL,
+  source_type VARCHAR(50) DEFAULT NULL,
+  source_id BIGINT DEFAULT NULL,
+  promotion_key_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  confidence DECIMAL(5,2) NOT NULL DEFAULT 0.80,
+  enabled TINYINT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_agent_memory_promotion (user_id, promotion_key_hash),
+  KEY idx_agent_memory_user_enabled (user_id, enabled),
+  KEY idx_agent_memory_source (source_type, source_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='V4 controllable agent memory with V9 promotion idempotency';

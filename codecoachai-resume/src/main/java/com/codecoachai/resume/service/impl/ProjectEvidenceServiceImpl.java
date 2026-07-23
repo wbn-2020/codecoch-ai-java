@@ -28,6 +28,7 @@ import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.ProjectEvidenceService;
+import com.codecoachai.resume.service.support.ProjectEvidenceVersionManager;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +59,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
     private final ResumeProjectMapper resumeProjectMapper;
     private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
+    private final ProjectEvidenceVersionManager projectEvidenceVersionManager;
 
     @Override
     public PageResult<ProjectEvidenceListVO> list(ProjectEvidenceQueryDTO query) {
@@ -102,6 +104,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProject(project, dto);
         recalculate(project, 0L);
         projectEvidenceMapper.insert(project);
+        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
         return toDetailVO(project, List.of());
     }
 
@@ -135,6 +138,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProjectPeriod(project, resumeProject.getProjectPeriod());
         recalculate(project, 0L);
         projectEvidenceMapper.insert(project);
+        projectEvidenceVersionManager.capture(project, SOURCE_RESUME_PROJECT, resumeProject.getId());
         return toDetailVO(project, List.of());
     }
 
@@ -155,6 +159,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProject(project, dto);
         recalculate(project, skillCount(project.getId(), userId));
         projectEvidenceMapper.updateById(project);
+        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project evidence updated");
         return toDetailVO(project, listSkillEvidences(userId, id));
     }
@@ -179,6 +184,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applySkillEvidence(evidence, dto);
         skillEvidenceMapper.insert(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence added");
         return toSkillVO(evidence);
     }
@@ -194,6 +200,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applySkillEvidence(evidence, dto);
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence updated");
         return toSkillVO(evidence);
     }
@@ -208,6 +215,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         evidence.setDeleted(CommonConstants.YES);
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence deleted");
     }
 
@@ -469,6 +477,12 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         vo.setResult(project.getResult());
         vo.setReflection(project.getReflection());
         vo.setSkillEvidences(skills == null ? List.of() : skills);
+        var version = projectEvidenceVersionManager.current(project.getUserId(), project.getId());
+        if (version != null) {
+            vo.setCurrentVersionId(version.getId());
+            vo.setCurrentVersionNo(version.getVersionNo());
+            vo.setCurrentVersionHash(version.getContentHash());
+        }
         return vo;
     }
 

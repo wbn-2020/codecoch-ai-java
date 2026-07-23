@@ -56,6 +56,8 @@ codecoachai:
     v7:
       external-plan-source: true
       campaign-review: true
+    v9:
+      evidence-learning: false
     v8:
       campaign-cockpit: false
       campaign-pulse: false

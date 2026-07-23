@@ -13,6 +13,7 @@ import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.vo.CampaignArchiveAiSourceVO;
 import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -60,7 +61,9 @@ public class CareerCampaignArchiveServiceImpl implements CareerCampaignArchiveSe
             throw new BusinessException(ErrorCode.PARAM_ERROR, "周期和档案导出请求不能为空。");
         }
         String format = normalizeFormat(request.getExportFormat());
-        String idempotencyHash = ResumeArtifactHashes.sha256(requireIdempotencyKey(request));
+        String idempotencyHash = ResumeArtifactHashes.sha256(
+                CareerCampaignArchiveBuilder.SCHEMA_VERSION + "\n"
+                        + requireIdempotencyKey(request));
         LocalDateTime cutoff = normalizeCutoff(request.getDataCutoffAt());
         CareerCampaignArchiveExport byKey = archiveMapper.selectByIdempotency(userId, idempotencyHash);
         if (byKey != null) {
@@ -246,6 +249,14 @@ public class CareerCampaignArchiveServiceImpl implements CareerCampaignArchiveSe
         bundle.setResearchSnapshots(loadSection(bundle, "research-snapshots", limit,
                 () -> archiveMapper.selectResearchSnapshots(
                         userId, campaignId, cutoff, queryLimit)));
+        bundle.setEvidenceUsages(loadSection(bundle, "evidence_usage", limit,
+                bundle.getEvidenceUsageSection(),
+                () -> archiveMapper.selectEvidenceUsages(
+                        userId, campaignId, cutoff, queryLimit)));
+        bundle.setEvidenceUsageResults(loadSection(bundle, "evidence_usage_results", limit,
+                bundle.getEvidenceUsageResultsSection(),
+                () -> archiveMapper.selectEvidenceUsageResults(
+                        userId, campaignId, cutoff, queryLimit)));
         try {
             CampaignArchiveAiSourceVO ai = FeignResultUtils.unwrap(
                     aiFeignClient.getSource(userId, campaignId, cutoff));
@@ -277,31 +288,56 @@ public class CareerCampaignArchiveServiceImpl implements CareerCampaignArchiveSe
             String section,
             int limit,
             Supplier<List<T>> loader) {
+        return loadSection(bundle, section, limit, null, loader);
+    }
+
+    private <T> List<T> loadSection(
+            CareerCampaignArchiveModels.ArchiveBundle bundle,
+            String section,
+            int limit,
+            CareerCampaignArchiveModels.SectionMetadata sectionMetadata,
+            Supplier<List<T>> loader) {
         try {
             List<T> values = loader.get();
             if (values == null || values.isEmpty()) {
                 return List.of();
             }
             if (values.size() > limit) {
-                bundle.getWarnings().add(section + " 区块超过条目上限，已截断为 " + limit + " 条。");
+                String warning = section + " 区块超过条目上限，已截断为 " + limit + " 条。";
+                bundle.getWarnings().add(warning);
+                if (sectionMetadata != null) {
+                    sectionMetadata.getWarnings().add(warning);
+                }
                 return List.copyOf(values.subList(0, limit));
             }
             return values;
         } catch (RuntimeException ex) {
+            String warning = section + " 区块暂不可用，档案已按部分来源生成。";
             bundle.getMissingSections().add(section);
-            bundle.getWarnings().add(section + " 区块暂不可用，档案已按部分来源生成。");
+            bundle.getWarnings().add(warning);
+            if (sectionMetadata != null) {
+                sectionMetadata.setAvailable(false);
+                sectionMetadata.getMissingSections().add(section);
+                sectionMetadata.getWarnings().add(warning);
+            }
             log.warn("Campaign archive section unavailable section={} campaignId={}",
                     section, bundle.getCampaign().getId(), ex);
             return List.of();
         }
     }
 
-    private String sourceHash(CareerCampaignArchiveModels.ArchiveBundle bundle, LocalDateTime cutoff) {
+    String sourceHash(CareerCampaignArchiveModels.ArchiveBundle bundle, LocalDateTime cutoff) {
         try {
-            String canonical = objectMapper.writeValueAsString(new Object[] {
+            ObjectMapper canonicalMapper = objectMapper.copy()
+                    .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+            String canonical = canonicalMapper.writeValueAsString(new Object[] {
+                    CareerCampaignArchiveBuilder.SCHEMA_VERSION,
+                    CareerCampaignArchiveBuilder.EVIDENCE_SECTION_SCHEMA_VERSION,
                     bundle.getCampaign(), bundle.getApplications(), bundle.getTimeline(),
                     bundle.getCalendar(), bundle.getInterviews(), bundle.getOffers(),
                     bundle.getContacts(), bundle.getActivities(), bundle.getResearchSnapshots(),
+                    bundle.getEvidenceUsages(), bundle.getEvidenceUsageResults(),
+                    bundle.getEvidenceUsageSection(), bundle.getEvidenceUsageResultsSection(),
                     bundle.getAgentPulses(), bundle.getCampaignReviewMarkdown(),
                     bundle.getAiSourceHash(), cutoff, bundle.getMissingSections(),
                     bundle.getWarnings(),

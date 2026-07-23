@@ -1,6 +1,10 @@
 package com.codecoachai.ai.service.impl;
 
 import com.codecoachai.ai.client.AiProviderException;
+import com.codecoachai.ai.agent.evidencelearning.EvidenceLearningRuleEngine;
+import com.codecoachai.ai.agent.evidencelearning.V9EvidenceAiScenes;
+import com.codecoachai.ai.agent.feign.ResumeEvidenceUsageFactsFeignClient;
+import com.codecoachai.ai.agent.feign.ResumeEvidenceUsageFactsVO;
 import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
@@ -8,6 +12,9 @@ import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
 import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
 import com.codecoachai.ai.domain.dto.GenerateAgentWeeklyReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateApplicationEventReviewDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceLearningCandidateDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceReuseMaterialDraftDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceUsageResultDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateFollowUpDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewPreparationDTO;
 import com.codecoachai.ai.domain.dto.GenerateInterviewQuestionDTO;
@@ -25,6 +32,12 @@ import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
+import com.codecoachai.ai.domain.vo.EvidenceLearningCandidateDecisionVO;
+import com.codecoachai.ai.domain.vo.EvidenceLearningReuseDraftVO;
+import com.codecoachai.ai.domain.vo.EvidenceLearningSourceRefVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceLearningCandidateVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceReuseMaterialDraftVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceUsageResultDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
 import com.codecoachai.ai.domain.vo.GenerateAgentWeeklyReportVO;
 import com.codecoachai.ai.domain.vo.GenerateApplicationEventReviewVO;
@@ -54,6 +67,7 @@ import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -61,6 +75,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -74,6 +89,7 @@ import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -142,6 +158,176 @@ public class AiServiceImpl implements AiService {
     private final AiCallLogService aiCallLogService;
     private final AiProperties aiProperties;
     private final ObjectMapper objectMapper;
+
+    private final EvidenceLearningRuleEngine evidenceLearningRuleEngine = new EvidenceLearningRuleEngine();
+
+    @Autowired(required = false)
+    private ResumeEvidenceUsageFactsFeignClient resumeEvidenceUsageFactsFeignClient;
+
+    @Override
+    public GenerateEvidenceUsageResultDraftVO generateEvidenceUsageResultDraft(
+            GenerateEvidenceUsageResultDraftDTO dto) {
+        ResumeEvidenceUsageFactsVO facts = loadV9Facts(
+                dto == null ? null : dto.getUserId(),
+                dto == null ? null : dto.getCampaignId(),
+                dto == null ? null : dto.getApplicationId(),
+                dto == null ? null : dto.getUsageId(),
+                dto == null ? null : dto.getDataCutoffAt());
+        return generateEvidenceUsageResultDraft(dto, facts);
+    }
+
+    @Override
+    public GenerateEvidenceLearningCandidateVO generateEvidenceLearningCandidate(
+            GenerateEvidenceLearningCandidateDTO dto) {
+        ResumeEvidenceUsageFactsVO facts = loadV9Facts(
+                dto == null ? null : dto.getUserId(),
+                dto == null ? null : dto.getCampaignId(),
+                dto == null ? null : dto.getApplicationId(),
+                dto == null ? null : dto.getUsageId(),
+                dto == null ? null : dto.getDataCutoffAt());
+        return generateEvidenceLearningCandidate(dto, facts);
+    }
+
+    @Override
+    public GenerateEvidenceReuseMaterialDraftVO generateEvidenceReuseMaterialDraft(
+            GenerateEvidenceReuseMaterialDraftDTO dto) {
+        ResumeEvidenceUsageFactsVO facts = loadV9Facts(
+                dto == null ? null : dto.getUserId(),
+                dto == null ? null : dto.getCampaignId(),
+                dto == null ? null : dto.getApplicationId(),
+                dto == null ? null : dto.getUsageId(),
+                dto == null ? null : dto.getDataCutoffAt());
+        return generateEvidenceReuseMaterialDraft(dto, facts);
+    }
+
+    @Override
+    public GenerateEvidenceUsageResultDraftVO generateEvidenceUsageResultDraft(
+            GenerateEvidenceUsageResultDraftDTO dto, ResumeEvidenceUsageFactsVO facts) {
+        validateV9Ids(dto == null ? null : dto.getUserId(), facts);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = null;
+        String rawResponse = null;
+        try {
+            promptResult = renderV9Prompt(
+                    V9EvidenceAiScenes.EVIDENCE_USAGE_RESULT_DRAFT_V9, facts);
+            GenerateEvidenceUsageResultDraftVO result;
+            if (mockEnabled()) {
+                result = mockEvidenceUsageResultDraft(facts);
+                result.setAiCallLogId(saveLog(promptResult, toJson(result),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()),
+                        start, null, dto == null ? null : dto.getUserId(), AiFailureType.NONE));
+            } else {
+                RouteResult routeResult = callAndLog(promptResult,
+                        dto == null ? null : dto.getUserId(),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()));
+                rawResponse = routeResult.getContent();
+                result = parseV9ResultDraft(rawResponse);
+                result.setAiCallLogId(routeResult.getAiCallLogId());
+            }
+            normalizeV9Result(result, facts);
+            return result;
+        } catch (RuntimeException ex) {
+            promptResult = promptResult == null
+                    ? fallbackV9PromptResult(V9EvidenceAiScenes.EVIDENCE_USAGE_RESULT_DRAFT_V9)
+                    : promptResult;
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    v9BusinessId(dto == null ? null : dto.getUsageId(),
+                            dto == null ? null : dto.getApplicationId(),
+                            dto == null ? null : dto.getCampaignId()),
+                    start, ex.getMessage(), dto == null ? null : dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public GenerateEvidenceLearningCandidateVO generateEvidenceLearningCandidate(
+            GenerateEvidenceLearningCandidateDTO dto, ResumeEvidenceUsageFactsVO facts) {
+        validateV9Ids(dto == null ? null : dto.getUserId(), facts);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = null;
+        String rawResponse = null;
+        try {
+            promptResult = renderV9Prompt(
+                    V9EvidenceAiScenes.EVIDENCE_LEARNING_CANDIDATE_V9, facts);
+            GenerateEvidenceLearningCandidateVO result;
+            if (mockEnabled()) {
+                result = mockEvidenceLearningCandidate(facts);
+                result.setAiCallLogId(saveLog(promptResult, toJson(result),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()),
+                        start, null, dto == null ? null : dto.getUserId(), AiFailureType.NONE));
+            } else {
+                RouteResult routeResult = callAndLog(promptResult,
+                        dto == null ? null : dto.getUserId(),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()));
+                rawResponse = routeResult.getContent();
+                result = parseV9Candidate(rawResponse);
+                result.setAiCallLogId(routeResult.getAiCallLogId());
+            }
+            normalizeV9Candidate(result, facts);
+            return result;
+        } catch (RuntimeException ex) {
+            promptResult = promptResult == null
+                    ? fallbackV9PromptResult(V9EvidenceAiScenes.EVIDENCE_LEARNING_CANDIDATE_V9)
+                    : promptResult;
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    v9BusinessId(dto == null ? null : dto.getUsageId(),
+                            dto == null ? null : dto.getApplicationId(),
+                            dto == null ? null : dto.getCampaignId()),
+                    start, ex.getMessage(), dto == null ? null : dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
+
+    @Override
+    public GenerateEvidenceReuseMaterialDraftVO generateEvidenceReuseMaterialDraft(
+            GenerateEvidenceReuseMaterialDraftDTO dto, ResumeEvidenceUsageFactsVO facts) {
+        validateV9Ids(dto == null ? null : dto.getUserId(), facts);
+        long start = System.currentTimeMillis();
+        PromptRenderResult promptResult = null;
+        String rawResponse = null;
+        try {
+            promptResult = renderV9Prompt(
+                    V9EvidenceAiScenes.EVIDENCE_REUSE_MATERIAL_DRAFT_V9, facts);
+            GenerateEvidenceReuseMaterialDraftVO result;
+            if (mockEnabled()) {
+                result = mockEvidenceReuseMaterialDraft(facts);
+                result.setAiCallLogId(saveLog(promptResult, toJson(result),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()),
+                        start, null, dto == null ? null : dto.getUserId(), AiFailureType.NONE));
+            } else {
+                RouteResult routeResult = callAndLog(promptResult,
+                        dto == null ? null : dto.getUserId(),
+                        v9BusinessId(dto == null ? null : dto.getUsageId(),
+                                dto == null ? null : dto.getApplicationId(),
+                                dto == null ? null : dto.getCampaignId()));
+                rawResponse = routeResult.getContent();
+                result = parseV9ReuseDraft(rawResponse);
+                result.setAiCallLogId(routeResult.getAiCallLogId());
+            }
+            normalizeV9ReuseDraft(result, facts);
+            return result;
+        } catch (RuntimeException ex) {
+            promptResult = promptResult == null
+                    ? fallbackV9PromptResult(V9EvidenceAiScenes.EVIDENCE_REUSE_MATERIAL_DRAFT_V9)
+                    : promptResult;
+            saveLog(promptResult, firstText(rawResponse, ex.getMessage()),
+                    v9BusinessId(dto == null ? null : dto.getUsageId(),
+                            dto == null ? null : dto.getApplicationId(),
+                            dto == null ? null : dto.getCampaignId()),
+                    start, ex.getMessage(), dto == null ? null : dto.getUserId(), failureType(ex));
+            throw toBusinessException(ex);
+        }
+    }
 
     @Override
     public GenerateInterviewQuestionVO generateQuestion(GenerateInterviewQuestionDTO dto) {
@@ -1181,6 +1367,388 @@ public class AiServiceImpl implements AiService {
 
     private boolean mockEnabled() {
         return Boolean.TRUE.equals(aiProperties.getMockEnabled());
+    }
+
+    private ResumeEvidenceUsageFactsVO loadV9Facts(
+            Long userId, Long campaignId, Long applicationId, Long usageId,
+            LocalDateTime dataCutoffAt) {
+        validateV9BusinessIds(userId, campaignId, applicationId, usageId);
+        if (resumeEvidenceUsageFactsFeignClient == null) {
+            if (!mockEnabled()) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                        "证据使用事实不可用，暂时无法生成 V9 结果");
+            }
+            return mockV9Facts(userId, campaignId, applicationId, usageId);
+        }
+        ResumeEvidenceUsageFactsVO facts = FeignResultUtils.unwrap(
+                resumeEvidenceUsageFactsFeignClient.getFacts(
+                        userId, campaignId, applicationId, usageId, dataCutoffAt));
+        validateV9Facts(userId, facts);
+        return facts;
+    }
+
+    private void validateV9BusinessIds(
+            Long userId, Long campaignId, Long applicationId, Long usageId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        if (campaignId == null && applicationId == null && usageId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "至少需要一个服务端业务 ID");
+        }
+    }
+
+    private void validateV9Ids(Long userId, ResumeEvidenceUsageFactsVO facts) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        validateV9Facts(userId, facts);
+    }
+
+    private void validateV9Facts(Long userId, ResumeEvidenceUsageFactsVO facts) {
+        if (facts == null || !userId.equals(facts.getUserId())
+                || !StringUtils.hasText(facts.getSourceSetHash())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "证据事实信封无效，无法生成 V9 结果");
+        }
+        if (facts.getUsageSnapshots() == null) {
+            facts.setUsageSnapshots(new ArrayList<>());
+        }
+        if (facts.getConfirmedResults() == null) {
+            facts.setConfirmedResults(new ArrayList<>());
+        }
+        if (facts.getExperimentAttributions() == null) {
+            facts.setExperimentAttributions(new ArrayList<>());
+        }
+        if (facts.getLimits() == null) {
+            facts.setLimits(new ArrayList<>());
+        }
+        if (facts.getWarnings() == null) {
+            facts.setWarnings(new ArrayList<>());
+        }
+    }
+
+    private ResumeEvidenceUsageFactsVO mockV9Facts(
+            Long userId, Long campaignId, Long applicationId, Long usageId) {
+        ResumeEvidenceUsageFactsVO facts = new ResumeEvidenceUsageFactsVO();
+        facts.setUserId(userId);
+        facts.setDataCutoffAt(LocalDateTime.now());
+        String id = v9BusinessId(usageId, applicationId, campaignId);
+        String sourceHash = TextFingerprintUtils.sha256Hex("mock-v9-source|" + id);
+        facts.setSourceSetHash(TextFingerprintUtils.sha256Hex("mock-v9-envelope|" + id));
+        ResumeEvidenceUsageFactsVO.UsageFact usage = new ResumeEvidenceUsageFactsVO.UsageFact();
+        usage.setUsageId(usageId == null ? 1L : usageId);
+        usage.setApplicationId(applicationId);
+        usage.setCampaignId(campaignId);
+        usage.setSourceHash(sourceHash);
+        usage.setContentHash(TextFingerprintUtils.sha256Hex("mock-v9-content|" + id));
+        usage.setUsageScene("MOCK_V9");
+        usage.setUsedAt(facts.getDataCutoffAt());
+        usage.setStatus("CAPTURED");
+        usage.setSourceRefs(List.of("mock-source-" + id));
+        facts.setUsageSnapshots(new ArrayList<>(List.of(usage)));
+        return facts;
+    }
+
+    private PromptRenderResult renderV9Prompt(
+            String scene, ResumeEvidenceUsageFactsVO facts) {
+        return promptRenderService.render(scene, v9PromptContent(scene, facts), Map.of());
+    }
+
+    private PromptRenderResult fallbackV9PromptResult(String scene) {
+        return PromptRenderResult.builder()
+                .scene(scene)
+                .promptVersion(V9EvidenceAiScenes.PROMPT_VERSION)
+                .renderedPrompt("")
+                .promptHash(null)
+                .build();
+    }
+
+    private String v9PromptContent(String scene, ResumeEvidenceUsageFactsVO facts) {
+        return "你是 CodeCoachAI 的受限证据学习助手。场景：" + scene + "，版本："
+                + V9EvidenceAiScenes.PROMPT_VERSION + "。\n"
+                + "只能陈述下面服务端生成的事实信封，不能补造事实、排名、概率、招聘方内部原因或单因素因果。\n"
+                + "外部反馈、用户解释和 unknowns 不得改写为已验证 facts；无法核验时必须保留在 unknowns/limits。\n"
+                + "低样本只能输出 LOW 和弱观察；所有用户可见文字使用中文；必须返回 JSON，且每条主张带 sourceRefs。\n"
+                + "本场景输出必须严格包含以下 schema 字段（不要改名、不要省略；没有内容时使用空数组、空对象或 null）：\n"
+                + v9OutputSchema(scene) + "\n"
+                + "服务端事实信封：\n" + toJson(facts);
+    }
+
+    private String v9OutputSchema(String scene) {
+        String common = """
+                {
+                  "summary": "中文摘要",
+                  "facts": ["只来自输入信封的中文事实"],
+                  "weakObservations": ["仅限弱观察的中文内容"],
+                  "unknowns": ["无法由输入信封确认的中文未知项"],
+                  "limits": ["样本、来源和解释边界"],
+                  "candidateDecision": [],
+                  "reuseDraft": null,
+                  "sourceRefs": [
+                    {"sourceType": "PROJECT_EVIDENCE", "sourceId": "PROJECT_EVIDENCE:123:2",
+                     "fieldPath": "$.usageSnapshots[*].sourceRefs", "sourceHash": "来源哈希"}
+                  ],
+                  "confidenceLevel": "LOW|MEDIUM|HIGH",
+                  "fallback": false,
+                  "fallbackReason": null
+                }
+                """;
+        if (V9EvidenceAiScenes.EVIDENCE_LEARNING_CANDIDATE_V9.equals(scene)) {
+            return common.replace("\"candidateDecision\": []",
+                    "\"candidateDecision\": [{\"candidateKey\": \"稳定键\", \"title\": \"中文标题\", "
+                            + "\"content\": \"中文候选内容\", \"decisionOptions\": "
+                            + "[\"KEEP\", \"EDIT\", \"CONTINUE\", \"REJECT\"], \"usageCount\": 0, "
+                            + "\"sampleCount\": 0, \"confidenceLevel\": \"LOW\", \"limits\": [], "
+                            + "\"sourceRefs\": [], \"requiresUserConfirmation\": true}]");
+        }
+        if (V9EvidenceAiScenes.EVIDENCE_REUSE_MATERIAL_DRAFT_V9.equals(scene)) {
+            return common.replace("\"reuseDraft\": null",
+                    "\"reuseDraft\": {\"title\": \"中文草稿标题\", \"content\": \"中文草稿内容\", "
+                            + "\"editDeepLink\": \"/evidence-assets\", "
+                            + "\"requiresUserConfirmation\": true}");
+        }
+        return common;
+    }
+
+    private GenerateEvidenceUsageResultDraftVO parseV9ResultDraft(String raw) {
+        return readV9Json(raw, GenerateEvidenceUsageResultDraftVO.class,
+                "证据结果草稿解析失败");
+    }
+
+    private GenerateEvidenceLearningCandidateVO parseV9Candidate(String raw) {
+        return readV9Json(raw, GenerateEvidenceLearningCandidateVO.class,
+                "学习候选解析失败");
+    }
+
+    private GenerateEvidenceReuseMaterialDraftVO parseV9ReuseDraft(String raw) {
+        return readV9Json(raw, GenerateEvidenceReuseMaterialDraftVO.class,
+                "证据复用草稿解析失败");
+    }
+
+    private <T> T readV9Json(String raw, Class<T> type, String message) {
+        try {
+            return objectMapper.readValue(extractJson(raw), type);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, message);
+        }
+    }
+
+    private void normalizeV9Result(
+            GenerateEvidenceUsageResultDraftVO result, ResumeEvidenceUsageFactsVO facts) {
+        if (result == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "证据结果草稿为空");
+        }
+        result.setScene(V9EvidenceAiScenes.EVIDENCE_USAGE_RESULT_DRAFT_V9);
+        result.setPromptVersion(V9EvidenceAiScenes.PROMPT_VERSION);
+        result.setSchemaVersion(V9EvidenceAiScenes.OUTPUT_SCHEMA_VERSION);
+        result.setDataCutoffAt(facts.getDataCutoffAt());
+        result.setSourceSetHash(facts.getSourceSetHash());
+        ensureV9OutputSources(result.getSourceRefs(), facts);
+        EvidenceLearningRuleEngine.Quality quality = evidenceLearningRuleEngine.quality(facts);
+        result.setConfidenceLevel(quality.confidenceLevel());
+        result.setLimits(mergeLimits(result.getLimits(), quality.limits()));
+        if ("LOW".equals(quality.confidenceLevel())) {
+            result.setWeakObservations(appendWeakObservation(
+                    result.getWeakObservations(), "当前样本只能形成弱观察，不能输出强策略或因果结论。"));
+        }
+        rejectV9Boundary(result.getSummary(), result.getFacts(), result.getWeakObservations());
+    }
+
+    private void normalizeV9Candidate(
+            GenerateEvidenceLearningCandidateVO result, ResumeEvidenceUsageFactsVO facts) {
+        if (result == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习候选为空");
+        }
+        result.setScene(V9EvidenceAiScenes.EVIDENCE_LEARNING_CANDIDATE_V9);
+        result.setPromptVersion(V9EvidenceAiScenes.PROMPT_VERSION);
+        result.setSchemaVersion(V9EvidenceAiScenes.OUTPUT_SCHEMA_VERSION);
+        result.setDataCutoffAt(facts.getDataCutoffAt());
+        result.setSourceSetHash(facts.getSourceSetHash());
+        ensureV9OutputSources(result.getSourceRefs(), facts);
+        EvidenceLearningRuleEngine.Quality quality = evidenceLearningRuleEngine.quality(facts);
+        result.setConfidenceLevel(quality.confidenceLevel());
+        result.setLimits(new ArrayList<>(quality.limits()));
+        result.setReuseDraft(null);
+        if (quality.usageCount() < 5) {
+            result.setWeakObservations(new ArrayList<>());
+        }
+        if (result.getCandidateDecision() == null) {
+            result.setCandidateDecision(new ArrayList<>());
+        }
+        if (!quality.candidateAllowed()) {
+            result.setCandidateDecision(new ArrayList<>());
+            rejectV9Boundary(result.getSummary(), result.getFacts(), result.getWeakObservations());
+            return;
+        }
+        for (EvidenceLearningCandidateDecisionVO decision : result.getCandidateDecision()) {
+            if (decision == null) {
+                continue;
+            }
+            decision.setDecisionOptions(List.of("KEEP", "EDIT", "CONTINUE", "REJECT"));
+            decision.setRequiresUserConfirmation(true);
+            decision.setSourceRefs(requireDecisionSources(decision.getSourceRefs(), facts));
+            decision.setUsageCount(quality.usageCount());
+            decision.setSampleCount(quality.sampleCount());
+            decision.setConfidenceLevel(quality.confidenceLevel());
+            decision.setLimits(new ArrayList<>(quality.limits()));
+            rejectV9Boundary(
+                    decision.getTitle(),
+                    StringUtils.hasText(decision.getContent())
+                            ? List.of(decision.getContent()) : List.of(),
+                    null);
+        }
+        rejectV9Boundary(result.getSummary(), result.getFacts(), result.getWeakObservations());
+    }
+
+    private void normalizeV9ReuseDraft(
+            GenerateEvidenceReuseMaterialDraftVO result, ResumeEvidenceUsageFactsVO facts) {
+        if (result == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "证据复用草稿为空");
+        }
+        result.setScene(V9EvidenceAiScenes.EVIDENCE_REUSE_MATERIAL_DRAFT_V9);
+        result.setPromptVersion(V9EvidenceAiScenes.PROMPT_VERSION);
+        result.setSchemaVersion(V9EvidenceAiScenes.OUTPUT_SCHEMA_VERSION);
+        result.setDataCutoffAt(facts.getDataCutoffAt());
+        result.setSourceSetHash(facts.getSourceSetHash());
+        ensureV9OutputSources(result.getSourceRefs(), facts);
+        EvidenceLearningRuleEngine.Quality quality = evidenceLearningRuleEngine.quality(facts);
+        result.setConfidenceLevel(quality.confidenceLevel());
+        result.setLimits(mergeLimits(result.getLimits(), quality.limits()));
+        if (result.getReuseDraft() != null) {
+            result.getReuseDraft().setRequiresUserConfirmation(true);
+            rejectV9Boundary(result.getReuseDraft().getTitle(),
+                    List.of(result.getReuseDraft().getContent()), result.getWeakObservations());
+        }
+        rejectV9Boundary(result.getSummary(), result.getFacts(), result.getWeakObservations());
+    }
+
+    private List<EvidenceLearningSourceRefVO> requireDecisionSources(
+            List<EvidenceLearningSourceRefVO> refs, ResumeEvidenceUsageFactsVO facts) {
+        ensureV9OutputSources(refs, facts);
+        return refs;
+    }
+
+    private void ensureV9OutputSources(
+            List<EvidenceLearningSourceRefVO> refs, ResumeEvidenceUsageFactsVO facts) {
+        if (!evidenceLearningRuleEngine.hasUsableSources(facts)
+                || refs == null || refs.isEmpty()) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "AI 输出缺少可核验来源引用");
+        }
+        Set<V9SourceSignature> knownSources = new LinkedHashSet<>();
+        for (EvidenceLearningSourceRefVO ref : evidenceLearningRuleEngine.sourceRefs(facts)) {
+            if (completeV9SourceRef(ref)) {
+                knownSources.add(V9SourceSignature.from(ref));
+            }
+        }
+        boolean completeAndKnown = refs.stream().allMatch(ref ->
+                completeV9SourceRef(ref) && knownSources.contains(V9SourceSignature.from(ref)));
+        if (!completeAndKnown) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "AI 输出来源引用与服务端事实不匹配");
+        }
+    }
+
+    private boolean completeV9SourceRef(EvidenceLearningSourceRefVO ref) {
+        return ref != null
+                && StringUtils.hasText(ref.getSourceType())
+                && StringUtils.hasText(ref.getSourceId())
+                && StringUtils.hasText(ref.getFieldPath())
+                && StringUtils.hasText(ref.getSourceHash());
+    }
+
+    private List<String> appendWeakObservation(List<String> values, String value) {
+        List<String> result = values == null ? new ArrayList<>() : new ArrayList<>(values);
+        if (!result.contains(value)) {
+            result.add(value);
+        }
+        return result;
+    }
+
+    private List<String> mergeLimits(List<String> values, List<String> additions) {
+        LinkedHashSet<String> merged = new LinkedHashSet<>();
+        if (values != null) {
+            merged.addAll(values);
+        }
+        if (additions != null) {
+            merged.addAll(additions);
+        }
+        return new ArrayList<>(merged);
+    }
+
+    private void rejectV9Boundary(String summary, List<String> facts, List<String> observations) {
+        List<String> values = new ArrayList<>();
+        if (StringUtils.hasText(summary)) {
+            values.add(summary);
+        }
+        if (facts != null) {
+            values.addAll(facts);
+        }
+        if (observations != null) {
+            values.addAll(observations);
+        }
+        for (String value : values) {
+            if (!StringUtils.hasText(value)) {
+                continue;
+            }
+            for (String forbidden : BOUNDARY_VIOLATIONS) {
+                if (value.contains(forbidden)) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                            "AI 输出超出 V9 可信边界");
+                }
+            }
+        }
+    }
+
+    private GenerateEvidenceUsageResultDraftVO mockEvidenceUsageResultDraft(
+            ResumeEvidenceUsageFactsVO facts) {
+        GenerateEvidenceUsageResultDraftVO result = evidenceLearningRuleEngine.resultFallback(facts, null);
+        result.setFallback(false);
+        result.setFallbackReason(null);
+        result.setSummary("已根据服务端回读的证据使用事实生成结果草稿，尚未替代用户确认。");
+        return result;
+    }
+
+    private GenerateEvidenceLearningCandidateVO mockEvidenceLearningCandidate(
+            ResumeEvidenceUsageFactsVO facts) {
+        GenerateEvidenceLearningCandidateVO result =
+                evidenceLearningRuleEngine.candidateFallback(facts, null);
+        result.setFallback(false);
+        result.setFallbackReason(null);
+        result.setSummary("已根据服务端回读的证据使用事实生成学习候选，请用户确认。");
+        return result;
+    }
+
+    private GenerateEvidenceReuseMaterialDraftVO mockEvidenceReuseMaterialDraft(
+            ResumeEvidenceUsageFactsVO facts) {
+        GenerateEvidenceReuseMaterialDraftVO result =
+                evidenceLearningRuleEngine.reuseFallback(facts, null);
+        result.setFallback(false);
+        result.setFallbackReason(null);
+        result.setSummary("已根据服务端回读的证据使用事实生成复用材料草稿，请用户确认。");
+        return result;
+    }
+
+    private String v9BusinessId(Long usageId, Long applicationId, Long campaignId) {
+        if (usageId != null) {
+            return "usage:" + usageId;
+        }
+        if (applicationId != null) {
+            return "application:" + applicationId;
+        }
+        return "campaign:" + campaignId;
+    }
+
+    private record V9SourceSignature(
+            String sourceType, String sourceId, String fieldPath, String sourceHash) {
+
+        private static V9SourceSignature from(EvidenceLearningSourceRefVO ref) {
+            return new V9SourceSignature(
+                    ref.getSourceType().trim(),
+                    ref.getSourceId().trim(),
+                    ref.getFieldPath().trim(),
+                    ref.getSourceHash().trim());
+        }
     }
 
     private BusinessException toResumeOptimizeBusinessException(RuntimeException ex) {

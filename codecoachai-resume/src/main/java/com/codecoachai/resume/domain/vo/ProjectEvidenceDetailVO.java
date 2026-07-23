@@ -27,6 +27,9 @@ public class ProjectEvidenceDetailVO {
     private Long sourceResumeProjectId;
     private Boolean sourceAvailable;
     private Long targetJobId;
+    private Integer currentVersionNo;
+    private Long currentVersionId;
+    private String currentVersionHash;
     private List<ProjectSkillEvidenceVO> skillEvidences;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

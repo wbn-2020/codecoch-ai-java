@@ -34,6 +34,7 @@ import com.codecoachai.resume.service.JobApplicationPackageService;
 import com.codecoachai.resume.service.JobReadinessService;
 import com.codecoachai.resume.service.JobRequirementService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import com.codecoachai.resume.service.support.JobApplicationPackageSnapshotManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
@@ -51,6 +52,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
@@ -60,7 +62,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class JobApplicationPackageServiceImpl implements JobApplicationPackageService {
 
     private static final int MATCH_READY_SCORE = 75;
@@ -84,6 +86,25 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private final V4ResumeCareerService v4ResumeCareerService;
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
+    private final JobApplicationPackageSnapshotManager packageSnapshotManager;
+
+    public JobApplicationPackageServiceImpl(
+            TargetJobMapper targetJobMapper,
+            JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper,
+            ResumeVersionMapper resumeVersionMapper,
+            ResumeJobMatchReportMapper resumeJobMatchReportMapper,
+            ResumeJobMatchDetailMapper resumeJobMatchDetailMapper,
+            ProjectEvidenceMapper projectEvidenceMapper,
+            JobRequirementService jobRequirementService,
+            JobReadinessService jobReadinessService,
+            V4ResumeCareerService v4ResumeCareerService,
+            ObjectMapper objectMapper,
+            JdbcTemplate jdbcTemplate) {
+        this(targetJobMapper, jobDescriptionAnalysisMapper, resumeVersionMapper,
+                resumeJobMatchReportMapper, resumeJobMatchDetailMapper, projectEvidenceMapper,
+                jobRequirementService, jobReadinessService, v4ResumeCareerService,
+                objectMapper, jdbcTemplate, null);
+    }
 
     @Override
     public JobApplicationPackageVO preview(Long targetJobId, Long jdAnalysisId, Long resumeVersionId,
@@ -223,7 +244,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     @Transactional(rollbackFor = Exception.class)
     public JobApplicationPackageVO refresh(Long packageId) {
         Long userId = SecurityAssert.requireLoginUserId();
-        PackageRow row = ownedPackage(userId, packageId);
+        PackageRow row = ownedPackageForUpdate(userId, packageId);
         JobApplicationPackageVO snapshot = preview(row.targetJobId, row.jdAnalysisId, row.resumeVersionId,
                 row.matchReportId, readLongList(row.projectEvidenceIdsJson));
         snapshot.setId(String.valueOf(row.id));
@@ -345,6 +366,11 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
 
     private void updatePackageSnapshot(Long userId, Long packageId, JobApplicationPackageVO snapshot,
                                        Integer snapshotVersion, LocalDateTime refreshedAt) {
+        var immutableSnapshot = packageSnapshotManager == null
+                ? null : packageSnapshotManager.capture(userId, packageId, snapshot, "SAVE");
+        Integer effectiveSnapshotVersion = immutableSnapshot == null
+                ? snapshotVersion : immutableSnapshot.getSnapshotVersion();
+        snapshot.setSnapshotVersion(effectiveSnapshotVersion);
         jdbcTemplate.update("""
                         UPDATE job_application_package
                         SET target_job_id = ?, jd_analysis_id = ?, resume_id = ?, resume_version_id = ?,
@@ -352,6 +378,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                             readiness_score = ?, readiness_reason = ?, package_status = ?, snapshot_json = ?,
                             checklist_json = ?, actions_json = ?, project_evidence_ids_json = ?, trace_id = ?,
                             result_source = ?, fallback = ?, fallback_reason = ?, snapshot_version = ?,
+                            current_snapshot_id = ?,
                             refreshed_at = ?, updated_at = ?
                         WHERE id = ? AND user_id = ? AND deleted = 0
                         """,
@@ -374,7 +401,8 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 snapshot.getResultSource(),
                 Boolean.TRUE.equals(snapshot.getFallback()) ? 1 : 0,
                 snapshot.getFallbackReason(),
-                snapshotVersion,
+                effectiveSnapshotVersion,
+                immutableSnapshot == null ? null : immutableSnapshot.getId(),
                 refreshedAt,
                 LocalDateTime.now(),
                 packageId,
@@ -382,15 +410,23 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     }
 
     private PackageRow ownedPackage(Long userId, Long packageId) {
+        return ownedPackage(userId, packageId, false);
+    }
+
+    private PackageRow ownedPackageForUpdate(Long userId, Long packageId) {
+        return ownedPackage(userId, packageId, true);
+    }
+
+    private PackageRow ownedPackage(Long userId, Long packageId, boolean forUpdate) {
         if (userId == null || packageId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "packageId is required");
         }
+        String lockClause = forUpdate ? " FOR UPDATE" : "";
         List<PackageRow> rows = jdbcTemplate.query("""
                         SELECT *
                         FROM job_application_package
                         WHERE id = ? AND user_id = ? AND deleted = 0
-                        LIMIT 1
-                        """,
+                        LIMIT 1""" + lockClause,
                 (rs, rowNum) -> toPackageRow(rs), packageId, userId);
         if (rows.isEmpty()) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "Application package not found or no permission");
@@ -424,6 +460,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setFallback(row.fallback);
         vo.setFallbackReason(row.fallbackReason);
         vo.setSnapshotVersion(row.snapshotVersion);
+        vo.setCurrentSnapshotId(row.currentSnapshotId);
         applyPackageVersionInfo(vo, packageVersionInfo(row));
         vo.setRefreshedAt(row.refreshedAt);
         normalizePersistentActions(vo, row.id);
@@ -481,6 +518,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         row.fallback = getBoolean(rs, "fallback");
         row.fallbackReason = rs.getString("fallback_reason");
         row.snapshotVersion = getInteger(rs, "snapshot_version");
+        row.currentSnapshotId = getLong(rs, "current_snapshot_id");
         row.refreshedAt = getLocalDateTime(rs, "refreshed_at");
         row.createdAt = getLocalDateTime(rs, "created_at");
         row.updatedAt = getLocalDateTime(rs, "updated_at");
@@ -2070,6 +2108,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         private Boolean fallback;
         private String fallbackReason;
         private Integer snapshotVersion;
+        private Long currentSnapshotId;
         private LocalDateTime refreshedAt;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;

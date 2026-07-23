@@ -31,6 +31,10 @@ public class JobSearchExperimentReviewVO {
     private Boolean fallback;
     private Map<String, Object> qualityGate;
     private String confidenceLevel;
+    private Long evidenceUsageCount;
+    private Long outcomeSampleCount;
+    private String usageSourceHash;
+    private Long attributionSnapshotId;
     private Integer demoFlag;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

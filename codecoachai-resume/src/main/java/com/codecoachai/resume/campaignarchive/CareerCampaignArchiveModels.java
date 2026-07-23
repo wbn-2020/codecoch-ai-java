@@ -204,11 +204,71 @@ public final class CareerCampaignArchiveModels {
         private List<ContactRow> contacts = new ArrayList<>();
         private List<ActivityRow> activities = new ArrayList<>();
         private List<ResearchSnapshotRow> researchSnapshots = new ArrayList<>();
+        private List<EvidenceUsageRow> evidenceUsages = new ArrayList<>();
+        private List<EvidenceUsageResultRow> evidenceUsageResults = new ArrayList<>();
+        private SectionMetadata evidenceUsageSection = new SectionMetadata();
+        private SectionMetadata evidenceUsageResultsSection = new SectionMetadata();
         private JsonNode agentPulses;
         private String campaignReviewMarkdown;
         private String aiSourceHash;
         private List<String> missingSections = new ArrayList<>();
         private List<String> warnings = new ArrayList<>();
+    }
+
+    @Data
+    public static class SectionMetadata {
+        private boolean available = true;
+        private List<String> missingSections = new ArrayList<>();
+        private List<String> warnings = new ArrayList<>();
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class EvidenceUsageRow {
+        private Long id;
+        private Long applicationId;
+        private Long targetJobId;
+        private String assetType;
+        private Long assetId;
+        private String assetVersion;
+        private Long packageSnapshotId;
+        private String sourceHash;
+        private String contentHash;
+        private String usageScene;
+        private LocalDateTime usedAt;
+        private Long hypothesisId;
+        private Long variantId;
+        private Long assignmentId;
+        private LocalDateTime createdAt;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class EvidenceUsageResultRow {
+        private Long id;
+        private Long usageId;
+        private Long applicationId;
+        private String eventType;
+        private Long eventId;
+        private String status;
+        private Integer snapshotVersion;
+        private Long snapshotId;
+        private String outcomeCode;
+        private String knownFactsJson;
+        private String externalFeedbackText;
+        private String userInterpretationText;
+        private String unknownsJson;
+        private String limitsJson;
+        private String sourceType;
+        private Long sourceId;
+        private String sourceVersion;
+        private String sourceHash;
+        private LocalDateTime occurredAt;
+        private LocalDateTime confirmedAt;
+        private String contentHash;
+        private Long supersedesSnapshotId;
+        private LocalDateTime snapshotCreatedAt;
+        private LocalDateTime createdAt;
     }
 
     @Data

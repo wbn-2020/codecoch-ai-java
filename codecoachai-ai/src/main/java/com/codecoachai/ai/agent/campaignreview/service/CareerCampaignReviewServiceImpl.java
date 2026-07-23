@@ -157,7 +157,9 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
         }
         CareerCampaignReviewMemoryCandidate candidate = persistenceService.confirmCandidate(
                 userId, candidateId,
-                AgentAdaptivePlanHashUtils.sha256(request.getIdempotencyKey().trim()),
+                AgentAdaptivePlanHashUtils.sha256(candidateId + "|"
+                        + (Boolean.TRUE.equals(request.getConfirmed()) ? "KEEP" : "REJECT")
+                        + "|" + request.getIdempotencyKey().trim()),
                 Boolean.TRUE.equals(request.getConfirmed()));
         CareerCampaignReview review = persistenceService.findOwned(
                 userId, candidate.getReviewId());
@@ -236,8 +238,17 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
                     .findFirst()
                     .ifPresent(seed -> {
                         seed.setCandidateId(candidate.getId());
+                        seed.setCandidateScopeType(candidate.getCandidateScopeType());
+                        seed.setCandidateScopeKey(candidate.getCandidateScopeKey());
+                        seed.setCandidateType(candidate.getCandidateType());
+                        seed.setUsageSourceHash(candidate.getUsageSourceHash());
+                        seed.setEvidenceCount(candidate.getEvidenceCount());
+                        seed.setSampleCount(candidate.getSampleCount());
+                        seed.setDecisionCode(candidate.getDecisionCode());
+                        seed.setPromotedMemoryId(candidate.getPromotedMemoryId());
                         seed.setStatus(candidate.getStatus());
-                        seed.setEffective("CONFIRMED".equals(candidate.getStatus())
+                        seed.setEffective(List.of("CONFIRMED", "CONFIRMED_BY_USER")
+                                .contains(candidate.getStatus())
                                 && (candidate.getExpiresAt() == null
                                 || candidate.getExpiresAt().isAfter(LocalDateTime.now())));
                     });

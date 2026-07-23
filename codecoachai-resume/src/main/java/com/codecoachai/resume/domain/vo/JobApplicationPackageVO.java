@@ -30,6 +30,7 @@ public class JobApplicationPackageVO {
     private Boolean fallback;
     private String fallbackReason;
     private Integer snapshotVersion;
+    private Long currentSnapshotId;
     private Integer contextPackageCount;
     private Integer contextVersionNo;
     private Long latestContextPackageId;

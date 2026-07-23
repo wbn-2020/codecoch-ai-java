@@ -25,11 +25,13 @@ import org.springframework.stereotype.Component;
 @Component
 public class CareerCampaignArchiveBuilder {
 
-    private static final String SCHEMA_VERSION = "v8.campaign-archive.v1";
+    static final String SCHEMA_VERSION = "v8.campaign-archive.v2";
+    static final String EVIDENCE_SECTION_SCHEMA_VERSION = "V9_EVIDENCE_ARCHIVE_SECTION_V1";
     private static final List<String> CONTENT_NAMES = List.of(
             "README.md", "campaign.json", "applications.csv", "timeline.csv", "calendar.ics",
             "interviews.json", "offers.json", "contacts.csv", "activities.csv",
-            "research-snapshots.json", "agent-pulses.json", "campaign-review.md");
+            "research-snapshots.json", "agent-pulses.json", "campaign-review.md",
+            "evidence_usage.json", "evidence_usage_results.json");
     private static final DateTimeFormatter UTC_FORMAT =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'", Locale.ROOT);
 
@@ -63,6 +65,12 @@ public class CareerCampaignArchiveBuilder {
                 ? objectMapper.createArrayNode() : bundle.getAgentPulses()));
         contents.put("campaign-review.md",
                 safeMarkdown(bundle.getCampaignReviewMarkdown()).getBytes(StandardCharsets.UTF_8));
+        contents.put("evidence_usage.json", evidenceUsageJson(
+                bundle.getEvidenceUsages(), dataCutoffAt,
+                bundle.getEvidenceUsageSection()));
+        contents.put("evidence_usage_results.json", evidenceUsageJson(
+                bundle.getEvidenceUsageResults(), dataCutoffAt,
+                bundle.getEvidenceUsageResultsSection()));
 
         if (!contents.keySet().equals(new java.util.LinkedHashSet<>(CONTENT_NAMES))) {
             throw new IOException("求职周期档案内容契约无效。");
@@ -238,6 +246,46 @@ public class CareerCampaignArchiveBuilder {
             safeRows.add(value);
         }
         return json(safeRows);
+    }
+
+    private byte[] evidenceUsageJson(
+            List<?> rows,
+            LocalDateTime dataCutoffAt,
+            CareerCampaignArchiveModels.SectionMetadata sectionMetadata)
+            throws JsonProcessingException {
+        List<?> safeRows = rows == null ? List.of() : rows;
+        CareerCampaignArchiveModels.SectionMetadata metadata = sectionMetadata == null
+                ? new CareerCampaignArchiveModels.SectionMetadata() : sectionMetadata;
+        boolean available = metadata.isAvailable();
+        List<String> missingSections = cleanList(metadata.getMissingSections());
+        List<String> warnings = cleanList(metadata.getWarnings());
+        Map<String, Object> envelope = new LinkedHashMap<>();
+        envelope.put("schemaVersion", EVIDENCE_SECTION_SCHEMA_VERSION);
+        envelope.put("dataCutoffAt", dataCutoffAt);
+        envelope.put("sourceSetHash", ResumeArtifactHashes.sha256(json(safeRows)));
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        coverage.put("itemCount", safeRows.size());
+        coverage.put("available", available);
+        envelope.put("coverage", coverage);
+        envelope.put("warnings", warnings);
+        envelope.put("unknowns", List.of());
+        envelope.put("limits", sectionLimits(available, safeRows.size()));
+        envelope.put("confidenceLevel", available && safeRows.size() >= 5 ? "MEDIUM" : "LOW");
+        envelope.put("fallback", false);
+        envelope.put("missingSections", missingSections);
+        envelope.put("items", safeRows);
+        envelope.put("contentHash", ResumeArtifactHashes.sha256(json(envelope)));
+        return json(envelope);
+    }
+
+    private List<String> sectionLimits(boolean available, int itemCount) {
+        if (!available) {
+            return List.of("章节来源不可用，不能据此判断是否存在使用记录或结果。");
+        }
+        if (itemCount < 5) {
+            return List.of("样本少于 5 条，仅支持事实展示。");
+        }
+        return List.of("当前章节仅支持有限观察，不输出强策略、排名或因果结论。");
     }
 
     private String safeMarkdown(String value) {
