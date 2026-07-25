@@ -7,12 +7,15 @@ import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.interview.feign.dto.GenerateLearningPlanDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
 import com.codecoachai.interview.feign.dto.GenerateTargetedStudyPlanDTO;
+import com.codecoachai.interview.feign.dto.InnerKnowledgeSearchDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateFollowUpVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateLearningPlanVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.vo.InnerKnowledgeSearchResultVO;
 import feign.Response;
+import java.util.List;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -40,4 +43,7 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/study-plans/generate-from-gap")
     Result<GenerateLearningPlanVO> generateTargetedStudyPlan(@RequestBody GenerateTargetedStudyPlanDTO dto);
+
+    @PostMapping("/inner/agent/knowledge/search")
+    Result<List<InnerKnowledgeSearchResultVO>> searchKnowledge(@RequestBody InnerKnowledgeSearchDTO dto);
 }

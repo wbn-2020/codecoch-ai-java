@@ -157,8 +157,7 @@ public class CareerCampaignArchiveServiceImpl implements CareerCampaignArchiveSe
         if (campaignId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "周期不能为空。");
         }
-        if (archiveMapper.selectCampaign(
-                userId, campaignId, LocalDateTime.now().withNano(0)) == null) {
+        if (archiveMapper.selectCampaignId(userId, campaignId) == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "求职周期不存在。");
         }
         return archiveMapper.selectList(new LambdaQueryWrapper<CareerCampaignArchiveExport>()

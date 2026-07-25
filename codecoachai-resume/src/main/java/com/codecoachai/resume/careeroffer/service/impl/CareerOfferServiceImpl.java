@@ -53,6 +53,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -202,6 +203,14 @@ public class CareerOfferServiceImpl implements CareerOfferService, CareerOfferRe
             throw parameter("Campaign Offers do not have terms versions");
         }
         Comparison comparison = CareerOfferComparator.compare(versions, actual);
+        // A campaign keeps a single live decision (uk_career_offer_decision_live_campaign on the generated
+        // live_campaign_id, and decisions are never soft-deleted). Re-previewing with a fresh idempotency key
+        // must refresh that decision in place; a blind insert would collide on the unique key and surface as
+        // HTTP 500 on the user's second "open comparison".
+        CareerOfferDecision existing = decisionMapper.selectLiveByCampaign(campaignId, userId);
+        if (existing != null) {
+            return refreshDecision(userId, campaignId, existing, keyHash, payloadHash, comparison, actual);
+        }
         CareerOfferDecision decision = new CareerOfferDecision();
         decision.setUserId(userId);
         decision.setCampaignId(campaignId);
@@ -209,15 +218,43 @@ public class CareerOfferServiceImpl implements CareerOfferService, CareerOfferRe
         decision.setLockVersion(1);
         decision.setIdempotencyKeyHash(keyHash);
         decision.setPayloadHash(payloadHash);
-        decisionMapper.insert(decision);
+        try {
+            decisionMapper.insert(decision);
+        } catch (DuplicateKeyException ex) {
+            // Concurrent first-preview double-submit raced us to the unique live_campaign_id; refresh instead.
+            CareerOfferDecision concurrent = decisionMapper.selectLiveByCampaign(campaignId, userId);
+            if (concurrent != null) {
+                return refreshDecision(userId, campaignId, concurrent, keyHash, payloadHash, comparison, actual);
+            }
+            throw ex;
+        }
+        writeDecisionSnapshot(userId, campaignId, decision, 1, comparison, actual);
+        decisionMapper.updateById(decision);
+        return decisionView(decision);
+    }
 
+    private CareerOfferDecisionVO refreshDecision(Long userId, Long campaignId, CareerOfferDecision decision,
+                                                  String keyHash, String payloadHash, Comparison comparison,
+                                                  CareerOfferDecisionPreviewDTO actual) {
+        if (!"PREVIEWED".equals(decision.getStatus())) {
+            throw parameter("Campaign offer decision is already final and cannot be re-previewed");
+        }
+        decision.setIdempotencyKeyHash(keyHash);
+        decision.setPayloadHash(payloadHash);
+        int nextSnapshotNo = snapshotMapper.selectMaxSnapshotNo(decision.getId(), userId) + 1;
+        writeDecisionSnapshot(userId, campaignId, decision, nextSnapshotNo, comparison, actual);
+        decisionMapper.updateById(decision);
+        return decisionView(decision);
+    }
+
+    private void writeDecisionSnapshot(Long userId, Long campaignId, CareerOfferDecision decision, int snapshotNo,
+                                       Comparison comparison, CareerOfferDecisionPreviewDTO actual) {
         CareerOfferDecisionSnapshot snapshot = snapshot(userId, campaignId, decision.getId(), comparison, actual);
+        snapshot.setSnapshotNo(snapshotNo);
         snapshotMapper.insert(snapshot);
         List<CareerOfferDecisionItem> items = decisionItems(userId, snapshot.getId(), comparison);
         items.forEach(itemMapper::insert);
         decision.setCurrentSnapshotId(snapshot.getId());
-        decisionMapper.updateById(decision);
-        return decisionView(decision);
     }
 
     @Override

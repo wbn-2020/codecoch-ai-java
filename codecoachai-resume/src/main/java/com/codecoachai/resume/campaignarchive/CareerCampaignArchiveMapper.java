@@ -22,6 +22,16 @@ public interface CareerCampaignArchiveMapper extends BaseMapper<CareerCampaignAr
                                             @Param("exportId") Long exportId);
 
     @Select("""
+            SELECT id
+              FROM career_campaign
+             WHERE id = #{campaignId}
+               AND user_id = #{userId}
+               AND deleted = 0
+             LIMIT 1
+            """)
+    Long selectCampaignId(@Param("userId") Long userId, @Param("campaignId") Long campaignId);
+
+    @Select("""
             SELECT *
               FROM career_campaign_archive_export
              WHERE user_id = #{userId}

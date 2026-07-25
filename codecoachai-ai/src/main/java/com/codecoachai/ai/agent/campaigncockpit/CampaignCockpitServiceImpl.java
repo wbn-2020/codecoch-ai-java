@@ -1,8 +1,6 @@
 package com.codecoachai.ai.agent.campaigncockpit;
 
 import com.baomidou.mybatisplus.core.toolkit.StringUtils;
-import com.codecoachai.ai.agent.campaigncockpit.CampaignCockpitModels.ActionDecisionRequest;
-import com.codecoachai.ai.agent.campaigncockpit.CampaignCockpitModels.ActionDecisionView;
 import com.codecoachai.ai.agent.campaigncockpit.CampaignCockpitModels.ActionItem;
 import com.codecoachai.ai.agent.campaigncockpit.CampaignCockpitModels.Campaign;
 import com.codecoachai.ai.agent.campaigncockpit.CampaignCockpitModels.CockpitView;
@@ -29,7 +27,6 @@ import java.util.Objects;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.CollectionUtils;
@@ -58,79 +55,6 @@ public class CampaignCockpitServiceImpl implements CampaignCockpitService {
             result.setCampaign(campaign);
         }
         return result;
-    }
-
-    @Transactional(rollbackFor = Exception.class)
-    public ActionDecisionView decide(Long userId, Long campaignId, ActionDecisionRequest request) {
-        requireIds(userId, campaignId);
-        if (request == null || !StringUtils.isNotBlank(request.getSemanticKey())
-                || !StringUtils.isNotBlank(request.getSourceHash())
-                || !StringUtils.isNotBlank(request.getDecisionStatus())
-                || !StringUtils.isNotBlank(request.getIdempotencyKey())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "行动决策请求不完整。");
-        }
-        String status = request.getDecisionStatus().trim().toUpperCase(Locale.ROOT);
-        if (!Set.of("SNOOZED", "DISMISSED", "REOPENED", "PLAN_PREVIEWED").contains(status)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的行动决策状态。");
-        }
-        if ("SNOOZED".equals(status)
-                && (request.getSnoozedUntil() == null
-                || !request.getSnoozedUntil().isAfter(timeProvider.now()))) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "稍后处理必须设置未来时间。");
-        }
-        CockpitView cockpit = get(userId, campaignId);
-        ActionItem action = cockpit.getActionQueue().stream()
-                .filter(item -> Objects.equals(item.getSemanticKey(), request.getSemanticKey())
-                        && Objects.equals(item.getSourceHash(), request.getSourceHash()))
-                .findFirst().orElse(null);
-        if (action == null) {
-            throw new BusinessException(ErrorCode.STALE_SOURCE_VERSION, "行动来源已经变化，请刷新后重试。");
-        }
-        String idempotencyHash = AgentAdaptivePlanHashUtils.sha256(request.getIdempotencyKey().trim());
-        String payloadHash = AgentAdaptivePlanHashUtils.sha256(
-                request.getSemanticKey().trim() + "|" + request.getSourceHash().trim() + "|"
-                        + status + "|" + Objects.toString(request.getSnoozedUntil(), "")
-                        + "|" + Objects.toString(request.getReason(), ""));
-        CampaignActionDecision existing = decisionMapper.selectByIdempotency(userId, idempotencyHash);
-        if (existing != null) {
-            if (!Objects.equals(existing.getPayloadHash(), payloadHash)) {
-                throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
-                        "同一幂等键不能用于不同的行动决策。");
-            }
-            return toView(existing);
-        }
-        CampaignActionDecision decision = new CampaignActionDecision();
-        decision.setUserId(userId);
-        decision.setCampaignId(campaignId);
-        decision.setSemanticKey(action.getSemanticKey());
-        decision.setSourceHash(action.getSourceHash());
-        decision.setActionType(action.getActionType());
-        decision.setDecisionStatus(status);
-        decision.setSnoozedUntil(request.getSnoozedUntil());
-        decision.setReason(request.getReason());
-        decision.setIdempotencyKeyHash(idempotencyHash);
-        decision.setPayloadHash(payloadHash);
-        decision.setDecidedAt(timeProvider.now());
-        decision.setDeleted(0);
-        try {
-            decisionMapper.insert(decision);
-        } catch (DuplicateKeyException ex) {
-            CampaignActionDecision concurrent = decisionMapper.selectByIdempotency(
-                    userId, idempotencyHash);
-            if (concurrent != null && Objects.equals(concurrent.getPayloadHash(), payloadHash)) {
-                return toView(concurrent);
-            }
-            throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
-                    "行动决策发生并发冲突，请重试。");
-        }
-        return toView(decision);
-    }
-
-    public List<ActionDecisionView> decisions(Long userId, Long campaignId) {
-        requireIds(userId, campaignId);
-        return decisionMapper.selectByCampaign(userId, campaignId).stream()
-                .map(this::toView)
-                .toList();
     }
 
     @Override
@@ -285,20 +209,6 @@ public class CampaignCockpitServiceImpl implements CampaignCockpitService {
                 .sorted()
                 .toList()
                 .toString());
-    }
-
-    private ActionDecisionView toView(CampaignActionDecision source) {
-        ActionDecisionView result = new ActionDecisionView();
-        result.setId(source.getId());
-        result.setCampaignId(source.getCampaignId());
-        result.setSemanticKey(source.getSemanticKey());
-        result.setSourceHash(source.getSourceHash());
-        result.setActionType(source.getActionType());
-        result.setDecisionStatus(source.getDecisionStatus());
-        result.setSnoozedUntil(source.getSnoozedUntil());
-        result.setReason(source.getReason());
-        result.setDecidedAt(source.getDecidedAt());
-        return result;
     }
 
     private void requireIds(Long userId, Long campaignId) {

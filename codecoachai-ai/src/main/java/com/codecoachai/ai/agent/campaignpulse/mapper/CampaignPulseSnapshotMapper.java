@@ -4,6 +4,7 @@ import com.codecoachai.ai.agent.campaignpulse.domain.entity.CampaignPulseSnapsho
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -25,6 +26,7 @@ public interface CampaignPulseSnapshotMapper {
                 #{confidenceLevel}, #{fallback}, #{aiCallLogId}, CURRENT_TIMESTAMP, 0
             )
             """)
+    @Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "id")
     int insert(CampaignPulseSnapshot snapshot);
 
     @Select("""

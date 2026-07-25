@@ -4,6 +4,7 @@ import com.codecoachai.ai.agent.campaignpulse.domain.entity.CampaignPulseSource;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -21,6 +22,7 @@ public interface CampaignPulseSourceMapper {
                 #{fieldPath}, #{safeSummary}, CURRENT_TIMESTAMP, 0
             )
             """)
+    @Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "id")
     int insert(CampaignPulseSource source);
 
     @Select("""

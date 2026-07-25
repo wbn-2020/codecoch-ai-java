@@ -44,6 +44,7 @@ import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.Asset
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.EventResolution;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -85,6 +86,9 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
     private final CareerEvidenceSourceResolver sourceResolver;
     private final V9FeatureGate featureGate;
     private final ObjectMapper objectMapper;
+
+    /** Lazily derived key-ordered mapper for JVM-stable persistence hashes (see {@link #writeCanonicalJson}). */
+    private volatile ObjectMapper canonicalHashMapper;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -259,6 +263,15 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
         if (current != null && Objects.equals(
                 current.getContentHash(), resultContentHash(currentStatus, input))) {
             return toResultVO(root, current);
+        }
+        // createResult records the initial RECORDED snapshot. Once the result root has advanced past
+        // RECORDED (CONFIRMED/CORRECTED/VOID), a fresh-key re-record with changed content must not silently
+        // append a RECORDED snapshot — that would demote the confirmed status and drop the event from
+        // confirmed facts. The root status (not the snapshot status) is the authoritative lifecycle state.
+        // Route such changes through the confirm/correct/void commands instead.
+        if (!"RECORDED".equals(root.getStatus())) {
+            throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "该结果已确认或作废，请通过确认/更正/作废操作修改，不能重新记录。");
         }
         return appendSnapshot(root, current, input, "RECORDED",
                 idempotencyKeyHash, payloadHash, root.getLockVersion());
@@ -616,7 +629,10 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
                 assertSamePayload(replay.getIdempotencyPayloadHash(), payloadHash, "结果操作请求");
                 return toResultVO(root, replay);
             }
-            throw ex;
+            // Not an idempotency-key replay, so this is a concurrent append colliding on the
+            // (result_id, snapshot_version) unique key. Surface it as a friendly stale-version
+            // signal so the caller refreshes and retries, rather than leaking DuplicateKeyException.
+            throw new BusinessException(ErrorCode.STALE_SOURCE_VERSION, "结果记录已更新，请刷新后重试。");
         }
         int updated = resultMapper.updateCurrentSnapshot(
                 root.getId(), root.getUserId(), snapshot.getId(), nextVersion,
@@ -1313,7 +1329,33 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
     }
 
     private String hash(Object value) {
-        return ResumeArtifactHashes.sha256(writeJson(value));
+        return ResumeArtifactHashes.sha256(writeCanonicalJson(value));
+    }
+
+    /**
+     * Serializes with map entries ordered by key so persisted hashes stay stable across JVMs.
+     * {@code Map.of(...)} (ImmutableCollections.MapN) iteration order is randomized per JVM by a
+     * nanoTime-seeded salt; without this, the same logical payload hashes differently across
+     * instances/restarts, breaking the unique-key and idempotency guarantees this service relies on.
+     * Kept separate from {@link #writeJson(Object)} because that method also serializes JSON columns
+     * whose stored field order must not change.
+     */
+    private String writeCanonicalJson(Object value) {
+        try {
+            return canonicalHashMapper().writeValueAsString(value);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "证据使用哈希序列化失败。");
+        }
+    }
+
+    private ObjectMapper canonicalHashMapper() {
+        ObjectMapper mapper = canonicalHashMapper;
+        if (mapper == null) {
+            mapper = objectMapper.copy()
+                    .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+            canonicalHashMapper = mapper;
+        }
+        return mapper;
     }
 
     private void assertSamePayload(String stored, String requested, String label) {

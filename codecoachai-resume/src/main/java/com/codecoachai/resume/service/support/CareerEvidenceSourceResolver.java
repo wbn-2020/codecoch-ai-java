@@ -124,8 +124,13 @@ public class CareerEvidenceSourceResolver {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "结果来源事件不能为空。");
         }
         String eventType = normalize(request.getEventType());
+        // CAMPAIGN_REVIEW_SNAPSHOT was previously listed here but had no validation branch, so every
+        // request fell through to the RESOURCE_RELATION_CONFLICT below — a "supported" type that always
+        // failed. Its source lives in the AI service (campaignreview) and cannot be validated from the
+        // resume service, so it is dropped from the accepted set until cross-service validation exists;
+        // callers now get an honest "unsupported type" PARAM_ERROR instead of a misleading conflict.
         if (!java.util.Set.of("APPLICATION_EVENT", "INTERVIEW_ROUND", "OFFER_DECISION",
-                "CONTACT_ACTIVITY", "CAMPAIGN_REVIEW_SNAPSHOT").contains(eventType)) {
+                "CONTACT_ACTIVITY").contains(eventType)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "不支持的结果来源事件类型。");
         }
         if ("APPLICATION_EVENT".equals(eventType)) {

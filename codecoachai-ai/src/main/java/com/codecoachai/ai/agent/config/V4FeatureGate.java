@@ -31,6 +31,10 @@ public class V4FeatureGate {
         }
     }
 
+    public boolean isKnowledgeEnabled() {
+        return knowledgeEnabled;
+    }
+
     public void requireAdaptivePlanEnabled() {
         if (!adaptivePlanEnabled) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "当前版本未开启复盘驱动自适应计划功能。");

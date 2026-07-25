@@ -16,4 +16,11 @@ public interface CareerOfferDecisionSnapshotMapper extends BaseMapper<CareerOffe
             """)
     CareerOfferDecisionSnapshot selectOwned(@Param("snapshotId") Long snapshotId,
                                             @Param("userId") Long userId);
+
+    @Select("""
+            SELECT COALESCE(MAX(snapshot_no), 0)
+              FROM career_offer_decision_snapshot
+             WHERE decision_id = #{decisionId} AND user_id = #{userId} AND deleted = 0
+            """)
+    int selectMaxSnapshotNo(@Param("decisionId") Long decisionId, @Param("userId") Long userId);
 }

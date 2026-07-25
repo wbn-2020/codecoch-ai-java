@@ -45,6 +45,7 @@ import com.codecoachai.interview.feign.dto.EvaluateAnswerDTO;
 import com.codecoachai.interview.feign.dto.GenerateFollowUpDTO;
 import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
+import com.codecoachai.interview.feign.dto.InnerKnowledgeSearchDTO;
 import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
 import com.codecoachai.interview.feign.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
@@ -53,6 +54,7 @@ import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationPackageVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
+import com.codecoachai.interview.feign.vo.InnerKnowledgeSearchResultVO;
 import com.codecoachai.interview.feign.vo.InnerProjectEvidenceTrainingContextVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
@@ -131,6 +133,13 @@ public class InterviewServiceImpl implements InterviewService {
             "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
     private static final String TRAINING_SCENE_JAVA_SPECIALTY = "JAVA_SPECIALTY";
     private static final String TRAINING_SCENE_PROJECT_DEEP_DIVE = "PROJECT_DEEP_DIVE";
+    // Knowledge-base enrichment of the interview training context. Kept intentionally small so only a
+    // few strongly-relevant hits reach the AI prompt: too many low-signal snippets dilute question
+    // quality. The AI service re-clamps limit to [1,50] and minScore to [0,1], so these are just the
+    // interview module's preferred narrow defaults.
+    private static final int KNOWLEDGE_REFERENCE_LIMIT = 3;
+    private static final double KNOWLEDGE_REFERENCE_MIN_SCORE = 0.35D;
+    private static final int KNOWLEDGE_QUERY_TERM_LIMIT = 6;
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -3365,7 +3374,97 @@ public class InterviewServiceImpl implements InterviewService {
             }
             summary.put("projectEvidenceSummaries", projects);
         }
+        List<Map<String, Object>> knowledgeReferences = loadKnowledgeReferences(userId, request, trainingScene);
+        if (!knowledgeReferences.isEmpty()) {
+            summary.put("knowledgeReferences", knowledgeReferences);
+        }
         return toJsonOrNull(summary);
+    }
+
+    /**
+     * Retrieve summary-level hits from the candidate's personal knowledge base to enrich the AI
+     * question context. Best-effort: any failure (feature disabled, feign error, empty query) yields
+     * an empty list so interview creation is never blocked. Only summary-level fields (title, snippet,
+     * type, score) are carried; raw document bodies never leave the knowledge module.
+     */
+    private List<Map<String, Object>> loadKnowledgeReferences(Long userId, CreateInterviewDTO request,
+                                                              String trainingScene) {
+        if (userId == null) {
+            return List.of();
+        }
+        String keyword = buildKnowledgeQuery(request, trainingScene);
+        if (!StringUtils.hasText(keyword)) {
+            return List.of();
+        }
+        try {
+            InnerKnowledgeSearchDTO searchDto = new InnerKnowledgeSearchDTO();
+            searchDto.setUserId(userId);
+            searchDto.setKeyword(keyword);
+            searchDto.setLimit(KNOWLEDGE_REFERENCE_LIMIT);
+            searchDto.setMinScore(KNOWLEDGE_REFERENCE_MIN_SCORE);
+            List<InnerKnowledgeSearchResultVO> hits =
+                    FeignResultUtils.unwrap(aiFeignClient.searchKnowledge(searchDto));
+            if (hits == null || hits.isEmpty()) {
+                return List.of();
+            }
+            List<Map<String, Object>> references = new ArrayList<>();
+            for (InnerKnowledgeSearchResultVO hit : hits) {
+                if (hit == null) {
+                    continue;
+                }
+                String snippet = normalizeText(hit.getSnippet());
+                String title = normalizeText(hit.getTitle());
+                if (!StringUtils.hasText(snippet) && !StringUtils.hasText(title)) {
+                    continue;
+                }
+                Map<String, Object> reference = new LinkedHashMap<>();
+                putIfPresent(reference, "title", title);
+                putIfPresent(reference, "documentType", normalizeText(hit.getDocumentType()));
+                putIfPresent(reference, "snippet", snippet);
+                if (hit.getScore() != null) {
+                    reference.put("score", hit.getScore());
+                }
+                references.add(reference);
+                if (references.size() >= KNOWLEDGE_REFERENCE_LIMIT) {
+                    break;
+                }
+            }
+            return references;
+        } catch (RuntimeException ex) {
+            // Knowledge enrichment is optional; never let a retrieval failure break interview creation.
+            log.warn("Knowledge reference retrieval failed, continuing without it. userId={}, error={}",
+                    userId, ex.getClass().getSimpleName());
+            return List.of();
+        }
+    }
+
+    /**
+     * Build the knowledge-base query from the strongest available training signals: the target skill
+     * domain and explicit skill codes, falling back to the training scene. Returns null when there is
+     * nothing meaningful to search on.
+     */
+    private String buildKnowledgeQuery(CreateInterviewDTO request, String trainingScene) {
+        if (request == null) {
+            return null;
+        }
+        List<String> parts = new ArrayList<>();
+        String targetSkillDomain = normalizeText(request.getTargetSkillDomain());
+        if (StringUtils.hasText(targetSkillDomain)) {
+            parts.add(targetSkillDomain);
+        }
+        for (String code : sanitizeStrings(request.getTargetSkillCodes())) {
+            parts.add(code);
+            if (parts.size() >= KNOWLEDGE_QUERY_TERM_LIMIT) {
+                break;
+            }
+        }
+        if (parts.isEmpty() && StringUtils.hasText(trainingScene)) {
+            parts.add(trainingScene);
+        }
+        if (parts.isEmpty()) {
+            return null;
+        }
+        return String.join(" ", parts);
     }
 
     private Map<String, Object> buildApplicationContextSummary(CreateInterviewDTO request) {
