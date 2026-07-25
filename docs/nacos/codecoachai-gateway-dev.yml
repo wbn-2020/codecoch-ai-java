@@ -135,7 +135,7 @@ spring:
         - id: codecoachai-ai-admin
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
+            - Path=/ai/health,/ai/feedback,/ai/feedback/**,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
         - id: codecoachai-file-admin
           uri: lb://codecoachai-file
           predicates:

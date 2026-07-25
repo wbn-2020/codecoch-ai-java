@@ -69,6 +69,7 @@ class GatewayRouteContractTest {
             "/interview-remediations",
             "/interview-tts",
             "/interview-streaming-asr",
+            "/ai/feedback",
             "/notifications");
 
     private static final Set<String> REQUIRED_WILDCARD_PUBLIC_ROUTES = Set.of(
@@ -134,6 +135,7 @@ class GatewayRouteContractTest {
             routeFamily("interview remediations", "/interview-remediations/contract-probe", "interview"),
             routeFamily("interview TTS", "/interview-tts/contract-probe", "interview"),
             routeFamily("interview streaming ASR", "/interview-streaming-asr/contract-probe", "interview"),
+            routeFamily("ai result feedback", "/ai/feedback/contract-probe", "ai"),
             routeFamily("growth", "/growth/contract-probe", "ai"),
             routeFamily("analytics", "/analytics/contract-probe", "ai"),
             routeFamily("files", "/files/contract-probe", "file"),
