@@ -50,7 +50,9 @@ import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
 import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
+import com.codecoachai.interview.feign.dto.InnerKnowledgeSearchDTO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
+import com.codecoachai.interview.feign.vo.InnerKnowledgeSearchResultVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
 import com.codecoachai.interview.feign.vo.InnerResumeJobMatchReportVO;
@@ -981,6 +983,129 @@ class InterviewServiceImplTest {
         report.setRubricVersion("INTERVIEW_RUBRIC_V1");
         report.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]");
         return report;
+    }
+
+    @Test
+    void buildKnowledgeQueryPrefersSkillDomainAndCodesOverScene() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setTargetSkillDomain("并发编程");
+        dto.setTargetSkillCodes(List.of("JUC", "AQS"));
+
+        String query = invokeBuildKnowledgeQuery(dto, "JAVA_SPECIALTY");
+
+        assertEquals("并发编程 JUC AQS", query);
+    }
+
+    @Test
+    void buildKnowledgeQueryFallsBackToTrainingSceneWhenNoSkillSignals() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+
+        String query = invokeBuildKnowledgeQuery(dto, "PROJECT_DEEP_DIVE");
+
+        assertEquals("PROJECT_DEEP_DIVE", query);
+    }
+
+    @Test
+    void buildKnowledgeQueryReturnsNullWhenNothingToSearch() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+
+        assertNull(invokeBuildKnowledgeQuery(dto, null));
+    }
+
+    @Test
+    void buildKnowledgeQueryCapsSkillCodeTerms() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setTargetSkillDomain("d0");
+        dto.setTargetSkillCodes(List.of("c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"));
+
+        String query = invokeBuildKnowledgeQuery(dto, "SCENE");
+
+        // domain + skill codes, capped at 6 total query terms.
+        assertEquals("d0 c1 c2 c3 c4 c5", query);
+    }
+
+    @Test
+    void loadKnowledgeReferencesReturnsEmptyWhenUserIdMissing() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setTargetSkillDomain("Redis");
+
+        List<Map<String, Object>> refs = invokeLoadKnowledgeReferences(null, dto, "JAVA_SPECIALTY");
+
+        assertTrue(refs.isEmpty());
+        verify(aiFeignClient, never()).searchKnowledge(any());
+    }
+
+    @Test
+    void loadKnowledgeReferencesReturnsEmptyWhenNoQuery() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+
+        List<Map<String, Object>> refs = invokeLoadKnowledgeReferences(10L, dto, null);
+
+        assertTrue(refs.isEmpty());
+        verify(aiFeignClient, never()).searchKnowledge(any());
+    }
+
+    @Test
+    void loadKnowledgeReferencesCarriesOnlySummaryFieldsAndScopesToUser() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setTargetSkillDomain("Redis");
+
+        InnerKnowledgeSearchResultVO hit = new InnerKnowledgeSearchResultVO();
+        hit.setTitle("缓存一致性");
+        hit.setDocumentType("NOTE");
+        hit.setSnippet("延迟双删与 binlog 补偿。");
+        hit.setScore(0.82D);
+        ArgumentCaptor<InnerKnowledgeSearchDTO> captor = ArgumentCaptor.forClass(InnerKnowledgeSearchDTO.class);
+        when(aiFeignClient.searchKnowledge(captor.capture()))
+                .thenReturn(Result.success(List.of(hit)));
+
+        List<Map<String, Object>> refs = invokeLoadKnowledgeReferences(10L, dto, "JAVA_SPECIALTY");
+
+        assertEquals(1, refs.size());
+        Map<String, Object> ref = refs.get(0);
+        assertEquals("缓存一致性", ref.get("title"));
+        assertEquals("NOTE", ref.get("documentType"));
+        assertEquals("延迟双删与 binlog 补偿。", ref.get("snippet"));
+        assertEquals(0.82D, ref.get("score"));
+        // No raw knowledge internals leak into the interview context.
+        assertFalse(ref.containsKey("chunkHash"));
+        assertFalse(ref.containsKey("sourceRef"));
+        // Request is scoped to the interview owner with the narrow interview-side defaults.
+        InnerKnowledgeSearchDTO sent = captor.getValue();
+        assertEquals(10L, sent.getUserId());
+        assertEquals("Redis", sent.getKeyword());
+        assertEquals(3, sent.getLimit());
+        assertEquals(0.35D, sent.getMinScore());
+    }
+
+    @Test
+    void loadKnowledgeReferencesSkipsBlankHitsAndDoesNotBreakOnFeignFailure() throws Exception {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setTargetSkillDomain("Redis");
+
+        when(aiFeignClient.searchKnowledge(any()))
+                .thenThrow(new RuntimeException("feign down"));
+
+        List<Map<String, Object>> refs = invokeLoadKnowledgeReferences(10L, dto, "JAVA_SPECIALTY");
+
+        // Best-effort: a retrieval failure yields an empty list, never propagates.
+        assertTrue(refs.isEmpty());
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> invokeLoadKnowledgeReferences(Long userId, CreateInterviewDTO request,
+                                                                    String trainingScene) throws Exception {
+        Method method = InterviewServiceImpl.class.getDeclaredMethod(
+                "loadKnowledgeReferences", Long.class, CreateInterviewDTO.class, String.class);
+        method.setAccessible(true);
+        return (List<Map<String, Object>>) method.invoke(target, userId, request, trainingScene);
+    }
+
+    private String invokeBuildKnowledgeQuery(CreateInterviewDTO request, String trainingScene) throws Exception {
+        Method method = InterviewServiceImpl.class.getDeclaredMethod(
+                "buildKnowledgeQuery", CreateInterviewDTO.class, String.class);
+        method.setAccessible(true);
+        return (String) method.invoke(target, request, trainingScene);
     }
 
     private InterviewReportVO invokeToReportVO(InterviewReport report, InterviewSession session) throws Exception {
