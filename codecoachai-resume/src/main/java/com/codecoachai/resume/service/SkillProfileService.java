@@ -5,6 +5,7 @@ import com.codecoachai.resume.domain.dto.SkillProfileGenerateDTO;
 import com.codecoachai.resume.domain.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileQueryDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileRefreshDTO;
+import com.codecoachai.resume.domain.entity.SkillProfile;
 import com.codecoachai.resume.domain.vo.SkillProfileDetailVO;
 import com.codecoachai.resume.domain.vo.SkillProfileGenerateVO;
 import com.codecoachai.resume.domain.vo.SkillProfileListVO;
@@ -30,4 +31,6 @@ public interface SkillProfileService {
     InnerSkillProfileVO getInnerSuccessProfileByMatchReport(Long matchReportId);
 
     void feedbackInterviewWeakPoints(InterviewWeakPointFeedbackDTO dto);
+
+    SkillProfile resolveEvidenceFeedbackProfile(Long userId, Long targetJobId);
 }

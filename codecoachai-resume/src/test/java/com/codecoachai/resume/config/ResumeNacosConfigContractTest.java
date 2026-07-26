@@ -23,6 +23,21 @@ class ResumeNacosConfigContractTest {
     }
 
     @Test
+    void v12FeatureConfigDeclaresProfileFeedbackAndSampleThresholds() throws IOException {
+        Path root = repositoryRoot();
+
+        String content = Files.readString(root.resolve(DOCS_CONFIG));
+        assertTrue(content.contains("v12:"),
+                () -> DOCS_CONFIG + " must declare the v12 feature block");
+        assertTrue(content.contains("evidence-profile-feedback: true"),
+                () -> DOCS_CONFIG + " must enable v12 evidence profile feedback in the test env");
+        assertTrue(content.contains("min-applications: 15"),
+                () -> DOCS_CONFIG + " must declare the experiment min-applications threshold");
+        assertTrue(content.contains("min-interviews: 3"),
+                () -> DOCS_CONFIG + " must declare the experiment min-interviews threshold");
+    }
+
+    @Test
     void resumeDatasourceUsesContainerSafeEnvironmentPlaceholders() throws IOException {
         Path root = repositoryRoot();
         String expectedUrl =

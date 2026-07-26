@@ -498,8 +498,8 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         boundary.put("resumeVersionSampleInsufficient", metrics.getResumeVersionSampleInsufficient());
         boundary.put("sampleWarning", metrics.getSampleWarning());
         boundary.put("blockedConclusionTypes", blockedConclusionTypes(metrics));
-        boundary.put("minComparableApplications", 15);
-        boundary.put("minInterviewTrendSamples", 3);
+        boundary.put("minComparableApplications", qualityGatePolicy.minReviewableApplications());
+        boundary.put("minInterviewTrendSamples", qualityGatePolicy.minInterviewTrendSamples());
         boundary.put("minResumeVersionUsage", 3);
         return boundary;
     }

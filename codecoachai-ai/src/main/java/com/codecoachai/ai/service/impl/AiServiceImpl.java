@@ -6100,6 +6100,10 @@ public class AiServiceImpl implements AiService {
 
                 Output only one JSON object. Do not output Markdown, code fences, or explanations.
                 The plan must directly address the selected skill gaps and must not invent candidate experience.
+                Gap items whose category is EVIDENCE_USAGE_FEEDBACK come from real usage outcomes of the
+                candidate's own evidence, such as an interview that did not advance after presenting it.
+                For those gaps, prefer INTERVIEW_PRACTICE and PROJECT_REVIEW tasks that train how to
+                structure, present, and defend the existing evidence instead of relearning the topic from scratch.
                 Top-level fields must be planTitle, planSummary, durationDays, stages.
                 stages must be an array. Each stage must contain stageNo, stageTitle, items.
                 items must be an array. Each item must contain dayOffset, title or taskTitle, description or taskDescription,

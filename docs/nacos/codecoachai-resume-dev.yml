@@ -41,3 +41,8 @@ codecoachai:
       evidence-usage: true
       evidence-feedback: true
       evidence-assets-view: true
+    v12:
+      evidence-profile-feedback: true
+      experiment-sample-thresholds:
+        min-applications: 15
+        min-interviews: 3

@@ -20,6 +20,7 @@ import com.codecoachai.interview.domain.vo.CreateInterviewVO;
 import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingResolver;
 import com.codecoachai.interview.service.InterviewService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -43,6 +44,8 @@ class InterviewRemediationServiceImplTest {
     @Mock
     private InterviewSessionMapper sessionMapper;
     @Mock
+    private InterviewScenarioBindingResolver bindingResolver;
+    @Mock
     private InterviewService interviewService;
 
     private InterviewRemediationServiceImpl service;
@@ -50,7 +53,8 @@ class InterviewRemediationServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new InterviewRemediationServiceImpl(
-                remediationMapper, reportMapper, sessionMapper, interviewService, new ObjectMapper());
+                remediationMapper, reportMapper, sessionMapper, bindingResolver,
+                interviewService, new ObjectMapper());
         LoginUserContext.setLoginUser(LoginUser.builder().userId(10L).username("tester").build());
     }
 
@@ -122,6 +126,29 @@ class InterviewRemediationServiceImplTest {
         assertEquals(88L, sessionCaptor.getValue().getSourceReportId());
         assertEquals("[7,9]", sessionCaptor.getValue().getSourceRequirementIds());
         assertEquals("补强缓存一致性追问", sessionCaptor.getValue().getPracticePurpose());
+    }
+
+    @Test
+    void remediationCarriesSourceScenarioBindingIntoNewInterview() {
+        when(reportMapper.selectById(88L)).thenReturn(report());
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+        when(bindingResolver.reusableScenarioVersionId(100L, 10L, false)).thenReturn(9001L);
+        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
+            InterviewRemediation remediation = invocation.getArgument(0);
+            remediation.setId(501L);
+            return 1;
+        });
+        CreateInterviewVO interview = new CreateInterviewVO();
+        interview.setId(201L);
+        when(interviewService.create(any())).thenReturn(interview);
+        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
+        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+
+        service.create(request(false, "scenario-carry"));
+
+        ArgumentCaptor<CreateInterviewDTO> requestCaptor = ArgumentCaptor.forClass(CreateInterviewDTO.class);
+        verify(interviewService).create(requestCaptor.capture());
+        assertEquals(9001L, requestCaptor.getValue().getScenarioVersionId());
     }
 
     @Test

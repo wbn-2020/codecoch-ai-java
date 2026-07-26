@@ -2,6 +2,7 @@ package com.codecoachai.resume.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.codecoachai.resume.domain.entity.CareerEvidenceUsageResult;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -89,4 +90,48 @@ public interface CareerEvidenceUsageResultMapper extends BaseMapper<CareerEviden
                                  @Param("campaignId") Long campaignId,
                                  @Param("applicationId") Long applicationId,
                                  @Param("assetType") String assetType);
+
+    @Select("""
+            SELECT COUNT(*)
+              FROM career_evidence_usage_result r
+              JOIN career_evidence_usage u
+                ON u.id = r.usage_id
+               AND u.user_id = r.user_id
+               AND u.deleted = 0
+              JOIN career_evidence_usage_result_snapshot s
+                ON s.id = r.current_snapshot_id
+             WHERE r.user_id = #{userId}
+               AND r.deleted = 0
+               AND r.status IN ('CONFIRMED', 'CORRECTED')
+               AND s.outcome_code = #{outcomeCode}
+               AND u.asset_type = #{assetType}
+               AND u.asset_id = #{assetId}
+            """)
+    long countTrustedOutcomeByAsset(@Param("userId") Long userId,
+                                    @Param("assetType") String assetType,
+                                    @Param("assetId") Long assetId,
+                                    @Param("outcomeCode") String outcomeCode);
+
+    @Select("""
+            SELECT DISTINCT r.usage_id
+              FROM career_evidence_usage_result r
+              JOIN career_evidence_usage u
+                ON u.id = r.usage_id
+               AND u.user_id = r.user_id
+               AND u.deleted = 0
+              JOIN career_evidence_usage_result_snapshot s
+                ON s.id = r.current_snapshot_id
+             WHERE r.user_id = #{userId}
+               AND r.deleted = 0
+               AND r.status IN ('CONFIRMED', 'CORRECTED')
+               AND s.outcome_code = #{outcomeCode}
+               AND u.asset_type = #{assetType}
+               AND u.asset_id = #{assetId}
+             ORDER BY r.usage_id
+             LIMIT 8
+            """)
+    List<Long> selectTrustedOutcomeUsageIds(@Param("userId") Long userId,
+                                            @Param("assetType") String assetType,
+                                            @Param("assetId") Long assetId,
+                                            @Param("outcomeCode") String outcomeCode);
 }

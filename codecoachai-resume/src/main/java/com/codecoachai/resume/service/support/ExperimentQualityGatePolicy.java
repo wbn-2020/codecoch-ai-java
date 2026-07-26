@@ -1,13 +1,40 @@
 package com.codecoachai.resume.service.support;
 
+import com.codecoachai.resume.config.V12FeatureGate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ExperimentQualityGatePolicy {
+
+    private final V12FeatureGate featureGate;
+
+    public ExperimentQualityGatePolicy() {
+        this(new V12FeatureGate());
+    }
+
+    @Autowired
+    public ExperimentQualityGatePolicy(V12FeatureGate featureGate) {
+        this.featureGate = featureGate;
+    }
+
+    /**
+     * Authoritative sample-sufficiency thresholds (V12/D2): configured through
+     * {@code codecoachai.features.v12.experiment-sample-thresholds} and read at evaluation
+     * time so Nacos refresh takes effect without restart. The frontend mirrors of these
+     * numbers are display fallbacks only.
+     */
+    public int minReviewableApplications() {
+        return featureGate.getExperimentSampleThresholds().getMinApplications();
+    }
+
+    public int minInterviewTrendSamples() {
+        return featureGate.getExperimentSampleThresholds().getMinInterviews();
+    }
 
     public QualityDecision evaluate(long applicationCount,
                                     int completedInterviewCount,
@@ -35,7 +62,8 @@ public class ExperimentQualityGatePolicy {
                                      int completedInterviewCount,
                                      boolean versionComparisonAllowed,
                                      Map<?, Integer> evidenceVersionUsageCounts) {
-        SampleState state = SampleState.resolve(applicationCount, completedInterviewCount);
+        SampleState state = SampleState.resolve(applicationCount, completedInterviewCount,
+                minReviewableApplications(), minInterviewTrendSamples());
         List<String> unsupportedConclusions = new ArrayList<>();
         List<String> weakObservations = new ArrayList<>();
         switch (state) {
@@ -50,7 +78,7 @@ public class ExperimentQualityGatePolicy {
             case PASS_REVIEWABLE ->
                     weakObservations.add("样本达到复盘口径，仍需保留岗位、渠道和时间窗口边界。");
         }
-        if (completedInterviewCount < 3) {
+        if (completedInterviewCount < minInterviewTrendSamples()) {
             addUnique(unsupportedConclusions, "不能判断面试能力变化或面试表现趋势。");
         }
         if (!versionComparisonAllowed) {
@@ -64,8 +92,8 @@ public class ExperimentQualityGatePolicy {
         sampleBoundary.put("applicationCount", applicationCount);
         sampleBoundary.put("completedInterviewCount", completedInterviewCount);
         sampleBoundary.put("minWeakObservationApplications", 5);
-        sampleBoundary.put("minReviewableApplications", 15);
-        sampleBoundary.put("minInterviewTrendSamples", 3);
+        sampleBoundary.put("minReviewableApplications", minReviewableApplications());
+        sampleBoundary.put("minInterviewTrendSamples", minInterviewTrendSamples());
         sampleBoundary.put("minEvidenceVersionUsage", 3);
         sampleBoundary.put("evidenceVersionUsageCounts", evidenceVersionUsageCounts);
         sampleBoundary.put("versionComparisonAllowed", versionComparisonAllowed);
@@ -106,14 +134,17 @@ public class ExperimentQualityGatePolicy {
             this.observationLevel = observationLevel;
         }
 
-        private static SampleState resolve(long applicationCount, int completedInterviewCount) {
+        private static SampleState resolve(long applicationCount,
+                                           int completedInterviewCount,
+                                           int minReviewableApplications,
+                                           int minInterviewTrendSamples) {
             if (applicationCount < 5) {
                 return BLOCKED_FACT_ONLY;
             }
-            if (applicationCount < 15) {
+            if (applicationCount < minReviewableApplications) {
                 return WARN_WEAK_OBSERVATION;
             }
-            if (completedInterviewCount < 3) {
+            if (completedInterviewCount < minInterviewTrendSamples) {
                 return WARN_INTERVIEW_BOUNDARY;
             }
             return PASS_REVIEWABLE;

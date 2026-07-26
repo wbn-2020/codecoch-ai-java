@@ -42,6 +42,7 @@ import com.codecoachai.resume.service.CareerEvidenceUsageService;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.AssetResolution;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.EventResolution;
+import com.codecoachai.resume.service.support.EvidenceProfileFeedbackService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -86,6 +87,7 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
     private final CareerEvidenceSourceResolver sourceResolver;
     private final V9FeatureGate featureGate;
     private final ObjectMapper objectMapper;
+    private final EvidenceProfileFeedbackService profileFeedbackService;
 
     /** Lazily derived key-ordered mapper for JVM-stable persistence hashes (see {@link #writeCanonicalJson}). */
     private volatile ObjectMapper canonicalHashMapper;
@@ -584,8 +586,14 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
         if (Objects.equals(current.getContentHash(), resultContentHash(targetStatus, input))) {
             return toResultVO(root, current);
         }
-        return appendSnapshot(root, current, input, targetStatus,
+        CareerEvidenceUsageResultVO mutated = appendSnapshot(root, current, input, targetStatus,
                 idempotencyKeyHash, payloadHash, request.getExpectedLockVersion());
+        // Real transition committed to the working set: fold the trusted outcome back into the
+        // skill profile. Replay and no-op paths above never reach this hook, and the hook itself
+        // never throws.
+        profileFeedbackService.afterResultTransition(
+                root, input.outcomeCode(), input.userInterpretationText());
+        return mutated;
     }
 
     private CareerEvidenceUsageResultVO appendSnapshot(

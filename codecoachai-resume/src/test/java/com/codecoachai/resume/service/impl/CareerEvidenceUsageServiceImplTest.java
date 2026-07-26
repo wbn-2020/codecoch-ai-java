@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -51,6 +52,7 @@ import com.codecoachai.resume.mapper.experimentv2.ExperimentVariantMapper;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.AssetResolution;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.EventResolution;
+import com.codecoachai.resume.service.support.EvidenceProfileFeedbackService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -97,6 +99,8 @@ class CareerEvidenceUsageServiceImplTest {
     private CareerEvidenceSourceResolver sourceResolver;
     @Mock
     private V9FeatureGate featureGate;
+    @Mock
+    private EvidenceProfileFeedbackService profileFeedbackService;
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
     private CareerEvidenceUsageServiceImpl service;
@@ -131,7 +135,8 @@ class CareerEvidenceUsageServiceImplTest {
                 variantMapper,
                 sourceResolver,
                 featureGate,
-                objectMapper);
+                objectMapper,
+                profileFeedbackService);
     }
 
     @AfterEach
@@ -364,6 +369,26 @@ class CareerEvidenceUsageServiceImplTest {
         assertEquals(4, result.getSnapshotVersion());
         assertEquals(301L, result.getCurrentSnapshotId());
         assertEquals(3, result.getLockVersion());
+        verify(profileFeedbackService).afterResultTransition(
+                eq(root), eq("INTERVIEW_ADVANCED"), nullable(String.class));
+    }
+
+    @Test
+    void confirmOnAlreadyConfirmedResultDoesNotNotifyProfileFeedback() {
+        CareerEvidenceUsageResult root = resultRoot(2, "CONFIRMED", 300L, 3);
+        CareerEvidenceUsageResultSnapshot current = resultSnapshot(
+                300L, 3, "REPLIED", "old-content");
+        stubMutationResolution(root, current);
+        when(resultSnapshotMapper.selectByIdempotencyKey(eq(RESULT_ID), eq(USER_ID), anyString()))
+                .thenReturn(null);
+
+        CareerEvidenceUsageResultVO result =
+                service.confirmResult(RESULT_ID, command("confirm-noop", 2));
+
+        assertEquals("CONFIRMED", result.getStatus());
+        verify(resultSnapshotMapper, never())
+                .insert(any(CareerEvidenceUsageResultSnapshot.class));
+        verifyNoInteractions(profileFeedbackService);
     }
 
     @Test
@@ -421,6 +446,8 @@ class CareerEvidenceUsageServiceImplTest {
         assertTrue(result.getLimits().contains("结果已作废：duplicate event"));
         verify(resultMapper).updateCurrentSnapshot(
                 eq(RESULT_ID), eq(USER_ID), eq(302L), eq(4), eq("VOID"), eq(2));
+        verify(profileFeedbackService).afterResultTransition(
+                eq(root), eq("INTERVIEW_ADVANCED"), nullable(String.class));
     }
 
     @Test

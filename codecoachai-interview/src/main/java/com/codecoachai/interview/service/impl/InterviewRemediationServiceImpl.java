@@ -17,9 +17,11 @@ import com.codecoachai.interview.domain.vo.InterviewRemediationVO;
 import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingResolver;
 import com.codecoachai.interview.service.InterviewRemediationService;
 import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewSessionConfigCopier;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -49,6 +51,7 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
     private final InterviewRemediationMapper remediationMapper;
     private final InterviewReportMapper reportMapper;
     private final InterviewSessionMapper sessionMapper;
+    private final InterviewScenarioBindingResolver bindingResolver;
     private final InterviewService interviewService;
     private final ObjectMapper objectMapper;
 
@@ -442,36 +445,18 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
             List<Long> requirementIds,
             String purpose,
             String strength) {
-        CreateInterviewDTO request = new CreateInterviewDTO();
-        request.setMode(source.getMode());
-        request.setInterviewMode(source.getMode());
-        request.setResumeId(source.getResumeId());
-        request.setApplicationId(source.getApplicationId());
-        request.setApplicationPackageId(source.getApplicationPackageId() == null
-                ? null : source.getApplicationPackageId().toString());
-        request.setTargetJobId(source.getTargetJobId());
-        request.setJdAnalysisId(source.getJdAnalysisId());
-        request.setResumeVersionId(source.getResumeVersionId());
-        request.setSkillProfileId(source.getSkillProfileId());
-        request.setMatchReportId(source.getMatchReportId());
+        CreateInterviewDTO request =
+                InterviewSessionConfigCopier.copyCreationConfig(source, objectMapper);
         request.setTitle(remediationTitle(source.getTitle()));
-        request.setMaxQuestionCount(source.getMaxQuestionCount());
-        request.setTargetPosition(source.getTargetPosition());
-        request.setExperienceLevel(source.getExperienceLevel());
-        request.setIndustryTemplateId(source.getIndustryTemplateId());
-        request.setIndustryDirection(source.getIndustryDirection());
-        request.setDifficulty(source.getDifficulty());
-        request.setInterviewerStyle(source.getInterviewerStyle());
-        request.setBasedOnResume(source.getBasedOnResume());
-        request.setTrainingScene(source.getTrainingScene());
-        request.setTargetSkillDomain(source.getTargetSkillDomain());
-        request.setTargetSkillCodes(readList(source.getTargetSkillCodes(), new TypeReference<>() {
-        }));
-        request.setTargetLevel(source.getTargetLevel());
-        request.setProjectEvidenceIds(readList(source.getProjectEvidenceIds(), new TypeReference<>() {
-        }));
-        request.setFollowUpIntensity(STRENGTH_STRONG.equals(strength)
-                ? "HIGH" : source.getFollowUpIntensity());
+        // Keep the source scenario binding so the remediation round is scored on the same
+        // rubric as the source (historically dropped, which made the pair incomparable).
+        // Lenient: if the scenario version has been unpublished, remediation still proceeds
+        // without it — repairing weak points wins over comparability here.
+        request.setScenarioVersionId(bindingResolver.reusableScenarioVersionId(
+                source.getId(), source.getUserId(), false));
+        if (STRENGTH_STRONG.equals(strength)) {
+            request.setFollowUpIntensity("HIGH");
+        }
         request.setPracticeMode(STRENGTH_STRONG.equals(strength) ? "STRONG_REMEDIATION" : "REMEDIATION");
         request.setRecommendationSource("INTERVIEW_REPORT");
         request.setRecommendationReason("sourceReportId=" + report.getId()

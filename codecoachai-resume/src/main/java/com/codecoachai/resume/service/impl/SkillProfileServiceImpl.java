@@ -221,6 +221,28 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         upsertAbilityProfileUpdates(dto);
     }
 
+    @Override
+    public SkillProfile resolveEvidenceFeedbackProfile(Long userId, Long targetJobId) {
+        SkillProfile profile = latestSuccessProfile(targetJobId, userId);
+        if (profile != null) {
+            return profile;
+        }
+        SkillProfile created = new SkillProfile();
+        created.setUserId(userId);
+        created.setTargetJobId(targetJobId);
+        // skill_profile.match_report_id is NOT NULL; 0 marks "no backing match report".
+        // Non-RESUME_JOB_MATCH profiles never dereference the report, so the sentinel is inert.
+        created.setMatchReportId(0L);
+        created.setProfileName("证据实战反馈画像");
+        created.setSourceType("EVIDENCE_USAGE");
+        created.setStatus(SkillProfileStatus.SUCCESS.getCode());
+        created.setSummary("由证据使用结果反馈自动创建，用于承载实战反馈缺口。");
+        created.setOverallLevel(2);
+        created.setOverallScore(60);
+        profileMapper.insert(created);
+        return created;
+    }
+
     private void upsertAbilityProfileUpdates(InterviewWeakPointFeedbackDTO dto) {
         JsonNode updates = readJsonSafely(dto.getAbilityProfileUpdatesJson());
         if (updates == null || !updates.isArray()) {
