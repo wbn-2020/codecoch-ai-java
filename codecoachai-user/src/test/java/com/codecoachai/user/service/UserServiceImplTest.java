@@ -1,12 +1,19 @@
 package com.codecoachai.user.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -98,6 +105,24 @@ class UserServiceImplTest {
         userService.updateUserStatus(9L, dto);
 
         verify(sysUserMapper).updateById(user);
-        verify(adminPermissionCache).invalidateUserPermissions(9L);
+        verify(adminPermissionCache).invalidateUserPermissionsAfterCommit(9L);
+    }
+
+    @Test
+    void updateUserStatusLocksAndRejectsDisablingLastActiveAdmin() {
+        when(roleService.listRoleCodesByUserId(9L)).thenReturn(List.of("ROLE_ADMIN"));
+        when(jdbcTemplate.queryForList(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN")))
+                .thenReturn(List.of(7L))
+                .thenReturn(List.of(9L));
+        UpdateUserStatusDTO dto = new UpdateUserStatusDTO();
+        dto.setStatus(CommonConstants.NO);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> userService.updateUserStatus(9L, dto));
+
+        assertEquals(ErrorCode.VALIDATION_ERROR.getCode(), exception.getCode());
+        verify(sysUserMapper, never()).updateById(any(SysUser.class));
+        verify(adminPermissionCache, never()).invalidateUserPermissionsAfterCommit(9L);
     }
 }

@@ -3,6 +3,12 @@ spring:
     nacos:
       discovery:
         ip: 127.0.0.1
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 5000
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -47,6 +53,7 @@ codecoachai:
       secret: ${CODECOACHAI_INTERNAL_SECRET}
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
+      max-signed-body-bytes: 1048576
 
   vector:
     enabled: ${CODECOACHAI_VECTOR_ENABLED:true}
@@ -59,13 +66,6 @@ codecoachai:
 
   ops:
     health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9208|service}
-
-feign:
-  client:
-    config:
-      default:
-        connectTimeout: 3000
-        readTimeout: 5000
 
 management:
   endpoints:

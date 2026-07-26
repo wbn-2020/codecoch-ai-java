@@ -40,6 +40,7 @@ class AutoOperationLogFilterTest {
             release.countDown();
             filter.shutdown();
         }
+        assertTrue(executor.isTerminated(), "audit executor must drain and terminate during shutdown");
     }
 
     private ExecutorService extractExecutor(AutoOperationLogFilter filter) throws Exception {

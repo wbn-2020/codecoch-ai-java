@@ -38,6 +38,6 @@ codecoachai:
       campaign-portfolio: false
       campaign-export: false
     v9:
-      evidence-usage: false
-      evidence-feedback: false
-      evidence-assets-view: false
+      evidence-usage: true
+      evidence-feedback: true
+      evidence-assets-view: true

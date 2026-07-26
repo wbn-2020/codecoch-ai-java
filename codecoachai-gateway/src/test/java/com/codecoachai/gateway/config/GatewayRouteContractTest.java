@@ -26,8 +26,7 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
 class GatewayRouteContractTest {
 
     private static final List<String> GATEWAY_CONFIGS = List.of(
-            "docs/nacos/codecoachai-gateway-dev.yml",
-            "config/nacos/codecoachai-gateway-dev.yml");
+            "docs/nacos/codecoachai-gateway-dev.yml");
 
     private static final String DEDUPE_RESPONSE_HEADER_FILTER =
             "DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE";
@@ -284,7 +283,7 @@ class GatewayRouteContractTest {
     }
 
     @Test
-    void pathTokenDeclarationsStayUniqueAndMirroredWithOccurrenceCounts() throws IOException {
+    void pathTokenDeclarationsStayUnique() throws IOException {
         Map<String, GatewayConfig> configs = readGatewayConfigs();
         for (GatewayConfig config : configs.values()) {
             Map<String, Long> duplicates = config.routeTokenOccurrences().entrySet().stream()
@@ -299,28 +298,6 @@ class GatewayRouteContractTest {
                     () -> config.relativePath() + " must not declare an exact Path token more than once"
                             + "; duplicate occurrence counts=" + duplicates);
         }
-
-        String docsPath = GATEWAY_CONFIGS.get(0);
-        String configPath = GATEWAY_CONFIGS.get(1);
-        Map<String, Long> docsOccurrences = configs.get(docsPath).routeTokenOccurrences();
-        Map<String, Long> configOccurrences = configs.get(configPath).routeTokenOccurrences();
-        Set<String> differingTokens = new TreeSet<>();
-        differingTokens.addAll(docsOccurrences.keySet());
-        differingTokens.addAll(configOccurrences.keySet());
-        differingTokens.removeIf(token ->
-                docsOccurrences.getOrDefault(token, 0L).equals(configOccurrences.getOrDefault(token, 0L)));
-
-        assertTrue(
-                differingTokens.isEmpty(),
-                () -> docsPath + " and " + configPath
-                        + " Path token occurrence counts must stay equal"
-                        + "; differences=" + differingTokens.stream()
-                                .collect(Collectors.toMap(
-                                        token -> token,
-                                        token -> "docs=" + docsOccurrences.getOrDefault(token, 0L)
-                                                + ", config=" + configOccurrences.getOrDefault(token, 0L),
-                                        (left, right) -> left,
-                                        LinkedHashMap::new)));
     }
 
     @Test

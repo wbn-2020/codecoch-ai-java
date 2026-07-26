@@ -187,6 +187,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateUserStatus(Long id, UpdateUserStatusDTO dto) {
         requireAdmin();
         if (!CommonConstants.YES.equals(dto.getStatus()) && !CommonConstants.NO.equals(dto.getStatus())) {
@@ -202,7 +203,7 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(id);
         user.setStatus(dto.getStatus());
         sysUserMapper.updateById(user);
-        adminPermissionCache.invalidateUserPermissions(id);
+        adminPermissionCache.invalidateUserPermissionsAfterCommit(id);
     }
 
     @Override
@@ -519,8 +520,23 @@ public class UserServiceImpl implements UserService {
         if (!targetIsAdmin) {
             return;
         }
-        Long activeOtherAdmins = jdbcTemplate.queryForObject("""
-                SELECT COUNT(1)
+        Set<Long> activeAdminUserIds = loadActiveAdminUserIdsForUpdate();
+        if (activeAdminUserIds.contains(userId) && activeAdminUserIds.size() <= 1) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
+        }
+    }
+
+    private Set<Long> loadActiveAdminUserIdsForUpdate() {
+        jdbcTemplate.queryForList("""
+                SELECT id
+                FROM sys_role
+                WHERE deleted = 0
+                  AND (UPPER(role_code) = UPPER(?) OR UPPER(role_code) = CONCAT('ROLE_', UPPER(?)))
+                ORDER BY id
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN);
+        return new java.util.LinkedHashSet<>(jdbcTemplate.queryForList("""
+                SELECT u.id
                 FROM sys_user u
                 JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
                 JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
@@ -528,11 +544,8 @@ public class UserServiceImpl implements UserService {
                   AND u.status = 1
                   AND r.status = 1
                   AND (UPPER(r.role_code) = UPPER(?) OR UPPER(r.role_code) = CONCAT('ROLE_', UPPER(?)))
-                  AND u.id <> ?
-                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN, userId);
-        if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
-        }
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN));
     }
 
     private String normalizeRoleCode(String roleCode) {

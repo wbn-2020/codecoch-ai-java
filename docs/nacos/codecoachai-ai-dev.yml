@@ -40,6 +40,13 @@ codecoachai:
         temperature: 0.3
         max-tokens: 2048
         timeout-seconds: 60
+    provider-security:
+      # Exact host names only. Wildcards are rejected to prevent API key exfiltration.
+      allowed-hosts:
+        - api.deepseek.com
+        - dashscope.aliyuncs.com
+      allowed-ports:
+        - 443
     crypto:
       # Required when saving AI model apiKey values from the admin UI.
       # Use at least 16 characters, or base64:<16/24/32-byte-key>.
@@ -57,7 +64,7 @@ codecoachai:
       external-plan-source: true
       campaign-review: true
     v9:
-      evidence-learning: false
+      evidence-learning: true
     v8:
       campaign-cockpit: false
       campaign-pulse: false

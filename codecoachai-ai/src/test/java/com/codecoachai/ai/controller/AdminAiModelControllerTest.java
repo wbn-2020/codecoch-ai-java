@@ -15,6 +15,7 @@ import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
+import com.codecoachai.ai.security.AiProviderEndpointPolicy;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
@@ -35,6 +36,8 @@ class AdminAiModelControllerTest {
     @Mock
     private AesGcmTextEncryptor apiKeyEncryptor;
     @Mock
+    private AiProviderEndpointPolicy endpointPolicy;
+    @Mock
     private AdminPermissionGuard permissionGuard;
     @Mock
     private AdminOperationConfirmationGuard operationConfirmationGuard;
@@ -47,6 +50,7 @@ class AdminAiModelControllerTest {
         controller = new AdminAiModelController(
                 mapper,
                 apiKeyEncryptor,
+                endpointPolicy,
                 permissionGuard,
                 operationConfirmationGuard);
     }
@@ -68,6 +72,33 @@ class AdminAiModelControllerTest {
                 "ai-model-create-1234");
         verify(mapper).insert(any(AiModelConfig.class));
         verify(operationConfirmationGuard, never()).release(any());
+    }
+
+    @Test
+    void createNormalizesAndValidatesProviderBaseUrlBeforeInsert() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setApiBaseUrl("https://API.EXAMPLE.COM/v1/");
+        when(endpointPolicy.validateAndNormalizeBaseUrl(dto.getApiBaseUrl()))
+                .thenReturn("https://api.example.com/v1");
+
+        controller.create(dto);
+
+        ArgumentCaptor<AiModelConfig> captor = ArgumentCaptor.forClass(AiModelConfig.class);
+        verify(mapper).insert(captor.capture());
+        assertEquals("https://api.example.com/v1", captor.getValue().getApiBaseUrl());
+    }
+
+    @Test
+    void createRejectsProviderBaseUrlOutsideSecurityPolicy() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setApiBaseUrl("http://127.0.0.1:8080");
+        when(endpointPolicy.validateAndNormalizeBaseUrl(dto.getApiBaseUrl()))
+                .thenThrow(new IllegalArgumentException("AI Provider base URL must use HTTPS"));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        verify(mapper, never()).insert(any(AiModelConfig.class));
     }
 
     @Test

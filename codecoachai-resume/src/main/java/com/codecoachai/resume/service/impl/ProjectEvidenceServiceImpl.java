@@ -24,15 +24,19 @@ import com.codecoachai.resume.domain.vo.ProjectEvidenceListVO;
 import com.codecoachai.resume.domain.vo.ProjectSkillEvidenceVO;
 import com.codecoachai.resume.mapper.ProjectEvidenceMapper;
 import com.codecoachai.resume.mapper.ProjectSkillEvidenceMapper;
+import com.codecoachai.resume.mapper.ProjectSkillEvidenceMapper.ConfirmedCount;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.ProjectEvidenceService;
 import com.codecoachai.resume.service.support.ProjectEvidenceVersionManager;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -88,8 +92,14 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         }
         wrapper.orderByDesc(ProjectEvidence::getUpdatedAt).orderByDesc(ProjectEvidence::getId);
         Page<ProjectEvidence> page = projectEvidenceMapper.selectPage(new Page<>(pageNo, pageSize), wrapper);
-        List<ProjectEvidenceListVO> records = page.getRecords().stream()
-                .map(project -> toListVO(project, skillCount(project.getId(), project.getUserId()), sourceAvailable(project)))
+        List<ProjectEvidence> projects = page.getRecords();
+        Map<Long, Long> skillCountByProject = loadConfirmedSkillCounts(userId, projects);
+        SourceAvailabilityContext sourceAvailability = loadSourceAvailability(userId, projects);
+        List<ProjectEvidenceListVO> records = projects.stream()
+                .map(project -> toListVO(
+                        project,
+                        skillCountByProject.getOrDefault(project.getId(), 0L),
+                        sourceAvailable(project, sourceAvailability)))
                 .toList();
         return PageResult.of(records, page.getTotal(), pageNo, pageSize);
     }
@@ -458,6 +468,63 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
                 && Objects.equals(project.getSourceResumeId(), resumeProject.getResumeId());
     }
 
+    private Map<Long, Long> loadConfirmedSkillCounts(Long userId, List<ProjectEvidence> projects) {
+        List<Long> projectIds = projects.stream()
+                .map(ProjectEvidence::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Long> counts = new LinkedHashMap<>();
+        for (ConfirmedCount count : skillEvidenceMapper.selectConfirmedCounts(userId, projectIds)) {
+            if (count != null && count.getProjectEvidenceId() != null) {
+                counts.put(count.getProjectEvidenceId(),
+                        count.getConfirmedCount() == null ? 0L : count.getConfirmedCount());
+            }
+        }
+        return counts;
+    }
+
+    private SourceAvailabilityContext loadSourceAvailability(Long userId, List<ProjectEvidence> projects) {
+        Set<Long> resumeIds = new LinkedHashSet<>();
+        Set<Long> resumeProjectIds = new LinkedHashSet<>();
+        for (ProjectEvidence project : projects) {
+            if (project.getSourceResumeId() != null && project.getSourceResumeProjectId() != null) {
+                resumeIds.add(project.getSourceResumeId());
+                resumeProjectIds.add(project.getSourceResumeProjectId());
+            }
+        }
+        if (resumeIds.isEmpty()) {
+            return SourceAvailabilityContext.empty();
+        }
+
+        Set<Long> availableResumeIds = resumeMapper.selectBatchIds(resumeIds).stream()
+                .filter(resume -> Objects.equals(userId, resume.getUserId()))
+                .filter(resume -> !CommonConstants.YES.equals(resume.getDeleted()))
+                .map(Resume::getId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Map<Long, Long> resumeIdByProjectId = resumeProjectMapper.selectBatchIds(resumeProjectIds).stream()
+                .filter(resumeProject -> !CommonConstants.YES.equals(resumeProject.getDeleted()))
+                .collect(Collectors.toMap(
+                        ResumeProject::getId,
+                        ResumeProject::getResumeId,
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        return new SourceAvailabilityContext(availableResumeIds, resumeIdByProjectId);
+    }
+
+    private boolean sourceAvailable(ProjectEvidence project, SourceAvailabilityContext context) {
+        if (project.getSourceResumeId() == null || project.getSourceResumeProjectId() == null) {
+            return true;
+        }
+        return context.availableResumeIds().contains(project.getSourceResumeId())
+                && Objects.equals(
+                        project.getSourceResumeId(),
+                        context.resumeIdByProjectId().get(project.getSourceResumeProjectId()));
+    }
+
     private ProjectEvidenceListVO toListVO(ProjectEvidence project, long skillCount, boolean sourceAvailable) {
         ProjectEvidenceListVO vo = new ProjectEvidenceListVO();
         copyProjectBase(vo, project, sourceAvailable);
@@ -652,5 +719,13 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
             }
         }
         return null;
+    }
+
+    private record SourceAvailabilityContext(Set<Long> availableResumeIds,
+                                             Map<Long, Long> resumeIdByProjectId) {
+
+        private static SourceAvailabilityContext empty() {
+            return new SourceAvailabilityContext(Set.of(), Map.of());
+        }
     }
 }

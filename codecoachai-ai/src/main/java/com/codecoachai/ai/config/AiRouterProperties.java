@@ -2,7 +2,9 @@ package com.codecoachai.ai.config;
 
 import java.time.Duration;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -22,6 +24,8 @@ public class AiRouterProperties {
     private Quota quota = new Quota();
 
     private Retry retry = new Retry();
+
+    private ProviderSecurity providerSecurity = new ProviderSecurity();
 
     @Data
     public static class Router {
@@ -70,5 +74,12 @@ public class AiRouterProperties {
         private Integer maxAttempts = 3;
         private Long initialBackoffMs = 500L;
         private Long maxBackoffMs = 5000L;
+    }
+
+    @Data
+    public static class ProviderSecurity {
+        private Set<String> allowedHosts = new LinkedHashSet<>(
+                Set.of("api.deepseek.com", "dashscope.aliyuncs.com"));
+        private Set<Integer> allowedPorts = new LinkedHashSet<>(Set.of(443));
     }
 }

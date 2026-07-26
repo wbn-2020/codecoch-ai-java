@@ -188,7 +188,6 @@ CodeCoachAI-java
 ├── codecoachai-search                  # 搜索服务
 ├── codecoachai-system                  # 系统配置和审计服务
 ├── docs                                # 后端相关文档，含官方 Nacos 配置源 docs/nacos
-├── config/nacos                        # 历史/手工 Nacos 模板，保留作参考
 ├── scripts                             # 辅助脚本
 ├── sql                                 # 初始化 SQL / migration 脚本
 ├── docker-compose.yml                  # 基础设施编排
@@ -237,7 +236,7 @@ Elasticsearch（搜索相关功能需要）
 docs/nacos/
 ```
 
-`config/nacos/` 仅保留为历史/手工模板参考，不再作为默认导入源；如手工上传，请优先对照 `docs/nacos/`。
+`docs/nacos/` 是唯一的 Nacos 配置源。历史上曾存在 `config/nacos/` 遗留模板目录（残缺子集且与官方源漂移），已于 2026-07-25 删除，避免误读误改。
 
 dev 验收口径使用真实阿里云 OSS：`codecoachai.file.storage.provider=ALIYUN_OSS`，`codecoachai.oss.enabled=true`。启动文件服务前请在环境变量或私有 Nacos 配置中提供 `OSS_BUCKET`、`OSS_AK`、`OSS_SK`、`OSS_STS_ROLE_ARN` 等凭证；缺失时应用会在启动期明确失败，而不是等上传时才报错。
 

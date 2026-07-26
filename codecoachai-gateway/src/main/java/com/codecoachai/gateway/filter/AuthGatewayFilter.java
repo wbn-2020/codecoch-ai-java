@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -31,6 +32,8 @@ import reactor.core.publisher.Mono;
 @Component
 @RequiredArgsConstructor
 public class AuthGatewayFilter implements GlobalFilter, Ordered {
+
+    private static final String GATEWAY_SERVICE_NAME = "codecoachai-gateway";
 
     private static final List<String> WHITE_PATHS = List.of(
             "/health",
@@ -148,12 +151,17 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         headers.remove(HeaderConstants.USERNAME);
         headers.remove(HeaderConstants.ROLES);
         headers.remove(HeaderConstants.USER_CONTEXT_TIMESTAMP);
+        headers.remove(HeaderConstants.USER_CONTEXT_NONCE);
+        headers.remove(HeaderConstants.USER_CONTEXT_SIGNER);
         headers.remove(HeaderConstants.USER_CONTEXT_SIGNATURE);
+        headers.remove(HeaderConstants.USER_CONTEXT_SIGNATURE_V2);
         headers.remove(HeaderConstants.INTERNAL_CALL);
         headers.remove(HeaderConstants.SERVICE_NAME);
         headers.remove(HeaderConstants.INTERNAL_TIMESTAMP);
         headers.remove(HeaderConstants.INTERNAL_NONCE);
         headers.remove(HeaderConstants.INTERNAL_SIGNATURE);
+        headers.remove(HeaderConstants.INTERNAL_SIGNATURE_V2);
+        headers.remove(HeaderConstants.INTERNAL_BODY_SHA256);
     }
 
     private void signUserContext(HttpHeaders headers, TokenInfo tokenInfo, ServerHttpRequest request) {
@@ -161,14 +169,52 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
             throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
         }
         String timestamp = String.valueOf(System.currentTimeMillis());
+        String nonce = UUID.randomUUID().toString();
         String userId = String.valueOf(tokenInfo.getUserId());
         String username = headers.getFirst(HeaderConstants.USERNAME);
         String roles = headers.getFirst(HeaderConstants.ROLES);
-        String payload = InternalSignatureUtils.userContextPayload(
-                String.valueOf(request.getMethod()), request.getURI().getPath(), timestamp, userId, username, roles);
-        String signature = InternalSignatureUtils.hmacSha256Hex(internalSecret, payload);
+        String path = request.getURI().getRawPath();
+        String rawQuery = request.getURI().getRawQuery();
+        String bodySha256 = bodySha256(request);
+        String legacyPayload = InternalSignatureUtils.userContextPayload(
+                String.valueOf(request.getMethod()), path, timestamp, userId, username, roles);
+        String payloadV2 = InternalSignatureUtils.userContextPayloadV2(
+                String.valueOf(request.getMethod()),
+                path,
+                rawQuery,
+                timestamp,
+                nonce,
+                GATEWAY_SERVICE_NAME,
+                bodySha256,
+                userId,
+                username,
+                roles);
         headers.set(HeaderConstants.USER_CONTEXT_TIMESTAMP, timestamp);
-        headers.set(HeaderConstants.USER_CONTEXT_SIGNATURE, signature);
+        headers.set(HeaderConstants.USER_CONTEXT_NONCE, nonce);
+        headers.set(HeaderConstants.USER_CONTEXT_SIGNER, GATEWAY_SERVICE_NAME);
+        headers.set(HeaderConstants.INTERNAL_BODY_SHA256, bodySha256);
+        headers.set(
+                HeaderConstants.USER_CONTEXT_SIGNATURE,
+                InternalSignatureUtils.hmacSha256Hex(internalSecret, legacyPayload));
+        headers.set(
+                HeaderConstants.USER_CONTEXT_SIGNATURE_V2,
+                InternalSignatureUtils.hmacSha256Hex(internalSecret, payloadV2));
+    }
+
+    private String bodySha256(ServerHttpRequest request) {
+        long contentLength = request.getHeaders().getContentLength();
+        boolean transferEncoded = !request.getHeaders().getOrEmpty(HttpHeaders.TRANSFER_ENCODING).isEmpty();
+        HttpMethod method = request.getMethod();
+        if (contentLength == 0L
+                || (contentLength < 0L
+                        && !transferEncoded
+                        && (HttpMethod.GET.equals(method)
+                                || HttpMethod.HEAD.equals(method)
+                                || HttpMethod.OPTIONS.equals(method)))) {
+            return InternalSignatureUtils.EMPTY_BODY_SHA256;
+        }
+        // Gateway must preserve request streaming; payload bytes are intentionally not buffered here.
+        return InternalSignatureUtils.STREAMING_BODY_SHA256;
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, ErrorCode errorCode) {

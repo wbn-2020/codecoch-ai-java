@@ -162,7 +162,7 @@ public class RoleServiceImpl implements RoleService {
         }
         role.setStatus(status);
         sysRoleMapper.updateById(role);
-        adminPermissionCache.invalidateUsersByRoleId(id);
+        adminPermissionCache.invalidateUsersByRoleIdAfterCommit(id);
     }
 
     @Override
@@ -182,7 +182,7 @@ public class RoleServiceImpl implements RoleService {
         for (Long roleId : normalizedRoleIds) {
             upsertUserRole(userId, roleId);
         }
-        adminPermissionCache.invalidateUserPermissions(userId);
+        adminPermissionCache.invalidateUserPermissionsAfterCommit(userId);
     }
 
     private void deactivateUserRolesNotIn(Long userId, List<Long> roleIds) {
@@ -253,8 +253,23 @@ public class RoleServiceImpl implements RoleService {
         if (!currentlyAdmin || newRoles.stream().anyMatch(role -> isAdminRoleCode(role.getRoleCode()))) {
             return;
         }
-        Long activeOtherAdmins = jdbcTemplate.queryForObject("""
-                SELECT COUNT(1)
+        Set<Long> activeAdminUserIds = loadActiveAdminUserIdsForUpdate();
+        if (activeAdminUserIds.contains(userId) && activeAdminUserIds.size() <= 1) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能移除最后一个可用管理员账号的管理员角色");
+        }
+    }
+
+    private Set<Long> loadActiveAdminUserIdsForUpdate() {
+        jdbcTemplate.queryForList("""
+                SELECT id
+                FROM sys_role
+                WHERE deleted = 0
+                  AND (UPPER(role_code) = UPPER(?) OR UPPER(role_code) = CONCAT('ROLE_', UPPER(?)))
+                ORDER BY id
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN);
+        return new LinkedHashSet<>(jdbcTemplate.queryForList("""
+                SELECT u.id
                 FROM sys_user u
                 JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
                 JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
@@ -262,11 +277,8 @@ public class RoleServiceImpl implements RoleService {
                   AND u.status = 1
                   AND r.status = 1
                   AND (UPPER(r.role_code) = UPPER(?) OR UPPER(r.role_code) = CONCAT('ROLE_', UPPER(?)))
-                  AND u.id <> ?
-                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN, userId);
-        if (activeOtherAdmins == null || activeOtherAdmins <= 0) {
-            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能移除最后一个可用管理员账号的管理员角色");
-        }
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN));
     }
 
     private boolean isAdminRoleCode(String roleCode) {

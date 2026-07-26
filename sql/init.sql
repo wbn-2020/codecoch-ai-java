@@ -1,3 +1,9 @@
+-- CodeCoachAI fresh-database baseline.
+-- Flyway baseline version: 2.999.
+-- Import this file once, then run every V3/V4 migration in order.
+-- Post-baseline schema changes belong in sql/migration/ and must not be copied here.
+-- No administrator account is seeded; use sql/bootstrap/bootstrap_admin.sql explicitly.
+
 CREATE DATABASE IF NOT EXISTS codecoachai_v1
   DEFAULT CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
@@ -57,20 +63,6 @@ ON DUPLICATE KEY UPDATE
   role_name = VALUES(role_name),
   description = VALUES(description),
   status = VALUES(status);
-
-INSERT INTO sys_user (id, username, password, nickname, email, status)
-VALUES
-  (1, 'admin', '$2a$10$OuTN8naVk6kfkcyMNiSf.eO3rCVpGr2j7RL.iQvHkM6H/AJoFVtHG', 'System Admin', 'admin@codecoachai.local', 1)
-ON DUPLICATE KEY UPDATE
-  nickname = VALUES(nickname),
-  email = VALUES(email),
-  status = VALUES(status);
-
-INSERT INTO sys_user_role (user_id, role_id)
-VALUES
-  (1, 2)
-ON DUPLICATE KEY UPDATE
-  role_id = VALUES(role_id);
 
 CREATE TABLE IF NOT EXISTS question_category (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -1331,13 +1323,10 @@ CREATE TABLE IF NOT EXISTS job_application (
   applied_at DATETIME DEFAULT NULL,
   next_follow_up_at DATETIME DEFAULT NULL,
   note VARCHAR(1000) DEFAULT NULL,
-  import_fingerprint VARCHAR(64) DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
-  UNIQUE KEY uk_job_application_import_fingerprint
-    (user_id, import_fingerprint, deleted),
   KEY idx_job_application_user_status (user_id, status),
   KEY idx_job_application_target_job (target_job_id),
   KEY idx_job_application_resume_version (resume_version_id),

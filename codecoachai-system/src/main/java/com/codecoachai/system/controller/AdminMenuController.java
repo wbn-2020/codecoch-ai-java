@@ -184,7 +184,7 @@ public class AdminMenuController {
             relation.setMenuId(menuId);
             roleMenuMapper.insert(relation);
         }
-        adminPermissionCache.invalidateUsersByRoleId(roleId);
+        adminPermissionCache.invalidateUsersByRoleIdAfterCommit(roleId);
     }
 
     private Set<Long> resolveGrantMenuIds(RoleMenuAssignDTO dto) {

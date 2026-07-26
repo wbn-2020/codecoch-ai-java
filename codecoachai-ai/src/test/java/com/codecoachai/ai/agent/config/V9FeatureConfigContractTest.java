@@ -1,10 +1,8 @@
 package com.codecoachai.ai.agent.config;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.codecoachai.common.core.exception.BusinessException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -19,11 +17,11 @@ import org.springframework.core.io.FileSystemResource;
 class V9FeatureConfigContractTest {
 
     @Test
-    void authoritativeNacosYamlKeepsV9EvidenceLearningDisabledByDefault() throws IOException {
+    void authoritativeNacosYamlEnablesApprovedV9EvidenceLearning() throws IOException {
         Path root = repositoryRoot();
         String yaml = Files.readString(
                 root.resolve("docs/nacos/codecoachai-ai-dev.yml"), StandardCharsets.UTF_8);
-        assertTrue(yaml.contains("evidence-learning: false"));
+        assertTrue(yaml.contains("evidence-learning: true"));
 
         StandardEnvironment environment = new StandardEnvironment();
         new YamlPropertySourceLoader()
@@ -33,7 +31,7 @@ class V9FeatureConfigContractTest {
         V9FeatureGate gate = Binder.get(environment)
                 .bind("codecoachai.features.v9", Bindable.of(V9FeatureGate.class))
                 .orElseThrow(() -> new IllegalStateException("V9 properties did not bind"));
-        assertThrows(BusinessException.class, gate::requireEvidenceLearning);
+        assertDoesNotThrow(gate::requireEvidenceLearning);
     }
 
     @Test

@@ -33,6 +33,9 @@ public class AuthTokenClient {
     @Value("${codecoachai.internal.auth.secret:}")
     private String internalSecret;
 
+    @Value("${codecoachai.gateway.auth.token-info-timeout-seconds:3}")
+    private long tokenInfoTimeoutSeconds;
+
     public Mono<Result<TokenInfo>> tokenInfo(String authorization) {
         if (internalAuthEnabled && !StringUtils.hasText(internalSecret)) {
             return Mono.just(authServiceUnavailable());
@@ -47,9 +50,11 @@ public class AuthTokenClient {
                 .header(HeaderConstants.INTERNAL_TIMESTAMP, internalSignatureHeaders.timestamp())
                 .header(HeaderConstants.INTERNAL_NONCE, internalSignatureHeaders.nonce())
                 .header(HeaderConstants.INTERNAL_SIGNATURE, internalSignatureHeaders.signature())
+                .header(HeaderConstants.INTERNAL_SIGNATURE_V2, internalSignatureHeaders.signatureV2())
+                .header(HeaderConstants.INTERNAL_BODY_SHA256, internalSignatureHeaders.bodySha256())
                 .retrieve()
                 .bodyToMono(TOKEN_INFO_TYPE)
-                .timeout(Duration.ofSeconds(3))
+                .timeout(Duration.ofSeconds(tokenInfoTimeoutSeconds))
                 .onErrorResume(ex -> Mono.just(authServiceUnavailable()));
     }
 
@@ -59,16 +64,29 @@ public class AuthTokenClient {
 
     private InternalSignatureHeaders buildInternalSignatureHeaders() {
         if (!internalAuthEnabled) {
-            return new InternalSignatureHeaders("", "", "");
+            return new InternalSignatureHeaders("", "", "", "", "");
         }
         String timestamp = String.valueOf(System.currentTimeMillis());
         String nonce = UUID.randomUUID().toString();
         String path = InternalSignatureUtils.normalizePath("/inner/auth/token-info");
-        String payload = InternalSignatureUtils.canonicalPayload("GET", path, timestamp, nonce, GATEWAY_SERVICE_NAME);
-        String signature = InternalSignatureUtils.hmacSha256Hex(internalSecret, payload);
-        return new InternalSignatureHeaders(timestamp, nonce, signature);
+        String bodySha256 = InternalSignatureUtils.EMPTY_BODY_SHA256;
+        String legacyPayload =
+                InternalSignatureUtils.canonicalPayload("GET", path, timestamp, nonce, GATEWAY_SERVICE_NAME);
+        String payloadV2 = InternalSignatureUtils.internalRequestPayloadV2(
+                "GET", path, "", timestamp, nonce, GATEWAY_SERVICE_NAME, bodySha256);
+        return new InternalSignatureHeaders(
+                timestamp,
+                nonce,
+                InternalSignatureUtils.hmacSha256Hex(internalSecret, legacyPayload),
+                InternalSignatureUtils.hmacSha256Hex(internalSecret, payloadV2),
+                bodySha256);
     }
 
-    private record InternalSignatureHeaders(String timestamp, String nonce, String signature) {
+    private record InternalSignatureHeaders(
+            String timestamp,
+            String nonce,
+            String signature,
+            String signatureV2,
+            String bodySha256) {
     }
 }

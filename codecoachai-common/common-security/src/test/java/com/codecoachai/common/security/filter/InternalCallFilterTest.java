@@ -3,6 +3,8 @@ package com.codecoachai.common.security.filter;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -10,6 +12,7 @@ import static org.mockito.Mockito.when;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.util.InternalSignatureUtils;
 import com.codecoachai.common.security.config.InternalAuthProperties;
+import com.codecoachai.common.security.internal.TrustedRequestVerifier;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
@@ -46,7 +49,10 @@ class InternalCallFilterTest {
         properties.setSecret(SECRET);
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
-        filter = new InternalCallFilter(properties, stringRedisTemplate);
+        properties.setMaxSignedBodyBytes(1024 * 1024);
+        filter = new InternalCallFilter(
+                properties,
+                new TrustedRequestVerifier(properties, stringRedisTemplate));
     }
 
     @Test
@@ -64,14 +70,15 @@ class InternalCallFilterTest {
 
     @Test
     void signedInternalRequestStoresNonceAndPasses() throws Exception {
-        MockHttpServletRequest request = signedInternalRequest("POST", "/inner/agent/job-coach", "codecoachai-task", "n-1");
+        MockHttpServletRequest request = signedInternalRequest(
+                "POST", "/inner/agent/job-coach", "", "codecoachai-task", "nonce-signed-0001");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.setIfAbsent(
-                eq("codecoachai:internal:nonce:codecoachai-task:n-1"),
+                anyString(),
                 eq("1"),
-                eq(Duration.ofSeconds(300)))).thenReturn(true);
+                any(Duration.class))).thenReturn(true);
 
         filter.doFilter(request, response, chain);
 
@@ -95,14 +102,19 @@ class InternalCallFilterTest {
 
     @Test
     void replayedNonceFailsClosedBeforeController() throws Exception {
-        MockHttpServletRequest request = signedInternalRequest("GET", "/inner/resume-job-match/reports", "codecoachai-ai", "n-replay");
+        MockHttpServletRequest request = signedInternalRequest(
+                "GET",
+                "/inner/resume-job-match/reports",
+                "",
+                "codecoachai-ai",
+                "nonce-replayed-001");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.setIfAbsent(
-                eq("codecoachai:internal:nonce:codecoachai-ai:n-replay"),
+                anyString(),
                 eq("1"),
-                eq(Duration.ofSeconds(300)))).thenReturn(false);
+                any(Duration.class))).thenReturn(false);
 
         filter.doFilter(request, response, chain);
 
@@ -112,16 +124,17 @@ class InternalCallFilterTest {
 
     @Test
     void canonicalizedInternalRequestWithContextPathPasses() throws Exception {
-        MockHttpServletRequest request = signedInternalRequest("POST", "/inner/job/run", "codecoachai-task", "n-ctx");
+        MockHttpServletRequest request = signedInternalRequest(
+                "POST", "/inner/job/run", "", "codecoachai-task", "nonce-context-001");
         request.setContextPath("/api");
         request.setRequestURI("/api//inner/%2E/task/../job/run/");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
         when(valueOperations.setIfAbsent(
-                eq("codecoachai:internal:nonce:codecoachai-task:n-ctx"),
+                anyString(),
                 eq("1"),
-                eq(Duration.ofSeconds(300)))).thenReturn(true);
+                any(Duration.class))).thenReturn(true);
 
         filter.doFilter(request, response, chain);
 
@@ -130,7 +143,7 @@ class InternalCallFilterTest {
     }
 
     @Test
-    void encodedInnerPrefixDoesNotTriggerInternalAuth() throws Exception {
+    void encodedInnerPrefixCannotBypassInternalAuth() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/%69nner/job/run");
         request.setContextPath("/api");
         request.setRequestURI("/api/%69nner/job/run");
@@ -139,8 +152,8 @@ class InternalCallFilterTest {
 
         filter.doFilter(request, response, chain);
 
-        assertTrue(chain.called());
-        assertEquals(200, response.getStatus());
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
         verifyNoInteractions(stringRedisTemplate);
     }
 
@@ -159,16 +172,64 @@ class InternalCallFilterTest {
         verifyNoInteractions(stringRedisTemplate);
     }
 
-    private MockHttpServletRequest signedInternalRequest(String method, String path, String serviceName, String nonce) {
+    @Test
+    void queryTamperingFailsBeforeNonceIsConsumed() throws Exception {
+        MockHttpServletRequest request = signedInternalRequest(
+                "GET",
+                "/inner/questions",
+                "b=2&a=1",
+                "codecoachai-question",
+                "nonce-query-00001");
+        request.setQueryString("b=3&a=1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
+    @Test
+    void redisFailureFailsClosedWithServiceUnavailable() throws Exception {
+        MockHttpServletRequest request = signedInternalRequest(
+                "GET",
+                "/inner/questions",
+                "",
+                "codecoachai-question",
+                "nonce-redis-00001");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(anyString(), eq("1"), any(Duration.class)))
+                .thenThrow(new IllegalStateException("redis unavailable"));
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(503, response.getStatus());
+    }
+
+    private MockHttpServletRequest signedInternalRequest(
+            String method,
+            String path,
+            String rawQuery,
+            String serviceName,
+            String nonce) {
         String timestamp = String.valueOf(System.currentTimeMillis());
-        String payload = InternalSignatureUtils.canonicalPayload(method, path, timestamp, nonce, serviceName);
+        String bodySha256 = InternalSignatureUtils.EMPTY_BODY_SHA256;
+        String payload = InternalSignatureUtils.internalRequestPayloadV2(
+                method, path, rawQuery, timestamp, nonce, serviceName, bodySha256);
         String signature = InternalSignatureUtils.hmacSha256Hex(SECRET, payload);
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);
+        request.setQueryString(rawQuery);
         request.addHeader(HeaderConstants.INTERNAL_CALL, "true");
         request.addHeader(HeaderConstants.SERVICE_NAME, serviceName);
         request.addHeader(HeaderConstants.INTERNAL_TIMESTAMP, timestamp);
         request.addHeader(HeaderConstants.INTERNAL_NONCE, nonce);
-        request.addHeader(HeaderConstants.INTERNAL_SIGNATURE, signature);
+        request.addHeader(HeaderConstants.INTERNAL_BODY_SHA256, bodySha256);
+        request.addHeader(HeaderConstants.INTERNAL_SIGNATURE_V2, signature);
         return request;
     }
 

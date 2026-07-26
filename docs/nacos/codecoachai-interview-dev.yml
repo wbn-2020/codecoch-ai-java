@@ -2,18 +2,18 @@ server:
   port: 9205
 
 spring:
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 40000
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
     password: ${MYSQL_PASSWORD}
-
-feign:
-  client:
-    config:
-      default:
-        connectTimeout: 3000
-        readTimeout: 40000
 
 codecoachai:
   interview:

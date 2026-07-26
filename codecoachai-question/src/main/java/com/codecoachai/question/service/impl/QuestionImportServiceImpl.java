@@ -5,6 +5,7 @@ import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.question.config.QuestionDocxZipSecurity;
 import com.codecoachai.question.config.QuestionImportProperties;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.mapper.QuestionMapper;
@@ -66,6 +67,7 @@ public class QuestionImportServiceImpl implements QuestionImportService {
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionDuplicateService questionDuplicateService;
     private final QuestionImportProperties questionImportProperties;
+    private final QuestionDocxZipSecurity questionDocxZipSecurity;
 
     private static final Pattern MD_TITLE_PATTERN = Pattern.compile("^#{1,3}\\s+(.+)$");
 
@@ -211,10 +213,14 @@ public class QuestionImportServiceImpl implements QuestionImportService {
 
     private Iterator<ParsedQuestion> parseDocx(InputStream inputStream) {
         try {
+            questionDocxZipSecurity.apply();
             XWPFDocument doc = new XWPFDocument(inputStream);
             return parseDocxParagraphIterator(docParagraphIterator(doc), doc);
         } catch (Exception e) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "DOCX \u89e3\u6790\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u6587\u4ef6\u5185\u5bb9\u683c\u5f0f\u3002");
+            log.warn("Question DOCX import rejected by parser or archive safety limits exceptionType={}",
+                    e.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "DOCX \u89e3\u6790\u5931\u8d25\u6216\u6587\u4ef6\u89e3\u538b\u540e\u8d85\u51fa\u5b89\u5168\u9650\u5236\u3002");
         }
     }
 

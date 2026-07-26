@@ -33,6 +33,9 @@ public class AsyncTask extends BaseEntity {
     /** 任务状态：PENDING / RUNNING / SUCCESS / FAILED / DEAD */
     private String status;
 
+    /** RUNNING 任务的持久化所有权与 fencing token */
+    private String leaseToken;
+
     /** 已重试次数 */
     private Integer retryCount;
 
@@ -48,7 +51,7 @@ public class AsyncTask extends BaseEntity {
     /** 任务结果（JSON，可空） */
     private String result;
 
-    /** 开始时间 */
+    /** 当前 RUNNING 租约的最近领取或续租时间 */
     private LocalDateTime startedAt;
 
     /** 完成时间 */

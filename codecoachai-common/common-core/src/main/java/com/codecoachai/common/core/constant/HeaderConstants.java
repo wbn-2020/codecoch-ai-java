@@ -12,8 +12,13 @@ public final class HeaderConstants {
     public static final String INTERNAL_TIMESTAMP = "X-Internal-Timestamp";
     public static final String INTERNAL_NONCE = "X-Internal-Nonce";
     public static final String INTERNAL_SIGNATURE = "X-Internal-Signature";
+    public static final String INTERNAL_SIGNATURE_V2 = "X-Internal-Signature-V2";
+    public static final String INTERNAL_BODY_SHA256 = "X-Internal-Body-Sha256";
     public static final String USER_CONTEXT_TIMESTAMP = "X-User-Context-Timestamp";
+    public static final String USER_CONTEXT_NONCE = "X-User-Context-Nonce";
+    public static final String USER_CONTEXT_SIGNER = "X-User-Context-Signer";
     public static final String USER_CONTEXT_SIGNATURE = "X-User-Context-Signature";
+    public static final String USER_CONTEXT_SIGNATURE_V2 = "X-User-Context-Signature-V2";
 
     private HeaderConstants() {
     }

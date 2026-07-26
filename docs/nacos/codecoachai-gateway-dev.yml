@@ -12,6 +12,13 @@ spring:
           uri: lb://codecoachai-auth
           predicates:
             - Path=/auth/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@ipKeyResolver}"
+                redis-rate-limiter.replenishRate: 3
+                redis-rate-limiter.burstCapacity: 10
+                redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-user-users
           uri: lb://codecoachai-user
           predicates:
@@ -152,6 +159,13 @@ spring:
           uri: lb://codecoachai-search
           predicates:
             - Path=/search,/search/**,/admin/search,/admin/search/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-system-admin
           uri: lb://codecoachai-system
           predicates:
@@ -197,6 +211,11 @@ spring:
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
 
+      filter:
+        request-rate-limiter:
+          deny-empty-key: true
+          empty-key-status-code: 429
+
 codecoachai:
   gateway:
     # Dev profile only. Add production domains explicitly in prod Nacos config.
@@ -205,7 +224,8 @@ codecoachai:
       allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
       allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
       exposed-headers: "X-Trace-Id"
-    trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"
+    # Exact IPs and CIDR ranges are supported. Set the Docker network subnet in deployed environments.
+    trusted-proxies: "${CODECOACHAI_GATEWAY_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}"
     auth:
       white-paths:
         - /auth/login
