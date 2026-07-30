@@ -8,6 +8,7 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.SkillGapSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import java.time.LocalDateTime;
@@ -123,6 +124,75 @@ class CandidateTaskBuilderImplTest {
         List<CandidateTask> tasks = builder.build(context, 6);
 
         assertTrue(tasks.stream().noneMatch(task -> task.getCandidateId().startsWith("requirement-")));
+    }
+
+    @Test
+    void buildGeneratesSkillGapCandidatesWithCategoryAwareCopy() {
+        JobCoachAgentContext context = context(List.of());
+        context.setSkillGaps(List.of(
+                skillGap(81L, "Redis 分布式锁", "EVIDENCE_USAGE_FEEDBACK", "HIGH"),
+                skillGap(82L, "系统设计", "INTERVIEW_FEEDBACK", "MEDIUM")));
+
+        List<CandidateTask> tasks = builder.build(context, 5);
+
+        List<CandidateTask> gapTasks = tasks.stream()
+                .filter(task -> task.getCandidateId().startsWith("skill-gap-"))
+                .toList();
+        assertEquals(2, gapTasks.size());
+        CandidateTask evidenceTask = gapTasks.get(0);
+        assertEquals("skill-gap-81", evidenceTask.getCandidateId());
+        assertEquals(AgentTaskTypeEnum.SKILL_REVIEW.name(), evidenceTask.getType());
+        assertTrue(evidenceTask.getTitle().contains("复盘证据"));
+        assertEquals("HIGH", evidenceTask.getPriority());
+        assertEquals("SKILL_GAP_ITEM", evidenceTask.getRelatedBizType());
+        assertEquals(81L, evidenceTask.getRelatedBizId());
+        assertEquals("Redis 分布式锁", evidenceTask.getRelatedSkillName());
+        assertEquals("/study-plans/from-gap", evidenceTask.getActionUrl());
+        assertTrue(evidenceTask.getReason().contains("讲述结构不清"));
+        CandidateTask trainingTask = gapTasks.get(1);
+        assertTrue(trainingTask.getTitle().contains("专项训练"));
+        assertEquals("MEDIUM", trainingTask.getPriority());
+    }
+
+    @Test
+    void buildLimitsSkillGapCandidatesToTwo() {
+        JobCoachAgentContext context = context(List.of());
+        context.setSkillGaps(List.of(
+                skillGap(81L, "Redis", "JD_GAP", "HIGH"),
+                skillGap(82L, "Kafka", "JD_GAP", "MEDIUM"),
+                skillGap(83L, "MySQL", "JD_GAP", "LOW")));
+
+        List<CandidateTask> tasks = builder.build(context, 6);
+
+        long gapTaskCount = tasks.stream()
+                .filter(task -> task.getCandidateId().startsWith("skill-gap-"))
+                .count();
+        assertEquals(2, gapTaskCount);
+    }
+
+    @Test
+    void buildReservesSkillGapCandidateWhenRequirementCandidatesFillPromptWindow() {
+        JobCoachAgentContext context = context(List.of());
+        context.setRequirementReadiness(requirementReadiness(false, "HIGH", true, true));
+        context.setSkillGaps(List.of(
+                skillGap(81L, "Redis 分布式锁", "EVIDENCE_USAGE_FEEDBACK", "HIGH")));
+
+        List<CandidateTask> tasks = builder.build(context, 3);
+
+        assertEquals(4, tasks.size());
+        assertTrue(tasks.stream().anyMatch(task ->
+                "SKILL_GAP_ITEM".equals(task.getRelatedBizType())
+                        && Long.valueOf(81L).equals(task.getRelatedBizId())));
+    }
+
+    private SkillGapSnapshot skillGap(Long id, String skillName, String category, String severity) {
+        SkillGapSnapshot gap = new SkillGapSnapshot();
+        gap.setId(id);
+        gap.setSkillName(skillName);
+        gap.setCategory(category);
+        gap.setSeverity(severity);
+        gap.setGapDescription("讲述结构不清");
+        return gap;
     }
 
     private JobCoachAgentContext context(List<ApplicationSnapshot> applications) {

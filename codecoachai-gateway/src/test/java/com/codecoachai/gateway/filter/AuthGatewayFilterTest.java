@@ -2,6 +2,7 @@ package com.codecoachai.gateway.filter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.when;
 
@@ -126,6 +127,30 @@ class AuthGatewayFilterTest {
         assertNull(headers.getFirst(HeaderConstants.USER_CONTEXT_SIGNER));
         assertNull(headers.getFirst(HeaderConstants.USER_CONTEXT_SIGNATURE_V2));
         assertNull(headers.getFirst(HeaderConstants.INTERNAL_BODY_SHA256));
+    }
+
+    @Test
+    void authenticatedAdminRouteForwardsNonAdminForDownstreamPermissionCheck() {
+        TokenInfo tokenInfo = tokenInfo();
+        tokenInfo.setRoles(List.of("USER"));
+        when(authTokenClient.tokenInfo("Bearer valid-token"))
+                .thenReturn(Mono.just(Result.success(tokenInfo)));
+        AtomicReference<ServerWebExchange> forwarded = new AtomicReference<>();
+        MockServerHttpRequest request = MockServerHttpRequest
+                .get("/admin/users")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer valid-token")
+                .build();
+
+        filter.filter(
+                        MockServerWebExchange.from(request),
+                        captured -> {
+                            forwarded.set(captured);
+                            return Mono.empty();
+                        })
+                .block();
+
+        assertNotNull(forwarded.get());
+        assertEquals("USER", forwarded.get().getRequest().getHeaders().getFirst(HeaderConstants.ROLES));
     }
 
     private TokenInfo tokenInfo() {

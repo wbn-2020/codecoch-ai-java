@@ -1,6 +1,7 @@
 package com.codecoachai.ai.security;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.codecoachai.ai.config.AiRouterProperties;
@@ -9,8 +10,20 @@ import java.net.URI;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 class AiProviderEndpointPolicyTest {
+
+    @Test
+    void springSelectsProductionConstructorWhenTestConstructorAlsoExists() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(AiRouterProperties.class, AiRouterProperties::new);
+            context.register(AiProviderEndpointPolicy.class);
+            context.refresh();
+
+            assertNotNull(context.getBean(AiProviderEndpointPolicy.class));
+        }
+    }
 
     @Test
     void acceptsAllowlistedHttpsHostAndBuildsProviderEndpoints() throws Exception {

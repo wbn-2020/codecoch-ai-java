@@ -1,18 +1,27 @@
 package com.codecoachai.system.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.system.domain.dto.SystemConfigQueryDTO;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.entity.SystemConfig;
 import com.codecoachai.system.mapper.SystemConfigMapper;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -63,6 +72,33 @@ class SystemConfigServiceImplTest {
         ArgumentCaptor<SystemConfig> captor = ArgumentCaptor.forClass(SystemConfig.class);
         verify(systemConfigMapper).updateById(captor.capture());
         assertEquals("", captor.getValue().getConfigValue());
+    }
+
+    @Test
+    void pageConfigsFiltersByExactConfigKey() {
+        String configKey = "acceptance.governance.20260728.audit-switch";
+        SystemConfigQueryDTO query = new SystemConfigQueryDTO();
+        query.setConfigKey(configKey);
+        Page<SystemConfig> page = new Page<>(1L, 10L, 0L);
+        page.setRecords(List.of());
+        when(systemConfigMapper.selectPage(any(Page.class), any())).thenReturn(page);
+
+        systemConfigService.pageConfigs(query);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<SystemConfig>> captor =
+                ArgumentCaptor.forClass((Class) LambdaQueryWrapper.class);
+        verify(systemConfigMapper).selectPage(any(Page.class), captor.capture());
+        initializeTableInfo(SystemConfig.class);
+        String sqlSegment = captor.getValue().getSqlSegment();
+        assertTrue(sqlSegment.contains("config_key"));
+        assertEquals(configKey, captor.getValue().getParamNameValuePairs().values().iterator().next());
+    }
+
+    private static void initializeTableInfo(Class<?> entityType) {
+        if (TableInfoHelper.getTableInfo(entityType) == null) {
+            TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), entityType);
+        }
     }
 
     private static SystemConfig existingConfig(String key, String value) {

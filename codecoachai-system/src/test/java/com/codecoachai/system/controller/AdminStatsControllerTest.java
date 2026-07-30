@@ -1,6 +1,7 @@
 package com.codecoachai.system.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 
 @ExtendWith(MockitoExtension.class)
 class AdminStatsControllerTest {
@@ -78,6 +80,18 @@ class AdminStatsControllerTest {
                 LocalDateTime.of(2026, 7, 25, 0, 0),
                 LocalDateTime.of(2026, 7, 27, 0, 0));
         verify(loginLogMapper, never()).selectCount(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void springSelectsProductionConstructorWhenTestConstructorAlsoExists() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.registerBean(LoginLogMapper.class, () -> loginLogMapper);
+            context.registerBean(AdminPermissionGuard.class, () -> adminPermissionGuard);
+            context.register(AdminStatsController.class);
+            context.refresh();
+
+            assertNotNull(context.getBean(AdminStatsController.class));
+        }
     }
 
     @Test

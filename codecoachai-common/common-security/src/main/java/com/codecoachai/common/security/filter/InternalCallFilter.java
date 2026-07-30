@@ -68,6 +68,15 @@ public class InternalCallFilter extends OncePerRequestFilter {
             writeForbidden(response);
             return;
         }
+        if (!internalAuthProperties.isRequestAllowed(serviceName, request.getMethod(), path)) {
+            log.warn(
+                    "Reject internal request: caller is not authorized, method={}, path={}, serviceName={}",
+                    request.getMethod(),
+                    path,
+                    serviceName);
+            writeForbidden(response);
+            return;
+        }
 
         try {
             HttpServletRequest verifiedRequest = verifySignature(request, path, serviceName);
@@ -84,12 +93,6 @@ public class InternalCallFilter extends OncePerRequestFilter {
     }
 
     private HttpServletRequest verifySignature(HttpServletRequest request, String path, String serviceName) {
-        if (!StringUtils.hasText(internalAuthProperties.getSecret())) {
-            log.warn("Reject internal request: internal secret not configured, path={}, serviceName={}", path,
-                    serviceName);
-            throw new VerificationException(FailureReason.INVALID_SIGNATURE);
-        }
-
         String timestamp = request.getHeader(HeaderConstants.INTERNAL_TIMESTAMP);
         String nonce = request.getHeader(HeaderConstants.INTERNAL_NONCE);
         String signature = request.getHeader(HeaderConstants.INTERNAL_SIGNATURE_V2);
@@ -104,6 +107,7 @@ public class InternalCallFilter extends OncePerRequestFilter {
                 bodySha256);
         return trustedRequestVerifier.verify(
                 request,
+                serviceName,
                 timestamp,
                 nonce,
                 signature,

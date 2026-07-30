@@ -7,6 +7,7 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimen
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.SkillGapSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.agent.service.CandidateTaskBuilder;
@@ -33,6 +34,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         candidates.addAll(applicationFollowUpTasks(context));
         candidates.addAll(requirementTasks(context));
         candidates.addAll(projectEvidenceTasks(context));
+        List<CandidateTask> skillGapCandidates = skillGapTasks(context);
+        candidates.addAll(skillGapCandidates);
         candidates.addAll(jobExperimentTasks(context));
         TargetJobSnapshot target = context.getTargetJob();
         List<String> skills = inferSkillNames(target);
@@ -72,7 +75,21 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 skillCode, skillName, "TRAINING_MATERIAL", null,
                 "/tools"));
         int size = Math.min(Math.max(taskCount, 1) + 1, candidates.size());
-        return candidates.subList(0, size);
+        List<CandidateTask> selected = new ArrayList<>(candidates.subList(0, size));
+        ensureSkillGapCandidate(selected, skillGapCandidates);
+        return List.copyOf(selected);
+    }
+
+    private void ensureSkillGapCandidate(List<CandidateTask> selected, List<CandidateTask> skillGapCandidates) {
+        if (selected.isEmpty() || skillGapCandidates.isEmpty()
+                || selected.stream().anyMatch(this::isSkillGapCandidate)) {
+            return;
+        }
+        selected.set(selected.size() - 1, skillGapCandidates.get(0));
+    }
+
+    private boolean isSkillGapCandidate(CandidateTask task) {
+        return task != null && "SKILL_GAP_ITEM".equals(task.getRelatedBizType());
     }
 
     private List<CandidateTask> applicationFollowUpTasks(JobCoachAgentContext context) {
@@ -101,6 +118,40 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                 .limit(2)
                 .map(this::projectEvidenceTask)
                 .toList();
+    }
+
+    private List<CandidateTask> skillGapTasks(JobCoachAgentContext context) {
+        if (context == null || context.getSkillGaps() == null || context.getSkillGaps().isEmpty()) {
+            return List.of();
+        }
+        Long targetJobId = context.getTargetJobId();
+        return context.getSkillGaps().stream()
+                .filter(gap -> StringUtils.hasText(gap.getSkillName()))
+                .limit(2)
+                .map(gap -> skillGapTask(gap, targetJobId))
+                .toList();
+    }
+
+    private CandidateTask skillGapTask(SkillGapSnapshot gap, Long targetJobId) {
+        String skillName = gap.getSkillName().trim();
+        boolean evidenceFeedback = gap.getCategory() != null
+                && gap.getCategory().startsWith("EVIDENCE_USAGE");
+        String title = evidenceFeedback
+                ? "复盘证据「" + skillName + "」的面试表达"
+                : "针对缺口「" + skillName + "」做专项训练";
+        String description = evidenceFeedback
+                ? "梳理该证据的讲述结构、重点与追问应对，完成一次表达与复述训练。"
+                : "围绕该缺口整理核心概念与项目落地场景，完成一次针对性训练。";
+        String reason = StringUtils.hasText(gap.getGapDescription())
+                ? gap.getGapDescription()
+                : "能力画像中记录了该缺口，安排专项训练缩小差距。";
+        String priority = "HIGH".equalsIgnoreCase(gap.getSeverity()) ? "HIGH" : "MEDIUM";
+        return task("skill-gap-" + gap.getId(),
+                AgentTaskTypeEnum.SKILL_REVIEW.name(),
+                title, description, reason, priority, 25,
+                toSkillCode(skillName), skillName,
+                "SKILL_GAP_ITEM", gap.getId(),
+                "/study-plans/from-gap");
     }
 
     private List<CandidateTask> requirementTasks(JobCoachAgentContext context) {

@@ -26,6 +26,7 @@ public final class FileUploadValidator {
             entry("doc", Set.of("application/msword")),
             entry("docx", Set.of("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/zip")),
+            entry("zip", Set.of("application/zip", "application/x-zip-compressed")),
             entry("md", Set.of("text/markdown", "text/plain")),
             entry("txt", Set.of("text/plain")),
             entry("webm", Set.of("audio/webm", "video/webm")),
@@ -85,9 +86,7 @@ public final class FileUploadValidator {
         boolean valid = switch (fileExt) {
             case "pdf" -> startsWith(header, "%PDF".getBytes(StandardCharsets.US_ASCII));
             case "doc" -> startsWith(header, new byte[] {(byte) 0xD0, (byte) 0xCF, 0x11, (byte) 0xE0});
-            case "docx" -> startsWith(header, new byte[] {0x50, 0x4B, 0x03, 0x04})
-                    || startsWith(header, new byte[] {0x50, 0x4B, 0x05, 0x06})
-                    || startsWith(header, new byte[] {0x50, 0x4B, 0x07, 0x08});
+            case "docx", "zip" -> hasZipHeader(header);
             case "md", "txt" -> looksLikeText(header);
             case "webm" -> startsWith(header, new byte[] {0x1A, 0x45, (byte) 0xDF, (byte) 0xA3});
             case "wav" -> startsWith(header, "RIFF".getBytes(StandardCharsets.US_ASCII));
@@ -123,6 +122,12 @@ public final class FileUploadValidator {
             }
         }
         return true;
+    }
+
+    private static boolean hasZipHeader(byte[] bytes) {
+        return startsWith(bytes, new byte[] {0x50, 0x4B, 0x03, 0x04})
+                || startsWith(bytes, new byte[] {0x50, 0x4B, 0x05, 0x06})
+                || startsWith(bytes, new byte[] {0x50, 0x4B, 0x07, 0x08});
     }
 
     private static boolean looksLikeMp3Frame(byte[] bytes) {

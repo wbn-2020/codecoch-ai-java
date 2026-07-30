@@ -17,7 +17,6 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.JobDescriptionParseStatus;
-import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.vo.ApplicationPackageActionExecuteVO;
 import com.codecoachai.resume.domain.vo.JobApplicationPackageListItemVO;
 import com.codecoachai.resume.domain.vo.JobApplicationPackageVO;
@@ -35,6 +34,7 @@ import com.codecoachai.resume.service.JobReadinessService;
 import com.codecoachai.resume.service.JobRequirementService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.codecoachai.resume.service.support.JobApplicationPackageSnapshotManager;
+import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.ResultSet;
@@ -71,9 +71,6 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private static final int MIN_REQUIREMENT_SAMPLE = 2;
     private static final Set<String> PACKAGE_STATUSES = Set.of("DRAFT", "READY", "APPLIED", "ARCHIVED");
     private static final String INVALID_PACKAGE_STATUS_FILTER = "__INVALID_STATUS__";
-    private static final String TRUST_VERIFIED = "VERIFIED";
-    private static final String TRUST_PARTIAL = "PARTIAL";
-    private static final String TRUST_FALLBACK = "FALLBACK";
 
     private final TargetJobMapper targetJobMapper;
     private final JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper;
@@ -87,6 +84,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
     private final JobApplicationPackageSnapshotManager packageSnapshotManager;
+    private final ResumeJobMatchTrustPolicy resumeJobMatchTrustPolicy;
 
     public JobApplicationPackageServiceImpl(
             TargetJobMapper targetJobMapper,
@@ -103,7 +101,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         this(targetJobMapper, jobDescriptionAnalysisMapper, resumeVersionMapper,
                 resumeJobMatchReportMapper, resumeJobMatchDetailMapper, projectEvidenceMapper,
                 jobRequirementService, jobReadinessService, v4ResumeCareerService,
-                objectMapper, jdbcTemplate, null);
+                objectMapper, jdbcTemplate, null, new ResumeJobMatchTrustPolicy(objectMapper));
     }
 
     @Override
@@ -112,18 +110,19 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         Long userId = SecurityAssert.requireLoginUserId();
         PreviewContext context = loadContext(userId, targetJobId, jdAnalysisId, resumeVersionId, matchReportId,
                 projectEvidenceIds);
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
         JobApplicationPackageVO vo = new JobApplicationPackageVO();
         vo.setId(previewId(context));
         vo.setUserId(userId);
         vo.setTargetJobId(context.targetJob == null ? context.targetJobId : context.targetJob.getId());
         vo.setJdAnalysisId(context.analysis == null ? context.jdAnalysisId : context.analysis.getId());
         vo.setRecommendedResumeVersionId(context.resumeVersion == null ? null : context.resumeVersion.getId());
-        vo.setMatchReportId(context.report == null ? null : context.report.getId());
+        vo.setMatchReportId(trustedReport == null ? null : trustedReport.getId());
         vo.setProjectEvidenceIds(context.projectEvidence.stream().map(ProjectEvidence::getId).toList());
         vo.setCompanyName(firstText(
                 context.targetJob == null ? null : context.targetJob.getCompanyName(),
                 context.analysis == null ? null : context.analysis.getCompanyName(),
-                context.report == null ? null : context.report.getSummary()));
+                trustedReport == null ? null : trustedReport.getSummary()));
         vo.setJobTitle(firstText(
                 context.targetJob == null ? null : context.targetJob.getJobTitle(),
                 context.analysis == null ? null : context.analysis.getJobTitle(),
@@ -236,6 +235,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                         FROM job_application_package
                         """ + where + " ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
                 (rs, rowNum) -> toListItem(rs), queryArgs.toArray());
+        sanitizeListMatchReportIds(userId, records);
         applyPackageVersionInfo(userId, records);
         return PageResult.of(records, total, effectivePageNo, effectivePageSize);
     }
@@ -442,13 +442,15 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             vo.setActions(readList(row.actionsJson, JobApplicationPackageVO.CareerActionItemVO.class));
             vo.setProjectEvidenceIds(readLongList(row.projectEvidenceIdsJson));
         }
+        Long storedMatchReportId = firstLong(row.matchReportId, vo.getMatchReportId());
+        StoredMatchTrust storedMatchTrust = storedMatchTrust(row.userId, storedMatchReportId);
         vo.setId(String.valueOf(row.id));
         vo.setPackageNo(row.packageNo);
         vo.setUserId(row.userId);
         vo.setTargetJobId(row.targetJobId);
         vo.setJdAnalysisId(row.jdAnalysisId);
         vo.setRecommendedResumeVersionId(row.resumeVersionId);
-        vo.setMatchReportId(row.matchReportId);
+        vo.setMatchReportId(storedMatchTrust.trustedReportId());
         vo.setJobApplicationId(row.applicationId);
         vo.setCompanyName(row.companyName);
         vo.setJobTitle(row.jobTitle);
@@ -463,6 +465,9 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setCurrentSnapshotId(row.currentSnapshotId);
         applyPackageVersionInfo(vo, packageVersionInfo(row));
         vo.setRefreshedAt(row.refreshedAt);
+        if (storedMatchReportId != null && !storedMatchTrust.trustedSuccess()) {
+            sanitizeUntrustedStoredMatch(vo, storedMatchTrust, row.userId);
+        }
         normalizePersistentActions(vo, row.id);
         return vo;
     }
@@ -698,7 +703,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             existing.setId(row.applicationId);
             existing.setTargetJobId(row.targetJobId);
             existing.setResumeVersionId(row.resumeVersionId);
-            existing.setMatchReportId(row.matchReportId);
+            existing.setMatchReportId(detail.getMatchReportId());
             existing.setCompanyName(row.companyName);
             existing.setJobTitle(row.jobTitle);
             existing.setStatus("EXISTING");
@@ -707,7 +712,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         JobApplicationSaveDTO saveDTO = new JobApplicationSaveDTO();
         saveDTO.setTargetJobId(row.targetJobId);
         saveDTO.setResumeVersionId(row.resumeVersionId);
-        saveDTO.setMatchReportId(row.matchReportId);
+        saveDTO.setMatchReportId(detail.getMatchReportId());
         saveDTO.setCompanyName(firstText(dto == null ? null : stringPayload(dto, "companyName"), row.companyName));
         saveDTO.setJobTitle(firstText(dto == null ? null : stringPayload(dto, "jobTitle"), row.jobTitle, "Untitled Job"));
         saveDTO.setSource(firstText(dto == null ? null : dto.getSource(), "APPLICATION_PACKAGE"));
@@ -847,9 +852,13 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
 
         context.report = ownedReport(userId, matchReportId);
         if (context.report != null) {
-            context.targetJobId = firstLong(context.targetJobId, context.report.getTargetJobId());
-            context.jdAnalysisId = firstLong(context.jdAnalysisId, context.report.getJdAnalysisId());
-            context.resumeVersionId = firstLong(context.resumeVersionId, context.report.getResumeVersionId());
+            context.matchAssessment = resumeJobMatchTrustPolicy.assess(context.report);
+            ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+            if (trustedReport != null) {
+                context.targetJobId = firstLong(context.targetJobId, trustedReport.getTargetJobId());
+                context.jdAnalysisId = firstLong(context.jdAnalysisId, trustedReport.getJdAnalysisId());
+                context.resumeVersionId = firstLong(context.resumeVersionId, trustedReport.getResumeVersionId());
+            }
         }
         context.targetJob = ownedTargetJob(userId, context.targetJobId);
         context.analysis = ownedAnalysis(userId, context.jdAnalysisId);
@@ -865,14 +874,19 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             context.report = latestReport(userId,
                     context.targetJob == null ? context.targetJobId : context.targetJob.getId(),
                     context.resumeVersion == null ? null : context.resumeVersion.getId());
+            context.matchAssessment = resumeJobMatchTrustPolicy.assess(context.report);
         }
-        if (context.resumeVersion == null && context.report != null) {
-            context.resumeVersion = ownedResumeVersion(userId, context.report.getResumeVersionId());
+        if (context.matchAssessment == null) {
+            context.matchAssessment = resumeJobMatchTrustPolicy.assess(null);
+        }
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        if (context.resumeVersion == null && trustedReport != null) {
+            context.resumeVersion = ownedResumeVersion(userId, trustedReport.getResumeVersionId());
         }
         if (context.resumeVersion == null) {
             context.resumeVersion = latestResumeVersion(userId);
         }
-        context.matchDetails = listMatchDetails(userId, context.report);
+        context.matchDetails = trustedReport == null ? List.of() : listMatchDetails(userId, trustedReport);
         context.projectEvidence = listProjectEvidence(userId,
                 context.targetJob == null ? context.targetJobId : context.targetJob.getId(),
                 projectEvidenceIds);
@@ -1123,6 +1137,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
 
     private List<JobApplicationPackageVO.EvidenceSourceVO> buildEvidenceSources(PreviewContext context) {
         List<JobApplicationPackageVO.EvidenceSourceVO> sources = new ArrayList<>();
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
         if (context.targetJob != null || context.analysis != null) {
             sources.add(evidenceSource("jd", "JD_ANALYSIS",
                     String.valueOf(context.analysis == null ? context.targetJob.getId() : context.analysis.getId()),
@@ -1137,10 +1152,10 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                     firstText(context.resumeVersion.getVersionName(), "简历版本"),
                     "用于本次投递包的推荐简历版本", "MEDIUM"));
         }
-        if (context.report != null) {
-            sources.add(evidenceSource("match", "RESUME_JOB_MATCH_REPORT", String.valueOf(context.report.getId()),
+        if (trustedReport != null) {
+            sources.add(evidenceSource("match", "RESUME_JOB_MATCH_REPORT", String.valueOf(trustedReport.getId()),
                     "简历/JD 匹配报告",
-                    firstText(context.report.getSummary(), "匹配报告用于判断简历适配度和风险"), "HIGH"));
+                    firstText(trustedReport.getSummary(), "匹配报告用于判断简历适配度和风险"), "HIGH"));
         }
         if (context.requirementMatrix != null) {
             sources.add(evidenceSource("requirements", "JOB_REQUIREMENT_MATRIX",
@@ -1178,9 +1193,9 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         vo.setVersionNo(context.resumeVersion.getVersionNo());
         vo.setVersionName(context.resumeVersion.getVersionName());
         vo.setCurrentFlag(context.resumeVersion.getCurrentFlag());
-        vo.setReason(context.report != null
+        vo.setReason(trustedMatchSuccess(context)
                 ? "该版本已关联当前岗位的匹配报告，优先作为本次投递包主简历。"
-                : "暂未找到当前岗位匹配报告，先使用当前可用简历版本作为预览候选。");
+                : "当前仅按可用简历版本生成预览候选，尚未形成可信的岗位适配结论。");
         return vo;
     }
 
@@ -1191,19 +1206,26 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
             vo.setSummary("暂无简历/JD 匹配报告。");
             return vo;
         }
-        vo.setOverallScore(context.report.getOverallScore());
-        vo.setTechStackScore(context.report.getTechStackScore());
-        vo.setProjectExperienceScore(context.report.getProjectExperienceScore());
-        vo.setBusinessFitScore(context.report.getBusinessFitScore());
-        vo.setCommunicationScore(context.report.getCommunicationScore());
+        ResumeJobMatchTrustPolicy.Assessment assessment = context.matchAssessment;
         vo.setStatus(context.report.getStatus());
-        vo.setTrustStatus(matchTrustStatus(context.report));
-        vo.setFallback(matchFallback(context.report));
-        vo.setSchemaWarningCount(matchSchemaWarningCount(context.report));
-        vo.setSummary(context.report.getSummary());
-        vo.setGaps(jsonTexts(context.report.getGapsJson(), 5));
-        vo.setInterviewTopics(firstNonEmpty(jsonTexts(context.report.getRecommendedInterviewTopicsJson(), 5),
-                context.analysis == null ? List.of() : jsonTexts(context.analysis.getInterviewFocusJson(), 5)));
+        vo.setTrustStatus(assessment.trustStatus());
+        vo.setFallback(assessment.fallback());
+        vo.setSchemaWarningCount(assessment.schemaWarningCount());
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        if (trustedReport == null) {
+            vo.setInterviewTopics(fallbackInterviewTopics(context.analysis));
+            return vo;
+        }
+        vo.setOverallScore(trustedReport.getOverallScore());
+        vo.setTechStackScore(trustedReport.getTechStackScore());
+        vo.setProjectExperienceScore(trustedReport.getProjectExperienceScore());
+        vo.setBusinessFitScore(trustedReport.getBusinessFitScore());
+        vo.setCommunicationScore(trustedReport.getCommunicationScore());
+        vo.setSummary(trustedReport.getSummary());
+        vo.setGaps(jsonTexts(trustedReport.getGapsJson(), 5));
+        vo.setInterviewTopics(firstNonEmpty(
+                jsonTexts(trustedReport.getRecommendedInterviewTopicsJson(), 5),
+                trustedJdInterviewTopics(context.analysis)));
         return vo;
     }
 
@@ -1234,22 +1256,23 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private JobApplicationPackageVO.InterviewPreparationVO buildInterviewPreparation(PreviewContext context,
                                                                                      JobApplicationPackageVO packageVO) {
         JobApplicationPackageVO.InterviewPreparationVO vo = new JobApplicationPackageVO.InterviewPreparationVO();
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
         List<String> topics = firstNonEmpty(
-                context.report == null ? List.of() : jsonTexts(context.report.getRecommendedInterviewTopicsJson(), 5),
-                context.analysis == null ? List.of() : jsonTexts(context.analysis.getInterviewFocusJson(), 5));
+                trustedReport == null
+                        ? List.of() : jsonTexts(trustedReport.getRecommendedInterviewTopicsJson(), 5),
+                trustedJdInterviewTopics(context.analysis));
         if (topics.isEmpty()) {
-            topics = List.of("围绕 JD 核心要求做一次文本模拟面试", "准备项目证据中的职责、难点、结果和复盘");
+            topics = defaultInterviewTopics();
         }
         vo.setTopics(topics);
         LinkedHashMap<String, Object> params = new LinkedHashMap<>();
-        Long trustedMatchReportId = matchSuccess(context.report) ? packageVO.getMatchReportId() : null;
         params.put("targetJobId", packageVO.getTargetJobId());
-        params.put("matchReportId", trustedMatchReportId);
+        params.put("matchReportId", packageVO.getMatchReportId());
         params.put("resumeVersionId", packageVO.getRecommendedResumeVersionId());
         params.put("projectEvidenceIds", packageVO.getProjectEvidenceIds());
         vo.setCreateParams(params);
         String query = "targetJobId=" + nullSafe(packageVO.getTargetJobId())
-                + "&matchReportId=" + nullSafe(trustedMatchReportId)
+                + "&matchReportId=" + nullSafe(packageVO.getMatchReportId())
                 + "&resumeVersionId=" + nullSafe(packageVO.getRecommendedResumeVersionId());
         vo.setEntryUrl("/interviews/create?" + query);
         return vo;
@@ -1269,15 +1292,20 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         boolean recommendationExplained = context.resumeVersion != null;
         items.add(check("RESUME_RECOMMENDATION_EXPLAINED", "推荐简历版本有解释", recommendationExplained,
                 recommendationExplained ? vo.getRecommendedResume().getReason() : "需要先选择或生成简历版本。",
-                "WARN", "UPDATE_RESUME_VERSION", "/resume-versions", List.of("resume", "match")));
-        boolean matchReady = matchSuccess(context.report) && scoreAtLeast(context.report.getOverallScore(), MATCH_READY_SCORE);
+                "WARN", "UPDATE_RESUME_VERSION", "/resume-versions",
+                withTrustedMatchEvidence(context, "resume")));
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        boolean matchReady = trustedReport != null
+                && scoreAtLeast(trustedReport.getOverallScore(), MATCH_READY_SCORE);
         items.add(check("MATCH_SCORE_THRESHOLD", "简历/JD 匹配分达到最低阈值", matchReady,
                 matchReady ? "匹配分达到投递前阈值。" : "匹配报告缺失或分数不足，建议补简历或重新匹配。",
-                "WARN", "UPDATE_RESUME_VERSION", matchUrl(vo.getMatchReportId()), List.of("match")));
+                "WARN", "UPDATE_RESUME_VERSION", matchUrl(vo.getMatchReportId()),
+                withTrustedMatchEvidence(context)));
         boolean skillEvidence = !vo.getProjectEvidenceCoverage().getCoveredRequirements().isEmpty();
         items.add(check("SKILL_EVIDENCE_COVERED", "核心技能要求有证据支撑", skillEvidence,
-                skillEvidence ? "已有要求可被匹配报告或项目证据支撑。" : "核心技能证据不足，建议补充项目证据。",
-                "WARN", "ADD_PROJECT_EVIDENCE", projectEvidenceUrl(vo.getTargetJobId()), List.of("match")));
+                skillEvidence ? "已有要求可被可信项目证据支撑。" : "核心技能证据不足，建议补充项目证据。",
+                "WARN", "ADD_PROJECT_EVIDENCE", projectEvidenceUrl(vo.getTargetJobId()),
+                List.of("requirements", "readiness")));
         boolean projectReady = hasTrustedStrongRequirement(context);
         items.add(check("PROJECT_EVIDENCE_READY", "至少一段项目证据可用于面试深挖", projectReady,
                 projectReady ? "At least one requirement has trusted, confirmed project evidence."
@@ -1287,7 +1315,8 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         boolean interviewReady = vo.getInterviewPreparation() != null && !vo.getInterviewPreparation().getTopics().isEmpty();
         items.add(check("INTERVIEW_PREPARATION_READY", "已生成面试准备方向", interviewReady,
                 interviewReady ? "已生成可带上下文进入模拟面试的准备方向。" : "建议先生成面试准备方向。",
-                "INFO", "PRACTICE_INTERVIEW", "/interviews/create", List.of("match", "jd")));
+                "INFO", "PRACTICE_INTERVIEW", "/interviews/create",
+                interviewTopicEvidenceSourceIds(context)));
         items.add(check("FOLLOW_UP_PLAN_READY", "已设置投递后跟进计划", false,
                 "预览阶段不会自动设置跟进日期，创建投递记录时请填写下一次跟进时间。",
                 "INFO", "SET_FOLLOW_UP", "/applications", List.of()));
@@ -1300,9 +1329,10 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         if (context.analysis == null) {
             risks.add(risk("JD_NOT_PARSED", "HIGH", "JD 信息不足", "缺少已解析 JD，投递包只能给出补资料行动。", List.of("jd")));
         }
-        if (!matchSuccess(context.report)) {
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        if (trustedReport == null) {
             risks.add(risk("MATCH_REPORT_MISSING", "MEDIUM", "缺少可信匹配报告", "尚无成功匹配报告，简历推荐只能按可用版本降级处理。", List.of("resume")));
-        } else if (scoreBelow(context.report.getOverallScore(), MATCH_READY_SCORE)) {
+        } else if (scoreBelow(trustedReport.getOverallScore(), MATCH_READY_SCORE)) {
             risks.add(risk("MATCH_SCORE_LOW", "MEDIUM", "简历匹配仍有缺口", "当前匹配分未达到 READY 阈值，建议先优化简历或补证据。", List.of("match")));
         }
         if (!hasTrustedStrongRequirement(context)) {
@@ -1325,11 +1355,13 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     private List<JobApplicationPackageVO.CareerActionItemVO> buildActions(PreviewContext context,
                                                                           JobApplicationPackageVO vo) {
         List<JobApplicationPackageVO.CareerActionItemVO> actions = new ArrayList<>();
-        if (context.resumeVersion == null || !matchSuccess(context.report)
-                || scoreBelow(context.report == null ? null : context.report.getOverallScore(), MATCH_READY_SCORE)) {
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        if (context.resumeVersion == null || trustedReport == null
+                || scoreBelow(trustedReport.getOverallScore(), MATCH_READY_SCORE)) {
             actions.add(action("update-resume", "UPDATE_RESUME_VERSION", "补齐或优化简历版本",
                     "先让简历版本和当前 JD 形成可信匹配报告，再决定是否投递。",
-                    "HIGH", matchUrl(vo.getMatchReportId()), "APPLICATION_PACKAGE", vo.getId(), List.of("resume", "match")));
+                    "HIGH", matchUrl(vo.getMatchReportId()), "APPLICATION_PACKAGE", vo.getId(),
+                    withTrustedMatchEvidence(context, "resume")));
         }
         if (hasRequirementGaps(context)) {
             actions.add(action("add-project-evidence", "ADD_PROJECT_EVIDENCE", "补充项目证据",
@@ -1337,14 +1369,16 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                     "HIGH", projectEvidenceUrl(vo.getTargetJobId()), "APPLICATION_PACKAGE", vo.getId(),
                     List.of("requirements", "readiness")));
         }
-        if (matchSuccess(context.report) && scoreBelow(context.report == null ? null : context.report.getOverallScore(), 85)) {
+        if (trustedReport != null && scoreBelow(trustedReport.getOverallScore(), 85)) {
             actions.add(action("practice-interview", "PRACTICE_INTERVIEW", "带岗位上下文练一场模拟面试",
                     "围绕匹配报告缺口和项目证据进行文本模拟面试。",
-                    "MEDIUM", vo.getInterviewPreparation().getEntryUrl(), "APPLICATION_PACKAGE", vo.getId(), List.of("jd", "match")));
+                    "MEDIUM", vo.getInterviewPreparation().getEntryUrl(), "APPLICATION_PACKAGE", vo.getId(),
+                    interviewTopicEvidenceSourceIds(context)));
         }
         actions.add(action("create-application", "CREATE_APPLICATION_RECORD", "创建投递记录",
                 "只在系统内创建个人投递记录，不会自动投递真实岗位。",
-                "MEDIUM", "/applications", "APPLICATION_PACKAGE", vo.getId(), List.of("jd", "resume", "match")));
+                "MEDIUM", "/applications", "APPLICATION_PACKAGE", vo.getId(),
+                withTrustedMatchEvidence(context, "jd", "resume")));
         actions.add(action("set-follow-up", "SET_FOLLOW_UP", "设置投递后跟进时间",
                 "创建记录时设置下一次跟进，后续可进入投递漏斗和今日行动。",
                 "LOW", "/applications", "APPLICATION_PACKAGE", vo.getId(), List.of()));
@@ -1355,10 +1389,13 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                                                                                    JobApplicationPackageVO vo) {
         List<JobApplicationPackageVO.ExplainableSuggestionVO> suggestions = new ArrayList<>();
         if (context.resumeVersion != null) {
+            boolean trustedMatch = trustedMatchSuccess(context);
             suggestions.add(suggestion("resume", "RESUME_VERSION", "推荐使用当前简历版本",
-                    vo.getRecommendedResume().getReason(), context.report == null ? "MEDIUM" : "HIGH",
-                    context.report == null ? "缺少匹配报告时，这只是可用版本建议，不是强适配结论。" : "推荐基于匹配报告和简历版本绑定关系。",
-                    List.of("resume", "match")));
+                    vo.getRecommendedResume().getReason(), trustedMatch ? "HIGH" : "MEDIUM",
+                    trustedMatch
+                            ? "推荐基于可信匹配报告和简历版本绑定关系。"
+                            : "当前只是可用版本建议，不是岗位强适配结论。",
+                    withTrustedMatchEvidence(context, "resume")));
         }
         if (hasTrustedStrongRequirement(context)) {
             suggestions.add(suggestion("project-evidence", "PROJECT_EVIDENCE", "优先使用已选项目证据",
@@ -1549,6 +1586,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
     }
 
     private String previewId(PreviewContext context) {
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
         return "preview:"
                 + nullSafe(context.targetJob == null ? context.targetJobId : context.targetJob.getId())
                 + ":"
@@ -1556,7 +1594,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 + ":"
                 + nullSafe(context.resumeVersion == null ? context.resumeVersionId : context.resumeVersion.getId())
                 + ":"
-                + nullSafe(context.report == null ? context.matchReportId : context.report.getId());
+                + nullSafe(trustedReport == null ? null : trustedReport.getId());
     }
 
     private String escapeLikeKeyword(String keyword) {
@@ -1699,56 +1737,323 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
                 || "READY".equalsIgnoreCase(evidence.getCompletenessStatus());
     }
 
-    private boolean matchSuccess(ResumeJobMatchReport report) {
-        return report != null
-                && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())
-                && !matchFallback(report);
+    private ResumeJobMatchReport trustedMatchReport(PreviewContext context) {
+        return trustedMatchSuccess(context) ? context.report : null;
     }
 
-    private boolean matchFallback(ResumeJobMatchReport report) {
-        JsonNode raw = rawMatchResult(report);
-        return report == null
-                || raw.path("fallback").asBoolean(false)
-                || TRUST_FALLBACK.equals(matchRawTrustStatus(raw))
-                || matchSchemaWarningCount(report) > 0;
+    private boolean trustedMatchSuccess(PreviewContext context) {
+        return context != null
+                && context.report != null
+                && context.matchAssessment != null
+                && context.matchAssessment.trustedSuccess();
     }
 
-    private String matchTrustStatus(ResumeJobMatchReport report) {
-        if (report == null || !ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())) {
-            return TRUST_FALLBACK;
+    private StoredMatchTrust storedMatchTrust(Long userId, Long reportId) {
+        if (userId == null || reportId == null) {
+            return new StoredMatchTrust(null, resumeJobMatchTrustPolicy.assess(null));
         }
-        JsonNode raw = rawMatchResult(report);
-        if (raw.path("fallback").asBoolean(false) || TRUST_FALLBACK.equals(matchRawTrustStatus(raw))) {
-            return TRUST_FALLBACK;
-        }
-        if (matchSchemaWarningCount(report) > 0) {
-            return TRUST_PARTIAL;
-        }
-        return TRUST_VERIFIED;
+        ResumeJobMatchReport report = resumeJobMatchReportMapper.selectOne(
+                new LambdaQueryWrapper<ResumeJobMatchReport>()
+                        .eq(ResumeJobMatchReport::getId, reportId)
+                        .eq(ResumeJobMatchReport::getUserId, userId)
+                        .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        return new StoredMatchTrust(report, resumeJobMatchTrustPolicy.assess(report));
     }
 
-    private String matchRawTrustStatus(JsonNode raw) {
-        if (raw == null || raw.isMissingNode() || raw.isNull()) {
+    private void sanitizeListMatchReportIds(
+            Long userId, List<JobApplicationPackageListItemVO> records) {
+        if (CollectionUtils.isEmpty(records)) {
+            return;
+        }
+        Set<Long> reportIds = new LinkedHashSet<>();
+        for (JobApplicationPackageListItemVO record : records) {
+            if (record != null && record.getMatchReportId() != null) {
+                reportIds.add(record.getMatchReportId());
+            }
+        }
+        if (reportIds.isEmpty()) {
+            return;
+        }
+        List<ResumeJobMatchReport> reports = resumeJobMatchReportMapper.selectList(
+                new LambdaQueryWrapper<ResumeJobMatchReport>()
+                        .eq(ResumeJobMatchReport::getUserId, userId)
+                        .in(ResumeJobMatchReport::getId, reportIds)
+                        .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO));
+        Set<Long> trustedReportIds = new LinkedHashSet<>();
+        if (reports != null) {
+            for (ResumeJobMatchReport report : reports) {
+                if (report != null && resumeJobMatchTrustPolicy.assess(report).trustedSuccess()) {
+                    trustedReportIds.add(report.getId());
+                }
+            }
+        }
+        for (JobApplicationPackageListItemVO record : records) {
+            if (record != null && record.getMatchReportId() != null
+                    && !trustedReportIds.contains(record.getMatchReportId())) {
+                record.setMatchReportId(null);
+            }
+        }
+    }
+
+    private void sanitizeUntrustedStoredMatch(
+            JobApplicationPackageVO vo, StoredMatchTrust trust, Long userId) {
+        ResumeJobMatchTrustPolicy.Assessment assessment = trust.assessment();
+        JobApplicationPackageVO.MatchSummaryVO summary = vo.getMatchSummary();
+        if (summary == null) {
+            summary = new JobApplicationPackageVO.MatchSummaryVO();
+            vo.setMatchSummary(summary);
+        }
+        summary.setOverallScore(null);
+        summary.setTechStackScore(null);
+        summary.setProjectExperienceScore(null);
+        summary.setBusinessFitScore(null);
+        summary.setCommunicationScore(null);
+        summary.setTrustStatus(assessment.trustStatus());
+        summary.setFallback(assessment.fallback());
+        summary.setSchemaWarningCount(assessment.schemaWarningCount());
+        summary.setSummary(null);
+        summary.setGaps(List.of());
+
+        JobDescriptionAnalysis analysis = storedAnalysis(userId, vo.getJdAnalysisId());
+        summary.setInterviewTopics(fallbackInterviewTopics(analysis));
+        TargetJob targetJob = storedTargetJob(userId, vo.getTargetJobId());
+        vo.setCompanyName(firstText(
+                targetJob == null ? null : targetJob.getCompanyName(),
+                analysis == null ? null : analysis.getCompanyName()));
+        List<String> topics = fallbackInterviewTopics(analysis);
+        JobApplicationPackageVO.InterviewPreparationVO preparation = vo.getInterviewPreparation();
+        if (preparation == null) {
+            preparation = new JobApplicationPackageVO.InterviewPreparationVO();
+            vo.setInterviewPreparation(preparation);
+        }
+        preparation.setTopics(topics);
+        LinkedHashMap<String, Object> params = new LinkedHashMap<>();
+        params.put("targetJobId", vo.getTargetJobId());
+        params.put("matchReportId", null);
+        params.put("resumeVersionId", vo.getRecommendedResumeVersionId());
+        params.put("projectEvidenceIds", vo.getProjectEvidenceIds());
+        preparation.setCreateParams(params);
+        preparation.setEntryUrl("/interviews/create?targetJobId=" + nullSafe(vo.getTargetJobId())
+                + "&matchReportId=&resumeVersionId=" + nullSafe(vo.getRecommendedResumeVersionId()));
+
+        if (vo.getEvidenceSources() != null) {
+            vo.setEvidenceSources(vo.getEvidenceSources().stream()
+                    .filter(Objects::nonNull)
+                    .filter(source -> !"match".equals(source.getId()))
+                    .filter(source -> !"RESUME_JOB_MATCH_REPORT".equals(source.getSourceType()))
+                    .toList());
+        }
+        sanitizeChecklistMatchEvidence(vo);
+        sanitizeActionMatchEvidence(vo, analysis);
+        sanitizeRiskMatchEvidence(vo);
+        sanitizeSuggestionMatchEvidence(vo);
+        sanitizeTraceMatchReference(vo);
+        if (vo.getRecommendedResume() != null) {
+            vo.getRecommendedResume().setReason(
+                    "当前仅按可用简历版本生成预览候选，尚未形成可信的岗位适配结论。");
+        }
+        vo.setReadinessScore(readinessScore(vo));
+    }
+
+    private JobDescriptionAnalysis storedAnalysis(Long userId, Long analysisId) {
+        if (userId == null || analysisId == null) {
             return null;
         }
-        String value = raw.path("trustStatus").asText(null);
-        return StringUtils.hasText(value) ? value.trim().toUpperCase(Locale.ROOT) : null;
+        return jobDescriptionAnalysisMapper.selectOne(
+                new LambdaQueryWrapper<JobDescriptionAnalysis>()
+                        .eq(JobDescriptionAnalysis::getId, analysisId)
+                        .eq(JobDescriptionAnalysis::getUserId, userId)
+                        .eq(JobDescriptionAnalysis::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
     }
 
-    private int matchSchemaWarningCount(ResumeJobMatchReport report) {
-        JsonNode warnings = rawMatchResult(report).path("schemaWarnings");
-        return warnings.isArray() ? warnings.size() : 0;
+    private TargetJob storedTargetJob(Long userId, Long targetJobId) {
+        if (userId == null || targetJobId == null) {
+            return null;
+        }
+        return targetJobMapper.selectOne(
+                new LambdaQueryWrapper<TargetJob>()
+                        .eq(TargetJob::getId, targetJobId)
+                        .eq(TargetJob::getUserId, userId)
+                        .eq(TargetJob::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
     }
 
-    private JsonNode rawMatchResult(ResumeJobMatchReport report) {
-        if (report == null || !StringUtils.hasText(report.getRawResultJson())) {
-            return objectMapper.getNodeFactory().missingNode();
+    private void sanitizeChecklistMatchEvidence(JobApplicationPackageVO vo) {
+        if (vo.getChecklist() == null) {
+            return;
+        }
+        for (JobApplicationPackageVO.ApplicationPackageChecklistItemVO item : vo.getChecklist()) {
+            if (item == null) {
+                continue;
+            }
+            item.setEvidenceSourceIds(withoutMatchEvidence(item.getEvidenceSourceIds()));
+            if ("MATCH_SCORE_THRESHOLD".equals(item.getKey())) {
+                item.setPassed(false);
+                item.setReason("匹配报告缺失或仍需复核，建议补简历或重新匹配。");
+                item.setActionUrl(matchUrl(null));
+            } else if ("RESUME_RECOMMENDATION_EXPLAINED".equals(item.getKey())) {
+                item.setReason("当前仅按可用简历版本生成预览候选，尚未形成可信的岗位适配结论。");
+            }
+        }
+    }
+
+    private void sanitizeActionMatchEvidence(
+            JobApplicationPackageVO vo, JobDescriptionAnalysis analysis) {
+        if (vo.getActions() == null) {
+            return;
+        }
+        for (JobApplicationPackageVO.CareerActionItemVO action : vo.getActions()) {
+            if (action == null) {
+                continue;
+            }
+            action.setEvidenceSourceIds(withoutMatchEvidence(action.getEvidenceSourceIds()));
+            if ("UPDATE_RESUME_VERSION".equalsIgnoreCase(action.getActionType())) {
+                action.setActionUrl(matchUrl(null));
+            }
+            if ("PRACTICE_INTERVIEW".equalsIgnoreCase(action.getActionType())) {
+                action.setDescription("围绕可信 JD 要求和已确认项目证据进行文本模拟面试。");
+                action.setEvidenceSourceIds(
+                        trustedJdInterviewTopics(analysis).isEmpty() ? List.of() : List.of("jd"));
+            }
+        }
+    }
+
+    private void sanitizeRiskMatchEvidence(JobApplicationPackageVO vo) {
+        List<JobApplicationPackageVO.CareerRiskSignalVO> risks = vo.getRiskSignals() == null
+                ? new ArrayList<>() : new ArrayList<>(vo.getRiskSignals());
+        risks.removeIf(risk -> risk == null || "MATCH_SCORE_LOW".equals(risk.getKey()));
+        risks.forEach(risk -> risk.setEvidenceSourceIds(withoutMatchEvidence(risk.getEvidenceSourceIds())));
+        if (risks.stream().noneMatch(risk -> "MATCH_REPORT_MISSING".equals(risk.getKey()))) {
+            risks.add(risk("MATCH_REPORT_MISSING", "MEDIUM", "缺少可信匹配报告",
+                    "尚无可信匹配报告，简历推荐只能按可用版本降级处理。", List.of("resume")));
+        }
+        vo.setRiskSignals(risks);
+    }
+
+    private void sanitizeSuggestionMatchEvidence(JobApplicationPackageVO vo) {
+        if (vo.getSuggestions() == null) {
+            return;
+        }
+        for (JobApplicationPackageVO.ExplainableSuggestionVO suggestion : vo.getSuggestions()) {
+            if (suggestion == null) {
+                continue;
+            }
+            suggestion.setEvidenceSourceIds(withoutMatchEvidence(suggestion.getEvidenceSourceIds()));
+            if ("resume".equals(suggestion.getId())) {
+                suggestion.setConfidence("MEDIUM");
+                suggestion.setContent(
+                        "当前仅按可用简历版本生成预览候选，尚未形成可信的岗位适配结论。");
+                suggestion.setBoundary("当前只是可用版本建议，不是岗位强适配结论。");
+            }
+        }
+    }
+
+    private void sanitizeTraceMatchReference(JobApplicationPackageVO vo) {
+        if (vo.getTrace() == null) {
+            return;
+        }
+        vo.getTrace().setTraceId("application-package:" + nullSafe(vo.getId())
+                + ":" + nullSafe(vo.getTargetJobId())
+                + ":" + nullSafe(vo.getRecommendedResumeVersionId()) + ":");
+        vo.getTrace().setInputSummary("targetJobId=" + nullSafe(vo.getTargetJobId())
+                + ", jdAnalysisId=" + nullSafe(vo.getJdAnalysisId())
+                + ", resumeVersionId=" + nullSafe(vo.getRecommendedResumeVersionId())
+                + ", matchReportId="
+                + ", projectEvidenceCount="
+                + (vo.getProjectEvidenceIds() == null ? 0 : vo.getProjectEvidenceIds().size()));
+        vo.getTrace().setDegraded(true);
+    }
+
+    private List<String> withoutMatchEvidence(List<String> sourceIds) {
+        if (sourceIds == null || sourceIds.isEmpty()) {
+            return List.of();
+        }
+        return sourceIds.stream()
+                .filter(StringUtils::hasText)
+                .filter(sourceId -> !"match".equals(sourceId))
+                .toList();
+    }
+
+    private List<String> trustedJdInterviewTopics(JobDescriptionAnalysis analysis) {
+        if (analysis == null
+                || !JobDescriptionParseStatus.PARSED.getCode().equals(analysis.getParseStatus())
+                || !StringUtils.hasText(analysis.getInterviewFocusJson())) {
+            return List.of();
         }
         try {
-            return objectMapper.readTree(report.getRawResultJson());
+            JsonNode topics = objectMapper.readTree(analysis.getInterviewFocusJson());
+            if (topics == null || !topics.isArray()) {
+                return List.of();
+            }
         } catch (Exception ignored) {
-            return objectMapper.getNodeFactory().missingNode();
+            return List.of();
         }
+        if (!trustedJdRawResult(analysis.getRawResultJson())) {
+            return List.of();
+        }
+        return jsonTexts(analysis.getInterviewFocusJson(), 5);
+    }
+
+    private List<String> fallbackInterviewTopics(JobDescriptionAnalysis analysis) {
+        List<String> topics = trustedJdInterviewTopics(analysis);
+        return topics.isEmpty() ? defaultInterviewTopics() : topics;
+    }
+
+    private List<String> defaultInterviewTopics() {
+        return List.of(
+                "围绕 JD 核心要求做一次文本模拟面试",
+                "准备项目证据中的职责、难点、结果和复盘");
+    }
+
+    private boolean trustedJdRawResult(String rawResultJson) {
+        if (!StringUtils.hasText(rawResultJson)) {
+            return true;
+        }
+        try {
+            JsonNode raw = objectMapper.readTree(rawResultJson);
+            if (raw == null || !raw.isObject() || raw.path("fallback").asBoolean(false)) {
+                return false;
+            }
+            String trustStatus = raw.path("trustStatus").asText("").trim().toUpperCase(Locale.ROOT);
+            if (ResumeJobMatchTrustPolicy.TRUST_PARTIAL.equals(trustStatus)
+                    || ResumeJobMatchTrustPolicy.TRUST_FALLBACK.equals(trustStatus)) {
+                return false;
+            }
+            if (StringUtils.hasText(trustStatus)
+                    && !ResumeJobMatchTrustPolicy.TRUST_VERIFIED.equals(trustStatus)) {
+                return false;
+            }
+            JsonNode warnings = raw.path("schemaWarnings");
+            return warnings.isMissingNode() || warnings.isNull()
+                    || (warnings.isArray() && warnings.isEmpty());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private List<String> withTrustedMatchEvidence(PreviewContext context, String... sourceIds) {
+        List<String> result = new ArrayList<>();
+        if (sourceIds != null) {
+            for (String sourceId : sourceIds) {
+                addUnique(result, sourceId);
+            }
+        }
+        if (trustedMatchSuccess(context)) {
+            addUnique(result, "match");
+        }
+        return result;
+    }
+
+    private List<String> interviewTopicEvidenceSourceIds(PreviewContext context) {
+        ResumeJobMatchReport trustedReport = trustedMatchReport(context);
+        if (trustedReport != null
+                && !jsonTexts(trustedReport.getRecommendedInterviewTopicsJson(), 1).isEmpty()) {
+            return List.of("match");
+        }
+        return trustedJdInterviewTopics(context == null ? null : context.analysis).isEmpty()
+                ? List.of() : List.of("jd");
     }
 
     private boolean scoreAtLeast(Integer score, int threshold) {
@@ -2077,6 +2382,7 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         private JobDescriptionAnalysis analysis;
         private ResumeVersion resumeVersion;
         private ResumeJobMatchReport report;
+        private ResumeJobMatchTrustPolicy.Assessment matchAssessment;
         private List<ResumeJobMatchDetail> matchDetails = List.of();
         private List<ProjectEvidence> projectEvidence = List.of();
         private JobRequirementMatrixVO requirementMatrix;
@@ -2133,6 +2439,18 @@ public class JobApplicationPackageServiceImpl implements JobApplicationPackageSe
         private Long resumeVersionId;
         private Long matchReportId;
         private LocalDateTime createdAt;
+    }
+
+    private record StoredMatchTrust(
+            ResumeJobMatchReport report, ResumeJobMatchTrustPolicy.Assessment assessment) {
+
+        private boolean trustedSuccess() {
+            return report != null && assessment != null && assessment.trustedSuccess();
+        }
+
+        private Long trustedReportId() {
+            return trustedSuccess() ? report.getId() : null;
+        }
     }
 
     private record PackageContextKey(Long targetJobId, Long resumeVersionId, Long matchReportId) {

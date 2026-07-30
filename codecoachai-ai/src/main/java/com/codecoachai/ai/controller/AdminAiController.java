@@ -289,7 +289,7 @@ public class AdminAiController {
         return Result.success(promptTemplateService.getLog(id));
     }
 
-    @OperationLog(module = "ai", action = "VIEW_AI_LOG_RAW", description = "查看 AI 调用日志原文", logResponse = false)
+    @OperationLog(module = "ai", action = "VIEW_AI_LOG_RAW", description = "查看 AI 调用日志原文", logArgs = true, logResponse = false)
     @PostMapping({"/admin/ai/call-logs/{id}/raw", "/admin/ai/logs/{id}/raw"})
     public Result<AiCallLogVO> getLogRaw(@PathVariable Long id,
                                           @Valid @RequestBody AiLogRawAccessDTO dto) {

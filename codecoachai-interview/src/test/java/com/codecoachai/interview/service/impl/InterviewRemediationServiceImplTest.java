@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,10 +22,10 @@ import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingResolver;
-import com.codecoachai.interview.service.InterviewService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +33,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DuplicateKeyException;
 
 @ExtendWith(MockitoExtension.class)
 class InterviewRemediationServiceImplTest {
@@ -46,7 +46,7 @@ class InterviewRemediationServiceImplTest {
     @Mock
     private InterviewScenarioBindingResolver bindingResolver;
     @Mock
-    private InterviewService interviewService;
+    private InterviewCloneTransactionService cloneTransactionService;
 
     private InterviewRemediationServiceImpl service;
 
@@ -54,7 +54,7 @@ class InterviewRemediationServiceImplTest {
     void setUp() {
         service = new InterviewRemediationServiceImpl(
                 remediationMapper, reportMapper, sessionMapper, bindingResolver,
-                interviewService, new ObjectMapper());
+                cloneTransactionService, new ObjectMapper());
         LoginUserContext.setLoginUser(LoginUser.builder().userId(10L).username("tester").build());
     }
 
@@ -74,8 +74,8 @@ class InterviewRemediationServiceImplTest {
                 () -> service.create(request(true, "strong-untrusted")));
 
         assertTrue(error.getMessage().contains("可信度不足"));
-        verify(remediationMapper, never()).insert(any(InterviewRemediation.class));
-        verify(interviewService, never()).create(any());
+        verify(cloneTransactionService, never())
+                .claimRemediation(any(InterviewRemediation.class));
     }
 
     @Test
@@ -89,23 +89,15 @@ class InterviewRemediationServiceImplTest {
                 () -> service.create(request(true, "strong-sample")));
 
         assertTrue(error.getMessage().contains("样本不足"));
-        verify(interviewService, never()).create(any());
+        verify(cloneTransactionService, never())
+                .claimRemediation(any(InterviewRemediation.class));
     }
 
     @Test
     void createsInterviewAndPersistsRemediationSourceContext() {
         when(reportMapper.selectById(88L)).thenReturn(report());
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
-            InterviewRemediation remediation = invocation.getArgument(0);
-            remediation.setId(500L);
-            return 1;
-        });
-        CreateInterviewVO interview = new CreateInterviewVO();
-        interview.setId(200L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
-        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+        stubOwnedCreation(500L, 200L);
 
         var result = service.create(request(false, "normal-create"));
 
@@ -116,38 +108,25 @@ class InterviewRemediationServiceImplTest {
         assertEquals("NORMAL", result.getRemediationStrength());
 
         ArgumentCaptor<CreateInterviewDTO> requestCaptor = ArgumentCaptor.forClass(CreateInterviewDTO.class);
-        verify(interviewService).create(requestCaptor.capture());
+        verify(cloneTransactionService)
+                .prepareCloneTarget(requestCaptor.capture(), eq(100L));
         assertEquals(300L, requestCaptor.getValue().getTargetJobId());
         assertTrue(requestCaptor.getValue().getRecommendationReason().contains("sourceReportId=88"));
         assertTrue(requestCaptor.getValue().getRecommendationReason().contains("sourceRequirementIds=[7, 9]"));
-
-        ArgumentCaptor<InterviewSession> sessionCaptor = ArgumentCaptor.forClass(InterviewSession.class);
-        verify(sessionMapper).updateById(sessionCaptor.capture());
-        assertEquals(88L, sessionCaptor.getValue().getSourceReportId());
-        assertEquals("[7,9]", sessionCaptor.getValue().getSourceRequirementIds());
-        assertEquals("补强缓存一致性追问", sessionCaptor.getValue().getPracticePurpose());
     }
 
     @Test
     void remediationCarriesSourceScenarioBindingIntoNewInterview() {
         when(reportMapper.selectById(88L)).thenReturn(report());
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(bindingResolver.reusableScenarioVersionId(100L, 10L, false)).thenReturn(9001L);
-        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
-            InterviewRemediation remediation = invocation.getArgument(0);
-            remediation.setId(501L);
-            return 1;
-        });
-        CreateInterviewVO interview = new CreateInterviewVO();
-        interview.setId(201L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
-        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+        when(bindingResolver.reusableScenarioVersionId(100L, 10L, true)).thenReturn(9001L);
+        stubOwnedCreation(501L, 201L);
 
         service.create(request(false, "scenario-carry"));
 
         ArgumentCaptor<CreateInterviewDTO> requestCaptor = ArgumentCaptor.forClass(CreateInterviewDTO.class);
-        verify(interviewService).create(requestCaptor.capture());
+        verify(cloneTransactionService)
+                .prepareCloneTarget(requestCaptor.capture(), eq(100L));
         assertEquals(9001L, requestCaptor.getValue().getScenarioVersionId());
     }
 
@@ -157,62 +136,65 @@ class InterviewRemediationServiceImplTest {
         report.setFailureReason("fallback report");
         when(reportMapper.selectById(88L)).thenReturn(report);
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
-            InterviewRemediation remediation = invocation.getArgument(0);
-            remediation.setId(502L);
-            return 1;
-        });
-        CreateInterviewVO interview = new CreateInterviewVO();
-        interview.setId(202L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
-        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+        stubOwnedCreation(502L, 202L);
 
         var result = service.create(request(false, "normal-fallback"));
 
         assertEquals(202L, result.getTargetSessionId());
         assertEquals("NORMAL", result.getRemediationStrength());
-        verify(interviewService).create(any());
+        verify(cloneTransactionService)
+                .createRemediationTarget(eq(502L), eq("claim-502"), any());
     }
 
     @Test
-    void idempotentReplayDoesNotCreateAnotherInterview() {
+    void completedRemediationIsRecoveredBeforeCurrentSourceChecks() {
         InterviewRemediation existing = remediation();
-        when(remediationMapper.selectOne(any())).thenReturn(existing);
+        when(cloneTransactionService.recoverCompletedRemediation(any()))
+                .thenReturn(existing);
 
         var result = service.create(request(false, "same-token"));
 
         assertEquals(200L, result.getTargetSessionId());
         assertTrue(result.getIdempotentReplay());
         verify(reportMapper, never()).selectById(any());
-        verify(interviewService, never()).create(any());
+        verify(sessionMapper, never()).selectById(any());
+        verify(cloneTransactionService, never())
+                .claimRemediation(any(InterviewRemediation.class));
+        verify(cloneTransactionService, never())
+                .createRemediationTarget(any(), any(), any());
     }
 
     @Test
-    void duplicateKeyRaceReturnsCommittedRemediationWithoutCreatingSecondInterview() {
-        InterviewRemediation concurrent = remediation();
-        when(remediationMapper.selectOne(any())).thenReturn(null, concurrent);
+    void creationInProgressIsNotReturnedAsSuccessfulRemediation() {
         when(reportMapper.selectById(88L)).thenReturn(report());
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(remediationMapper.insert(any(InterviewRemediation.class)))
-                .thenThrow(new DuplicateKeyException("duplicate"));
+        when(cloneTransactionService.claimRemediation(any()))
+                .thenThrow(new BusinessException(
+                        com.codecoachai.common.core.enums.ErrorCode.RESOURCE_RELATION_CONFLICT,
+                        "CREATION_IN_PROGRESS"));
 
-        var result = service.create(request(false, "same-token"));
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> service.create(request(false, "same-token")));
 
-        assertEquals(200L, result.getTargetSessionId());
-        assertTrue(result.getIdempotentReplay());
-        verify(interviewService, never()).create(any());
+        assertEquals("CREATION_IN_PROGRESS", error.getMessage());
+        verify(cloneTransactionService, never())
+                .createRemediationTarget(any(), any(), any());
     }
 
     @Test
     void sameIdempotencyKeyWithDifferentPayloadIsRejected() {
-        InterviewRemediation existing = remediation();
-        existing.setPracticePurpose("其他目的");
-        when(remediationMapper.selectOne(any())).thenReturn(existing);
+        when(reportMapper.selectById(88L)).thenReturn(report());
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+        when(cloneTransactionService.claimRemediation(any()))
+                .thenThrow(new BusinessException(
+                        com.codecoachai.common.core.enums.ErrorCode.RESOURCE_RELATION_CONFLICT,
+                        "幂等键已被不同的复练请求占用"));
 
         assertThrows(BusinessException.class, () -> service.create(request(false, "same-token")));
 
-        verify(interviewService, never()).create(any());
+        verify(cloneTransactionService, never())
+                .createRemediationTarget(any(), any(), any());
     }
 
     @Test
@@ -273,7 +255,8 @@ class InterviewRemediationServiceImplTest {
         report.setFailureReason("fallback report");
         when(reportMapper.selectOne(any())).thenReturn(report);
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(remediationMapper.selectOne(any())).thenReturn(remediation());
+        when(remediationMapper.selectPreferredBySourceReport(10L, 88L))
+                .thenReturn(remediation());
 
         var result = service.options(100L);
 
@@ -299,6 +282,24 @@ class InterviewRemediationServiceImplTest {
     }
 
     @Test
+    void remediationOptionsRejectInvalidHistoricalScenarioBinding() {
+        when(reportMapper.selectOne(any())).thenReturn(report());
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+        when(bindingResolver.reusableScenarioVersionId(100L, 10L, true))
+                .thenThrow(new BusinessException(
+                        com.codecoachai.common.core.enums.ErrorCode.PARAM_ERROR,
+                        "invalid scenario"));
+
+        var result = service.options(100L);
+
+        assertEquals(false, result.getRemediationAvailable());
+        assertEquals(
+                "SCENARIO_VERSION_INVALID",
+                result.getRemediationUnavailableReason());
+        assertEquals(List.of(), result.getOptions());
+    }
+
+    @Test
     void remediationOptionsDoNotReadReportsForAnotherUserSession() {
         InterviewSession foreignSession = session();
         foreignSession.setUserId(11L);
@@ -316,21 +317,79 @@ class InterviewRemediationServiceImplTest {
         dto.setSourceRequirementIds(List.of());
         when(reportMapper.selectById(88L)).thenReturn(report());
         when(sessionMapper.selectById(100L)).thenReturn(session());
-        when(remediationMapper.insert(any(InterviewRemediation.class))).thenAnswer(invocation -> {
-            InterviewRemediation remediation = invocation.getArgument(0);
-            remediation.setId(501L);
-            return 1;
-        });
-        CreateInterviewVO interview = new CreateInterviewVO();
-        interview.setId(201L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
-        when(remediationMapper.updateById(any(InterviewRemediation.class))).thenReturn(1);
+        stubOwnedCreation(501L, 201L);
 
         var result = service.create(dto);
 
         assertEquals(List.of(), result.getSourceRequirementIds());
         assertEquals(201L, result.getTargetSessionId());
+    }
+
+    @Test
+    void targetCreationFailureReleasesClaimForRetry() {
+        when(reportMapper.selectById(88L)).thenReturn(report());
+        when(sessionMapper.selectById(100L)).thenReturn(session());
+        InterviewServiceImpl.InterviewClonePreparation preparation =
+                clonePreparation();
+        when(cloneTransactionService.prepareCloneTarget(
+                any(CreateInterviewDTO.class), eq(100L)))
+                .thenReturn(preparation);
+        InterviewRemediation claimed = remediation();
+        claimed.setId(503L);
+        claimed.setTargetSessionId(null);
+        claimed.setStatus("CREATING");
+        when(cloneTransactionService.claimRemediation(any()))
+                .thenReturn(new InterviewCloneTransactionService.RemediationClaim(
+                        claimed, "claim-503", true));
+        when(cloneTransactionService.createRemediationTarget(
+                eq(503L), eq("claim-503"), any()))
+                .thenThrow(new BusinessException(
+                        com.codecoachai.common.core.enums.ErrorCode.SYSTEM_ERROR,
+                        "create failed"));
+
+        assertThrows(
+                BusinessException.class,
+                () -> service.create(request(false, "retryable")));
+
+        verify(cloneTransactionService)
+                .releaseRemediationClaim(503L, "claim-503");
+    }
+
+    private AtomicReference<InterviewRemediation> stubOwnedCreation(
+            Long remediationId, Long targetSessionId) {
+        AtomicReference<InterviewRemediation> claimedRef = new AtomicReference<>();
+        String claimToken = "claim-" + remediationId;
+        InterviewServiceImpl.InterviewClonePreparation preparation =
+                clonePreparation();
+        when(cloneTransactionService.prepareCloneTarget(
+                any(CreateInterviewDTO.class), eq(100L)))
+                .thenReturn(preparation);
+        when(cloneTransactionService.claimRemediation(any()))
+                .thenAnswer(invocation -> {
+                    InterviewRemediation claimed = invocation.getArgument(0);
+                    claimed.setId(remediationId);
+                    claimed.setStatus("CREATING");
+                    claimedRef.set(claimed);
+                    return new InterviewCloneTransactionService.RemediationClaim(
+                            claimed, claimToken, true);
+                });
+        when(cloneTransactionService.createRemediationTarget(
+                eq(remediationId), eq(claimToken), eq(preparation)))
+                .thenAnswer(invocation -> {
+                    InterviewRemediation created = claimedRef.get();
+                    created.setTargetSessionId(targetSessionId);
+                    created.setStatus("CREATED");
+                    CreateInterviewVO interview = new CreateInterviewVO();
+                    interview.setId(targetSessionId);
+                    return new InterviewCloneTransactionService.RemediationCreation(
+                            created, interview);
+                });
+        return claimedRef;
+    }
+
+    private InterviewServiceImpl.InterviewClonePreparation clonePreparation() {
+        return new InterviewServiceImpl.InterviewClonePreparation(
+                null, session());
     }
 
     private InterviewRemediationCreateDTO request(boolean strong, String token) {

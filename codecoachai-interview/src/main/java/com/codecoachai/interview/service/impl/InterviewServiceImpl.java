@@ -164,8 +164,71 @@ public class InterviewServiceImpl implements InterviewService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CreateInterviewVO create(CreateInterviewDTO dto) {
-        CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
+        return createPrepared(prepareCreate(dto, null, userId), null);
+    }
+
+    @Override
+    public CreateInterviewVO createClone(CreateInterviewDTO dto, Long sourceSessionId) {
+        InterviewClonePreparation preparation = prepareClone(dto, sourceSessionId);
+        return transactionTemplate.execute(status -> createPreparedClone(preparation));
+    }
+
+    InterviewClonePreparation prepareClone(
+            CreateInterviewDTO dto, Long sourceSessionId) {
+        Long userId = requireCurrentUserId();
+        InterviewSession sourceSession =
+                requireCloneSourceSession(userId, sourceSessionId);
+        validateCloneScenarioBinding(
+                userId,
+                sourceSessionId,
+                dto == null ? null : dto.getScenarioVersionId());
+        return new InterviewClonePreparation(
+                prepareCreate(dto, sourceSession, userId), sourceSession);
+    }
+
+    CreateInterviewVO createPreparedClone(
+            InterviewClonePreparation clonePreparation) {
+        if (clonePreparation == null
+                || clonePreparation.preparation() == null
+                || clonePreparation.sourceSession() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "克隆准备上下文不能为空");
+        }
+        InterviewCreatePreparation preparation = clonePreparation.preparation();
+        Long userId = requireCurrentUserId();
+        if (!userId.equals(preparation.userId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "克隆准备上下文已失效");
+        }
+        InterviewSession sourceSession = requireCloneSourceSession(
+                userId, clonePreparation.sourceSession().getId());
+        validateCloneScenarioBinding(
+                userId,
+                sourceSession.getId(),
+                preparation.request().getScenarioVersionId());
+        return createPrepared(preparation, clonePreparation.sourceSession());
+    }
+
+    @Override
+    public void validateClone(CreateInterviewDTO dto, Long sourceSessionId) {
+        prepareClone(dto, sourceSessionId);
+    }
+
+    private InterviewSession requireCloneSourceSession(
+            Long userId, Long sourceSessionId) {
+        InterviewSession sourceSession = sessionMapper.selectById(sourceSessionId);
+        if (sourceSession == null
+                || CommonConstants.YES.equals(sourceSession.getDeleted())
+                || !userId.equals(sourceSession.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "源面试场次不存在或不可用");
+        }
+        return sourceSession;
+    }
+
+    private InterviewCreatePreparation prepareCreate(
+            CreateInterviewDTO dto,
+            InterviewSession cloneSourceSession,
+            Long userId) {
+        CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long applicationPackageId = parseApplicationPackageId(request.getApplicationPackageId());
         InnerJobApplicationPackageVO applicationPackage =
                 validateApplicationPackageBinding(userId, applicationPackageId, request);
@@ -179,13 +242,54 @@ public class InterviewServiceImpl implements InterviewService {
         InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
         resolveDefaultResumeIfNeeded(mode, request);
         validateResumeOwnership(userId, mode, request);
-        IndustryTemplateSnapshot industrySnapshot = withRecommendationContext(resolveIndustrySnapshot(request), request);
+        IndustryTemplateSnapshot industrySnapshot = cloneSourceSession == null
+                ? withRecommendationContext(resolveIndustrySnapshot(request), request)
+                : withRecommendationContext(
+                        new IndustryTemplateSnapshot(
+                                cloneSourceSession.getIndustryTemplateId(),
+                                cloneSourceSession.getIndustryDirection(),
+                                cloneSourceSession.getIndustryContext()),
+                        request);
         ScenarioVersionVO scenario = request.getScenarioVersionId() == null
                 ? null
-                : scenarioRubricService.getPublishedScenarioVersion(request.getScenarioVersionId());
+                : cloneSourceSession == null
+                        ? scenarioRubricService.getPublishedScenarioVersion(request.getScenarioVersionId())
+                        : scenarioRubricService.getCloneableScenarioVersion(request.getScenarioVersionId());
         List<String> targetSkillCodes = sanitizeStrings(request.getTargetSkillCodes());
         List<Long> projectEvidenceIds = sanitizeLongs(request.getProjectEvidenceIds());
-        String trainingContextSummary = buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds);
+        String trainingContextSummary = cloneSourceSession == null
+                ? buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds)
+                : appendRecommendationContext(
+                        cloneSourceSession.getTrainingContextSummary(), request);
+
+        return new InterviewCreatePreparation(
+                request,
+                userId,
+                applicationPackageId,
+                mode,
+                targetJob,
+                industrySnapshot,
+                scenario,
+                targetSkillCodes,
+                projectEvidenceIds,
+                trainingContextSummary);
+    }
+
+    private CreateInterviewVO createPrepared(
+            InterviewCreatePreparation preparation,
+            InterviewSession cloneSourceSession) {
+        CreateInterviewDTO request = preparation.request();
+        Long userId = preparation.userId();
+        Long applicationPackageId = preparation.applicationPackageId();
+        String mode = preparation.mode();
+        InnerTargetJobVO targetJob = preparation.targetJob();
+        IndustryTemplateSnapshot industrySnapshot =
+                preparation.industrySnapshot();
+        ScenarioVersionVO scenario = preparation.scenario();
+        List<String> targetSkillCodes = preparation.targetSkillCodes();
+        List<Long> projectEvidenceIds = preparation.projectEvidenceIds();
+        String trainingContextSummary =
+                preparation.trainingContextSummary();
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -222,7 +326,8 @@ public class InterviewServiceImpl implements InterviewService {
         session.setTotalScore(0);
         sessionMapper.insert(session);
 
-        ScenarioBindingVO scenarioBinding = bindScenario(session, scenario);
+        ScenarioBindingVO scenarioBinding =
+                bindScenario(session, scenario, cloneSourceSession != null);
         List<InterviewStage> stages = createStages(session, scenario);
         int totalQuestionCount = totalExpectedQuestionCount(stages);
         if (!Integer.valueOf(totalQuestionCount).equals(session.getMaxQuestionCount())) {
@@ -1104,14 +1209,8 @@ public class InterviewServiceImpl implements InterviewService {
         if (vo == null || session == null || vo.getId() == null || session.getUserId() == null) {
             return vo;
         }
-        InterviewRemediation remediation = remediationMapper.selectOne(
-                new LambdaQueryWrapper<InterviewRemediation>()
-                        .eq(InterviewRemediation::getUserId, session.getUserId())
-                        .eq(InterviewRemediation::getSourceReportId, vo.getId())
-                        .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
-                        .orderByDesc(InterviewRemediation::getCreatedAt)
-                        .orderByDesc(InterviewRemediation::getId)
-                        .last("limit 1"));
+        InterviewRemediation remediation = remediationMapper.selectPreferredBySourceReport(
+                session.getUserId(), vo.getId());
         if (remediation == null) {
             vo.setRemediationCreated(false);
             return vo;
@@ -1734,14 +1833,37 @@ public class InterviewServiceImpl implements InterviewService {
                 .eq(InterviewMessage::getMessageType, "QUESTION"));
     }
 
-    private ScenarioBindingVO bindScenario(InterviewSession session, ScenarioVersionVO scenario) {
+    private ScenarioBindingVO bindScenario(
+            InterviewSession session, ScenarioVersionVO scenario, boolean historicalClone) {
         if (scenario == null) {
             return null;
+        }
+        if (historicalClone) {
+            return scenarioRubricService.bindCloneScenario(
+                    session.getId(), scenario.getScenarioVersionId());
         }
         ScenarioBindingCreateDTO binding = new ScenarioBindingCreateDTO();
         binding.setScenarioVersionId(scenario.getScenarioVersionId());
         binding.setBindingSource("INTERVIEW_CREATE");
         return scenarioRubricService.bindScenario(session.getId(), binding);
+    }
+
+    private void validateCloneScenarioBinding(
+            Long userId, Long sourceSessionId, Long requestedScenarioVersionId) {
+        InterviewScenarioBinding sourceBinding =
+                scenarioBindingMapper.selectOne(
+                        new LambdaQueryWrapper<InterviewScenarioBinding>()
+                                .eq(InterviewScenarioBinding::getSessionId, sourceSessionId)
+                                .eq(InterviewScenarioBinding::getUserId, userId)
+                                .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                                .last("limit 1"));
+        Long sourceScenarioVersionId = sourceBinding == null
+                ? null : sourceBinding.getScenarioVersionId();
+        if (!Objects.equals(sourceScenarioVersionId, requestedScenarioVersionId)) {
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "克隆场景必须与源面试场次绑定一致");
+        }
     }
 
     private int scenarioQuestionCount(ScenarioVersionVO scenario, Integer requestedCount) {
@@ -3133,23 +3255,34 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private IndustryTemplateSnapshot withRecommendationContext(IndustryTemplateSnapshot snapshot, CreateInterviewDTO dto) {
-        if (dto == null) {
+        String context = appendRecommendationContext(snapshot.industryContext(), dto);
+        if (Objects.equals(context, snapshot.industryContext())) {
             return snapshot;
+        }
+        return new IndustryTemplateSnapshot(
+                snapshot.industryTemplateId(),
+                snapshot.industryDirection(),
+                context);
+    }
+
+    private String appendRecommendationContext(String existingContext, CreateInterviewDTO dto) {
+        if (dto == null) {
+            return existingContext;
         }
         String source = normalizeText(dto.getRecommendationSource());
         String reason = normalizeText(dto.getRecommendationReason());
         String practiceMode = normalizeText(dto.getPracticeMode());
         if (!StringUtils.hasText(source) && !StringUtils.hasText(reason) && !StringUtils.hasText(practiceMode)) {
-            return snapshot;
+            return existingContext;
         }
-        StringBuilder builder = new StringBuilder(firstText(snapshot.industryContext(), ""));
+        StringBuilder builder = new StringBuilder();
+        if (StringUtils.hasText(existingContext)) {
+            builder.append(existingContext.trim()).append('\n');
+        }
         appendLine(builder, "推荐配置来源", source);
         appendLine(builder, "推荐配置依据", reason);
         appendLine(builder, "训练模式", practiceMode);
-        return new IndustryTemplateSnapshot(
-                snapshot.industryTemplateId(),
-                snapshot.industryDirection(),
-                builder.toString().trim());
+        return builder.toString().trim();
     }
 
     private String buildIndustryContext(IndustryTemplate template, String direction) {
@@ -3614,7 +3747,25 @@ public class InterviewServiceImpl implements InterviewService {
         return null;
     }
 
-    private record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
+    record InterviewClonePreparation(
+            InterviewCreatePreparation preparation,
+            InterviewSession sourceSession) {
+    }
+
+    record InterviewCreatePreparation(
+            CreateInterviewDTO request,
+            Long userId,
+            Long applicationPackageId,
+            String mode,
+            InnerTargetJobVO targetJob,
+            IndustryTemplateSnapshot industrySnapshot,
+            ScenarioVersionVO scenario,
+            List<String> targetSkillCodes,
+            List<Long> projectEvidenceIds,
+            String trainingContextSummary) {
+    }
+
+    record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
     }
 
     private record StartContext(InterviewSession session, InterviewStage stage) {

@@ -3,10 +3,12 @@ package com.codecoachai.resume.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,6 +24,7 @@ import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.JobDescriptionParseStatus;
+import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.vo.JobReadinessSnapshotVO;
 import com.codecoachai.resume.domain.vo.JobRequirementMatrixVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
@@ -34,6 +37,7 @@ import com.codecoachai.resume.service.JobReadinessService;
 import com.codecoachai.resume.service.JobRequirementService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.codecoachai.resume.service.support.JobApplicationPackageSnapshotManager;
+import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
@@ -64,6 +68,7 @@ class JobApplicationPackageServiceImplTest {
     private static final Long USER_ID = 1001L;
     private static final Long TARGET_JOB_ID = 11L;
     private static final Long PROJECT_ID = 31L;
+    private static final Long MATCH_REPORT_ID = 61L;
     private static final Long PACKAGE_ID = 71L;
 
     @Mock
@@ -115,15 +120,16 @@ class JobApplicationPackageServiceImplTest {
                 v4ResumeCareerService,
                 objectMapper,
                 jdbcTemplate,
-                packageSnapshotManager);
+                packageSnapshotManager,
+                new ResumeJobMatchTrustPolicy(objectMapper));
         LoginUser user = new LoginUser();
         user.setUserId(USER_ID);
         LoginUserContext.setLoginUser(user);
-        when(targetJobMapper.selectOne(any())).thenReturn(targetJob());
+        lenient().when(targetJobMapper.selectOne(any())).thenReturn(targetJob());
         when(jobDescriptionAnalysisMapper.selectOne(any())).thenReturn(analysis());
-        when(resumeVersionMapper.selectOne(any())).thenReturn(resumeVersion());
+        lenient().when(resumeVersionMapper.selectOne(any())).thenReturn(resumeVersion());
         when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(null);
-        when(projectEvidenceMapper.selectList(any())).thenReturn(List.of(completeProject()));
+        lenient().when(projectEvidenceMapper.selectList(any())).thenReturn(List.of(completeProject()));
     }
 
     @AfterEach
@@ -181,6 +187,231 @@ class JobApplicationPackageServiceImplTest {
         assertTrue(preview.getRequirementReadinessSource().getWarnings()
                 .contains("READINESS_SNAPSHOT_MISSING"));
         assertTrue(preview.getFallbackReason().contains("READINESS_SNAPSHOT_MISSING"));
+    }
+
+    @Test
+    void schemaWarningMatchIsPartialNonFallbackAndNotTrustedForDownstreamUse() {
+        JobRequirementMatrixVO matrix = matrix(
+                requirement(101L, "Java", "MUST", "STRONG", strongEvidence(PROJECT_ID)),
+                requirement(102L, "Redis", "MUST", "STRONG", strongEvidence(PROJECT_ID)));
+        when(jobRequirementService.getMatrix(TARGET_JOB_ID)).thenReturn(matrix);
+        when(jobReadinessService.latest(TARGET_JOB_ID)).thenReturn(snapshot(matrix, "READY", false, "HIGH"));
+        JobDescriptionAnalysis trustedAnalysis = analysis();
+        trustedAnalysis.setInterviewFocusJson("[\"JD concurrency topic\"]");
+        trustedAnalysis.setRawResultJson("""
+                {"trustStatus":"VERIFIED","fallback":false,"schemaWarnings":[]}
+                """);
+        when(jobDescriptionAnalysisMapper.selectOne(any())).thenReturn(trustedAnalysis);
+        ResumeJobMatchReport partialReport = matchReport("""
+                {
+                  "trustStatus": "PARTIAL",
+                  "fallback": false,
+                  "schemaWarnings": [
+                    {"field":"evidenceBoundary","message":"unsupported evidence removed"}
+                  ]
+                }
+                """);
+        partialReport.setGapsJson("[\"REPORT_ONLY_GAP\"]");
+        partialReport.setRecommendedInterviewTopicsJson("[\"REPORT_ONLY_TOPIC\"]");
+        when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(partialReport);
+
+        var preview = service.preview(
+                TARGET_JOB_ID, null, null, MATCH_REPORT_ID, List.of(PROJECT_ID));
+
+        assertNull(preview.getMatchReportId());
+        assertEquals("PARTIAL", preview.getMatchSummary().getTrustStatus());
+        assertFalse(preview.getMatchSummary().getFallback());
+        assertEquals(1, preview.getMatchSummary().getSchemaWarningCount());
+        assertNull(preview.getMatchSummary().getOverallScore());
+        assertNull(preview.getMatchSummary().getSummary());
+        assertTrue(preview.getMatchSummary().getGaps().isEmpty());
+        assertEquals(List.of("JD concurrency topic"), preview.getMatchSummary().getInterviewTopics());
+        assertEquals(List.of("JD concurrency topic"), preview.getInterviewPreparation().getTopics());
+        assertFalse(preview.getInterviewPreparation().getTopics().contains("REPORT_ONLY_TOPIC"));
+        assertNull(preview.getInterviewPreparation().getCreateParams().get("matchReportId"));
+        assertFalse(preview.getInterviewPreparation().getEntryUrl().contains(String.valueOf(MATCH_REPORT_ID)));
+        assertTrue(preview.getEvidenceSources().stream()
+                .noneMatch(source -> "RESUME_JOB_MATCH_REPORT".equals(source.getSourceType())));
+        assertTrue(preview.getRecommendedResume().getReason().contains("尚未形成可信"));
+        assertEquals("MEDIUM", preview.getSuggestions().stream()
+                .filter(suggestion -> "resume".equals(suggestion.getId()))
+                .findFirst()
+                .orElseThrow()
+                .getConfidence());
+        assertTrue(preview.getChecklist().stream()
+                .flatMap(item -> item.getEvidenceSourceIds().stream())
+                .noneMatch("match"::equals));
+        assertTrue(preview.getActions().stream()
+                .flatMap(action -> action.getEvidenceSourceIds().stream())
+                .noneMatch("match"::equals));
+        assertTrue(preview.getSuggestions().stream()
+                .flatMap(suggestion -> suggestion.getEvidenceSourceIds().stream())
+                .noneMatch("match"::equals));
+        assertFalse(preview.getId().contains(String.valueOf(MATCH_REPORT_ID)));
+        assertFalse(preview.getTrace().getInputSummary().contains(String.valueOf(MATCH_REPORT_ID)));
+    }
+
+    @Test
+    void verifiedMatchIsTrustedForDownstreamUse() {
+        JobRequirementMatrixVO matrix = matrix(
+                requirement(101L, "Java", "MUST", "STRONG", strongEvidence(PROJECT_ID)),
+                requirement(102L, "Redis", "MUST", "STRONG", strongEvidence(PROJECT_ID)));
+        when(jobRequirementService.getMatrix(TARGET_JOB_ID)).thenReturn(matrix);
+        when(jobReadinessService.latest(TARGET_JOB_ID)).thenReturn(snapshot(matrix, "READY", false, "HIGH"));
+        when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport("""
+                {"trustStatus":"VERIFIED","fallback":false,"schemaWarnings":[]}
+                """));
+
+        var preview = service.preview(
+                TARGET_JOB_ID, null, null, MATCH_REPORT_ID, List.of(PROJECT_ID));
+
+        assertEquals("VERIFIED", preview.getMatchSummary().getTrustStatus());
+        assertFalse(preview.getMatchSummary().getFallback());
+        assertEquals(MATCH_REPORT_ID, preview.getMatchReportId());
+        assertEquals("Grounded match result", preview.getMatchSummary().getSummary());
+        assertEquals(List.of("Java scenarios"), preview.getInterviewPreparation().getTopics());
+        assertTrue(preview.getEvidenceSources().stream()
+                .anyMatch(source -> "RESUME_JOB_MATCH_REPORT".equals(source.getSourceType())));
+        assertEquals("HIGH", preview.getSuggestions().stream()
+                .filter(suggestion -> "resume".equals(suggestion.getId()))
+                .findFirst()
+                .orElseThrow()
+                .getConfidence());
+        assertEquals(MATCH_REPORT_ID,
+                preview.getInterviewPreparation().getCreateParams().get("matchReportId"));
+    }
+
+    @Test
+    void rawFallbackMatchRemainsFallbackAndNotTrustedForDownstreamUse() {
+        JobRequirementMatrixVO matrix = matrix(
+                requirement(101L, "Java", "MUST", "STRONG", strongEvidence(PROJECT_ID)),
+                requirement(102L, "Redis", "MUST", "STRONG", strongEvidence(PROJECT_ID)));
+        when(jobRequirementService.getMatrix(TARGET_JOB_ID)).thenReturn(matrix);
+        when(jobReadinessService.latest(TARGET_JOB_ID)).thenReturn(snapshot(matrix, "READY", false, "HIGH"));
+        when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(matchReport("""
+                {"trustStatus":"VERIFIED","fallback":true,"schemaWarnings":[]}
+                """));
+
+        var preview = service.preview(
+                TARGET_JOB_ID, null, null, MATCH_REPORT_ID, List.of(PROJECT_ID));
+
+        assertEquals("FALLBACK", preview.getMatchSummary().getTrustStatus());
+        assertTrue(preview.getMatchSummary().getFallback());
+        assertNull(preview.getMatchReportId());
+        assertNull(preview.getMatchSummary().getSummary());
+        assertTrue(preview.getMatchSummary().getGaps().isEmpty());
+        assertNull(preview.getInterviewPreparation().getCreateParams().get("matchReportId"));
+        assertFalse(preview.getInterviewPreparation().getTopics().contains("Java scenarios"));
+        assertTrue(preview.getEvidenceSources().stream()
+                .noneMatch(source -> "RESUME_JOB_MATCH_REPORT".equals(source.getSourceType())));
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void legacySnapshotWithPartialMatchIsSanitizedWhenRead() throws Exception {
+        ResumeJobMatchReport partialReport = matchReport("""
+                {
+                  "trustStatus":"VERIFIED",
+                  "fallback":false,
+                  "schemaWarnings":[{"field":"legacy","message":"requires review"}]
+                }
+                """);
+        when(resumeJobMatchReportMapper.selectOne(any())).thenReturn(partialReport);
+        JobDescriptionAnalysis trustedAnalysis = analysis();
+        trustedAnalysis.setInterviewFocusJson("[\"Trusted JD topic\"]");
+        trustedAnalysis.setRawResultJson("""
+                {"trustStatus":"VERIFIED","fallback":false,"schemaWarnings":[]}
+                """);
+        when(jobDescriptionAnalysisMapper.selectOne(any())).thenReturn(trustedAnalysis);
+        String legacySnapshot = """
+                {
+                  "matchReportId":61,
+                  "targetJobId":11,
+                  "jdAnalysisId":21,
+                  "recommendedResumeVersionId":41,
+                  "projectEvidenceIds":[31],
+                  "matchSummary":{
+                    "overallScore":88,
+                    "trustStatus":"VERIFIED",
+                    "fallback":false,
+                    "schemaWarningCount":0,
+                    "summary":"LEGACY_REPORT_SUMMARY",
+                    "gaps":["LEGACY_REPORT_GAP"],
+                    "interviewTopics":["LEGACY_REPORT_TOPIC"]
+                  },
+                  "interviewPreparation":{
+                    "entryUrl":"/interviews/create?matchReportId=61",
+                    "topics":["LEGACY_REPORT_TOPIC"],
+                    "createParams":{"matchReportId":61}
+                  },
+                  "recommendedResume":{"reason":"LEGACY_TRUSTED_REASON"},
+                  "evidenceSources":[{
+                    "id":"match",
+                    "sourceType":"RESUME_JOB_MATCH_REPORT",
+                    "sourceId":"61",
+                    "summary":"LEGACY_REPORT_SUMMARY"
+                  }],
+                  "checklist":[{
+                    "key":"MATCH_SCORE_THRESHOLD",
+                    "passed":true,
+                    "evidenceSourceIds":["match"]
+                  }],
+                  "actions":[{
+                    "id":"create-application",
+                    "actionType":"CREATE_APPLICATION_RECORD",
+                    "evidenceSourceIds":["match"]
+                  }],
+                  "riskSignals":[{
+                    "key":"MATCH_SCORE_LOW",
+                    "evidenceSourceIds":["match"]
+                  }],
+                  "suggestions":[{
+                    "id":"resume",
+                    "confidence":"HIGH",
+                    "evidenceSourceIds":["match"]
+                  }],
+                  "trace":{
+                    "traceId":"legacy:61",
+                    "inputSummary":"matchReportId=61"
+                  }
+                }
+                """;
+        when(jdbcTemplate.query(anyString(), any(RowMapper.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    RowMapper mapper = invocation.getArgument(1);
+                    if (sql.contains("SELECT *")
+                            && sql.contains("FROM job_application_package")) {
+                        return List.of(mapper.mapRow(
+                                packageRowResultSet(1, 901L, MATCH_REPORT_ID, legacySnapshot), 0));
+                    }
+                    return List.of();
+                });
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenReturn(1L);
+
+        var detail = service.detail(PACKAGE_ID);
+
+        assertNull(detail.getMatchReportId());
+        assertEquals("PARTIAL", detail.getMatchSummary().getTrustStatus());
+        assertFalse(detail.getMatchSummary().getFallback());
+        assertEquals(1, detail.getMatchSummary().getSchemaWarningCount());
+        assertNull(detail.getMatchSummary().getOverallScore());
+        assertNull(detail.getMatchSummary().getSummary());
+        assertTrue(detail.getMatchSummary().getGaps().isEmpty());
+        assertEquals(List.of("Trusted JD topic"), detail.getMatchSummary().getInterviewTopics());
+        assertEquals(List.of("Trusted JD topic"), detail.getInterviewPreparation().getTopics());
+        assertNull(detail.getInterviewPreparation().getCreateParams().get("matchReportId"));
+        assertTrue(detail.getEvidenceSources().isEmpty());
+        assertEquals("MEDIUM", detail.getSuggestions().get(0).getConfidence());
+        assertTrue(detail.getChecklist().stream()
+                .flatMap(item -> item.getEvidenceSourceIds().stream())
+                .noneMatch("match"::equals));
+        assertTrue(detail.getActions().stream()
+                .flatMap(action -> action.getEvidenceSourceIds().stream())
+                .noneMatch("match"::equals));
+        assertFalse(detail.getTrace().getTraceId().contains(String.valueOf(MATCH_REPORT_ID)));
+        assertFalse(detail.getTrace().getInputSummary().contains(String.valueOf(MATCH_REPORT_ID)));
     }
 
     @Test
@@ -290,6 +521,29 @@ class JobApplicationPackageServiceImplTest {
         return version;
     }
 
+    private ResumeJobMatchReport matchReport(String rawResultJson) {
+        ResumeJobMatchReport report = new ResumeJobMatchReport();
+        report.setId(MATCH_REPORT_ID);
+        report.setUserId(USER_ID);
+        report.setResumeId(51L);
+        report.setResumeVersionId(41L);
+        report.setTargetJobId(TARGET_JOB_ID);
+        report.setJdAnalysisId(21L);
+        report.setStatus(ResumeJobMatchStatus.SUCCESS.getCode());
+        report.setOverallScore(88);
+        report.setTechStackScore(86);
+        report.setProjectExperienceScore(84);
+        report.setBusinessFitScore(90);
+        report.setCommunicationScore(89);
+        report.setAiCallLogId(91L);
+        report.setSummary("Grounded match result");
+        report.setGapsJson("[]");
+        report.setRecommendedInterviewTopicsJson("[\"Java scenarios\"]");
+        report.setRawResultJson(rawResultJson);
+        report.setDeleted(CommonConstants.NO);
+        return report;
+    }
+
     private ProjectEvidence completeProject() {
         ProjectEvidence project = new ProjectEvidence();
         project.setId(PROJECT_ID);
@@ -368,6 +622,12 @@ class JobApplicationPackageServiceImplTest {
 
     private ResultSet packageRowResultSet(int snapshotVersion, Long currentSnapshotId)
             throws SQLException {
+        return packageRowResultSet(snapshotVersion, currentSnapshotId, null, "{}");
+    }
+
+    private ResultSet packageRowResultSet(int snapshotVersion, Long currentSnapshotId,
+                                          Long matchReportId, String snapshotJson)
+            throws SQLException {
         ResultSet resultSet = org.mockito.Mockito.mock(ResultSet.class);
         AtomicBoolean wasNull = new AtomicBoolean();
         Map<String, Long> longs = new HashMap<>();
@@ -376,7 +636,7 @@ class JobApplicationPackageServiceImplTest {
         longs.put("target_job_id", TARGET_JOB_ID);
         longs.put("jd_analysis_id", 21L);
         longs.put("resume_version_id", 41L);
-        longs.put("match_report_id", null);
+        longs.put("match_report_id", matchReportId);
         longs.put("application_id", 81L);
         longs.put("current_snapshot_id", currentSnapshotId);
         Map<String, Integer> integers = Map.of(
@@ -401,7 +661,7 @@ class JobApplicationPackageServiceImplTest {
         when(resultSet.getString("readiness_level")).thenReturn("READY");
         when(resultSet.getString("readiness_reason")).thenReturn("证据已覆盖核心要求");
         when(resultSet.getString("package_status")).thenReturn("READY");
-        when(resultSet.getString("snapshot_json")).thenReturn("{}");
+        when(resultSet.getString("snapshot_json")).thenReturn(snapshotJson);
         when(resultSet.getString("checklist_json")).thenReturn("[]");
         when(resultSet.getString("actions_json")).thenReturn("[]");
         when(resultSet.getString("project_evidence_ids_json")).thenReturn("[31]");

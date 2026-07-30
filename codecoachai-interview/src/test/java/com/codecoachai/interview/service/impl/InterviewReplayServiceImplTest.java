@@ -1,14 +1,17 @@
 package com.codecoachai.interview.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -18,11 +21,7 @@ import com.codecoachai.interview.domain.entity.InterviewReplay;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.vo.CreateInterviewVO;
-import com.codecoachai.interview.mapper.InterviewReplayMapper;
-import com.codecoachai.interview.mapper.InterviewReportMapper;
-import com.codecoachai.interview.mapper.InterviewSessionMapper;
-import com.codecoachai.interview.scenario.InterviewScenarioBindingResolver;
-import com.codecoachai.interview.service.InterviewService;
+import com.codecoachai.interview.support.InterviewReplayEligibilityEvaluator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,7 +30,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.dao.DuplicateKeyException;
 
 @ExtendWith(MockitoExtension.class)
 class InterviewReplayServiceImplTest {
@@ -41,23 +39,18 @@ class InterviewReplayServiceImplTest {
     private static final Long SOURCE_REPORT_ID = 88L;
 
     @Mock
-    private InterviewReplayMapper replayMapper;
+    private InterviewReplayEligibilityEvaluator eligibilityEvaluator;
     @Mock
-    private InterviewReportMapper reportMapper;
-    @Mock
-    private InterviewSessionMapper sessionMapper;
-    @Mock
-    private InterviewScenarioBindingResolver bindingResolver;
-    @Mock
-    private InterviewService interviewService;
+    private InterviewCloneTransactionService cloneTransactionService;
 
     private InterviewReplayServiceImpl service;
 
     @BeforeEach
     void setUp() {
         service = new InterviewReplayServiceImpl(
-                replayMapper, reportMapper, sessionMapper, bindingResolver,
-                interviewService, new ObjectMapper());
+                eligibilityEvaluator,
+                cloneTransactionService,
+                new ObjectMapper());
         LoginUserContext.setLoginUser(
                 LoginUser.builder().userId(USER_ID).username("tester").build());
     }
@@ -68,33 +61,43 @@ class InterviewReplayServiceImplTest {
     }
 
     @Test
-    void createsReplayCopyingFullConfigIncludingScenarioBinding() {
-        when(replayMapper.selectOne(any())).thenReturn(null, (InterviewReplay) null);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(session());
-        when(reportMapper.selectOne(any())).thenReturn(report());
-        when(bindingResolver.reusableScenarioVersionId(SOURCE_SESSION_ID, USER_ID, true))
-                .thenReturn(9001L);
-        when(replayMapper.insert(any(InterviewReplay.class))).thenAnswer(invocation -> {
-            InterviewReplay replay = invocation.getArgument(0);
-            replay.setId(600L);
-            return 1;
-        });
+    void createsReplayThroughOwnedClaimAndFrozenClonePath() {
+        InterviewServiceImpl.InterviewClonePreparation preparation =
+                clonePreparation();
+        when(eligibilityEvaluator.evaluate(USER_ID, SOURCE_SESSION_ID))
+                .thenReturn(eligible(9001L));
+        when(cloneTransactionService.prepareCloneTarget(
+                any(CreateInterviewDTO.class), eq(SOURCE_SESSION_ID)))
+                .thenReturn(preparation);
+        when(cloneTransactionService.claimReplay(any(InterviewReplay.class)))
+                .thenAnswer(invocation -> {
+                    InterviewReplay replay = invocation.getArgument(0);
+                    replay.setId(600L);
+                    replay.setStatus("CREATING");
+                    return new InterviewCloneTransactionService.ReplayClaim(
+                            replay, "claim-1", true);
+                });
+        InterviewReplay created = replay(600L, 210L, "CREATED");
         CreateInterviewVO interview = new CreateInterviewVO();
         interview.setId(210L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(replayMapper.updateById(any(InterviewReplay.class))).thenReturn(1);
+        when(cloneTransactionService.createReplayTarget(
+                eq(600L), eq("claim-1"), eq(preparation)))
+                .thenReturn(new InterviewCloneTransactionService.ReplayCreation(
+                        created, interview));
 
-        var result = service.create(SOURCE_SESSION_ID, request("replay-1"));
+        var result = service.create(
+                SOURCE_SESSION_ID, request("replay-1"));
 
-        assertEquals(600L, result.getId());
         assertEquals(210L, result.getTargetSessionId());
         assertEquals(9001L, result.getScenarioVersionId());
         assertEquals("CREATED", result.getStatus());
+        assertFalse(result.getIdempotentReplay());
 
-        ArgumentCaptor<CreateInterviewDTO> captor =
+        ArgumentCaptor<CreateInterviewDTO> requestCaptor =
                 ArgumentCaptor.forClass(CreateInterviewDTO.class);
-        verify(interviewService).create(captor.capture());
-        CreateInterviewDTO copied = captor.getValue();
+        verify(cloneTransactionService).prepareCloneTarget(
+                requestCaptor.capture(), eq(SOURCE_SESSION_ID));
+        CreateInterviewDTO copied = requestCaptor.getValue();
         assertEquals(9001L, copied.getScenarioVersionId());
         assertEquals(300L, copied.getTargetJobId());
         assertEquals("HARD", copied.getDifficulty());
@@ -107,121 +110,148 @@ class InterviewReplayServiceImplTest {
     }
 
     @Test
-    void sessionWithoutScenarioBindingReplaysWithoutScenario() {
-        when(replayMapper.selectOne(any())).thenReturn(null, (InterviewReplay) null);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(session());
-        when(reportMapper.selectOne(any())).thenReturn(report());
-        when(bindingResolver.reusableScenarioVersionId(SOURCE_SESSION_ID, USER_ID, true))
-                .thenReturn(null);
-        when(replayMapper.insert(any(InterviewReplay.class))).thenReturn(1);
-        CreateInterviewVO interview = new CreateInterviewVO();
-        interview.setId(211L);
-        when(interviewService.create(any())).thenReturn(interview);
-        when(replayMapper.updateById(any(InterviewReplay.class))).thenReturn(1);
+    void completedReplayIsRecoveredBeforeCurrentSourceEligibilityChecks() {
+        InterviewReplay existing = replay(601L, 212L, "CREATED");
+        when(cloneTransactionService.recoverCompletedReplay(
+                any(InterviewReplay.class)))
+                .thenReturn(existing);
 
-        var result = service.create(SOURCE_SESSION_ID, request("replay-2"));
-
-        assertNull(result.getScenarioVersionId());
-        assertEquals(211L, result.getTargetSessionId());
-    }
-
-    @Test
-    void unpublishedScenarioVersionFailsInsteadOfSilentlyDegrading() {
-        when(replayMapper.selectOne(any())).thenReturn(null);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(session());
-        when(reportMapper.selectOne(any())).thenReturn(report());
-        when(bindingResolver.reusableScenarioVersionId(SOURCE_SESSION_ID, USER_ID, true))
-                .thenThrow(new BusinessException(
-                        com.codecoachai.common.core.enums.ErrorCode.PARAM_ERROR,
-                        "源场次绑定的场景版本已下线，无法同配置再练"));
-
-        assertThrows(BusinessException.class,
-                () -> service.create(SOURCE_SESSION_ID, request("replay-3")));
-        verify(interviewService, never()).create(any());
-    }
-
-    @Test
-    void idempotentReplayReturnsExistingWithoutCreatingInterview() {
-        InterviewReplay existing = new InterviewReplay();
-        existing.setId(601L);
-        existing.setUserId(USER_ID);
-        existing.setSourceSessionId(SOURCE_SESSION_ID);
-        existing.setTargetSessionId(212L);
-        existing.setStatus("CREATED");
-        when(replayMapper.selectOne(any())).thenReturn(existing);
-
-        var result = service.create(SOURCE_SESSION_ID, request("same-token"));
+        var result = service.create(
+                SOURCE_SESSION_ID, request("same-token"));
 
         assertEquals(212L, result.getTargetSessionId());
         assertTrue(result.getIdempotentReplay());
-        verify(sessionMapper, never()).selectById(any(Long.class));
-        verify(interviewService, never()).create(any());
+        verifyNoInteractions(eligibilityEvaluator);
+        verify(cloneTransactionService, never())
+                .claimReplay(any(InterviewReplay.class));
+        verify(cloneTransactionService, never())
+                .createReplayTarget(any(), any(), any());
     }
 
     @Test
-    void sameIdempotencyKeyForDifferentSourceSessionIsRejected() {
-        InterviewReplay existing = new InterviewReplay();
-        existing.setId(602L);
-        existing.setUserId(USER_ID);
-        existing.setSourceSessionId(777L);
-        when(replayMapper.selectOne(any())).thenReturn(existing);
+    void creationInProgressIsNotReturnedAsSuccessfulReplay() {
+        when(eligibilityEvaluator.evaluate(USER_ID, SOURCE_SESSION_ID))
+                .thenReturn(eligible(null));
+        when(cloneTransactionService.claimReplay(any(InterviewReplay.class)))
+                .thenThrow(new BusinessException(
+                        ErrorCode.RESOURCE_RELATION_CONFLICT,
+                        "CREATION_IN_PROGRESS"));
 
-        assertThrows(BusinessException.class,
-                () -> service.create(SOURCE_SESSION_ID, request("stolen-token")));
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> service.create(
+                        SOURCE_SESSION_ID, request("busy-token")));
+
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), error.getCode());
+        assertEquals("CREATION_IN_PROGRESS", error.getMessage());
+        verify(cloneTransactionService, never())
+                .createReplayTarget(any(), any(), any());
     }
 
     @Test
-    void duplicateKeyRaceReturnsCommittedReplay() {
-        InterviewReplay committed = new InterviewReplay();
-        committed.setId(603L);
-        committed.setUserId(USER_ID);
-        committed.setSourceSessionId(SOURCE_SESSION_ID);
-        committed.setTargetSessionId(213L);
-        committed.setStatus("CREATED");
-        when(replayMapper.selectOne(any())).thenReturn(null, committed);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(session());
-        when(reportMapper.selectOne(any())).thenReturn(report());
-        when(bindingResolver.reusableScenarioVersionId(SOURCE_SESSION_ID, USER_ID, true))
-                .thenReturn(null);
-        when(replayMapper.insert(any(InterviewReplay.class)))
-                .thenThrow(new DuplicateKeyException("uk_interview_replay_user_token"));
+    void targetCreationFailureReleasesClaimForRetry() {
+        InterviewServiceImpl.InterviewClonePreparation preparation =
+                clonePreparation();
+        when(eligibilityEvaluator.evaluate(USER_ID, SOURCE_SESSION_ID))
+                .thenReturn(eligible(null));
+        when(cloneTransactionService.prepareCloneTarget(
+                any(CreateInterviewDTO.class), eq(SOURCE_SESSION_ID)))
+                .thenReturn(preparation);
+        InterviewReplay claimed = replay(602L, null, "CREATING");
+        when(cloneTransactionService.claimReplay(any(InterviewReplay.class)))
+                .thenReturn(new InterviewCloneTransactionService.ReplayClaim(
+                        claimed, "claim-2", true));
+        when(cloneTransactionService.createReplayTarget(
+                eq(602L), eq("claim-2"), eq(preparation)))
+                .thenThrow(new BusinessException(
+                        ErrorCode.SYSTEM_ERROR, "create failed"));
 
-        var result = service.create(SOURCE_SESSION_ID, request("race-token"));
+        assertThrows(
+                BusinessException.class,
+                () -> service.create(
+                        SOURCE_SESSION_ID, request("retry-token")));
 
-        assertEquals(213L, result.getTargetSessionId());
-        assertTrue(result.getIdempotentReplay());
-        verify(interviewService, never()).create(any());
+        verify(cloneTransactionService)
+                .releaseReplayClaim(602L, "claim-2");
     }
 
     @Test
-    void missingOrUngeneratedReportIsRejected() {
-        when(replayMapper.selectOne(any())).thenReturn(null);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(session());
-        InterviewReport notGenerated = report();
-        notGenerated.setStatus("GENERATING");
-        when(reportMapper.selectOne(any())).thenReturn(notGenerated);
+    void optionsExposeIndependentReplayEligibilityContract() {
+        when(eligibilityEvaluator.evaluate(USER_ID, SOURCE_SESSION_ID))
+                .thenReturn(new InterviewReplayEligibilityEvaluator.Evaluation(
+                        session(),
+                        report(),
+                        null,
+                        false,
+                        "SCENARIO_VERSION_INVALID",
+                        "源场次绑定的场景版本不可用于历史克隆"));
 
-        assertThrows(BusinessException.class,
-                () -> service.create(SOURCE_SESSION_ID, request("no-report")));
-        verify(interviewService, never()).create(any());
+        var result = service.options(SOURCE_SESSION_ID);
+
+        assertEquals("INELIGIBLE", result.getState());
+        assertEquals(false, result.getReplayAvailable());
+        assertEquals("SCENARIO_VERSION_INVALID", result.getReasonCode());
+        assertEquals(
+                InterviewReplayEligibilityEvaluator.POLICY_VERSION,
+                result.getPolicyVersion());
+        assertEquals(SOURCE_REPORT_ID, result.getSourceReportId());
     }
 
     @Test
-    void foreignSessionIsRejected() {
-        when(replayMapper.selectOne(any())).thenReturn(null);
-        InterviewSession foreign = session();
-        foreign.setUserId(999L);
-        when(sessionMapper.selectById(SOURCE_SESSION_ID)).thenReturn(foreign);
+    void ineligiblePostUsesTheSameEvaluationAsOptions() {
+        InterviewReplayEligibilityEvaluator.Evaluation ineligible =
+                new InterviewReplayEligibilityEvaluator.Evaluation(
+                        session(),
+                        report(),
+                        null,
+                        false,
+                        "REPORT_NOT_GENERATED",
+                        "源面试报告尚未生成，不能同配置再练");
+        when(eligibilityEvaluator.evaluate(USER_ID, SOURCE_SESSION_ID))
+                .thenReturn(ineligible);
 
-        assertThrows(BusinessException.class,
-                () -> service.create(SOURCE_SESSION_ID, request("foreign")));
-        verify(interviewService, never()).create(any());
+        assertThrows(
+                BusinessException.class,
+                () -> service.create(
+                        SOURCE_SESSION_ID, request("no-report")));
+
+        verify(cloneTransactionService, never()).claimReplay(any());
+    }
+
+    private InterviewReplayEligibilityEvaluator.Evaluation eligible(
+            Long scenarioVersionId) {
+        return new InterviewReplayEligibilityEvaluator.Evaluation(
+                session(),
+                report(),
+                scenarioVersionId,
+                true,
+                null,
+                null);
     }
 
     private InterviewReplayCreateDTO request(String idempotencyKey) {
         InterviewReplayCreateDTO dto = new InterviewReplayCreateDTO();
         dto.setIdempotencyKey(idempotencyKey);
         return dto;
+    }
+
+    private InterviewServiceImpl.InterviewClonePreparation clonePreparation() {
+        return new InterviewServiceImpl.InterviewClonePreparation(
+                null, session());
+    }
+
+    private InterviewReplay replay(Long id, Long targetSessionId, String status) {
+        InterviewReplay replay = new InterviewReplay();
+        replay.setId(id);
+        replay.setUserId(USER_ID);
+        replay.setSourceSessionId(SOURCE_SESSION_ID);
+        replay.setSourceReportId(SOURCE_REPORT_ID);
+        replay.setTargetSessionId(targetSessionId);
+        replay.setTargetJobId(300L);
+        replay.setScenarioVersionId(9001L);
+        replay.setRubricVersion("RUBRIC_ID:5");
+        replay.setStatus(status);
+        return replay;
     }
 
     private InterviewSession session() {

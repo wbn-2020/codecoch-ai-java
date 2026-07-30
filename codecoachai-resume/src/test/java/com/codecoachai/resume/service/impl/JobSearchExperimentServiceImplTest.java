@@ -1,18 +1,22 @@
 package com.codecoachai.resume.service.impl;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.resume.config.V12FeatureGate;
 import com.codecoachai.resume.domain.dto.JobSearchExperimentRelationSaveDTO;
 import com.codecoachai.resume.domain.dto.JobSearchExperimentReviewSaveDTO;
 import com.codecoachai.resume.domain.dto.JobSearchExperimentSaveDTO;
@@ -36,11 +40,13 @@ import com.codecoachai.resume.mapper.ResumeJobMatchReportMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
 import org.junit.jupiter.api.AfterEach;
@@ -55,6 +61,8 @@ import org.springframework.jdbc.core.RowMapper;
 
 @ExtendWith(MockitoExtension.class)
 class JobSearchExperimentServiceImplTest {
+
+    private static final AtomicLong APPLICATION_ID_SEQUENCE = new AtomicLong(100L);
 
     @Mock
     private JobSearchExperimentMapper experimentMapper;
@@ -85,6 +93,7 @@ class JobSearchExperimentServiceImplTest {
 
     @BeforeEach
     void setUp() {
+        APPLICATION_ID_SEQUENCE.set(100L);
         LoginUserContext.setLoginUser(LoginUser.builder()
                 .userId(10L)
                 .username("phase3-service-user")
@@ -108,6 +117,44 @@ class JobSearchExperimentServiceImplTest {
     @AfterEach
     void tearDown() {
         LoginUserContext.clear();
+    }
+
+    /**
+     * V13 块D②漂移防护：Nacos 阈值改动后，策略文案与置信判断必须跟着配置走，
+     * 不再回落到 15/3 字面量。16 条投递在默认阈值下是趋势观察（MEDIUM），
+     * 在自定义 20/5 阈值下必须仍是弱观察（LOW）且文案显示 20。
+     */
+    @Test
+    void generateReviewCopyFollowsConfiguredThresholds() {
+        V12FeatureGate customGate = new V12FeatureGate();
+        customGate.getExperimentSampleThresholds().setMinApplications(20);
+        customGate.getExperimentSampleThresholds().setMinInterviews(5);
+        JobSearchExperimentServiceImpl customService = new JobSearchExperimentServiceImpl(
+                experimentMapper, relationMapper, reviewMapper, resumeVersionMapper,
+                targetJobMapper, jobDescriptionAnalysisMapper, matchReportMapper,
+                jobApplicationMapper, jobApplicationEventMapper, projectEvidenceMapper,
+                userAbilityProfileMapper, jdbcTemplate, new ObjectMapper(),
+                new ExperimentQualityGatePolicy(customGate));
+
+        when(experimentMapper.selectOne(any())).thenReturn(experiment());
+        when(relationMapper.selectList(any())).thenReturn(applicationRelations(16));
+        List<JobApplication> applications = new ArrayList<>();
+        for (int index = 0; index < 16; index++) {
+            applications.add(application("APPLIED"));
+        }
+        when(jobApplicationMapper.selectList(any())).thenReturn(applications);
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.<JobApplicationEvent>of());
+        when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
+            JobSearchExperimentReview review = invocation.getArgument(0);
+            review.setId(100L);
+            return 1;
+        });
+
+        JobSearchExperimentReviewVO review = customService.generateReview(7L);
+
+        assertEquals("LOW", review.getConfidenceLevel());
+        assertTrue(review.getNextAction().contains("补足到 20 条投递后"));
+        assertTrue(review.getSampleWarning().contains("投递处于 5-19 条"));
     }
 
     @Test
@@ -183,6 +230,7 @@ class JobSearchExperimentServiceImplTest {
         when(relationMapper.selectList(any())).thenReturn(applicationRelations(15));
         when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L, 2L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(2));
+        stubCompletedInterviewSessions(2);
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
             review.setId(101L);
@@ -210,6 +258,7 @@ class JobSearchExperimentServiceImplTest {
                 resumeVersionRelationsWithApplications(15, 1L, 2L, 3L, 4L));
         when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L, 2L, 3L, 4L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(3));
+        stubCompletedInterviewSessions(3);
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
             review.setId(102L);
@@ -236,6 +285,7 @@ class JobSearchExperimentServiceImplTest {
                 resumeVersionRelationsWithApplications(15, 1L));
         when(jobApplicationMapper.selectList(any())).thenReturn(applications(15, List.of(1L)));
         when(jobApplicationEventMapper.selectList(any())).thenReturn(interviewCompletedEvents(3));
+        stubCompletedInterviewSessions(3);
         when(reviewMapper.insert(any(JobSearchExperimentReview.class))).thenAnswer(invocation -> {
             JobSearchExperimentReview review = invocation.getArgument(0);
             review.setId(103L);
@@ -247,6 +297,71 @@ class JobSearchExperimentServiceImplTest {
         assertEquals("HIGH", review.getConfidenceLevel());
         assertTrue(review.getUnsupportedConclusion().contains("每个证据或简历版本使用少于 3 次"));
         assertTrue(review.getSampleWarning().contains("简历版本"));
+    }
+
+    @Test
+    void metricsCountsOnlyApplicationsThatStillExistAndAreOwned() {
+        when(experimentMapper.selectOne(any())).thenReturn(experiment());
+        when(relationMapper.selectList(any())).thenReturn(applicationRelations(3));
+        when(jobApplicationMapper.selectList(any()))
+                .thenReturn(List.of(application("APPLIED")));
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of());
+
+        var metrics = service.metrics(7L);
+
+        assertEquals(1, metrics.getApplicationCount());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void metricsDeduplicatesEventSessionAndReportForTheSameInterview() {
+        List<JobSearchExperimentRelation> relations = applicationRelations(1);
+        relations.add(relationWithType(701L, "INTERVIEW_SESSION"));
+        relations.add(relationWithType(901L, "INTERVIEW_REPORT"));
+        when(experimentMapper.selectOne(any())).thenReturn(experiment());
+        when(relationMapper.selectList(any())).thenReturn(relations);
+        when(jobApplicationMapper.selectList(any()))
+                .thenReturn(List.of(application("INTERVIEWING")));
+        when(jobApplicationEventMapper.selectList(any()))
+                .thenReturn(interviewCompletedEvents(1));
+        when(jdbcTemplate.query(
+                contains("FROM interview_report r"),
+                any(RowMapper.class),
+                any(Object[].class))).thenReturn((List) List.of(701L));
+        when(jdbcTemplate.query(
+                contains("FROM interview_session"),
+                any(RowMapper.class),
+                any(Object[].class))).thenReturn((List) List.of(701L));
+
+        var metrics = service.metrics(7L);
+
+        assertEquals(1, metrics.getInterviewCompletedCount());
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void metricsBindsInterviewEventSessionToTheSameApplication() {
+        when(experimentMapper.selectOne(any())).thenReturn(experiment());
+        when(relationMapper.selectList(any())).thenReturn(applicationRelations(1));
+        when(jobApplicationMapper.selectList(any()))
+                .thenReturn(List.of(application("INTERVIEWING")));
+        when(jobApplicationEventMapper.selectList(any()))
+                .thenReturn(interviewCompletedEvents(1));
+        when(jdbcTemplate.query(
+                contains("FROM interview_session"),
+                any(RowMapper.class),
+                any(Object[].class))).thenReturn((List) List.of(701L));
+
+        service.metrics(7L);
+
+        ArgumentCaptor<Object[]> argsCaptor = ArgumentCaptor.forClass(Object[].class);
+        verify(jdbcTemplate).query(
+                contains("application_id = ?"),
+                any(RowMapper.class),
+                argsCaptor.capture());
+        assertArrayEquals(
+                new Object[]{10L, 701L, 101L},
+                argsCaptor.getValue());
     }
 
     @Test
@@ -554,8 +669,17 @@ class JobSearchExperimentServiceImplTest {
         return relation;
     }
 
+    private static JobSearchExperimentRelation relationWithType(
+            Long relationId, String relationType) {
+        JobSearchExperimentRelation relation = relation(relationId);
+        relation.setRelationType(relationType);
+        relation.setRelationId(relationId);
+        return relation;
+    }
+
     private static JobApplication application(String status) {
         JobApplication application = new JobApplication();
+        application.setId(APPLICATION_ID_SEQUENCE.incrementAndGet());
         application.setUserId(10L);
         application.setStatus(status);
         return application;
@@ -580,9 +704,22 @@ class JobSearchExperimentServiceImplTest {
             event.setUserId(10L);
             event.setApplicationId(101L + i);
             event.setEventType("INTERVIEW_COMPLETED");
+            event.setReviewJson("{\"interviewId\":" + (701L + i) + "}");
             events.add(event);
         }
         return events;
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void stubCompletedInterviewSessions(int count) {
+        List<Long> ids = new ArrayList<>();
+        for (long index = 0; index < count; index++) {
+            ids.add(701L + index);
+        }
+        when(jdbcTemplate.query(
+                contains("FROM interview_session"),
+                any(RowMapper.class),
+                any(Object[].class))).thenReturn((List) ids);
     }
 
     @SuppressWarnings("unchecked")

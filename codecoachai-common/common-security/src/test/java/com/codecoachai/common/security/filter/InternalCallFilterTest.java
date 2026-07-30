@@ -12,6 +12,7 @@ import static org.mockito.Mockito.when;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.util.InternalSignatureUtils;
 import com.codecoachai.common.security.config.InternalAuthProperties;
+import com.codecoachai.common.security.config.InternalAuthProperties.CallerKeyRing;
 import com.codecoachai.common.security.internal.TrustedRequestVerifier;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -19,6 +20,8 @@ import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import java.io.IOException;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -33,7 +36,14 @@ import org.springframework.mock.web.MockHttpServletResponse;
 @ExtendWith(MockitoExtension.class)
 class InternalCallFilterTest {
 
-    private static final String SECRET = "test-internal-secret";
+    private static final String LEGACY_SECRET =
+            "test-internal-legacy-secret-0123456789";
+    private static final String TASK_SECRET =
+            "test-internal-task-secret-012345678901";
+    private static final String AI_SECRET =
+            "test-internal-ai-secret-01234567890123";
+    private static final String QUESTION_SECRET =
+            "test-internal-question-secret-012345678";
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
@@ -46,7 +56,19 @@ class InternalCallFilterTest {
     void setUp() {
         InternalAuthProperties properties = new InternalAuthProperties();
         properties.setEnabled(true);
-        properties.setSecret(SECRET);
+        properties.setSecret(LEGACY_SECRET);
+        properties.setLegacySharedSecretEnabled(false);
+        properties.setCallerKeyRings(Map.of(
+                "codecoachai-task", keyRing(
+                        TASK_SECRET,
+                        "POST /inner/agent/**",
+                        "POST /inner/job/**"),
+                "codecoachai-ai", keyRing(
+                        AI_SECRET,
+                        "GET /inner/resume-job-match/reports"),
+                "codecoachai-question", keyRing(
+                        QUESTION_SECRET,
+                        "GET /inner/questions")));
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
         properties.setMaxSignedBodyBytes(1024 * 1024);
@@ -211,17 +233,64 @@ class InternalCallFilterTest {
         assertEquals(503, response.getStatus());
     }
 
+    @Test
+    void callerKeyCannotForgeAnotherTrustedServiceName() throws Exception {
+        MockHttpServletRequest request = signedInternalRequest(
+                "GET",
+                "/inner/agent/job-coach",
+                "",
+                "codecoachai-task",
+                "nonce-forged-00001",
+                AI_SECRET);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
+    @Test
+    void validCallerKeyCannotAccessAnUnauthorizedMethodOrPath() throws Exception {
+        MockHttpServletRequest request = signedInternalRequest(
+                "GET",
+                "/inner/admin/users",
+                "",
+                "codecoachai-task",
+                "nonce-unauthorized-01");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        RecordingFilterChain chain = new RecordingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
     private MockHttpServletRequest signedInternalRequest(
             String method,
             String path,
             String rawQuery,
             String serviceName,
             String nonce) {
+        return signedInternalRequest(method, path, rawQuery, serviceName, nonce, secretFor(serviceName));
+    }
+
+    private MockHttpServletRequest signedInternalRequest(
+            String method,
+            String path,
+            String rawQuery,
+            String serviceName,
+            String nonce,
+            String signingSecret) {
         String timestamp = String.valueOf(System.currentTimeMillis());
         String bodySha256 = InternalSignatureUtils.EMPTY_BODY_SHA256;
         String payload = InternalSignatureUtils.internalRequestPayloadV2(
                 method, path, rawQuery, timestamp, nonce, serviceName, bodySha256);
-        String signature = InternalSignatureUtils.hmacSha256Hex(SECRET, payload);
+        String signature = InternalSignatureUtils.hmacSha256Hex(signingSecret, payload);
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);
         request.setQueryString(rawQuery);
         request.addHeader(HeaderConstants.INTERNAL_CALL, "true");
@@ -231,6 +300,22 @@ class InternalCallFilterTest {
         request.addHeader(HeaderConstants.INTERNAL_BODY_SHA256, bodySha256);
         request.addHeader(HeaderConstants.INTERNAL_SIGNATURE_V2, signature);
         return request;
+    }
+
+    private String secretFor(String serviceName) {
+        return switch (serviceName) {
+            case "codecoachai-task" -> TASK_SECRET;
+            case "codecoachai-ai" -> AI_SECRET;
+            case "codecoachai-question" -> QUESTION_SECRET;
+            default -> throw new IllegalArgumentException("Unexpected service: " + serviceName);
+        };
+    }
+
+    private static CallerKeyRing keyRing(String secret, String... permissions) {
+        CallerKeyRing keyRing = new CallerKeyRing();
+        keyRing.setSecrets(List.of(secret));
+        keyRing.setPermissions(List.of(permissions));
+        return keyRing;
     }
 
     private static class RecordingFilterChain implements FilterChain {

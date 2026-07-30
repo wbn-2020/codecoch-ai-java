@@ -29,6 +29,7 @@ import com.codecoachai.ai.mapper.PromptTemplateVersionMapper;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
 import com.codecoachai.ai.router.AiModelRouter.RouteResult;
 import com.codecoachai.ai.service.AiCallLogService;
+import com.codecoachai.ai.service.PromptSceneContracts;
 import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
@@ -164,8 +165,9 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void deletePrompt(Long id, PromptTemplateActionDTO dto) {
-        PromptTemplate template = getTemplate(id);
+        PromptTemplate template = lockTemplateForSceneMutation(id);
         PromptTemplateActionDTO action = dto == null ? new PromptTemplateActionDTO() : dto;
         assertExpectedTemplateState(template, action.getExpectedStatus(), action.getExpectedActiveVersionId());
         if (isTemplateEnabled(template)) {
@@ -178,13 +180,18 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateStatus(Long id, UpdatePromptStatusDTO dto) {
-        PromptTemplate template = getTemplate(id);
+        PromptTemplate template = lockTemplateForSceneMutation(id);
         assertExpectedTemplateState(template, dto.getExpectedStatus(), dto.getExpectedActiveVersionId());
         Integer nextStatus = normalizeTemplateStatus(dto.getStatus());
         if (CommonConstants.YES.equals(nextStatus)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Prompt template content must be changed through version management.");
+        }
+        if (isTemplateEnabled(template) && PromptSceneContracts.find(template.getScene()).isPresent()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Managed prompt templates must remain enabled; activate a compatible version instead.");
         }
         template.setStatus(nextStatus);
         template.setEnabled(nextStatus);
@@ -237,6 +244,16 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PromptTemplateVersionVO activateVersion(Long versionId, PromptVersionActionDTO dto) {
+        return doActivateVersion(versionId, dto);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PromptTemplateVersionVO rollbackVersion(Long versionId, PromptVersionActionDTO dto) {
+        return doActivateVersion(versionId, dto);
+    }
+
+    private PromptTemplateVersionVO doActivateVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
         if (PromptVersionStatus.DISABLED.name().equals(version.getStatus())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -244,12 +261,23 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         }
         PromptTemplateVariableValidator.validateDefinition(version.getContent(), version.getVariablesJson());
         PromptTemplate template = getTemplate(version.getTemplateId());
+        PromptSceneContractValidator.requireCompatible(
+                firstText(version.getScene(), template.getScene()),
+                version.getVersionCode(),
+                version.getContent(),
+                version.getVariablesJson());
+        String scene = firstText(version.getScene(), template.getScene());
+        promptTemplateMapper.lockSceneTemplatesForActivation(scene);
+        version = getVersion(versionId);
+        template = getTemplate(version.getTemplateId());
+        String lockedScene = firstText(version.getScene(), template.getScene());
+        if (!Objects.equals(scene, lockedScene)
+                || PromptVersionStatus.DISABLED.name().equals(version.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
+        }
         assertExpectedActiveVersion(template, dto);
-        promptTemplateVersionMapper.update(null, new LambdaUpdateWrapper<PromptTemplateVersion>()
-                .eq(PromptTemplateVersion::getTemplateId, template.getId())
-                .eq(PromptTemplateVersion::getIsActive, CommonConstants.YES)
-                .set(PromptTemplateVersion::getIsActive, CommonConstants.NO)
-                .set(PromptTemplateVersion::getStatus, PromptVersionStatus.INACTIVE.name()));
+        promptTemplateVersionMapper.deactivateOtherActiveVersionsForScene(scene, version.getId());
         version.setStatus(PromptVersionStatus.ACTIVE.name());
         version.setIsActive(CommonConstants.YES);
         version.setActivatedBy(LoginUserContext.getUserId());
@@ -267,22 +295,31 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
-    public PromptTemplateVersionVO rollbackVersion(Long versionId, PromptVersionActionDTO dto) {
-        return activateVersion(versionId, dto);
-    }
-
-    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void disableVersion(Long versionId, PromptVersionActionDTO dto) {
         PromptTemplateVersion version = getVersion(versionId);
         PromptTemplate template = getTemplate(version.getTemplateId());
+        String scene = firstText(version.getScene(), template.getScene());
+        promptTemplateMapper.lockSceneTemplatesForActivation(scene);
+        version = getVersion(versionId);
+        template = getTemplate(version.getTemplateId());
+        if (!Objects.equals(scene, firstText(version.getScene(), template.getScene()))) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
+        }
         assertExpectedActiveVersion(template, dto);
         if (CommonConstants.YES.equals(version.getIsActive())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Prompt template content must be changed through version management.");
         }
-        version.setStatus(PromptVersionStatus.DISABLED.name());
-        version.setChangeLog(dto == null ? version.getChangeLog() : firstText(dto.getChangeLog(), version.getChangeLog()));
-        promptTemplateVersionMapper.updateById(version);
+        String changeLog = dto == null
+                ? version.getChangeLog()
+                : firstText(dto.getChangeLog(), version.getChangeLog());
+        int updated = promptTemplateVersionMapper.disableInactiveVersion(versionId, changeLog);
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
+        }
     }
 
     @Override
@@ -560,6 +597,18 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                     "Prompt template content must be changed through version management.");
         }
         return template;
+    }
+
+    private PromptTemplate lockTemplateForSceneMutation(Long id) {
+        PromptTemplate template = getTemplate(id);
+        String scene = template.getScene();
+        promptTemplateMapper.lockSceneTemplatesForActivation(scene);
+        PromptTemplate locked = getTemplate(id);
+        if (!Objects.equals(scene, locked.getScene())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Prompt template content must be changed through version management.");
+        }
+        return locked;
     }
 
     private void assertExpectedTemplateState(PromptTemplate template, Integer expectedStatus,

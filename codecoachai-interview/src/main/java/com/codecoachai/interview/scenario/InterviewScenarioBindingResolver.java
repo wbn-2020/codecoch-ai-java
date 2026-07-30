@@ -22,9 +22,9 @@ public class InterviewScenarioBindingResolver {
 
     /**
      * Returns the source session's bound scenario version id, or null when the session has
-     * no binding. When the binding exists but its version is no longer published: strict
-     * callers (same-config replay, where losing the scenario defeats comparability) get a
-     * BusinessException; lenient callers (remediation, where availability wins) get null.
+     * no binding. Historical clone flows accept PUBLISHED and RETIRED versions, while DRAFT,
+     * deleted and missing versions remain invalid. Strict callers receive a BusinessException;
+     * lenient callers receive null.
      */
     public Long reusableScenarioVersionId(Long sessionId, Long userId, boolean strict) {
         InterviewScenarioBinding binding = bindingMapper.selectOne(
@@ -37,12 +37,12 @@ public class InterviewScenarioBindingResolver {
             return null;
         }
         try {
-            scenarioRubricService.getPublishedScenarioVersion(binding.getScenarioVersionId());
+            scenarioRubricService.getCloneableScenarioVersion(binding.getScenarioVersionId());
             return binding.getScenarioVersionId();
         } catch (BusinessException ex) {
             if (strict) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR,
-                        "源场次绑定的场景版本已下线，无法同配置再练");
+                        "源场次绑定的场景版本不可用于历史克隆");
             }
             return null;
         }

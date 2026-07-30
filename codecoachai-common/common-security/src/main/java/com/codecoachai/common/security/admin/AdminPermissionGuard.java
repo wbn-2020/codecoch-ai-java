@@ -23,7 +23,7 @@ public class AdminPermissionGuard {
     }
 
     public void requireAny(String... permissionCodes) {
-        SecurityAssert.requireAdmin();
+        SecurityAssert.requireLoginUserId();
         String[] codes = Arrays.stream(permissionCodes == null ? new String[0] : permissionCodes)
                 .filter(StringUtils::hasText)
                 .map(String::trim)

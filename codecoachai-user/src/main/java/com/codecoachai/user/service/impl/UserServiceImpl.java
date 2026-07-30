@@ -165,7 +165,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query) {
-        requireAdmin();
+        requireCurrentUserId();
         AdminUserQueryDTO safeQuery = query == null ? new AdminUserQueryDTO() : query;
         Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
                 normalizeKeyword(safeQuery.getKeyword()), safeQuery.getStatus(), normalizeKeyword(safeQuery.getRoleCode()));
@@ -189,7 +189,6 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateUserStatus(Long id, UpdateUserStatusDTO dto) {
-        requireAdmin();
         if (!CommonConstants.YES.equals(dto.getStatus()) && !CommonConstants.NO.equals(dto.getStatus())) {
             throw new BusinessException(ErrorCode.VALIDATION_ERROR, "status 只能是0或1");
         }
@@ -208,7 +207,7 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public String resetPassword(Long id) {
-        requireAdmin();
+        requireCurrentUserId();
         SysUser user = getUserOrThrow(id);
         String newPassword = generateTemporaryPassword();
         user.setPasswordHash(passwordEncoder.encode(newPassword));
@@ -301,13 +300,6 @@ public class UserServiceImpl implements UserService {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         return userId;
-    }
-
-    private void requireAdmin() {
-        requireCurrentUserId();
-        if (!LoginUserContext.isAdmin()) {
-            throw new BusinessException(ErrorCode.FORBIDDEN);
-        }
     }
 
     private String normalizeKeyword(String value) {

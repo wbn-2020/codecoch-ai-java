@@ -4,6 +4,7 @@ import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.util.InternalSignatureUtils;
+import com.codecoachai.common.security.config.InternalAuthProperties;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.internal.TrustedRequestVerifier;
 import com.codecoachai.common.security.internal.TrustedRequestVerifier.FailureReason;
@@ -29,9 +30,13 @@ public class LoginUserContextFilter extends OncePerRequestFilter {
     private static final String GATEWAY_SERVICE_NAME = "codecoachai-gateway";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final InternalAuthProperties internalAuthProperties;
     private final TrustedRequestVerifier trustedRequestVerifier;
 
-    public LoginUserContextFilter(TrustedRequestVerifier trustedRequestVerifier) {
+    public LoginUserContextFilter(
+            InternalAuthProperties internalAuthProperties,
+            TrustedRequestVerifier trustedRequestVerifier) {
+        this.internalAuthProperties = internalAuthProperties;
         this.trustedRequestVerifier = trustedRequestVerifier;
     }
 
@@ -48,6 +53,9 @@ public class LoginUserContextFilter extends OncePerRequestFilter {
 
             String signer = request.getHeader(HeaderConstants.USER_CONTEXT_SIGNER);
             if (!TrustedServiceNames.contains(signer)) {
+                throw new VerificationException(FailureReason.INVALID_SIGNATURE);
+            }
+            if (!internalAuthProperties.mayForwardUserContext(signer)) {
                 throw new VerificationException(FailureReason.INVALID_SIGNATURE);
             }
             String timestamp = request.getHeader(HeaderConstants.USER_CONTEXT_TIMESTAMP);
@@ -71,6 +79,7 @@ public class LoginUserContextFilter extends OncePerRequestFilter {
                     || TrustedRequestVerifier.isMultipartRequest(request);
             HttpServletRequest verifiedRequest = trustedRequestVerifier.verify(
                     request,
+                    signer,
                     timestamp,
                     nonce,
                     signature,

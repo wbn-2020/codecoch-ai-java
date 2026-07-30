@@ -16,6 +16,7 @@ public class JobCoachAgentContext {
     private TargetJobSnapshot targetJob;
     private List<ApplicationSnapshot> applications = new ArrayList<>();
     private List<ProjectEvidenceSnapshot> projectEvidences = new ArrayList<>();
+    private List<SkillGapSnapshot> skillGaps = new ArrayList<>();
     private RequirementReadinessSnapshot requirementReadiness;
     private List<JobExperimentSnapshot> jobExperiments = new ArrayList<>();
     private List<String> recentMemories = new ArrayList<>();
@@ -76,6 +77,18 @@ public class JobCoachAgentContext {
         private List<String> topSkillNames;
         private Long targetJobId;
         private String suggestedActionPath;
+    }
+
+    @Data
+    public static class SkillGapSnapshot {
+        private Long id;
+        private String skillName;
+        private String category;
+        private String severity;
+        private Integer gapLevel;
+        private String gapDescription;
+        private String sourceType;
+        private List<String> recommendedActions = new ArrayList<>();
     }
 
     @Data

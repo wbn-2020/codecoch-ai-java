@@ -110,7 +110,7 @@ JAVA_TOOL_OPTIONS=--add-opens=java.base/java.io=ALL-UNNAMED
 勿执行示例：powershell -ExecutionPolicy Bypass -File scripts/nacos/start-nacos-dev.ps1 -Port 8848
 ```
 
-## V2.1 HMAC 配置要求
+## V2.2 HMAC caller key ring 配置要求
 
 `docs/nacos/codecoachai-common-dev.yml` 必须包含：
 
@@ -119,7 +119,11 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      secret: ${CODECOACHAI_INTERNAL_SECRET}
+      secret: ${CODECOACHAI_INTERNAL_OUTBOUND_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
+      legacy-shared-secret: ${CODECOACHAI_INTERNAL_LEGACY_SHARED_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
+      legacy-shared-secret-enabled: true
+      legacy-shared-secret-callers: []
+      caller-key-rings: {}
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
 ```
@@ -127,7 +131,12 @@ codecoachai:
 说明：
 
 - 当前是强制 HMAC 模式，不是兼容弱校验模式。
-- 本地开发和验收环境也必须通过进程级 `CODECOACHAI_INTERNAL_SECRET` 或私有 Nacos 配置注入强随机 secret，不再提供公开默认值。
+- `secret` 是当前服务的出站签名 key；正式联调时每个服务必须使用不同值。
+- `legacy-shared-secret` 仅用于滚动迁移。完成 caller key ring 配置后，应关闭 `legacy-shared-secret-enabled`。
+- caller key ring 必须配置精确的 HTTP method + `/inner/**` path 权限，以及独立的 `forward-user-context` 权限。
+- 每个密钥至少包含 32 字节，caller 密钥必须两两不同且不能复用 legacy shared secret。
+- caller key ring 的完整迁移顺序见 `docs/nacos/internal-auth-caller-keyring-migration.md`。
+- 本地开发和验收环境也必须通过进程级环境变量或私有 Nacos 配置注入强随机 secret，不再提供公开默认值。
 - 不要把 `change-me`、示例值或真实密钥持久化到仓库文档、用户级环境变量或公共 Nacos namespace。
 - 生产环境应通过环境变量、私有配置中心或 secret manager 注入真实 secret。
 - 如果修改了该配置，需要重新导入 Nacos 配置或等待配置刷新。

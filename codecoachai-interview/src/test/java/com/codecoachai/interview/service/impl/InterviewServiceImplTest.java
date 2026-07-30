@@ -65,6 +65,7 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
+import com.codecoachai.interview.scenario.InterviewScenarioBinding;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
 import com.codecoachai.interview.scenario.ScenarioBindingVO;
 import com.codecoachai.interview.scenario.ScenarioRubricService;
@@ -266,6 +267,164 @@ class InterviewServiceImplTest {
         assertEquals(List.of("REQUIREMENTS", "ARCHITECTURE"),
                 stageCaptor.getAllValues().stream().map(InterviewStage::getStageType).toList());
         assertFalse(stageCaptor.getAllValues().get(0).getAllowFollowUp());
+    }
+
+    @Test
+    void createAllowsRecommendationContextWithoutIndustryContext() {
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setInterviewMode(InterviewModeEnum.COMPREHENSIVE.name());
+        dto.setBasedOnResume(false);
+        dto.setRecommendationSource("VOICE_FALLBACK_ACCEPTANCE");
+        dto.setRecommendationReason("验证未配置语音供应商时的文字降级链路");
+        dto.setPracticeMode("TEXT_FALLBACK");
+
+        when(resumeFeignClient.getCurrentTargetJob(10L)).thenReturn(Result.success(null));
+        when(sessionMapper.insert(any(InterviewSession.class))).thenAnswer(invocation -> {
+            InterviewSession session = invocation.getArgument(0);
+            session.setId(1L);
+            return 1;
+        });
+
+        var result = service.create(dto);
+
+        assertNotNull(result);
+        ArgumentCaptor<InterviewSession> sessionCaptor = ArgumentCaptor.forClass(InterviewSession.class);
+        verify(sessionMapper).insert(sessionCaptor.capture());
+        assertEquals(
+                """
+                推荐配置来源：VOICE_FALLBACK_ACCEPTANCE
+                推荐配置依据：验证未配置语音供应商时的文字降级链路
+                训练模式：TEXT_FALLBACK""",
+                sessionCaptor.getValue().getIndustryContext());
+    }
+
+    @Test
+    void createCloneReusesFrozenContextsAndAllowsRetiredScenario() throws Exception {
+        InterviewSession source = new InterviewSession();
+        source.setId(100L);
+        source.setUserId(10L);
+        source.setDeleted(0);
+        source.setIndustryTemplateId(77L);
+        source.setIndustryDirection("金融科技");
+        source.setIndustryContext("冻结行业上下文");
+        source.setTrainingContextSummary("冻结训练上下文");
+        when(sessionMapper.selectById(100L)).thenReturn(source);
+        InterviewScenarioBinding sourceBinding = new InterviewScenarioBinding();
+        sourceBinding.setUserId(10L);
+        sourceBinding.setSessionId(100L);
+        sourceBinding.setScenarioVersionId(71L);
+        sourceBinding.setDeleted(0);
+        when(scenarioBindingMapper.selectOne(any())).thenReturn(sourceBinding);
+        when(resumeFeignClient.getCurrentTargetJob(10L))
+                .thenReturn(Result.success(null));
+
+        ScenarioVersionVO retiredScenario = new ScenarioVersionVO();
+        retiredScenario.setScenarioVersionId(71L);
+        retiredScenario.setRubricVersionId(81L);
+        retiredScenario.setScenarioCode("SYSTEM_DESIGN");
+        retiredScenario.setVersionStatus("RETIRED");
+        retiredScenario.setScript(new ObjectMapper().readTree("""
+                {"questionBudget":1,"stages":[
+                  {"code":"ARCHITECTURE","name":"总体架构","questionCount":1}
+                ]}
+                """));
+        when(scenarioRubricService.getCloneableScenarioVersion(71L))
+                .thenReturn(retiredScenario);
+        when(sessionMapper.insert(any(InterviewSession.class)))
+                .thenAnswer(invocation -> {
+                    InterviewSession session = invocation.getArgument(0);
+                    session.setId(2L);
+                    return 1;
+                });
+        ScenarioBindingVO binding = new ScenarioBindingVO();
+        binding.setSessionId(2L);
+        binding.setScenarioVersionId(71L);
+        binding.setRubricVersionId(81L);
+        when(scenarioRubricService.bindCloneScenario(2L, 71L))
+                .thenReturn(binding);
+
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setInterviewMode(InterviewModeEnum.COMPREHENSIVE.name());
+        dto.setBasedOnResume(false);
+        dto.setIndustryTemplateId(999L);
+        dto.setIndustryDirection("当前行业方向");
+        dto.setTargetSkillCodes(List.of("REDIS"));
+        dto.setProjectEvidenceIds(List.of(31L));
+        dto.setScenarioVersionId(71L);
+        dto.setMaxQuestionCount(1);
+        dto.setPracticeMode("REMEDIATION");
+        dto.setRecommendationSource("INTERVIEW_REPORT");
+        dto.setRecommendationReason(
+                "sourceReportId=88, sourceRequirementIds=[7, 9], practicePurpose=补强缓存一致性");
+
+        var result = service.createClone(dto, 100L);
+
+        assertEquals(71L, result.getScenarioVersionId());
+        ArgumentCaptor<InterviewSession> sessionCaptor =
+                ArgumentCaptor.forClass(InterviewSession.class);
+        verify(sessionMapper).insert(sessionCaptor.capture());
+        assertEquals(77L, sessionCaptor.getValue().getIndustryTemplateId());
+        assertEquals("金融科技", sessionCaptor.getValue().getIndustryDirection());
+        assertTrue(sessionCaptor.getValue().getIndustryContext().contains("冻结行业上下文"));
+        assertTrue(sessionCaptor.getValue().getIndustryContext().contains("补强缓存一致性"));
+        assertTrue(sessionCaptor.getValue().getIndustryContext().contains("训练模式：REMEDIATION"));
+        assertTrue(sessionCaptor.getValue().getTrainingContextSummary().contains("冻结训练上下文"));
+        assertTrue(sessionCaptor.getValue().getTrainingContextSummary().contains("补强缓存一致性"));
+        verify(industryTemplateService, never()).getEnabledTemplate(anyLong());
+        verify(resumeFeignClient, never())
+                .listProjectEvidenceTrainingContext(anyLong(), any());
+        verify(scenarioRubricService, never())
+                .getPublishedScenarioVersion(anyLong());
+        verify(scenarioRubricService).bindCloneScenario(2L, 71L);
+    }
+
+    @Test
+    void createCloneRejectsScenarioThatWasNotBoundToSourceSession() {
+        InterviewSession source = new InterviewSession();
+        source.setId(100L);
+        source.setUserId(10L);
+        source.setDeleted(0);
+        when(sessionMapper.selectById(100L)).thenReturn(source);
+        InterviewScenarioBinding sourceBinding = new InterviewScenarioBinding();
+        sourceBinding.setUserId(10L);
+        sourceBinding.setSessionId(100L);
+        sourceBinding.setScenarioVersionId(71L);
+        sourceBinding.setDeleted(0);
+        when(scenarioBindingMapper.selectOne(any())).thenReturn(sourceBinding);
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setScenarioVersionId(72L);
+
+        BusinessException error = assertThrows(
+                BusinessException.class,
+                () -> service.createClone(dto, 100L));
+
+        assertEquals(
+                ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(),
+                error.getCode());
+        verify(sessionMapper, never()).insert(any(InterviewSession.class));
+        verify(scenarioRubricService, never())
+                .getCloneableScenarioVersion(anyLong());
+    }
+
+    @Test
+    void validateCloneRunsDependencyPreflightWithoutCreatingSession() {
+        InterviewSession source = new InterviewSession();
+        source.setId(100L);
+        source.setUserId(10L);
+        source.setDeleted(0);
+        when(sessionMapper.selectById(100L)).thenReturn(source);
+        when(resumeFeignClient.getApplicationSummary(10L, 501L))
+                .thenThrow(new RuntimeException("application unavailable"));
+        CreateInterviewDTO dto = new CreateInterviewDTO();
+        dto.setApplicationId(501L);
+
+        assertThrows(
+                BusinessException.class,
+                () -> service.validateClone(dto, 100L));
+
+        verify(sessionMapper, never()).insert(any(InterviewSession.class));
+        verify(scenarioRubricService, never())
+                .bindCloneScenario(anyLong(), anyLong());
     }
 
     @Test
@@ -600,7 +759,8 @@ class InterviewServiceImplTest {
         when(sessionMapper.selectById(1L)).thenReturn(session);
         when(reportMapper.selectOne(any())).thenReturn(report);
         when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
-        when(remediationMapper.selectOne(any())).thenReturn(remediation);
+        when(remediationMapper.selectPreferredBySourceReport(10L, 88L))
+                .thenReturn(remediation);
 
         InterviewReportVO result = service.report(1L);
 

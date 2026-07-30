@@ -124,11 +124,11 @@ public class FileUserController {
 
     private String normalizeBizType(String bizType) {
         String normalized = FileBizTypes.normalizeOrNull(bizType);
-        return FileBizTypes.requireAllowed(normalized == null ? "RESUME" : normalized);
+        return FileBizTypes.requireUserAllowed(normalized == null ? "RESUME" : normalized);
     }
 
     private String normalizeBizTypeOrNull(String bizType) {
         String normalized = FileBizTypes.normalizeOrNull(bizType);
-        return normalized == null ? null : FileBizTypes.requireAllowed(normalized);
+        return normalized == null ? null : FileBizTypes.requireUserAllowed(normalized);
     }
 }

@@ -13,6 +13,7 @@ import static org.mockito.Mockito.when;
 import com.codecoachai.common.core.constant.HeaderConstants;
 import com.codecoachai.common.core.util.InternalSignatureUtils;
 import com.codecoachai.common.security.config.InternalAuthProperties;
+import com.codecoachai.common.security.config.InternalAuthProperties.CallerKeyRing;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.internal.TrustedRequestVerifier;
@@ -23,6 +24,7 @@ import jakarta.servlet.ServletResponse;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +41,12 @@ import org.springframework.mock.web.MockHttpServletResponse;
 @ExtendWith(MockitoExtension.class)
 class LoginUserContextFilterTest {
 
-    private static final String SECRET = "test-user-context-secret";
+    private static final String LEGACY_SECRET =
+            "test-user-context-legacy-secret-01234567";
+    private static final String GATEWAY_SECRET =
+            "test-user-context-gateway-secret-012345";
+    private static final String AI_SECRET =
+            "test-user-context-ai-secret-0123456789";
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
@@ -51,11 +58,16 @@ class LoginUserContextFilterTest {
     @BeforeEach
     void setUp() {
         InternalAuthProperties properties = new InternalAuthProperties();
-        properties.setSecret(SECRET);
+        properties.setSecret(LEGACY_SECRET);
+        properties.setLegacySharedSecretEnabled(false);
+        properties.setCallerKeyRings(Map.of(
+                "codecoachai-gateway", keyRing(GATEWAY_SECRET, true),
+                "codecoachai-ai", keyRing(AI_SECRET, false)));
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
         properties.setMaxSignedBodyBytes(1024 * 1024);
         filter = new LoginUserContextFilter(
+                properties,
                 new TrustedRequestVerifier(properties, stringRedisTemplate));
     }
 
@@ -149,11 +161,64 @@ class LoginUserContextFilterTest {
         assertNull(LoginUserContext.getLoginUser());
     }
 
+    @Test
+    void serviceKeyCannotForgeGatewaySignedUserContext() throws Exception {
+        MockHttpServletRequest request = signedUserRequest(
+                "GET",
+                "/resume/profile",
+                "10",
+                "alice",
+                "ROLE_ADMIN,USER",
+                "codecoachai-gateway",
+                AI_SECRET);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        CapturingFilterChain chain = new CapturingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
+        assertNull(LoginUserContext.getLoginUser());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
+    @Test
+    void callerWithoutForwardingPermissionCannotAttachUserContext() throws Exception {
+        MockHttpServletRequest request = signedUserRequest(
+                "GET",
+                "/resume/profile",
+                "10",
+                "alice",
+                "ROLE_ADMIN,USER",
+                "codecoachai-ai",
+                AI_SECRET);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        CapturingFilterChain chain = new CapturingFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertFalse(chain.called());
+        assertEquals(403, response.getStatus());
+        assertNull(LoginUserContext.getLoginUser());
+        verifyNoInteractions(stringRedisTemplate);
+    }
+
     private MockHttpServletRequest signedUserRequest(String method, String path, String userId, String username,
                                                      String roles) {
+        return signedUserRequest(
+                method, path, userId, username, roles, "codecoachai-gateway", GATEWAY_SECRET);
+    }
+
+    private MockHttpServletRequest signedUserRequest(
+            String method,
+            String path,
+            String userId,
+            String username,
+            String roles,
+            String signer,
+            String signingSecret) {
         String timestamp = String.valueOf(System.currentTimeMillis());
         String nonce = "nonce-user-ctx-01";
-        String signer = "codecoachai-gateway";
         String bodySha256 = InternalSignatureUtils.EMPTY_BODY_SHA256;
         String payload = InternalSignatureUtils.userContextPayloadV2(
                 method,
@@ -166,7 +231,7 @@ class LoginUserContextFilterTest {
                 userId,
                 username,
                 roles);
-        String signature = InternalSignatureUtils.hmacSha256Hex(SECRET, payload);
+        String signature = InternalSignatureUtils.hmacSha256Hex(signingSecret, payload);
         MockHttpServletRequest request = new MockHttpServletRequest(method, path);
         request.addHeader(HeaderConstants.USER_ID, userId);
         request.addHeader(HeaderConstants.USERNAME, username);
@@ -177,6 +242,14 @@ class LoginUserContextFilterTest {
         request.addHeader(HeaderConstants.INTERNAL_BODY_SHA256, bodySha256);
         request.addHeader(HeaderConstants.USER_CONTEXT_SIGNATURE_V2, signature);
         return request;
+    }
+
+    private static CallerKeyRing keyRing(String secret, boolean forwardUserContext) {
+        CallerKeyRing keyRing = new CallerKeyRing();
+        keyRing.setSecrets(List.of(secret));
+        keyRing.setPermissions(List.of("GET /inner/test"));
+        keyRing.setForwardUserContext(forwardUserContext);
+        return keyRing;
     }
 
     private static class CapturingFilterChain implements FilterChain {

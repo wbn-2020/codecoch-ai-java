@@ -22,9 +22,9 @@ import com.codecoachai.resume.domain.entity.SkillGapItem;
 import com.codecoachai.resume.domain.entity.SkillProfile;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.entity.UserAbilityProfile;
-import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.enums.SkillProfileStatus;
+import com.codecoachai.resume.domain.vo.InnerSkillGapAgentContextVO;
 import com.codecoachai.resume.domain.vo.InnerSkillGapItemVO;
 import com.codecoachai.resume.domain.vo.InnerSkillProfileVO;
 import com.codecoachai.resume.domain.vo.SkillGapItemVO;
@@ -46,6 +46,7 @@ import com.codecoachai.resume.mapper.SkillProfileMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
 import com.codecoachai.resume.service.SkillProfileService;
+import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -56,6 +57,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
@@ -68,7 +70,9 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     private static final long DEFAULT_PAGE_SIZE = 10L;
     private static final long MAX_PAGE_SIZE = 100L;
     private static final String SOURCE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
-    private static final String TRUST_FALLBACK = "FALLBACK";
+    private static final String SOURCE_EVIDENCE_USAGE = "EVIDENCE_USAGE";
+    private static final int AGENT_CONTEXT_GAP_LIMIT = 8;
+    private static final int AGENT_CONTEXT_GAP_DESCRIPTION_MAX = 300;
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
@@ -83,6 +87,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
+    private final ResumeJobMatchTrustPolicy resumeJobMatchTrustPolicy;
 
     @Override
     public SkillProfileGenerateVO generate(SkillProfileGenerateDTO dto) {
@@ -155,6 +160,10 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         Long matchReportId = dto.getMatchReportId();
         if (matchReportId == null) {
             SkillProfile profile = getOwnedProfile(dto.getProfileId(), userId);
+            if (!isResumeJobMatchProfile(profile) || profile.getMatchReportId() == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "仅简历岗位匹配画像支持刷新");
+            }
             matchReportId = profile.getMatchReportId();
         }
         return generateFromMatchReport(matchReportId, userId);
@@ -223,24 +232,101 @@ public class SkillProfileServiceImpl implements SkillProfileService {
 
     @Override
     public SkillProfile resolveEvidenceFeedbackProfile(Long userId, Long targetJobId) {
-        SkillProfile profile = latestSuccessProfile(targetJobId, userId);
+        SkillProfile profile = evidenceFeedbackProfile(userId, targetJobId);
         if (profile != null) {
             return profile;
         }
         SkillProfile created = new SkillProfile();
         created.setUserId(userId);
         created.setTargetJobId(targetJobId);
-        // skill_profile.match_report_id is NOT NULL; 0 marks "no backing match report".
-        // Non-RESUME_JOB_MATCH profiles never dereference the report, so the sentinel is inert.
-        created.setMatchReportId(0L);
+        created.setMatchReportId(null);
         created.setProfileName("证据实战反馈画像");
-        created.setSourceType("EVIDENCE_USAGE");
+        created.setSourceType(SOURCE_EVIDENCE_USAGE);
+        created.setSourceBizId(targetJobId);
         created.setStatus(SkillProfileStatus.SUCCESS.getCode());
         created.setSummary("由证据使用结果反馈自动创建，用于承载实战反馈缺口。");
         created.setOverallLevel(2);
         created.setOverallScore(60);
-        profileMapper.insert(created);
-        return created;
+        try {
+            profileMapper.insert(created);
+            return created;
+        } catch (DuplicateKeyException ex) {
+            SkillProfile concurrent = evidenceFeedbackProfile(userId, targetJobId);
+            if (concurrent != null) {
+                return concurrent;
+            }
+            throw ex;
+        }
+    }
+
+    /**
+     * V13: top gaps of the latest trusted profile, fed into the AI agent daily-plan context.
+     * Reuses the latestSuccessProfile trust chain; no profile means no gaps, never an error.
+     */
+    @Override
+    public List<InnerSkillGapAgentContextVO> listAgentContextGaps(Long userId, Long targetJobId) {
+        if (userId == null || targetJobId == null) {
+            return List.of();
+        }
+        SkillProfile profile = latestSuccessProfile(targetJobId, userId);
+        if (profile == null) {
+            return List.of();
+        }
+        return mergedGapItems(profile).stream()
+                .sorted(Comparator.comparingInt(this::gapSeverityRank)
+                        .thenComparing(
+                                SkillGapItem::getPriority,
+                                Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing(
+                                SkillGapItem::getUpdatedAt,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(
+                                SkillGapItem::getId,
+                                Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(AGENT_CONTEXT_GAP_LIMIT)
+                .map(this::toAgentContextGap)
+                .toList();
+    }
+
+    private int gapSeverityRank(SkillGapItem item) {
+        return switch (item.getSeverity() == null ? "" : item.getSeverity()) {
+            case "HIGH" -> 0;
+            case "MEDIUM" -> 1;
+            case "LOW" -> 2;
+            default -> 3;
+        };
+    }
+
+    private InnerSkillGapAgentContextVO toAgentContextGap(SkillGapItem item) {
+        InnerSkillGapAgentContextVO vo = new InnerSkillGapAgentContextVO();
+        vo.setId(item.getId());
+        vo.setTargetJobId(item.getTargetJobId());
+        vo.setSkillName(item.getSkillName());
+        vo.setCategory(item.getCategory());
+        vo.setSeverity(item.getSeverity());
+        vo.setGapLevel(item.getGapLevel());
+        vo.setConfidence(item.getConfidence());
+        vo.setGapDescription(item.getGapDescription() == null
+                || item.getGapDescription().length() <= AGENT_CONTEXT_GAP_DESCRIPTION_MAX
+                ? item.getGapDescription()
+                : item.getGapDescription().substring(0, AGENT_CONTEXT_GAP_DESCRIPTION_MAX));
+        vo.setSourceType(item.getSourceType());
+        vo.setRecommendedActions(readTextArray(item.getRecommendedActionsJson()));
+        return vo;
+    }
+
+    private List<String> readTextArray(String raw) {
+        JsonNode node = readJsonSafely(raw);
+        if (node == null || !node.isArray()) {
+            return List.of();
+        }
+        List<String> values = new ArrayList<>();
+        for (JsonNode element : node) {
+            if (element != null && element.isTextual() && StringUtils.hasText(element.asText())) {
+                values.add(element.asText());
+            }
+        }
+        return values;
     }
 
     private void upsertAbilityProfileUpdates(InterviewWeakPointFeedbackDTO dto) {
@@ -540,11 +626,36 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
                 .eq(SkillProfile::getDeleted, CommonConstants.NO)
                 .orderByDesc(SkillProfile::getUpdatedAt)
-                .last("limit 10"));
-        return profiles.stream()
-                .filter(this::hasTrustedProfileEvidence)
-                .findFirst()
-                .orElse(null);
+                .last("limit 50"));
+        SkillProfile nonMatchFallback = null;
+        SkillProfile evidenceFallback = null;
+        for (SkillProfile profile : profiles) {
+            if (!hasTrustedProfileEvidence(profile)) {
+                continue;
+            }
+            if (isResumeJobMatchProfile(profile)) {
+                return profile;
+            }
+            if (isEvidenceFeedbackProfile(profile)) {
+                if (evidenceFallback == null) {
+                    evidenceFallback = profile;
+                }
+            } else if (nonMatchFallback == null) {
+                nonMatchFallback = profile;
+            }
+        }
+        return nonMatchFallback == null ? evidenceFallback : nonMatchFallback;
+    }
+
+    private SkillProfile evidenceFeedbackProfile(Long userId, Long targetJobId) {
+        return profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+                .eq(SkillProfile::getUserId, userId)
+                .eq(SkillProfile::getTargetJobId, targetJobId)
+                .eq(SkillProfile::getSourceType, SOURCE_EVIDENCE_USAGE)
+                .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
+                .eq(SkillProfile::getDeleted, CommonConstants.NO)
+                .orderByDesc(SkillProfile::getId)
+                .last("limit 1"));
     }
 
     private void assertTrustedProfileEvidence(SkillProfile profile) {
@@ -569,18 +680,12 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         return isTrustedSuccessMatchReport(report);
     }
 
-    private boolean isTrustedSuccessMatchReport(ResumeJobMatchReport report) {
-        return report != null
-                && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())
-                && !isFallbackMatchReport(report);
+    private boolean isEvidenceFeedbackProfile(SkillProfile profile) {
+        return profile != null && SOURCE_EVIDENCE_USAGE.equals(profile.getSourceType());
     }
 
-    private boolean isFallbackMatchReport(ResumeJobMatchReport report) {
-        JsonNode rawResult = readJsonSafely(report == null ? null : report.getRawResultJson());
-        return rawResult != null
-                && (rawResult.path("fallback").asBoolean(false)
-                || TRUST_FALLBACK.equalsIgnoreCase(rawResult.path("trustStatus").asText(null))
-                || (rawResult.path("schemaWarnings").isArray() && !rawResult.path("schemaWarnings").isEmpty()));
+    private boolean isTrustedSuccessMatchReport(ResumeJobMatchReport report) {
+        return resumeJobMatchTrustPolicy.assess(report).trustedSuccess();
     }
 
     private boolean isResumeJobMatchProfile(SkillProfile profile) {
@@ -733,21 +838,15 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     private List<InnerSkillGapItemVO> innerGapItems(SkillProfile profile) {
-        return gapItemMapper.selectList(new LambdaQueryWrapper<SkillGapItem>()
-                        .eq(SkillGapItem::getProfileId, profile.getId())
-                        .eq(SkillGapItem::getUserId, profile.getUserId())
-                        .eq(SkillGapItem::getDeleted, CommonConstants.NO)
-                        .orderByAsc(SkillGapItem::getPriority)
-                        .orderByAsc(SkillGapItem::getId))
-                .stream()
-                .map(this::toInnerGapItemVO)
+        return mergedGapItems(profile).stream()
+                .map(item -> toInnerGapItemVO(item, profile.getId()))
                 .toList();
     }
 
-    private InnerSkillGapItemVO toInnerGapItemVO(SkillGapItem item) {
+    private InnerSkillGapItemVO toInnerGapItemVO(SkillGapItem item, Long effectiveProfileId) {
         InnerSkillGapItemVO vo = new InnerSkillGapItemVO();
         vo.setId(item.getId());
-        vo.setProfileId(item.getProfileId());
+        vo.setProfileId(effectiveProfileId);
         vo.setUserId(item.getUserId());
         vo.setTargetJobId(item.getTargetJobId());
         vo.setSkillName(item.getSkillName());
@@ -769,21 +868,42 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     private List<SkillGapItemVO> listGapItems(SkillProfile profile) {
-        return gapItemMapper.selectList(new LambdaQueryWrapper<SkillGapItem>()
-                        .eq(SkillGapItem::getProfileId, profile.getId())
-                        .eq(SkillGapItem::getUserId, profile.getUserId())
-                        .eq(SkillGapItem::getDeleted, CommonConstants.NO)
-                        .orderByAsc(SkillGapItem::getPriority)
-                        .orderByAsc(SkillGapItem::getId))
-                .stream()
-                .map(this::toGapItemVO)
+        return mergedGapItems(profile).stream()
+                .map(item -> toGapItemVO(item, profile.getId()))
                 .toList();
     }
 
-    private SkillGapItemVO toGapItemVO(SkillGapItem item) {
+    private List<SkillGapItem> mergedGapItems(SkillProfile profile) {
+        List<SkillGapItem> items = new ArrayList<>(profileGapItems(profile));
+        if (!isEvidenceFeedbackProfile(profile)) {
+            SkillProfile overlay = evidenceFeedbackProfile(
+                    profile.getUserId(), profile.getTargetJobId());
+            if (overlay != null && !overlay.getId().equals(profile.getId())) {
+                items.addAll(profileGapItems(overlay));
+            }
+        }
+        return items.stream()
+                .sorted(Comparator
+                        .comparing((SkillGapItem item) ->
+                                firstInteger(item.getPriority(), Integer.MAX_VALUE))
+                        .thenComparing(SkillGapItem::getId,
+                                Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+    }
+
+    private List<SkillGapItem> profileGapItems(SkillProfile profile) {
+        return gapItemMapper.selectList(new LambdaQueryWrapper<SkillGapItem>()
+                .eq(SkillGapItem::getProfileId, profile.getId())
+                .eq(SkillGapItem::getUserId, profile.getUserId())
+                .eq(SkillGapItem::getDeleted, CommonConstants.NO)
+                .orderByAsc(SkillGapItem::getPriority)
+                .orderByAsc(SkillGapItem::getId));
+    }
+
+    private SkillGapItemVO toGapItemVO(SkillGapItem item, Long effectiveProfileId) {
         SkillGapItemVO vo = new SkillGapItemVO();
         vo.setId(item.getId());
-        vo.setProfileId(item.getProfileId());
+        vo.setProfileId(effectiveProfileId);
         vo.setUserId(item.getUserId());
         vo.setTargetJobId(item.getTargetJobId());
         vo.setSkillName(item.getSkillName());

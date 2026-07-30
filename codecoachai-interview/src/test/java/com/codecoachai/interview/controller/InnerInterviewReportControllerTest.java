@@ -151,6 +151,62 @@ class InnerInterviewReportControllerTest {
     }
 
     @Test
+    void getReportContextPreservesRolesAnswersCommentsAndScores() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(messageMapper.selectList(any())).thenReturn(scoredMessages());
+
+        Result<InnerInterviewReportController.ReportContextVO> result =
+                controller.getReportContext(1L);
+
+        List<String> messages = result.getData().getMessages();
+        assertEquals(6, messages.size());
+        assertTrue(messages.get(1).contains("Role:USER"));
+        assertTrue(messages.get(1).contains("Type:ANSWER"));
+        assertTrue(messages.get(1).contains("CandidateAnswer:回答一"));
+        assertTrue(messages.get(2).contains("Role:AI"));
+        assertTrue(messages.get(2).contains("Type:EVALUATION"));
+        assertTrue(messages.get(2).contains("Score:85"));
+        assertTrue(messages.get(2).contains("AiComment:点评一"));
+    }
+
+    @Test
+    void completeReportRecoversEmptyAiPayloadFromStoredEvaluationEvidence() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(scoredMessages());
+
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("""
+                {"totalScore":null,"summary":null,"rubricScores":null,
+                 "qaReview":null,"reportContent":null}
+                """);
+
+        controller.completeReport(1L, dto);
+
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals(ReportStatusEnum.GENERATED.name(), persisted.getStatus());
+        assertEquals(84, persisted.getTotalScore());
+        assertTrue(persisted.getRubricScores().contains("ANSWER_QUALITY"));
+        assertTrue(persisted.getRubricScores().contains("STORED_INTERVIEW_EVALUATION"));
+        assertTrue(persisted.getQaReview().contains("回答一"));
+        assertTrue(persisted.getQaReview().contains("点评二"));
+        assertTrue(persisted.getSummary().contains("2 条有效回答"));
+        assertTrue(persisted.getReportContent().contains("综合得分 84 分"));
+        verify(interviewMqDispatcher).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
     void completeReportSkipsSessionSideEffectsWhenPayloadTargetsStaleGenerationToken() {
         InterviewReport latest = generatedReport();
         latest.setStatus(ReportStatusEnum.GENERATING.name());
@@ -334,5 +390,57 @@ class InnerInterviewReportControllerTest {
                 "qaReview", "[{\"question\":\"Q1\"}]",
                 "rubricScores", "[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]",
                 "reportContent", "full report body");
+    }
+
+    private List<InterviewMessage> scoredMessages() {
+        InterviewMessage questionOne = new InterviewMessage();
+        questionOne.setId(11L);
+        questionOne.setRole("AI");
+        questionOne.setMessageType("QUESTION");
+        questionOne.setQuestionContent("问题一");
+
+        InterviewMessage answerOne = new InterviewMessage();
+        answerOne.setId(12L);
+        answerOne.setParentMessageId(11L);
+        answerOne.setRole("USER");
+        answerOne.setMessageType("ANSWER");
+        answerOne.setUserAnswer("回答一");
+
+        InterviewMessage evaluationOne = new InterviewMessage();
+        evaluationOne.setId(13L);
+        evaluationOne.setParentMessageId(11L);
+        evaluationOne.setRole("AI");
+        evaluationOne.setMessageType("EVALUATION");
+        evaluationOne.setAiScore(85);
+        evaluationOne.setAiComment("点评一");
+
+        InterviewMessage questionTwo = new InterviewMessage();
+        questionTwo.setId(14L);
+        questionTwo.setRole("AI");
+        questionTwo.setMessageType("QUESTION");
+        questionTwo.setQuestionContent("问题二");
+
+        InterviewMessage answerTwo = new InterviewMessage();
+        answerTwo.setId(15L);
+        answerTwo.setParentMessageId(14L);
+        answerTwo.setRole("USER");
+        answerTwo.setMessageType("ANSWER");
+        answerTwo.setUserAnswer("回答二");
+
+        InterviewMessage evaluationTwo = new InterviewMessage();
+        evaluationTwo.setId(16L);
+        evaluationTwo.setParentMessageId(14L);
+        evaluationTwo.setRole("AI");
+        evaluationTwo.setMessageType("EVALUATION");
+        evaluationTwo.setAiScore(82);
+        evaluationTwo.setAiComment("点评二");
+
+        return List.of(
+                questionOne,
+                answerOne,
+                evaluationOne,
+                questionTwo,
+                answerTwo,
+                evaluationTwo);
     }
 }

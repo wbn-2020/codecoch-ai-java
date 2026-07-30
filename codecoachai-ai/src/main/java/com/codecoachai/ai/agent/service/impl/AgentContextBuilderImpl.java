@@ -8,13 +8,16 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.PersonalKnow
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.RequirementReadinessSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.MissingRequirementSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.SkillGapSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.TargetJobSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.SkillGapAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
+import com.codecoachai.ai.agent.config.V13FeatureGate;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.entity.PersonalKnowledgeChunk;
@@ -60,6 +63,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
     private final AgentMemoryMapper agentMemoryMapper;
     private final PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
     private final PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
+    private final V13FeatureGate v13FeatureGate;
 
     @Override
     public JobCoachAgentContext build(Long userId, Long targetJobId, LocalDate planDate) {
@@ -75,6 +79,7 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
         context.setRequirementReadiness(resolveRequirementReadiness(userId, targetJob.getId(), context));
         context.setApplications(resolveApplications(userId, targetJob.getId(), context));
         context.setProjectEvidences(resolveProjectEvidences(userId, context));
+        context.setSkillGaps(resolveSkillGaps(userId, targetJob.getId(), context));
         context.setJobExperiments(resolveJobExperiments(userId, targetJob.getId(), context));
         List<AgentMemory> recentMemoryRecords = recentMemoryRecords(userId);
         context.setRecentMemories(recentMemoryRecords.stream()
@@ -174,6 +179,43 @@ public class AgentContextBuilderImpl implements AgentContextBuilder {
             context.getContextWarnings().add("Project evidence context is temporarily unavailable; skipped project evidence tasks.");
             return List.of();
         }
+    }
+
+    private List<SkillGapSnapshot> resolveSkillGaps(Long userId, Long targetJobId,
+                                                    JobCoachAgentContext context) {
+        if (!v13FeatureGate.isAgentSkillGapContext()) {
+            return List.of();
+        }
+        try {
+            List<SkillGapAgentContextVO> gaps = FeignResultUtils.unwrap(
+                    resumeFeignClient.listSkillGapAgentContext(userId, targetJobId));
+            if (gaps == null || gaps.isEmpty()) {
+                return List.of();
+            }
+            return gaps.stream()
+                    .filter(Objects::nonNull)
+                    .map(this::toSkillGapSnapshot)
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.info("Skill gap context unavailable userId={}, reason={}", userId, ex.getMessage());
+            context.getContextWarnings().add("Skill gap context is temporarily unavailable; skipped gap-targeted tasks.");
+            return List.of();
+        }
+    }
+
+    private SkillGapSnapshot toSkillGapSnapshot(SkillGapAgentContextVO source) {
+        SkillGapSnapshot snapshot = new SkillGapSnapshot();
+        snapshot.setId(source.getId());
+        snapshot.setSkillName(source.getSkillName());
+        snapshot.setCategory(source.getCategory());
+        snapshot.setSeverity(source.getSeverity());
+        snapshot.setGapLevel(source.getGapLevel());
+        snapshot.setGapDescription(source.getGapDescription());
+        snapshot.setSourceType(source.getSourceType());
+        snapshot.setRecommendedActions(source.getRecommendedActions() == null
+                ? List.of()
+                : source.getRecommendedActions());
+        return snapshot;
     }
 
     private RequirementReadinessSnapshot resolveRequirementReadiness(Long userId, Long targetJobId,

@@ -13,6 +13,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
@@ -48,6 +49,7 @@ public final class TrustedRequestVerifier {
 
     public HttpServletRequest verify(
             HttpServletRequest request,
+            String callerServiceName,
             String timestamp,
             String nonce,
             String signature,
@@ -55,7 +57,8 @@ public final class TrustedRequestVerifier {
             String canonicalPayload,
             String declaredBodySha256,
             boolean allowUnsignedStreamingBody) {
-        if (!properties.isEnabled() || !StringUtils.hasText(properties.getSecret())) {
+        List<String> verificationSecrets = properties.verificationSecretsFor(callerServiceName);
+        if (verificationSecrets.isEmpty()) {
             throw new VerificationException(FailureReason.INVALID_SIGNATURE);
         }
         TimestampWindow timestampWindow = validateTimestamp(timestamp);
@@ -69,9 +72,7 @@ public final class TrustedRequestVerifier {
             throw new VerificationException(FailureReason.INVALID_SIGNATURE);
         }
 
-        String expectedSignature =
-                InternalSignatureUtils.hmacSha256Hex(properties.getSecret(), canonicalPayload);
-        if (!InternalSignatureUtils.constantTimeEquals(expectedSignature, signature)) {
+        if (!matchesAnySignature(verificationSecrets, canonicalPayload, signature)) {
             throw new VerificationException(FailureReason.INVALID_SIGNATURE);
         }
 
@@ -79,6 +80,19 @@ public final class TrustedRequestVerifier {
                 verifyBody(request, declaredBodySha256, allowUnsignedStreamingBody);
         claimNonce(nonceScope, nonce, timestampWindow.replayTtl());
         return verifiedRequest;
+    }
+
+    private boolean matchesAnySignature(
+            List<String> verificationSecrets,
+            String canonicalPayload,
+            String signature) {
+        boolean matched = false;
+        for (String verificationSecret : verificationSecrets) {
+            String expectedSignature =
+                    InternalSignatureUtils.hmacSha256Hex(verificationSecret, canonicalPayload);
+            matched |= InternalSignatureUtils.constantTimeEquals(expectedSignature, signature);
+        }
+        return matched;
     }
 
     public static boolean isMultipartRequest(HttpServletRequest request) {

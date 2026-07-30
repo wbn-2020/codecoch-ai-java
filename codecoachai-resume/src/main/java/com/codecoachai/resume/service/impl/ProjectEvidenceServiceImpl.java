@@ -28,6 +28,7 @@ import com.codecoachai.resume.mapper.ProjectSkillEvidenceMapper.ConfirmedCount;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.service.EvidenceProfileFeedbackOutboxService;
 import com.codecoachai.resume.service.ProjectEvidenceService;
 import com.codecoachai.resume.service.support.ProjectEvidenceVersionManager;
 import java.util.Arrays;
@@ -64,6 +65,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
     private final TargetJobMapper targetJobMapper;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final ProjectEvidenceVersionManager projectEvidenceVersionManager;
+    private final EvidenceProfileFeedbackOutboxService profileFeedbackOutboxService;
 
     @Override
     public PageResult<ProjectEvidenceListVO> list(ProjectEvidenceQueryDTO query) {
@@ -181,6 +183,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         ProjectEvidence project = getOwnedProject(id, userId);
         project.setDeleted(CommonConstants.YES);
         projectEvidenceMapper.updateById(project);
+        profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
     }
 
     @Override
@@ -194,6 +197,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applySkillEvidence(evidence, dto);
         skillEvidenceMapper.insert(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
         projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence added");
         return toSkillVO(evidence);
@@ -210,6 +214,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applySkillEvidence(evidence, dto);
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
         projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence updated");
         return toSkillVO(evidence);
@@ -225,6 +230,7 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         evidence.setDeleted(CommonConstants.YES);
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
+        profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
         projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence deleted");
     }

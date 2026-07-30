@@ -6,11 +6,13 @@ import com.codecoachai.resume.domain.dto.InterviewWeakPointFeedbackDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileQueryDTO;
 import com.codecoachai.resume.domain.dto.SkillProfileRefreshDTO;
 import com.codecoachai.resume.domain.entity.SkillProfile;
+import com.codecoachai.resume.domain.vo.InnerSkillGapAgentContextVO;
 import com.codecoachai.resume.domain.vo.SkillProfileDetailVO;
 import com.codecoachai.resume.domain.vo.SkillProfileGenerateVO;
 import com.codecoachai.resume.domain.vo.SkillProfileListVO;
 import com.codecoachai.resume.domain.vo.SkillProfileOverviewVO;
 import com.codecoachai.resume.domain.vo.InnerSkillProfileVO;
+import java.util.List;
 
 public interface SkillProfileService {
 
@@ -33,4 +35,6 @@ public interface SkillProfileService {
     void feedbackInterviewWeakPoints(InterviewWeakPointFeedbackDTO dto);
 
     SkillProfile resolveEvidenceFeedbackProfile(Long userId, Long targetJobId);
+
+    List<InnerSkillGapAgentContextVO> listAgentContextGaps(Long userId, Long targetJobId);
 }

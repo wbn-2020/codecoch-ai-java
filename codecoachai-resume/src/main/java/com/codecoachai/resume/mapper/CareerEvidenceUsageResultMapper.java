@@ -67,7 +67,7 @@ public interface CareerEvidenceUsageResultMapper extends BaseMapper<CareerEviden
 
     @Select("""
             <script>
-            SELECT COUNT(*)
+            SELECT COUNT(DISTINCT r.usage_id)
               FROM career_evidence_usage_result r
               JOIN career_evidence_usage u
                 ON u.id = r.usage_id
@@ -92,7 +92,7 @@ public interface CareerEvidenceUsageResultMapper extends BaseMapper<CareerEviden
                                  @Param("assetType") String assetType);
 
     @Select("""
-            SELECT COUNT(*)
+            SELECT COUNT(DISTINCT r.usage_id)
               FROM career_evidence_usage_result r
               JOIN career_evidence_usage u
                 ON u.id = r.usage_id
@@ -104,10 +104,12 @@ public interface CareerEvidenceUsageResultMapper extends BaseMapper<CareerEviden
                AND r.deleted = 0
                AND r.status IN ('CONFIRMED', 'CORRECTED')
                AND s.outcome_code = #{outcomeCode}
+               AND u.target_job_id = #{targetJobId}
                AND u.asset_type = #{assetType}
                AND u.asset_id = #{assetId}
             """)
     long countTrustedOutcomeByAsset(@Param("userId") Long userId,
+                                    @Param("targetJobId") Long targetJobId,
                                     @Param("assetType") String assetType,
                                     @Param("assetId") Long assetId,
                                     @Param("outcomeCode") String outcomeCode);
@@ -125,13 +127,16 @@ public interface CareerEvidenceUsageResultMapper extends BaseMapper<CareerEviden
                AND r.deleted = 0
                AND r.status IN ('CONFIRMED', 'CORRECTED')
                AND s.outcome_code = #{outcomeCode}
+               AND u.target_job_id = #{targetJobId}
                AND u.asset_type = #{assetType}
                AND u.asset_id = #{assetId}
              ORDER BY r.usage_id
              LIMIT 8
             """)
     List<Long> selectTrustedOutcomeUsageIds(@Param("userId") Long userId,
+                                            @Param("targetJobId") Long targetJobId,
                                             @Param("assetType") String assetType,
                                             @Param("assetId") Long assetId,
                                             @Param("outcomeCode") String outcomeCode);
+
 }

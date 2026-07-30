@@ -5,6 +5,7 @@ import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.SkillGapAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.common.core.domain.Result;
 import java.util.List;
@@ -45,4 +46,9 @@ public interface ResumeAgentContextFeignClient {
     Result<List<JobExperimentAgentContextVO>> listJobExperimentAgentContext(
             @PathVariable("userId") Long userId,
             @RequestParam(value = "targetJobId", required = false) Long targetJobId);
+
+    @GetMapping("/inner/skill-profiles/users/{userId}/agent-context")
+    Result<List<SkillGapAgentContextVO>> listSkillGapAgentContext(
+            @PathVariable("userId") Long userId,
+            @RequestParam("targetJobId") Long targetJobId);
 }

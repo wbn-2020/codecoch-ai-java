@@ -16,6 +16,8 @@ public class SystemConfigQueryDTO {
 
     private String keyword;
 
+    private String configKey;
+
     private String configType;
 
     private Integer status;

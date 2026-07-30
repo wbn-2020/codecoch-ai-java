@@ -474,13 +474,13 @@ public class V3DashboardController {
                         matchReportPath(match), 1));
             }
         } else if (vo.getSkillProfile() == null) {
-            actions.add(action("GENERATE_PROFILE", "生成能力画像", "把匹配报告转成可训练的能力短板。", "/skill-profiles", 1));
+            actions.add(action("GENERATE_PROFILE", "生成能力画像", "把匹配报告转成可训练的能力短板。", "/skill-profile", 1));
         } else if (vo.getStudyProgress() == null || vo.getStudyProgress().getActivePlanId() == null) {
             actions.add(action("GENERATE_PLAN", "生成学习计划", "基于能力短板安排每日训练任务。", "/study-plans", 1));
         } else {
             actions.add(action("START_INTERVIEW", "开始目标岗位模拟面试", "用当前岗位要求和能力短板进行针对性面试。", "/interviews/create?source=job-target", 1));
         }
-        actions.add(action("REVIEW_GAPS", "复盘能力短板", "查看最新能力画像和面试报告回流弱项。", "/skill-profiles", 2));
+        actions.add(action("REVIEW_GAPS", "复盘能力短板", "查看最新能力画像和面试报告回流弱项。", "/skill-profile", 2));
         return actions;
     }
 

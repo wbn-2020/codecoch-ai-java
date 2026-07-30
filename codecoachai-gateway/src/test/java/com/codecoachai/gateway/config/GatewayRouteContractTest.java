@@ -170,7 +170,9 @@ class GatewayRouteContractTest {
             "/inner/job-targets/users/42/current",
             "/inner/agent/reminders/candidates");
 
-    private static final String DEV_ORIGIN = "http://nqx.githubpage.com:30080";
+    private static final Set<String> DEV_ORIGINS = Set.of(
+            "http://nqx.githubpage.com:30080",
+            "http://103.236.97.252:30080");
 
     @Test
     void devGatewayConfigsExposeTheReleaseRoutesAndCorsOriginWithoutInnerRoutes() throws IOException {
@@ -208,11 +210,11 @@ class GatewayRouteContractTest {
             }
 
             assertTrue(
-                    config.globalCorsAllowedOriginPatterns().contains(DEV_ORIGIN),
-                    () -> config.relativePath() + " globalcors must allow " + DEV_ORIGIN);
+                    config.globalCorsAllowedOriginPatterns().containsAll(DEV_ORIGINS),
+                    () -> config.relativePath() + " globalcors must allow " + DEV_ORIGINS);
             assertTrue(
-                    config.applicationCorsAllowedOriginPatterns().contains(DEV_ORIGIN),
-                    () -> config.relativePath() + " codecoachai.gateway.cors must allow " + DEV_ORIGIN);
+                    config.applicationCorsAllowedOriginPatterns().containsAll(DEV_ORIGINS),
+                    () -> config.relativePath() + " codecoachai.gateway.cors must allow " + DEV_ORIGINS);
             assertTrue(
                     config.globalCorsExposedHeaders().contains("X-Trace-Id"),
                     () -> config.relativePath() + " globalcors must expose X-Trace-Id");
@@ -260,6 +262,29 @@ class GatewayRouteContractTest {
                     route.pathPatterns(),
                     () -> config.relativePath()
                             + " must keep resume claim audits isolated from the aggregate resume route");
+        }
+    }
+
+    @Test
+    void resumeEvidenceResultsUseTheirDedicatedGatewayRoute() throws IOException {
+        List<String> expectedPatterns = routeGroupTokens(
+                "/evidence-assets/overview",
+                "/evidence-assets/usages",
+                "/evidence-assets/results",
+                "/evidence-usages",
+                "/evidence-usage-results");
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            GatewayRoute route = config.routesMatching("/evidence-usages/contract-probe").get(0);
+            assertTrue(
+                    route.id().contains("evidence-results"),
+                    () -> config.relativePath()
+                            + " must keep evidence result routes on a dedicated route; actual route="
+                            + route.id());
+            assertEquals(
+                    expectedPatterns,
+                    route.pathPatterns(),
+                    () -> config.relativePath()
+                            + " must keep evidence result routes isolated from the aggregate resume route");
         }
     }
 

@@ -18,6 +18,7 @@ import com.codecoachai.common.security.internal.TrustedRequestVerifier.Verificat
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Duration;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,7 @@ class TrustedRequestVerifierTest {
         InternalAuthProperties properties = new InternalAuthProperties();
         properties.setEnabled(true);
         properties.setSecret(SECRET);
+        properties.setLegacySharedSecretCallers(Set.of("codecoachai-task", "codecoachai-gateway"));
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
         properties.setMaxSignedBodyBytes(1024);
@@ -66,6 +68,7 @@ class TrustedRequestVerifierTest {
 
         HttpServletRequest verified = verifier.verify(
                 request,
+                "codecoachai-task",
                 String.valueOf(NOW),
                 NONCE,
                 signature("payload"),
@@ -86,6 +89,7 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
+                        "codecoachai-task",
                         String.valueOf(NOW),
                         NONCE,
                         "invalid",
@@ -108,6 +112,7 @@ class TrustedRequestVerifierTest {
 
         HttpServletRequest verified = verifier.verify(
                 request,
+                "codecoachai-gateway",
                 String.valueOf(NOW),
                 NONCE,
                 signature("payload"),
@@ -128,6 +133,7 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
+                        "codecoachai-task",
                         String.valueOf(NOW),
                         NONCE,
                         signature("payload"),
@@ -152,6 +158,7 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
+                        "codecoachai-task",
                         String.valueOf(NOW),
                         NONCE,
                         signature("payload"),
@@ -173,6 +180,7 @@ class TrustedRequestVerifierTest {
 
         verifier.verify(
                 request,
+                "codecoachai-task",
                 String.valueOf(futureTimestamp),
                 NONCE,
                 signature("payload"),

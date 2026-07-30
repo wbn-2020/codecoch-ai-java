@@ -95,9 +95,6 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
                     if (result.getData() == null) {
                         return writeError(exchange, ErrorCode.TOKEN_INVALID);
                     }
-                    if (path.startsWith("/admin/") && !hasAdminRole(result.getData())) {
-                        return writeError(exchange, ErrorCode.FORBIDDEN);
-                    }
                     ServerHttpRequest mutated = request.mutate()
                             .headers(headers -> enrichUserHeaders(headers, authorization, result.getData(), request))
                             .build();
@@ -112,24 +109,6 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
     private boolean isWhitePath(String path) {
         return WHITE_PATHS.stream().anyMatch(path::equals);
-    }
-
-    private boolean hasAdminRole(TokenInfo tokenInfo) {
-        List<String> roles = tokenInfo.getRoles();
-        return roles != null && roles.stream()
-                .map(this::normalizeRoleCode)
-                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
-    }
-
-    private String normalizeRoleCode(String roleCode) {
-        if (!StringUtils.hasText(roleCode)) {
-            return "";
-        }
-        String normalized = roleCode.trim();
-        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
-            normalized = normalized.substring(5);
-        }
-        return normalized;
     }
 
     private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo,

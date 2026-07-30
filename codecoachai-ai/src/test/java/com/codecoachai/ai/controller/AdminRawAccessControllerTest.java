@@ -1,6 +1,7 @@
 package com.codecoachai.ai.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,6 +28,8 @@ import com.codecoachai.ai.service.PromptTemplateService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.web.log.OperationLog;
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -73,6 +76,17 @@ class AdminRawAccessControllerTest {
 
         verify(adminPermissionGuard).require("admin:ai:log:raw:view");
         verify(promptTemplateService, never()).getLogRaw(any());
+    }
+
+    @Test
+    void getLogRawAuditIncludesTheControlledAccessRequest() throws NoSuchMethodException {
+        Method method = AdminAiController.class.getMethod(
+                "getLogRaw", Long.class, AiLogRawAccessDTO.class);
+        OperationLog operationLog = method.getAnnotation(OperationLog.class);
+
+        assertTrue(operationLog.logArgs());
+        assertEquals("VIEW_AI_LOG_RAW", operationLog.action());
+        assertFalse(operationLog.logResponse());
     }
 
     @Test

@@ -32,11 +32,11 @@ codecoachai:
       contact-activity: true
       research: true
     v8:
-      campaign-cockpit: false
-      campaign-pulse: false
-      campaign-plan: false
-      campaign-portfolio: false
-      campaign-export: false
+      campaign-cockpit: true
+      campaign-pulse: true
+      campaign-plan: true
+      campaign-portfolio: true
+      campaign-export: true
     v9:
       evidence-usage: true
       evidence-feedback: true
@@ -46,3 +46,5 @@ codecoachai:
       experiment-sample-thresholds:
         min-applications: 15
         min-interviews: 3
+    v13:
+      positive-ability-reinforcement: true

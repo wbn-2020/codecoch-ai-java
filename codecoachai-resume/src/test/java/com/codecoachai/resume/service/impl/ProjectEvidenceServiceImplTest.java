@@ -16,7 +16,9 @@ import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.ProjectEvidenceQueryDTO;
+import com.codecoachai.resume.domain.dto.ProjectSkillEvidenceSaveDTO;
 import com.codecoachai.resume.domain.entity.ProjectEvidence;
+import com.codecoachai.resume.domain.entity.ProjectSkillEvidence;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.vo.ProjectEvidenceListVO;
@@ -26,6 +28,7 @@ import com.codecoachai.resume.mapper.ProjectSkillEvidenceMapper.ConfirmedCount;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.service.EvidenceProfileFeedbackOutboxService;
 import com.codecoachai.resume.service.support.ProjectEvidenceVersionManager;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
@@ -55,6 +58,8 @@ class ProjectEvidenceServiceImplTest {
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
     @Mock
     private ProjectEvidenceVersionManager projectEvidenceVersionManager;
+    @Mock
+    private EvidenceProfileFeedbackOutboxService profileFeedbackOutboxService;
 
     private ProjectEvidenceServiceImpl service;
 
@@ -68,7 +73,8 @@ class ProjectEvidenceServiceImplTest {
                 resumeProjectMapper,
                 targetJobMapper,
                 agentBusinessActionNotifier,
-                projectEvidenceVersionManager);
+                projectEvidenceVersionManager,
+                profileFeedbackOutboxService);
     }
 
     @AfterEach
@@ -115,6 +121,60 @@ class ProjectEvidenceServiceImplTest {
         verify(resumeProjectMapper, never()).selectById(any());
     }
 
+    @Test
+    void deletingProjectRequeuesItsAbilityProjection() {
+        ProjectEvidence project = project(5L, null, null);
+        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+
+        service.delete(project.getId());
+
+        verify(projectEvidenceMapper).updateById(project);
+        verify(profileFeedbackOutboxService)
+                .requeueAbilityProjectionForProject(USER_ID, project.getId());
+    }
+
+    @Test
+    void addingSkillEvidenceRequeuesProjectAbilityProjection() {
+        ProjectEvidence project = project(5L, null, null);
+        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+        ProjectSkillEvidenceSaveDTO dto = skillSave("Redis", true);
+
+        service.addSkillEvidence(project.getId(), dto);
+
+        verify(skillEvidenceMapper).insert(any(ProjectSkillEvidence.class));
+        verify(profileFeedbackOutboxService)
+                .requeueAbilityProjectionForProject(USER_ID, project.getId());
+    }
+
+    @Test
+    void updatingSkillEvidenceRequeuesProjectAbilityProjection() {
+        ProjectEvidence project = project(5L, null, null);
+        ProjectSkillEvidence evidence = skillEvidence(8L, project.getId());
+        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+        when(skillEvidenceMapper.selectOne(any())).thenReturn(evidence);
+
+        service.updateSkillEvidence(project.getId(), evidence.getId(),
+                skillSave("Redis Cluster", false));
+
+        verify(skillEvidenceMapper).updateById(evidence);
+        verify(profileFeedbackOutboxService)
+                .requeueAbilityProjectionForProject(USER_ID, project.getId());
+    }
+
+    @Test
+    void deletingSkillEvidenceRequeuesProjectAbilityProjection() {
+        ProjectEvidence project = project(5L, null, null);
+        ProjectSkillEvidence evidence = skillEvidence(8L, project.getId());
+        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+        when(skillEvidenceMapper.selectOne(any())).thenReturn(evidence);
+
+        service.deleteSkillEvidence(project.getId(), evidence.getId());
+
+        verify(skillEvidenceMapper).updateById(evidence);
+        verify(profileFeedbackOutboxService)
+                .requeueAbilityProjectionForProject(USER_ID, project.getId());
+    }
+
     private ProjectEvidence project(Long id, Long resumeId, Long resumeProjectId) {
         ProjectEvidence project = new ProjectEvidence();
         project.setId(id);
@@ -130,6 +190,23 @@ class ProjectEvidenceServiceImplTest {
         count.setProjectEvidenceId(projectId);
         count.setConfirmedCount(value);
         return count;
+    }
+
+    private ProjectSkillEvidenceSaveDTO skillSave(String skillName, boolean confirmed) {
+        ProjectSkillEvidenceSaveDTO dto = new ProjectSkillEvidenceSaveDTO();
+        dto.setSkillName(skillName);
+        dto.setConfirmed(confirmed);
+        return dto;
+    }
+
+    private ProjectSkillEvidence skillEvidence(Long id, Long projectId) {
+        ProjectSkillEvidence evidence = new ProjectSkillEvidence();
+        evidence.setId(id);
+        evidence.setUserId(USER_ID);
+        evidence.setProjectEvidenceId(projectId);
+        evidence.setSkillName("Redis");
+        evidence.setConfirmed(1);
+        return evidence;
     }
 
     private Resume resume(Long id, Long userId) {

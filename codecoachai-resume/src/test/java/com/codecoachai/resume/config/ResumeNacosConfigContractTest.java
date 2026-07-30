@@ -38,6 +38,29 @@ class ResumeNacosConfigContractTest {
     }
 
     @Test
+    void v13FeatureConfigDeclaresPositiveAbilityReinforcement() throws IOException {
+        Path root = repositoryRoot();
+
+        String content = Files.readString(root.resolve(DOCS_CONFIG));
+        assertTrue(content.contains("v13:"),
+                () -> DOCS_CONFIG + " must declare the v13 feature block");
+        assertTrue(content.contains("positive-ability-reinforcement: true"),
+                () -> DOCS_CONFIG + " must enable v13 positive ability reinforcement in the test env");
+    }
+
+    @Test
+    void v8CampaignCapabilitiesAreEnabledForAcceptance() throws IOException {
+        Path root = repositoryRoot();
+
+        String content = Files.readString(root.resolve(DOCS_CONFIG));
+        assertTrue(content.contains("campaign-cockpit: true"));
+        assertTrue(content.contains("campaign-pulse: true"));
+        assertTrue(content.contains("campaign-plan: true"));
+        assertTrue(content.contains("campaign-portfolio: true"));
+        assertTrue(content.contains("campaign-export: true"));
+    }
+
+    @Test
     void resumeDatasourceUsesContainerSafeEnvironmentPlaceholders() throws IOException {
         Path root = repositoryRoot();
         String expectedUrl =

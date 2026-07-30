@@ -1,6 +1,5 @@
 package com.codecoachai.common.security.config;
 
-import com.codecoachai.common.security.filter.AdminRoleFilter;
 import com.codecoachai.common.security.filter.InternalCallFilter;
 import com.codecoachai.common.security.filter.LoginUserContextFilter;
 import com.codecoachai.common.security.internal.TrustedRequestVerifier;
@@ -26,9 +25,11 @@ public class CommonSecurityAutoConfiguration {
 
     @Bean
     public FilterRegistrationBean<LoginUserContextFilter> loginUserContextFilter(
+            InternalAuthProperties internalAuthProperties,
             TrustedRequestVerifier trustedRequestVerifier) {
         FilterRegistrationBean<LoginUserContextFilter> registrationBean = new FilterRegistrationBean<>();
-        registrationBean.setFilter(new LoginUserContextFilter(trustedRequestVerifier));
+        registrationBean.setFilter(
+                new LoginUserContextFilter(internalAuthProperties, trustedRequestVerifier));
         registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 15);
         registrationBean.addUrlPatterns("/*");
         return registrationBean;
@@ -53,12 +54,4 @@ public class CommonSecurityAutoConfiguration {
         return registrationBean;
     }
 
-    @Bean
-    public FilterRegistrationBean<AdminRoleFilter> adminRoleFilter() {
-        FilterRegistrationBean<AdminRoleFilter> registrationBean = new FilterRegistrationBean<>();
-        registrationBean.setFilter(new AdminRoleFilter());
-        registrationBean.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
-        registrationBean.addUrlPatterns("/*");
-        return registrationBean;
-    }
 }

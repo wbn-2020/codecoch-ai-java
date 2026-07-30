@@ -387,27 +387,35 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                 .collect(Collectors.groupingBy(JobSearchExperimentRelationVO::getRelationType));
         List<Long> appIds = ids(grouped.get("JOB_APPLICATION"));
         List<Long> relatedResumeVersionIds = ids(grouped.get("RESUME_VERSION"));
-        metrics.setApplicationCount(appIds.size());
         metrics.setTargetJobCount(ids(grouped.get("TARGET_JOB")).size());
         metrics.setProjectEvidenceCount(ids(grouped.get("PROJECT_EVIDENCE")).size());
         metrics.setAgentTaskCount(ids(grouped.get("AGENT_TASK")).size());
         List<JobApplication> apps = List.of();
+        List<JobApplicationEvent> events = List.of();
         if (!appIds.isEmpty()) {
             apps = safeList(jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                     .eq(JobApplication::getUserId, experiment.getUserId())
                     .eq(JobApplication::getDeleted, CommonConstants.NO)
                     .in(JobApplication::getId, appIds)));
+            Set<Long> activeAppIds = apps.stream()
+                    .map(JobApplication::getId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            metrics.setApplicationCount(activeAppIds.size());
             metrics.setFeedbackCount((int) apps.stream().filter(app -> !"SAVED".equalsIgnoreCase(app.getStatus())).count());
             metrics.setInterviewInviteCount((int) apps.stream().filter(app -> "INTERVIEWING".equalsIgnoreCase(app.getStatus())
                     || "OFFER".equalsIgnoreCase(app.getStatus())).count());
             metrics.setOfferCount((int) apps.stream().filter(app -> "OFFER".equalsIgnoreCase(app.getStatus())).count());
             metrics.setRejectedCount((int) apps.stream().filter(app -> "REJECTED".equalsIgnoreCase(app.getStatus())).count());
-            List<JobApplicationEvent> events = safeList(jobApplicationEventMapper.selectList(new LambdaQueryWrapper<JobApplicationEvent>()
-                    .eq(JobApplicationEvent::getUserId, experiment.getUserId())
-                    .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
-                    .in(JobApplicationEvent::getApplicationId, appIds)));
-            metrics.setInterviewCompletedCount((int) events.stream()
-                    .filter(event -> "INTERVIEW_COMPLETED".equalsIgnoreCase(event.getEventType())).count());
+            if (!activeAppIds.isEmpty()) {
+                events = safeList(jobApplicationEventMapper.selectList(
+                        new LambdaQueryWrapper<JobApplicationEvent>()
+                                .eq(JobApplicationEvent::getUserId, experiment.getUserId())
+                                .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
+                                .in(JobApplicationEvent::getApplicationId, activeAppIds)));
+            }
+        } else {
+            metrics.setApplicationCount(0);
         }
         Map<Long, Integer> resumeUsageCounts = apps.stream()
                 .map(JobApplication::getResumeVersionId)
@@ -416,11 +424,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         relatedResumeVersionIds.forEach(id -> resumeUsageCounts.putIfAbsent(id, 0));
         metrics.setResumeVersionUsageCounts(resumeUsageCounts);
         metrics.setResumeVersionCount(resumeUsageCounts.isEmpty() ? relatedResumeVersionIds.size() : resumeUsageCounts.size());
+        Set<Long> completedInterviewSessionIds = completedInterviewSessionIds(
+                experiment.getUserId(), grouped, events);
+        metrics.setInterviewCompletedCount(completedInterviewSessionIds.size());
         int sample = Math.max(metrics.getApplicationCount(), metrics.getInterviewCompletedCount());
-        metrics.setSampleCount(sample);
-        int relationInterviewCount = ids(grouped.get("INTERVIEW_REPORT")).size() + ids(grouped.get("INTERVIEW_SESSION")).size();
-        metrics.setInterviewCompletedCount(Math.max(metrics.getInterviewCompletedCount(), relationInterviewCount));
-        sample = Math.max(metrics.getApplicationCount(), metrics.getInterviewCompletedCount());
         metrics.setSampleCount(sample);
         metrics.getFacts().add("投递数：" + metrics.getApplicationCount());
         metrics.getFacts().add("反馈数：" + metrics.getFeedbackCount());
@@ -437,6 +444,109 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         metrics.setSampleWarning(sampleWarning(metrics));
         metrics.setSampleBoundary(buildSampleBoundary(metrics));
         return metrics;
+    }
+
+    private Set<Long> completedInterviewSessionIds(
+            Long userId,
+            Map<String, List<JobSearchExperimentRelationVO>> grouped,
+            List<JobApplicationEvent> events) {
+        Set<Long> directCandidates =
+                new LinkedHashSet<>(ids(grouped.get("INTERVIEW_SESSION")));
+        Set<InterviewEventReference> eventReferences = new LinkedHashSet<>();
+        for (JobApplicationEvent event : safeList(events)) {
+            if (!"INTERVIEW_COMPLETED".equalsIgnoreCase(event.getEventType())) {
+                continue;
+            }
+            Long sessionId = asLong(readMap(event.getReviewJson()).get("interviewId"));
+            if (sessionId != null && event.getApplicationId() != null) {
+                eventReferences.add(
+                        new InterviewEventReference(sessionId, event.getApplicationId()));
+            }
+        }
+        try {
+            directCandidates.addAll(completedReportSessionIds(
+                    userId, ids(grouped.get("INTERVIEW_REPORT"))));
+            if (directCandidates.isEmpty() && eventReferences.isEmpty()) {
+                return Set.of();
+            }
+            List<String> candidatePredicates = new ArrayList<>();
+            List<Object> args = new ArrayList<>();
+            args.add(userId);
+            if (!directCandidates.isEmpty()) {
+                String placeholders = directCandidates.stream()
+                        .map(ignored -> "?")
+                        .collect(Collectors.joining(","));
+                candidatePredicates.add("id IN (" + placeholders + ")");
+                args.addAll(directCandidates);
+            }
+            for (InterviewEventReference reference : eventReferences) {
+                candidatePredicates.add("(id = ? AND application_id = ?)");
+                args.add(reference.sessionId());
+                args.add(reference.applicationId());
+            }
+            List<Long> completed = safeList(jdbcTemplate.query("""
+                    SELECT DISTINCT id
+                      FROM interview_session
+                     WHERE user_id = ?
+                       AND status = 'COMPLETED'
+                       AND deleted = 0
+                       AND (%s)
+                    """.formatted(String.join(" OR ", candidatePredicates)),
+                    (rs, rowNum) -> rs.getLong("id"),
+                    args.toArray()));
+            return completed.stream()
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        } catch (DataAccessException ex) {
+            return Set.of();
+        }
+    }
+
+    private record InterviewEventReference(Long sessionId, Long applicationId) {
+    }
+
+    private Set<Long> completedReportSessionIds(Long userId, List<Long> reportIds) {
+        if (reportIds == null || reportIds.isEmpty()) {
+            return Set.of();
+        }
+        String placeholders = reportIds.stream()
+                .map(ignored -> "?")
+                .collect(Collectors.joining(","));
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        args.addAll(reportIds);
+        List<Long> sessionIds = safeList(jdbcTemplate.query("""
+                SELECT DISTINCT r.session_id
+                  FROM interview_report r
+                  JOIN interview_session s
+                    ON s.id = r.session_id
+                   AND s.user_id = r.user_id
+                   AND s.deleted = 0
+                   AND s.status = 'COMPLETED'
+                 WHERE r.user_id = ?
+                   AND r.id IN (%s)
+                   AND r.status = 'GENERATED'
+                   AND r.deleted = 0
+                """.formatted(placeholders),
+                (rs, rowNum) -> rs.getLong("session_id"),
+                args.toArray()));
+        return sessionIds.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Long.valueOf(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private JobSearchExperimentStrategyVO buildStrategy(JobSearchExperiment experiment, JobSearchExperimentMetricsVO metrics,
@@ -456,9 +566,12 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
             case BLOCKED_FACT_ONLY ->
                     "当前只展示事实：继续记录投递、反馈和岗位来源，累计到 5 条投递前不判断策略有效性。";
             case WARN_WEAK_OBSERVATION ->
-                    "当前只给弱观察：保留当前实验方向，补足到 15 条投递后再做强策略判断或排名。";
+                    "当前只给弱观察：保留当前实验方向，补足到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条投递后再做强策略判断或排名。";
             case WARN_INTERVIEW_BOUNDARY ->
-                    "投递样本达到 15 条，可做带边界的过程趋势观察；先补齐面试复盘样本，完成面试达到 3 次前不判断面试能力变化。";
+                    "投递样本达到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条，可做带边界的过程趋势观察；先补齐面试复盘样本，完成面试达到 "
+                            + qualityGatePolicy.minInterviewTrendSamples() + " 次前不判断面试能力变化。";
             case PASS_REVIEWABLE ->
                     "基于当前样本进入下一轮实验：复盘 JD 关键词、项目证据、渠道和反馈节奏，并标注这些影响因素。";
         });
@@ -547,10 +660,11 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                                                             JobSearchExperimentMetricsVO metrics) {
         List<Map<String, Object>> actions = new ArrayList<>();
         String evidenceRoute = "/job-experiments/" + experiment.getId() + "?tab=evidence";
-        if (metrics.getApplicationCount() < 15) {
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             actions.add(actionCandidate(experiment, metrics, "COLLECT_APPLICATION_SAMPLE",
                     "补充投递样本",
-                    "继续记录投递、反馈和岗位来源，达到 15 条投递前不做强策略判断或排名。",
+                    "继续记录投递、反馈和岗位来源，达到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条投递前不做强策略判断或排名。",
                     "当前投递数为 " + metrics.getApplicationCount() + "，样本门槛未达到。",
                     "/applications?experimentId=" + experiment.getId(),
                     metrics.getApplicationCount() < 5 ? "HIGH" : "MEDIUM",
@@ -591,11 +705,13 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                     "MEDIUM",
                     false));
         }
-        if (metrics.getApplicationCount() >= 15 && metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getApplicationCount() >= qualityGatePolicy.minReviewableApplications()
+                && metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             actions.add(actionCandidate(experiment, metrics, "COLLECT_INTERVIEW_REVIEW_SAMPLE",
                     "补充面试复盘样本",
-                    "记录面试完成事件或面试复盘；少于 3 次完成面试前不判断面试能力趋势。",
-                    "投递样本已达到 15 条，但面试样本不足。",
+                    "记录面试完成事件或面试复盘；少于 " + qualityGatePolicy.minInterviewTrendSamples()
+                            + " 次完成面试前不判断面试能力趋势。",
+                    "投递样本已达到 " + qualityGatePolicy.minReviewableApplications() + " 条，但面试样本不足。",
                     null,
                     "MEDIUM",
                     false));
@@ -721,25 +837,29 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     private String requiredSampleHint(String conclusion) {
         String type = conclusionType(conclusion);
         if ("INTERVIEW_ABILITY_TREND".equals(type)) {
-            return "完成面试至少 3 次后再观察面试能力趋势。";
+            return "完成面试至少 " + qualityGatePolicy.minInterviewTrendSamples() + " 次后再观察面试能力趋势。";
         }
         if ("RESUME_VERSION_COMPARISON".equals(type)) {
             return "每个参与比较的简历版本至少使用 3 次。";
         }
         if ("STRONG_STRATEGY".equals(type)) {
-            return "投递达到 15 条后才允许观察过程趋势，仍不能做强因果归因。";
+            return "投递达到 " + qualityGatePolicy.minReviewableApplications()
+                    + " 条后才允许观察过程趋势，仍不能做强因果归因。";
         }
         return "需要结合岗位、渠道、时间窗口和多类证据人工复核。";
     }
 
     private String sampleWarning(JobSearchExperimentMetricsVO metrics) {
+        int minApplications = qualityGatePolicy.minReviewableApplications();
+        int minInterviews = qualityGatePolicy.minInterviewTrendSamples();
         String base;
         if (metrics.getApplicationCount() < 5) {
             base = "样本不足：投递少于 5 条。当前只展示事实，不判断策略有效性。";
-        } else if (metrics.getApplicationCount() < 15) {
-            base = "样本有限：投递处于 5-14 条。只允许弱观察，不输出强策略或排名。";
-        } else if (metrics.getInterviewCompletedCount() < 3) {
-            base = "面试样本不足：投递已达到 15 条，但完成面试少于 3 次。可做过程趋势观察，不判断面试能力变化。";
+        } else if (metrics.getApplicationCount() < minApplications) {
+            base = "样本有限：投递处于 5-" + (minApplications - 1) + " 条。只允许弱观察，不输出强策略或排名。";
+        } else if (metrics.getInterviewCompletedCount() < minInterviews) {
+            base = "面试样本不足：投递已达到 " + minApplications + " 条，但完成面试少于 " + minInterviews
+                    + " 次。可做过程趋势观察，不判断面试能力变化。";
         } else {
             base = "样本可用于高置信复盘，但仍需说明岗位、渠道、时间窗口等影响因素。";
         }
@@ -750,10 +870,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private String confidenceLevel(JobSearchExperimentMetricsVO metrics) {
-        if (metrics.getApplicationCount() < 15) {
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             return "LOW";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             return "MEDIUM";
         }
         return "HIGH";
@@ -770,10 +890,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         List<String> conclusions = new ArrayList<>();
         if (metrics.getApplicationCount() < 5) {
             conclusions.add("不能判断策略有效性或渠道质量。");
-        } else if (metrics.getApplicationCount() < 15) {
+        } else if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             conclusions.add("不能输出强策略结论、排名或判断岗位方向明显更优。");
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             conclusions.add("不判断面试能力变化或面试表现趋势。");
         }
         if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
@@ -786,14 +906,15 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private String insightSummary(JobSearchExperimentMetricsVO metrics) {
+        int minApplications = qualityGatePolicy.minReviewableApplications();
         if (metrics.getApplicationCount() < 5) {
             return "当前投递样本少于 5 条，只展示事实，不给策略强判断。";
         }
-        if (metrics.getApplicationCount() < 15) {
-            return "当前投递样本为 5-14 条，只给弱观察，不输出强策略或排名。";
+        if (metrics.getApplicationCount() < minApplications) {
+            return "当前投递样本为 5-" + (minApplications - 1) + " 条，只给弱观察，不输出强策略或排名。";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
-            return "投递样本达到 15 条，可做过程趋势观察，但面试样本不足。";
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
+            return "投递样本达到 " + minApplications + " 条，可做过程趋势观察，但面试样本不足。";
         }
         return "样本达到阶段二高置信复盘门槛，但仍需结合影响因素人工复核。";
     }
@@ -802,10 +923,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         if (metrics.getApplicationCount() < 5) {
             return "继续积累事实样本";
         }
-        if (metrics.getApplicationCount() < 15) {
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             return "弱观察与样本积累";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             return "趋势观察与面试补样本";
         }
         return "下一轮实验策略";
@@ -888,7 +1009,8 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         gate.put("blockedConclusions", metrics.getUnsupportedConclusions());
         gate.put("sampleSize", metrics.getApplicationCount());
         gate.put("minSampleSize",
-                decision.state() == SampleState.BLOCKED_FACT_ONLY ? 5 : 15);
+                decision.state() == SampleState.BLOCKED_FACT_ONLY
+                        ? 5 : qualityGatePolicy.minReviewableApplications());
         gate.put("sampleBoundary", metrics.getSampleBoundary());
         gate.put("sampleLevel", sampleLevel(metrics));
         gate.put("strongRecommendationAllowed", decision.strongConclusionAllowed());

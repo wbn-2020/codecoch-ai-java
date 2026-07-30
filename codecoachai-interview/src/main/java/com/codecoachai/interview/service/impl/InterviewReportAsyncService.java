@@ -792,9 +792,12 @@ public class InterviewReportAsyncService {
             dto.setReportId(report.getId());
             dto.setWeakPoints(weakPoints);
             dto.setAbilityProfileUpdatesJson(report.getAbilityProfileUpdates());
-            resumeFeignClient.feedbackInterviewWeakPoints(dto);
-        } catch (RuntimeException ignored) {
-            // Report generation must not fail only because downstream profile feedback is temporarily unavailable.
+            FeignResultUtils.unwrap(resumeFeignClient.feedbackInterviewWeakPoints(dto));
+        } catch (RuntimeException ex) {
+            // Report generation must not fail only because downstream profile feedback is
+            // temporarily unavailable, but the skip has to stay visible in logs.
+            log.warn("skill profile feedback skipped for report {}: {}",
+                    report.getId(), ex.getMessage());
         }
     }
 

@@ -15,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.Data;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,6 +37,7 @@ public class AdminStatsController {
     private final AdminPermissionGuard adminPermissionGuard;
     private final Clock clock;
 
+    @Autowired
     public AdminStatsController(LoginLogMapper loginLogMapper, AdminPermissionGuard adminPermissionGuard) {
         this(loginLogMapper, adminPermissionGuard, Clock.systemDefaultZone());
     }

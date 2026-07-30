@@ -2,6 +2,7 @@ package com.codecoachai.interview.support;
 
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -55,7 +56,7 @@ public class InterviewReportComparabilityPolicy {
             return unavailable("REPORT_UNAVAILABLE", "Interview report is unavailable",
                     Map.of(), null, null, null, null, List.of());
         }
-        if (!"GENERATED".equalsIgnoreCase(report.getStatus())) {
+        if (!ReportStatusEnum.isComparisonReady(report.getStatus())) {
             return unavailable("REPORT_NOT_GENERATED", "Only generated reports can be compared",
                     Map.of(), session.getTargetJobId(), null, null, null, List.of());
         }

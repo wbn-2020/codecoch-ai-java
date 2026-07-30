@@ -39,10 +39,10 @@ import com.codecoachai.resume.mapper.experimentv2.ExperimentAssignmentMapper;
 import com.codecoachai.resume.mapper.experimentv2.ExperimentHypothesisMapper;
 import com.codecoachai.resume.mapper.experimentv2.ExperimentVariantMapper;
 import com.codecoachai.resume.service.CareerEvidenceUsageService;
+import com.codecoachai.resume.service.EvidenceProfileFeedbackOutboxService;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.AssetResolution;
 import com.codecoachai.resume.service.support.CareerEvidenceSourceResolver.EventResolution;
-import com.codecoachai.resume.service.support.EvidenceProfileFeedbackService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -87,7 +87,7 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
     private final CareerEvidenceSourceResolver sourceResolver;
     private final V9FeatureGate featureGate;
     private final ObjectMapper objectMapper;
-    private final EvidenceProfileFeedbackService profileFeedbackService;
+    private final EvidenceProfileFeedbackOutboxService profileFeedbackOutboxService;
 
     /** Lazily derived key-ordered mapper for JVM-stable persistence hashes (see {@link #writeCanonicalJson}). */
     private volatile ObjectMapper canonicalHashMapper;
@@ -588,11 +588,10 @@ public class CareerEvidenceUsageServiceImpl implements CareerEvidenceUsageServic
         }
         CareerEvidenceUsageResultVO mutated = appendSnapshot(root, current, input, targetStatus,
                 idempotencyKeyHash, payloadHash, request.getExpectedLockVersion());
-        // Real transition committed to the working set: fold the trusted outcome back into the
-        // skill profile. Replay and no-op paths above never reach this hook, and the hook itself
-        // never throws.
-        profileFeedbackService.afterResultTransition(
-                root, input.outcomeCode(), input.userInterpretationText());
+        // The outbox insert is part of the result transaction. Projection runs after commit
+        // in an independent transaction and is durably retried on failure.
+        profileFeedbackOutboxService.enqueue(
+                root.getId(), root.getUserId(), root.getSnapshotVersion());
         return mutated;
     }
 

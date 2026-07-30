@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 import com.codecoachai.common.security.config.AdminPermissionCacheProperties;
 import com.codecoachai.common.security.context.LoginUser;
@@ -74,5 +75,20 @@ class AdminPermissionGuardTest {
 
         verify(stringRedisTemplate, never()).opsForValue();
         verify(jdbcTemplate, never()).queryForList(anyString(), eq(String.class), eq(42L));
+    }
+
+    @Test
+    void requireAllowsAuthenticatedNonAdminWithGrantedPermission() {
+        LoginUserContext.setLoginUser(LoginUser.builder()
+                .userId(43L)
+                .roles(List.of("USER"))
+                .build());
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get("auth:permissions:user:43"))
+                .thenReturn("admin:user:list");
+
+        assertDoesNotThrow(() -> guard.require("admin:user:list"));
+
+        verify(valueOperations).get("auth:permissions:user:43");
     }
 }

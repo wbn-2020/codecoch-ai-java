@@ -2,6 +2,7 @@ package com.codecoachai.interview.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -21,4 +22,6 @@ public class InterviewRemediation extends BaseEntity {
     private String rubricVersion;
     private String status;
     private String idempotencyKey;
+    private String claimToken;
+    private LocalDateTime claimedAt;
 }
