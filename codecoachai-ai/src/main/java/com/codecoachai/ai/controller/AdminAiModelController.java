@@ -6,6 +6,7 @@ import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
+import com.codecoachai.ai.security.AiProviderEndpointPolicy;
 import com.codecoachai.ai.security.SensitiveTextMasker;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -41,6 +42,7 @@ public class AdminAiModelController {
 
     private final AiModelConfigMapper mapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
+    private final AiProviderEndpointPolicy endpointPolicy;
     private final AdminPermissionGuard permissionGuard;
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
@@ -230,7 +232,7 @@ public class AdminAiModelController {
         entity.setModelName(StringUtils.hasText(dto.getDisplayName()) ? dto.getDisplayName().trim()
                 : StringUtils.hasText(dto.getModelName()) ? dto.getModelName().trim() : entity.getModelCode());
         entity.setCapabilityTags(dto.getCapabilityTags());
-        entity.setApiBaseUrl(StringUtils.hasText(dto.getApiBaseUrl()) ? dto.getApiBaseUrl().trim() : null);
+        entity.setApiBaseUrl(normalizeApiBaseUrl(dto.getApiBaseUrl()));
         if (StringUtils.hasText(dto.getApiKey())) {
             entity.setApiKey(encryptApiKey(dto.getApiKey()));
         }
@@ -296,6 +298,17 @@ public class AdminAiModelController {
         } catch (IllegalStateException ex) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                     "模型密钥加密配置不可用，请先检查运行环境配置");
+        }
+    }
+
+    private String normalizeApiBaseUrl(String apiBaseUrl) {
+        if (!StringUtils.hasText(apiBaseUrl)) {
+            return null;
+        }
+        try {
+            return endpointPolicy.validateAndNormalizeBaseUrl(apiBaseUrl);
+        } catch (IllegalArgumentException ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, ex.getMessage());
         }
     }
 

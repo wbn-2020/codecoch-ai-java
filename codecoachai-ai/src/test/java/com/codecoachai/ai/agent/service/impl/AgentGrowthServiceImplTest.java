@@ -725,6 +725,26 @@ class AgentGrowthServiceImplTest {
     }
 
     @Test
+    void confirmV9EvidenceDraftDoesNotEnableMemoryAutomatically() {
+        AgentGrowthServiceImpl service = service();
+        AgentMemory candidate = memory(199L, 10L, 0,
+                "EVIDENCE_LEARNING_CANDIDATE", BigDecimal.valueOf(0.85));
+        AgentMemory confirmed = memory(199L, 10L, 0,
+                "USER_CONFIRMED_EVIDENCE_LEARNING_CANDIDATE", BigDecimal.valueOf(0.85));
+        when(agentMemoryMapper.selectById(199L))
+                .thenReturn(candidate)
+                .thenReturn(confirmed);
+
+        AgentMemoryVO vo = service.confirmMemory(10L, 199L);
+
+        ArgumentCaptor<AgentMemory> memoryCaptor = ArgumentCaptor.forClass(AgentMemory.class);
+        verify(agentMemoryMapper).updateById(memoryCaptor.capture());
+        assertEquals(0, memoryCaptor.getValue().getEnabled());
+        assertEquals("CONFIRMED_DISABLED", vo.getMemoryStatus());
+        assertEquals("WAITING_USER_ENABLE", vo.getDisabledReason());
+    }
+
+    @Test
     void deleteMemoryRejectsOtherUsersMemory() {
         AgentGrowthServiceImpl service = service();
         when(agentMemoryMapper.selectById(99L)).thenReturn(memory(99L, 20L, 1));

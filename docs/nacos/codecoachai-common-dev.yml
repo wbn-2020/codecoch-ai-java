@@ -3,6 +3,37 @@ spring:
     nacos:
       discovery:
         ip: 127.0.0.1
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 5000
+          # Resume AI calls invoke a real model and can legitimately exceed the
+          # default internal RPC budget. Keep the extended timeout scoped to
+          # the long-running client instead of weakening all Feign calls.
+          resumeAiFeignClient:
+            connectTimeout: 3000
+            readTimeout: 120000
+          # Practice review invokes a real model synchronously. The default
+          # five-second budget can expire after the model succeeds but before
+          # question-service receives the response, leaving a false FAILED
+          # practice record and an orphaned successful AI call log.
+          aiPracticeFeignClient:
+            connectTimeout: 3000
+            readTimeout: 120000
+          # Async task consumers synchronously ask resume-service to execute
+          # JD parsing, resume optimization, and matching before acknowledging
+          # the message. It must outlive the nested AI call above.
+          taskResumeFeignClient:
+            connectTimeout: 3000
+            readTimeout: 120000
+          # Task consumers call AI synchronously for interview reports and
+          # generation jobs. Keep this budget scoped so normal RPC remains
+          # responsive while a real model is still allowed to finish.
+          taskAiFeignClient:
+            connectTimeout: 3000
+            readTimeout: 180000
   jackson:
     time-zone: Asia/Shanghai
     date-format: yyyy-MM-dd HH:mm:ss
@@ -44,9 +75,22 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      secret: ${CODECOACHAI_INTERNAL_SECRET}
+      # This is the current service's outbound signing key. During migration it also
+      # falls back to the old shared value until every deployment gets a unique key.
+      secret: ${CODECOACHAI_INTERNAL_OUTBOUND_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
+      # Keep this separate while callers migrate. If omitted, code falls back to secret
+      # for compatibility with the old configuration shape.
+      legacy-shared-secret: ${CODECOACHAI_INTERNAL_LEGACY_SHARED_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
+      legacy-shared-secret-enabled: true
+      # Empty means deny all legacy callers. During a migration window, list every
+      # still-legacy caller explicitly; caller rings can accept current and legacy
+      # keys at the same time until cutover is complete.
+      legacy-shared-secret-callers: []
+      # Each caller ring must also declare its allowed METHOD /inner/path patterns
+      # and whether it may forward signed user context. See the migration guide.
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
+      max-signed-body-bytes: 1048576
 
   vector:
     enabled: ${CODECOACHAI_VECTOR_ENABLED:true}
@@ -59,13 +103,6 @@ codecoachai:
 
   ops:
     health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9208|service}
-
-feign:
-  client:
-    config:
-      default:
-        connectTimeout: 3000
-        readTimeout: 5000
 
 management:
   endpoints:

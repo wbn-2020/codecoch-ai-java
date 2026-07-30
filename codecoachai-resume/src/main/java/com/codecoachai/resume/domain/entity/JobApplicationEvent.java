@@ -17,4 +17,6 @@ public class JobApplicationEvent extends BaseEntity {
     private String summary;
     private String reviewJson;
     private String idempotencyKeyHash;
+    private String requestHash;
+    private Integer resultLockVersion;
 }

@@ -56,6 +56,7 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
     private static final int AUDIT_LOG_THREADS = 2;
     private static final int AUDIT_LOG_QUEUE_CAPACITY = 1024;
+    private static final long AUDIT_LOG_SHUTDOWN_TIMEOUT_SECONDS = 5L;
 
     private final JdbcTemplate jdbcTemplate;
     private final ExecutorService logExecutor = new ThreadPoolExecutor(
@@ -105,6 +106,16 @@ public class AutoOperationLogFilter extends OncePerRequestFilter {
     @PreDestroy
     public void shutdown() {
         logExecutor.shutdown();
+        try {
+            if (!logExecutor.awaitTermination(AUDIT_LOG_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                int discarded = logExecutor.shutdownNow().size();
+                log.warn("自动操作日志执行器关闭超时，已中断剩余任务 discarded={}", discarded);
+            }
+        } catch (InterruptedException ex) {
+            int discarded = logExecutor.shutdownNow().size();
+            Thread.currentThread().interrupt();
+            log.warn("等待自动操作日志执行器关闭时被中断 discarded={}", discarded);
+        }
     }
 
     private void submitAuditLog(HttpServletRequest request, HttpServletResponse response, long start, Exception failure) {

@@ -14,6 +14,13 @@ public class CareerCampaignReviewMemoryCandidate {
     private Long userId;
     private Long reviewId;
     private Long snapshotId;
+    private String candidateScopeType;
+    private String candidateScopeKey;
+    private String candidateType;
+    private String usageSourceHash;
+    private Integer evidenceCount;
+    private Integer sampleCount;
+    private String limitsJson;
     private String candidateKey;
     private String semanticHash;
     private String title;
@@ -25,6 +32,11 @@ public class CareerCampaignReviewMemoryCandidate {
     private String status;
     private LocalDateTime confirmedAt;
     private String decisionIdempotencyKeyHash;
+    private String decisionCode;
+    private String decisionPayloadHash;
+    private String decisionHistoryJson;
+    private LocalDateTime decisionAt;
+    private Long promotedMemoryId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Integer deleted;

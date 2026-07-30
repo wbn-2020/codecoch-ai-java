@@ -43,4 +43,52 @@ class FileUploadValidatorTest {
 
         assertDoesNotThrow(() -> FileUploadValidator.validateContent(file, "INTERVIEW_VOICE", "webm"));
     }
+
+    @Test
+    void acceptsZipArchiveWithStandardMimeAndHeader() {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "application-package.zip",
+                "application/zip",
+                new byte[] {0x50, 0x4B, 0x03, 0x04, 0x14, 0x00});
+
+        assertDoesNotThrow(() -> FileUploadValidator.validateContent(
+                file, "APPLICATION_PACKAGE_ARCHIVE", "zip"));
+    }
+
+    @Test
+    void acceptsEmptyZipHeaderWithCompatibleMime() {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "career-campaign.zip",
+                "application/x-zip-compressed",
+                new byte[] {0x50, 0x4B, 0x05, 0x06, 0x00, 0x00});
+
+        assertDoesNotThrow(() -> FileUploadValidator.validateContent(
+                file, "CAREER_CAMPAIGN_ARCHIVE", "zip"));
+    }
+
+    @Test
+    void rejectsNonZipContentDisguisedAsZip() {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "application-package.zip",
+                "application/zip",
+                new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A});
+
+        assertThrows(BusinessException.class,
+                () -> FileUploadValidator.validateContent(file, "APPLICATION_PACKAGE_ARCHIVE", "zip"));
+    }
+
+    @Test
+    void rejectsZipWithMismatchedMime() {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "application-package.zip",
+                "application/pdf",
+                new byte[] {0x50, 0x4B, 0x03, 0x04, 0x14, 0x00});
+
+        assertThrows(BusinessException.class,
+                () -> FileUploadValidator.validateContent(file, "APPLICATION_PACKAGE_ARCHIVE", "zip"));
+    }
 }

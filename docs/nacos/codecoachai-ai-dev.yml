@@ -4,8 +4,8 @@ server:
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
+    url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD}
 
 codecoachai:
@@ -20,6 +20,10 @@ codecoachai:
     temperature: 0.3
     max-tokens: 2048
     timeout-seconds: 60
+    prompt-contract:
+      # Flyway must publish a compatible ACTIVE managed prompt before the service accepts it.
+      startup-check-enabled: true
+      fail-fast: true
     router:
       default-provider: deepseek
       fallback-provider: dashscope
@@ -40,12 +44,21 @@ codecoachai:
         temperature: 0.3
         max-tokens: 2048
         timeout-seconds: 60
+    provider-security:
+      # Exact host names only. Wildcards are rejected to prevent API key exfiltration.
+      allowed-hosts:
+        - api.deepseek.com
+        - dashscope.aliyuncs.com
+      allowed-ports:
+        - 443
     crypto:
       # Required when saving AI model apiKey values from the admin UI.
       # Use at least 16 characters, or base64:<16/24/32-byte-key>.
       secret-key: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY}
   v4:
     features:
+      growth-enabled: true
+      knowledge-enabled: true
       adaptive-plan-enabled: true
   v6:
     features:
@@ -56,3 +69,13 @@ codecoachai:
     v7:
       external-plan-source: true
       campaign-review: true
+    v9:
+      evidence-learning: true
+    v13:
+      agent-skill-gap-context: true
+    v8:
+      campaign-cockpit: true
+      campaign-pulse: true
+      campaign-plan: true
+      campaign-portfolio: true
+      campaign-export: true

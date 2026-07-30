@@ -89,6 +89,9 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         LambdaQueryWrapper<SystemConfig> wrapper = new LambdaQueryWrapper<SystemConfig>()
                 .orderByDesc(SystemConfig::getUpdatedAt);
         if (query != null) {
+            if (StringUtils.hasText(query.getConfigKey())) {
+                wrapper.eq(SystemConfig::getConfigKey, query.getConfigKey().trim());
+            }
             if (StringUtils.hasText(query.getKeyword())) {
                 String keyword = query.getKeyword().trim();
                 wrapper.and(condition -> condition

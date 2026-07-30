@@ -20,7 +20,11 @@ public interface ScenarioRubricService {
 
     ScenarioVersionVO getPublishedScenarioVersion(Long scenarioVersionId);
 
+    ScenarioVersionVO getCloneableScenarioVersion(Long scenarioVersionId);
+
     ScenarioBindingVO bindScenario(Long sessionId, ScenarioBindingCreateDTO dto);
+
+    ScenarioBindingVO bindCloneScenario(Long sessionId, Long scenarioVersionId);
 
     ScenarioBindingVO getBinding(Long sessionId);
 }

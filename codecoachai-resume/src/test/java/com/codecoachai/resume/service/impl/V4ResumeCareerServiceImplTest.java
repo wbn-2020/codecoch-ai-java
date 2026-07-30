@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -14,6 +15,7 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
@@ -229,6 +231,17 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void createApplicationRejectsDirectCampaignAssignment() {
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setCampaignId(700L);
+        dto.setStatus("SAVED");
+
+        assertThrows(BusinessException.class, () -> service.createApplication(dto));
+
+        verify(jobApplicationMapper, never()).insert(any(JobApplication.class));
+    }
+
+    @Test
     void createApplicationFromMatchReportStoresReportTargetAndVersion() {
         JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
         dto.setMatchReportId(99L);
@@ -409,15 +422,18 @@ class V4ResumeCareerServiceImplTest {
     void createApplicationEventSyncsForwardStatus() {
         JobApplication app = application(88L, USER_ID);
         app.setStatus("APPLIED");
+        app.setLockVersion(3);
         when(jobApplicationMapper.selectById(88L)).thenReturn(app);
+        when(jobApplicationLifecycleService.allowedTransitions("APPLIED"))
+                .thenReturn(java.util.Set.of("INTERVIEWING"));
         JobApplicationEventSaveDTO dto = new JobApplicationEventSaveDTO();
         dto.setEventType("INTERVIEW");
 
         service.createApplicationEvent(88L, dto);
 
-        ArgumentCaptor<JobApplication> appCaptor = ArgumentCaptor.forClass(JobApplication.class);
-        verify(jobApplicationMapper).updateById(appCaptor.capture());
-        assertEquals("INTERVIEWING", appCaptor.getValue().getStatus());
+        verify(jobApplicationLifecycleService).transitionForUser(
+                eq(USER_ID), eq(88L), eq("INTERVIEWING"), eq(3),
+                org.mockito.ArgumentMatchers.startsWith("legacy-event:"), isNull());
     }
 
     @Test
@@ -927,7 +943,13 @@ class V4ResumeCareerServiceImplTest {
         current.setCompanyName("Old Company");
         current.setJobTitle("Old Title");
         current.setStatus("SAVED");
-        when(jobApplicationMapper.selectById(56L)).thenReturn(current, current);
+        current.setLockVersion(2);
+        JobApplication saved = application(56L, USER_ID);
+        saved.setCampaignId(700L);
+        saved.setCompanyName("New Company");
+        saved.setJobTitle("New Title");
+        when(jobApplicationMapper.selectById(56L)).thenReturn(current, saved);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
         JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
         dto.setCompanyName("New Company");
         dto.setJobTitle("New Title");
@@ -935,14 +957,26 @@ class V4ResumeCareerServiceImplTest {
 
         JobApplicationVO result = service.updateApplication(56L, dto);
 
-        ArgumentCaptor<JobApplication> captor = ArgumentCaptor.forClass(JobApplication.class);
-        verify(jobApplicationMapper).updateById(captor.capture());
-        JobApplication updated = captor.getValue();
-        assertEquals(700L, updated.getCampaignId());
-        assertEquals("New Company", updated.getCompanyName());
-        assertEquals("New Title", updated.getJobTitle());
-        assertEquals("SAVED", updated.getStatus());
+        verify(jobApplicationMapper).update(isNull(), any(LambdaUpdateWrapper.class));
+        assertEquals("New Company", result.getCompanyName());
+        assertEquals("New Title", result.getJobTitle());
         assertEquals(700L, result.getCampaignId());
+    }
+
+    @Test
+    void updateApplicationRejectsLegacyCampaignChange() {
+        JobApplication current = application(57L, USER_ID);
+        current.setCampaignId(700L);
+        current.setLockVersion(2);
+        when(jobApplicationMapper.selectById(57L)).thenReturn(current);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setCampaignId(800L);
+        dto.setExpectedLockVersion(2);
+        dto.setIdempotencyKey("legacy-campaign-change-57");
+
+        assertThrows(BusinessException.class, () -> service.updateApplication(57L, dto));
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(jobApplicationMapper, never()).updateById(any(JobApplication.class));
     }
 
     @Test

@@ -390,6 +390,68 @@ class ScenarioRubricServiceImplTest {
                 () -> service.bindScenario(99L, bindingDto(55L, "USER_SELECTED")));
     }
 
+    @Test
+    void cloneableScenarioAcceptsRetiredButPublicSelectionStillRejectsIt() {
+        InterviewScenarioVersion retired = publishedScenario(55L, 44L);
+        retired.setVersionStatus(ScenarioVersionStatus.RETIRED.name());
+        retired.setScriptJson("{}");
+        when(scenarioMapper.selectById(55L)).thenReturn(retired);
+        when(rubricMapper.selectById(44L)).thenReturn(publishedRubric());
+
+        ScenarioVersionVO cloneable =
+                service.getCloneableScenarioVersion(55L);
+
+        assertEquals(ScenarioVersionStatus.RETIRED.name(), cloneable.getVersionStatus());
+        assertThrows(
+                BusinessException.class,
+                () -> service.getPublishedScenarioVersion(55L));
+    }
+
+    @Test
+    void internalCloneBindingAcceptsRetiredScenario() {
+        InterviewSession session = new InterviewSession();
+        session.setId(99L);
+        session.setUserId(10L);
+        session.setDeleted(0);
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        InterviewScenarioVersion retired = publishedScenario(55L, 44L);
+        retired.setVersionStatus(ScenarioVersionStatus.RETIRED.name());
+        when(scenarioMapper.selectById(55L)).thenReturn(retired);
+        when(rubricMapper.selectById(44L)).thenReturn(publishedRubric());
+        when(bindingMapper.selectOne(any())).thenReturn(null);
+        when(bindingMapper.insert(any(InterviewScenarioBinding.class)))
+                .thenAnswer(invocation -> {
+                    InterviewScenarioBinding binding = invocation.getArgument(0);
+                    binding.setId(78L);
+                    return 1;
+                });
+
+        ScenarioBindingVO result = service.bindCloneScenario(99L, 55L);
+
+        assertEquals(78L, result.getBindingId());
+        assertEquals("INTERVIEW_CLONE", result.getBindingSource());
+    }
+
+    @Test
+    void internalCloneBindingRejectsDraftScenario() {
+        InterviewSession session = new InterviewSession();
+        session.setId(99L);
+        session.setUserId(10L);
+        session.setDeleted(0);
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        InterviewScenarioVersion draft = publishedScenario(55L, 44L);
+        draft.setVersionStatus(ScenarioVersionStatus.DRAFT.name());
+        when(scenarioMapper.selectById(55L)).thenReturn(draft);
+        when(bindingMapper.selectOne(any())).thenReturn(null);
+
+        assertThrows(
+                BusinessException.class,
+                () -> service.bindCloneScenario(99L, 55L));
+
+        verify(bindingMapper, never())
+                .insert(any(InterviewScenarioBinding.class));
+    }
+
     private RubricVersionCreateDTO rubricDto(ArrayNode dimensions) {
         RubricVersionCreateDTO dto = new RubricVersionCreateDTO();
         dto.setRubricCode("CORE");

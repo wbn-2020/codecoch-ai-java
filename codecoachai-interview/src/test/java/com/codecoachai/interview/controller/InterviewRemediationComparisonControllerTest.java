@@ -9,8 +9,10 @@ import com.codecoachai.interview.domain.dto.InterviewRemediationCreateDTO;
 import com.codecoachai.interview.domain.vo.InterviewComparisonVO;
 import com.codecoachai.interview.domain.vo.InterviewRemediationOptionsVO;
 import com.codecoachai.interview.domain.vo.InterviewRemediationVO;
+import com.codecoachai.interview.domain.vo.InterviewReplayOptionsVO;
 import com.codecoachai.interview.service.InterviewComparisonService;
 import com.codecoachai.interview.service.InterviewRemediationService;
+import com.codecoachai.interview.service.InterviewReplayService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,6 +26,8 @@ class InterviewRemediationComparisonControllerTest {
     private InterviewRemediationService remediationService;
     @Mock
     private InterviewComparisonService comparisonService;
+    @Mock
+    private InterviewReplayService replayService;
 
     @Test
     void remediationControllerDelegatesCreate() {
@@ -62,6 +66,21 @@ class InterviewRemediationComparisonControllerTest {
 
         assertEquals(100L, result.getInterviewId());
         verify(remediationService).options(100L);
+    }
+
+    @Test
+    void replayControllerReturnsIndependentEligibilityOptions() {
+        InterviewReplayOptionsVO expected = new InterviewReplayOptionsVO();
+        expected.setInterviewId(100L);
+        expected.setState("ELIGIBLE");
+        when(replayService.options(100L)).thenReturn(expected);
+
+        var result = new InterviewReplayController(replayService)
+                .options(100L)
+                .getData();
+
+        assertEquals("ELIGIBLE", result.getState());
+        verify(replayService).options(100L);
     }
 
     @Test

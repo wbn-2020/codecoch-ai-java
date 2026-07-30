@@ -18,10 +18,12 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.LinkedHashSet;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
@@ -42,29 +44,52 @@ public class JobApplicationLifecycleServiceImpl implements JobApplicationLifecyc
     public JobApplication transition(Long applicationId, String targetStatus,
                                      Integer expectedLockVersion, String idempotencyKey) {
         return transitionForUser(SecurityAssert.requireLoginUserId(), applicationId,
-                targetStatus, expectedLockVersion, idempotencyKey);
+                targetStatus, expectedLockVersion, idempotencyKey, null);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public JobApplication transitionForUser(Long userId, Long applicationId, String targetStatus,
                                             Integer expectedLockVersion, String idempotencyKey) {
-        JobApplication current = owned(userId, applicationId);
-        String next = normalize(targetStatus);
-        String keyHash = idempotencyKey == null || idempotencyKey.isBlank()
-                ? null
-                : hash(userId + "|STATUS_CHANGED|" + applicationId + "|" + idempotencyKey.trim());
+        return transitionForUser(userId, applicationId, targetStatus,
+                expectedLockVersion, idempotencyKey, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobApplication transition(Long applicationId, String targetStatus,
+                                     Integer expectedLockVersion, String idempotencyKey,
+                                     String note) {
+        return transitionForUser(SecurityAssert.requireLoginUserId(), applicationId,
+                targetStatus, expectedLockVersion, idempotencyKey, note);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobApplication transitionForUser(Long userId, Long applicationId, String targetStatus,
+                                            Integer expectedLockVersion, String idempotencyKey,
+                                            String note) {
+        JobApplication current = ownedForUpdate(userId, applicationId);
+        String next = requiredStatus(targetStatus);
+        String normalizedNote = trimNote(note);
+        int expected = requiredVersion(expectedLockVersion);
+        String cleanKey = requiredKey(idempotencyKey);
+        String requestHash = hash("STATUS_CHANGED|" + next + "|" + normalizedNote);
+        String keyHash = hash(userId + "|STATUS_CHANGED|" + applicationId + "|" + cleanKey);
         if (keyHash != null) {
             JobApplicationEvent existing = eventMapper.selectByIdempotencyKey(userId, applicationId, keyHash);
             if (existing != null) {
-                if (existing.getSummary() != null && existing.getSummary().endsWith(" -> " + next)) {
+                if (sameRequest(existing, requestHash, next)) {
                     return current;
                 }
                 throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
-                        "Idempotency key was already used with a different status");
+                        "Idempotency key was already used with a different application transition");
             }
         }
         String previous = normalize(current.getStatus());
+        if (current.getLockVersion() != null && !current.getLockVersion().equals(expected)) {
+            throw concurrent();
+        }
         if (previous.equals(next)) {
             return current;
         }
@@ -72,31 +97,31 @@ public class JobApplicationLifecycleServiceImpl implements JobApplicationLifecyc
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Application status cannot transition from " + previous + " to " + next);
         }
-        int expected = expectedLockVersion == null
-                ? (current.getLockVersion() == null ? 1 : current.getLockVersion())
-                : expectedLockVersion;
-        if (current.getLockVersion() != null && !current.getLockVersion().equals(expected)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Application was changed by another request");
-        }
         LocalDateTime now = LocalDateTime.now();
         int updated = applicationMapper.transitionStatus(applicationId, userId, previous, next, now,
                 outcomeFor(next), expected);
         if (updated != 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Application was changed by another request");
+            throw concurrent();
         }
         JobApplicationEvent event = new JobApplicationEvent();
         event.setUserId(userId);
         event.setApplicationId(applicationId);
         event.setEventType("STATUS_CHANGED");
         event.setEventTime(now);
-        event.setSummary(previous + " -> " + next);
+        event.setSummary(summary(previous, next, normalizedNote));
         event.setIdempotencyKeyHash(keyHash);
+        event.setRequestHash(requestHash);
+        event.setResultLockVersion(expected + 1);
         try {
             eventMapper.insert(event);
         } catch (DuplicateKeyException duplicate) {
             JobApplicationEvent existing = eventMapper.selectByIdempotencyKey(userId, applicationId, keyHash);
             if (existing == null) {
                 throw duplicate;
+            }
+            if (!sameRequest(existing, requestHash, next)) {
+                throw new BusinessException(ErrorCode.RESOURCE_RELATION_CONFLICT,
+                        "Idempotency key was already used for a different application transition");
             }
         }
         return owned(userId, applicationId);
@@ -113,8 +138,80 @@ public class JobApplicationLifecycleServiceImpl implements JobApplicationLifecyc
         return application;
     }
 
+    private JobApplication ownedForUpdate(Long userId, Long id) {
+        JobApplication application = applicationMapper.selectOne(new LambdaQueryWrapper<JobApplication>()
+                .eq(JobApplication::getId, id)
+                .eq(JobApplication::getUserId, userId)
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .last("FOR UPDATE"));
+        if (application == null) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Application not found");
+        }
+        return application;
+    }
+
     private static String normalize(String value) {
         return value == null || value.isBlank() ? "DRAFT" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static String requiredStatus(String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Target application status is required");
+        }
+        return value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static int requiredVersion(Integer value) {
+        if (value == null || value < 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Expected application lock version is required");
+        }
+        return value;
+    }
+
+    private static String requiredKey(String value) {
+        if (!StringUtils.hasText(value)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Idempotency key is required");
+        }
+        return value.trim();
+    }
+
+    private static String trimNote(String value) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String result = value.trim();
+        return result.length() <= 300 ? result : result.substring(0, 300);
+    }
+
+    private static String summary(String previous, String next, String note) {
+        String transition = previous + " -> " + next;
+        return StringUtils.hasText(note) ? transition + " | " + note : transition;
+    }
+
+    private static boolean sameRequest(JobApplicationEvent existing, String requestHash, String targetStatus) {
+        if (existing.getRequestHash() != null) {
+            return existing.getRequestHash().equals(requestHash);
+        }
+        return transitionTarget(existing.getSummary()).equals(targetStatus);
+    }
+
+    private static String transitionTarget(String summary) {
+        if (!StringUtils.hasText(summary)) {
+            return "";
+        }
+        int separator = summary.indexOf(" -> ");
+        if (separator < 0) {
+            return "";
+        }
+        String target = summary.substring(separator + 4);
+        int noteSeparator = target.indexOf(" | ");
+        return (noteSeparator < 0 ? target : target.substring(0, noteSeparator))
+                .trim().toUpperCase(Locale.ROOT);
+    }
+
+    private static BusinessException concurrent() {
+        return new BusinessException(ErrorCode.PARAM_ERROR,
+                "Application was changed by another request");
     }
 
     private static String outcomeFor(String status) {
@@ -139,20 +236,24 @@ public class JobApplicationLifecycleServiceImpl implements JobApplicationLifecyc
 
     private static Map<String, Set<String>> transitions() {
         Map<String, Set<String>> values = new LinkedHashMap<>();
-        values.put("DRAFT", Set.of("SAVED", "APPLIED", "WITHDRAWN", "CLOSED"));
-        values.put("SAVED", Set.of("PREPARING", "APPLIED", "WITHDRAWN", "CLOSED"));
-        values.put("PREPARING", Set.of("APPLIED", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("APPLIED", Set.of("PREPARING", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("SCREENING", Set.of("INTERVIEW", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("INTERVIEW", Set.of("OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("INTERVIEWING", Set.of("OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("OFFER", Set.of("ACCEPTED", "DECLINED", "REJECTED", "WITHDRAWN", "CLOSED"));
-        values.put("ACCEPTED", Set.of("CLOSED"));
-        values.put("DECLINED", Set.of("CLOSED"));
-        values.put("REJECTED", Set.of("CLOSED"));
-        values.put("WITHDRAWN", Set.of("CLOSED"));
-        values.put("CLOSED", Set.of("REOPENED"));
-        values.put("REOPENED", Set.of("SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER", "CLOSED"));
+        values.put("DRAFT", orderedSet("SAVED", "APPLIED", "WITHDRAWN", "CLOSED"));
+        values.put("SAVED", orderedSet("PREPARING", "APPLIED", "WITHDRAWN", "CLOSED"));
+        values.put("PREPARING", orderedSet("APPLIED", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("APPLIED", orderedSet("PREPARING", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("SCREENING", orderedSet("INTERVIEW", "INTERVIEWING", "OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("INTERVIEW", orderedSet("OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("INTERVIEWING", orderedSet("OFFER", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("OFFER", orderedSet("ACCEPTED", "DECLINED", "REJECTED", "WITHDRAWN", "CLOSED"));
+        values.put("ACCEPTED", orderedSet("CLOSED"));
+        values.put("DECLINED", orderedSet("CLOSED"));
+        values.put("REJECTED", orderedSet("CLOSED"));
+        values.put("WITHDRAWN", orderedSet("CLOSED"));
+        values.put("CLOSED", orderedSet("REOPENED"));
+        values.put("REOPENED", orderedSet("SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER", "CLOSED"));
         return Map.copyOf(values);
+    }
+
+    private static Set<String> orderedSet(String... values) {
+        return java.util.Collections.unmodifiableSet(new LinkedHashSet<>(java.util.List.of(values)));
     }
 }

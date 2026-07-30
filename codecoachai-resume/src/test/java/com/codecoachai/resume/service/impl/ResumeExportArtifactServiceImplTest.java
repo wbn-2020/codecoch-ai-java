@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
@@ -449,6 +450,9 @@ class ResumeExportArtifactServiceImplTest {
         byte[] persistedZip = harness.files().get(zipFileId);
         assertNotNull(persistedZip);
         assertEquals(ResumeArtifactHashes.sha256(persistedZip), zipArtifact.getSha256());
+        assertEquals("RESUME", harness.upload(".pdf").bizType());
+        assertEquals("RESUME", harness.upload(".docx").bizType());
+        assertEquals("APPLICATION_PACKAGE_ARCHIVE", harness.upload(".zip").bizType());
 
         clearInvocations(fileFeignClient, artifactMapper);
         harness.files().remove(pdfFileId);
@@ -467,7 +471,8 @@ class ResumeExportArtifactServiceImplTest {
                 firstResponse.getHeaders().getFirst("X-Artifact-SHA256"));
         assertEquals(firstResponse.getHeaders().getFirst("X-Artifact-SHA256"),
                 secondResponse.getHeaders().getFirst("X-Artifact-SHA256"));
-        verify(fileFeignClient, times(2)).download(zipFileId, USER_ID, "RESUME");
+        verify(fileFeignClient, times(2))
+                .download(zipFileId, USER_ID, "APPLICATION_PACKAGE_ARCHIVE");
         verify(fileFeignClient, never()).download(pdfFileId, USER_ID, "RESUME");
         verify(fileFeignClient, never()).download(docxFileId, USER_ID, "RESUME");
     }
@@ -845,24 +850,25 @@ class ResumeExportArtifactServiceImplTest {
         });
         lenient().when(exportMapper.selectById(any())).thenAnswer(invocation ->
                 exports.get(((Number) invocation.getArgument(0)).longValue()));
-        when(fileFeignClient.upload(any(), eq("RESUME"), eq(USER_ID))).thenAnswer(invocation -> {
+        when(fileFeignClient.upload(any(), anyString(), eq(USER_ID))).thenAnswer(invocation -> {
             org.springframework.web.multipart.MultipartFile file = invocation.getArgument(0);
+            String bizType = invocation.getArgument(1);
             Long fileId = fileIds.incrementAndGet();
             byte[] bytes = file.getBytes();
             files.put(fileId, bytes);
-            uploads.add(new UploadRecord(fileId, file.getOriginalFilename()));
+            uploads.add(new UploadRecord(fileId, file.getOriginalFilename(), bizType));
             InnerFileUploadVO uploaded = new InnerFileUploadVO();
             uploaded.setFileId(fileId);
             return Result.success(uploaded);
         });
-        when(fileFeignClient.download(any(), eq(USER_ID), eq("RESUME"))).thenAnswer(invocation -> {
+        when(fileFeignClient.download(any(), eq(USER_ID), anyString())).thenAnswer(invocation -> {
             Long fileId = invocation.getArgument(0);
             byte[] bytes = files.get(fileId);
             return bytes == null
                     ? ResponseEntity.notFound().build()
                     : ResponseEntity.ok(new ByteArrayResource(bytes));
         });
-        lenient().when(fileFeignClient.delete(any(), eq(USER_ID), eq("RESUME"))).thenAnswer(invocation -> {
+        lenient().when(fileFeignClient.delete(any(), eq(USER_ID), anyString())).thenAnswer(invocation -> {
             files.remove((Long) invocation.getArgument(0));
             return Result.success();
         });
@@ -931,7 +937,7 @@ class ResumeExportArtifactServiceImplTest {
         }
     }
 
-    private record UploadRecord(Long fileId, String name) {
+    private record UploadRecord(Long fileId, String name, String bizType) {
     }
 
     private record PackageHarness(
@@ -941,9 +947,12 @@ class ResumeExportArtifactServiceImplTest {
             List<UploadRecord> uploads) {
 
         private Long uploadId(String suffix) {
+            return upload(suffix).fileId();
+        }
+
+        private UploadRecord upload(String suffix) {
             return uploads.stream()
-                    .filter(upload -> upload.name().endsWith(suffix))
-                    .map(UploadRecord::fileId)
+                    .filter(item -> item.name().endsWith(suffix))
                     .findFirst()
                     .orElseThrow();
         }

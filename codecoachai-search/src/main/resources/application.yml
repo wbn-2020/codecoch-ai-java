@@ -17,6 +17,8 @@ spring:
       max-lifetime: 1200000
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
+    username: ${ELASTICSEARCH_USERNAME:elastic}
+    password: ${ELASTIC_PASSWORD:}
   profiles:
     active: dev
   config:
@@ -42,3 +44,5 @@ management:
 codecoachai:
   elasticsearch:
     uris: ${ELASTICSEARCH_URIS:http://elasticsearch:9200}
+    username: ${ELASTICSEARCH_USERNAME:elastic}
+    password: ${ELASTIC_PASSWORD:}

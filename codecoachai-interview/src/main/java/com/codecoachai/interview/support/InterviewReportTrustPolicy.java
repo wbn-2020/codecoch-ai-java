@@ -1,6 +1,7 @@
 package com.codecoachai.interview.support;
 
 import com.codecoachai.interview.domain.entity.InterviewReport;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Locale;
@@ -51,7 +52,7 @@ public final class InterviewReportTrustPolicy {
     public static boolean isTrustedForComparisonNormalization(
             InterviewReport report, Integer normalizedTotalScore) {
         if (report == null
-                || !"GENERATED".equalsIgnoreCase(report.getStatus())
+                || !ReportStatusEnum.isComparisonReady(report.getStatus())
                 || report.getId() == null
                 || report.getSessionId() == null
                 || report.getUserId() == null

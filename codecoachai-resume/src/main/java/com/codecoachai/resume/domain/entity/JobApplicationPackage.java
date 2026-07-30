@@ -34,5 +34,6 @@ public class JobApplicationPackage extends BaseEntity {
     private Integer fallback;
     private String fallbackReason;
     private Integer snapshotVersion;
+    private Long currentSnapshotId;
     private LocalDateTime refreshedAt;
 }

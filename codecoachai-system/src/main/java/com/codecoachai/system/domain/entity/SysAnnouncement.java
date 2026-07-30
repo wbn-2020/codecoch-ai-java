@@ -1,6 +1,8 @@
 package com.codecoachai.system.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
 import java.time.LocalDateTime;
 import lombok.Data;
 
@@ -10,6 +12,7 @@ import lombok.Data;
 @Data
 @TableName("sys_announcement")
 public class SysAnnouncement {
+    @JsonSerialize(using = ToStringSerializer.class)
     private Long id;
     private String title;
     private String content;

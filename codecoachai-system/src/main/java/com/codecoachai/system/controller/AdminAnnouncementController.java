@@ -88,7 +88,7 @@ public class AdminAnnouncementController {
     @Operation(summary = "新增公告")
     @OperationLog(module = "system", action = "CREATE_ANNOUNCEMENT", description = "新增公告", logArgs = false)
     @PostMapping("/admin/announcements")
-    public Result<Long> create(@Valid @RequestBody AnnouncementSaveDTO dto) {
+    public Result<String> create(@Valid @RequestBody AnnouncementSaveDTO dto) {
         adminPermissionGuard.require(PERM_ANNOUNCEMENT_WRITE);
         return runConfirmedOperation("announcement-create:" + (dto == null ? "new" : dto.getTitle()),
                 dto == null ? null : dto.getConfirm(),
@@ -108,7 +108,7 @@ public class AdminAnnouncementController {
         a.setCreatedAt(LocalDateTime.now());
         a.setUpdatedAt(LocalDateTime.now());
         announcementMapper.insert(a);
-                    return Result.success(a.getId());
+                    return Result.success(String.valueOf(a.getId()));
                 });
     }
 

@@ -17,9 +17,10 @@ import com.codecoachai.interview.domain.vo.InterviewRemediationVO;
 import com.codecoachai.interview.mapper.InterviewRemediationMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
+import com.codecoachai.interview.scenario.InterviewScenarioBindingResolver;
 import com.codecoachai.interview.service.InterviewRemediationService;
-import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewSessionConfigCopier;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,29 +32,28 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DuplicateKeyException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class InterviewRemediationServiceImpl implements InterviewRemediationService {
 
     private static final String STRENGTH_NORMAL = "NORMAL";
     private static final String STRENGTH_STRONG = "STRONG";
-    private static final String STATUS_CREATING = "CREATING";
     private static final String STATUS_CREATED = "CREATED";
     private static final int MAX_OPTIONS = 10;
 
     private final InterviewRemediationMapper remediationMapper;
     private final InterviewReportMapper reportMapper;
     private final InterviewSessionMapper sessionMapper;
-    private final InterviewService interviewService;
+    private final InterviewScenarioBindingResolver bindingResolver;
+    private final InterviewCloneTransactionService cloneTransactionService;
     private final ObjectMapper objectMapper;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public InterviewRemediationVO create(InterviewRemediationCreateDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
         List<Long> requirementIds = normalizeRequirementIds(dto.getSourceRequirementIds());
@@ -61,10 +61,18 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
         String idempotencyKey = dto.getIdempotencyKey().trim();
         String strength = Boolean.TRUE.equals(dto.getStrongRemediation()) ? STRENGTH_STRONG : STRENGTH_NORMAL;
 
-        InterviewRemediation existing = findByIdempotencyKey(userId, idempotencyKey);
-        if (existing != null) {
-            validateReplayPayload(existing, dto.getSourceReportId(), requirementIds, purpose, strength);
-            return toVO(existing, true, null);
+        InterviewRemediation remediation = new InterviewRemediation();
+        remediation.setUserId(userId);
+        remediation.setSourceReportId(dto.getSourceReportId());
+        remediation.setSourceRequirementIds(writeJson(requirementIds));
+        remediation.setPracticePurpose(purpose);
+        remediation.setRemediationStrength(strength);
+        remediation.setIdempotencyKey(idempotencyKey);
+
+        InterviewRemediation completed =
+                cloneTransactionService.recoverCompletedRemediation(remediation);
+        if (completed != null) {
+            return toVO(completed, true, null);
         }
 
         InterviewReport sourceReport = reportMapper.selectById(dto.getSourceReportId());
@@ -90,50 +98,33 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
             throw new BusinessException(ErrorCode.PARAM_ERROR, reason);
         }
 
-        InterviewRemediation remediation = new InterviewRemediation();
-        remediation.setUserId(userId);
-        remediation.setSourceReportId(sourceReport.getId());
+        CreateInterviewDTO interviewRequest =
+                buildInterviewRequest(
+                        sourceSession, sourceReport, requirementIds, purpose, strength);
         remediation.setSourceSessionId(sourceSession.getId());
         remediation.setTargetJobId(sourceSession.getTargetJobId());
-        remediation.setSourceRequirementIds(writeJson(requirementIds));
-        remediation.setPracticePurpose(purpose);
-        remediation.setRemediationStrength(strength);
         remediation.setRubricVersion(sourceReport.getRubricVersion());
-        remediation.setStatus(STATUS_CREATING);
-        remediation.setIdempotencyKey(idempotencyKey);
+        InterviewServiceImpl.InterviewClonePreparation clonePreparation =
+                cloneTransactionService.prepareCloneTarget(
+                        interviewRequest, sourceSession.getId());
+
+        InterviewCloneTransactionService.RemediationClaim claim =
+                cloneTransactionService.claimRemediation(remediation);
+        if (!claim.owner()) {
+            return toVO(claim.remediation(), true, null);
+        }
         try {
-            remediationMapper.insert(remediation);
-        } catch (DuplicateKeyException ex) {
-            InterviewRemediation concurrent = findByIdempotencyKey(userId, idempotencyKey);
-            if (concurrent == null) {
-                throw ex;
-            }
-            validateReplayPayload(concurrent, sourceReport.getId(), requirementIds, purpose, strength);
-            return toVO(concurrent, true, null);
+            InterviewCloneTransactionService.RemediationCreation creation =
+                    cloneTransactionService.createRemediationTarget(
+                            claim.remediation().getId(),
+                            claim.claimToken(),
+                            clonePreparation);
+            return toVO(
+                    creation.remediation(), false, creation.interview());
+        } catch (RuntimeException ex) {
+            releaseClaimQuietly(claim);
+            throw ex;
         }
-
-        CreateInterviewVO interview = interviewService.create(
-                buildInterviewRequest(sourceSession, sourceReport, requirementIds, purpose, strength));
-        if (interview == null || interview.getId() == null) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "复练面试创建失败");
-        }
-
-        InterviewSession targetPatch = new InterviewSession();
-        targetPatch.setId(interview.getId());
-        targetPatch.setSourceReportId(sourceReport.getId());
-        targetPatch.setSourceRequirementIds(writeJson(requirementIds));
-        targetPatch.setPracticePurpose(purpose);
-        targetPatch.setRemediationStrength(strength);
-        if (sessionMapper.updateById(targetPatch) != 1) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "复练来源上下文保存失败");
-        }
-
-        remediation.setTargetSessionId(interview.getId());
-        remediation.setStatus(STATUS_CREATED);
-        if (remediationMapper.updateById(remediation) != 1) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "复练记录保存失败");
-        }
-        return toVO(remediation, false, interview);
     }
 
     @Override
@@ -178,6 +169,14 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
         if (!InterviewReportTrustPolicy.isAvailableForRemediation(report)) {
             result.setRemediationAvailable(false);
             result.setRemediationUnavailableReason(InterviewReportTrustPolicy.remediationUnavailableReason(report));
+            return result;
+        }
+        try {
+            bindingResolver.reusableScenarioVersionId(
+                    session.getId(), userId, true);
+        } catch (BusinessException ex) {
+            result.setRemediationAvailable(false);
+            result.setRemediationUnavailableReason("SCENARIO_VERSION_INVALID");
             return result;
         }
 
@@ -442,36 +441,16 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
             List<Long> requirementIds,
             String purpose,
             String strength) {
-        CreateInterviewDTO request = new CreateInterviewDTO();
-        request.setMode(source.getMode());
-        request.setInterviewMode(source.getMode());
-        request.setResumeId(source.getResumeId());
-        request.setApplicationId(source.getApplicationId());
-        request.setApplicationPackageId(source.getApplicationPackageId() == null
-                ? null : source.getApplicationPackageId().toString());
-        request.setTargetJobId(source.getTargetJobId());
-        request.setJdAnalysisId(source.getJdAnalysisId());
-        request.setResumeVersionId(source.getResumeVersionId());
-        request.setSkillProfileId(source.getSkillProfileId());
-        request.setMatchReportId(source.getMatchReportId());
+        CreateInterviewDTO request =
+                InterviewSessionConfigCopier.copyCreationConfig(source, objectMapper);
         request.setTitle(remediationTitle(source.getTitle()));
-        request.setMaxQuestionCount(source.getMaxQuestionCount());
-        request.setTargetPosition(source.getTargetPosition());
-        request.setExperienceLevel(source.getExperienceLevel());
-        request.setIndustryTemplateId(source.getIndustryTemplateId());
-        request.setIndustryDirection(source.getIndustryDirection());
-        request.setDifficulty(source.getDifficulty());
-        request.setInterviewerStyle(source.getInterviewerStyle());
-        request.setBasedOnResume(source.getBasedOnResume());
-        request.setTrainingScene(source.getTrainingScene());
-        request.setTargetSkillDomain(source.getTargetSkillDomain());
-        request.setTargetSkillCodes(readList(source.getTargetSkillCodes(), new TypeReference<>() {
-        }));
-        request.setTargetLevel(source.getTargetLevel());
-        request.setProjectEvidenceIds(readList(source.getProjectEvidenceIds(), new TypeReference<>() {
-        }));
-        request.setFollowUpIntensity(STRENGTH_STRONG.equals(strength)
-                ? "HIGH" : source.getFollowUpIntensity());
+        // Historical clones accept RETIRED versions, but never silently drop an invalid
+        // binding because that would change the rubric contract.
+        request.setScenarioVersionId(bindingResolver.reusableScenarioVersionId(
+                source.getId(), source.getUserId(), true));
+        if (STRENGTH_STRONG.equals(strength)) {
+            request.setFollowUpIntensity("HIGH");
+        }
         request.setPracticeMode(STRENGTH_STRONG.equals(strength) ? "STRONG_REMEDIATION" : "REMEDIATION");
         request.setRecommendationSource("INTERVIEW_REPORT");
         request.setRecommendationReason("sourceReportId=" + report.getId()
@@ -479,22 +458,8 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
         return request;
     }
 
-    private InterviewRemediation findByIdempotencyKey(Long userId, String idempotencyKey) {
-        return remediationMapper.selectOne(new LambdaQueryWrapper<InterviewRemediation>()
-                .eq(InterviewRemediation::getUserId, userId)
-                .eq(InterviewRemediation::getIdempotencyKey, idempotencyKey)
-                .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
-                .last("limit 1"));
-    }
-
     private InterviewRemediation findLatestBySourceReport(Long userId, Long sourceReportId) {
-        return remediationMapper.selectOne(new LambdaQueryWrapper<InterviewRemediation>()
-                .eq(InterviewRemediation::getUserId, userId)
-                .eq(InterviewRemediation::getSourceReportId, sourceReportId)
-                .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
-                .orderByDesc(InterviewRemediation::getCreatedAt)
-                .orderByDesc(InterviewRemediation::getId)
-                .last("limit 1"));
+        return remediationMapper.selectPreferredBySourceReport(userId, sourceReportId);
     }
 
     private void applyExistingRemediationState(
@@ -516,22 +481,6 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
         return InterviewReportTrustPolicy.isTrustedForFormalAction(report) ? "VERIFIED" : "PARTIAL";
     }
 
-    private void validateReplayPayload(
-            InterviewRemediation existing,
-            Long sourceReportId,
-            List<Long> requirementIds,
-            String purpose,
-            String strength) {
-        List<Long> savedIds = readList(existing.getSourceRequirementIds(), new TypeReference<>() {
-        });
-        if (!sourceReportId.equals(existing.getSourceReportId())
-                || !requirementIds.equals(normalizeRequirementIds(savedIds))
-                || !purpose.equals(existing.getPracticePurpose())
-                || !strength.equals(existing.getRemediationStrength())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "幂等键已被不同的复练请求占用");
-        }
-    }
-
     private InterviewRemediationVO toVO(
             InterviewRemediation remediation, boolean replay, CreateInterviewVO interview) {
         InterviewRemediationVO vo = new InterviewRemediationVO();
@@ -549,6 +498,19 @@ public class InterviewRemediationServiceImpl implements InterviewRemediationServ
         vo.setIdempotentReplay(replay);
         vo.setInterview(interview);
         return vo;
+    }
+
+    private void releaseClaimQuietly(
+            InterviewCloneTransactionService.RemediationClaim claim) {
+        try {
+            cloneTransactionService.releaseRemediationClaim(
+                    claim.remediation().getId(), claim.claimToken());
+        } catch (RuntimeException releaseError) {
+            log.error(
+                    "failed to release interview remediation claim {}: {}",
+                    claim.remediation().getId(),
+                    releaseError.getMessage());
+        }
     }
 
     private List<Long> normalizeRequirementIds(List<Long> ids) {

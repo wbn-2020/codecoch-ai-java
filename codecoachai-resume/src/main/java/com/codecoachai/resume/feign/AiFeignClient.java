@@ -19,7 +19,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
-@FeignClient(name = "codecoachai-ai")
+@FeignClient(name = "codecoachai-ai", contextId = "resumeAiFeignClient")
 public interface AiFeignClient {
 
     @PostMapping("/inner/ai/resume/parse")

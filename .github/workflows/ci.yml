@@ -1,34 +1,48 @@
-name: CI
+name: CodeCoachAI CI
 
 on:
   push:
-    branches: [main, dev-v3]
+    branches:
+      - main
+      - dev-v3
+      - dev-260703
   pull_request:
-    branches: [main]
+    branches:
+      - main
+      - dev-v3
+      - dev-260703
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codecoachai-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  JAVA_VERSION: '21'
-  MAVEN_OPTS: '-Xmx1024m'
+  JAVA_VERSION: "17"
+  NODE_VERSION: "20"
+  MAVEN_OPTS: "-Xmx1024m"
 
 jobs:
-  build:
+  backend:
+    name: Backend test and package
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 35
     services:
       mysql:
         image: mysql:8.0
         env:
           MYSQL_ROOT_PASSWORD: ci_password
-          MYSQL_DATABASE: codecoachai
+          MYSQL_DATABASE: codecoachai_v1
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost"
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
           --health-interval=10s
           --health-timeout=5s
-          --health-retries=5
-
+          --health-retries=10
       redis:
         image: redis:7-alpine
         ports:
@@ -37,98 +51,301 @@ jobs:
           --health-cmd="redis-cli ping"
           --health-interval=5s
           --health-timeout=3s
-          --health-retries=5
+          --health-retries=10
 
     steps:
-      - name: Checkout
+      - name: Checkout backend
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
 
-      - name: Setup JDK
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: 'maven'
+          cache: maven
 
-      - name: Build & Test
-        run: mvn clean install -DskipTests=false -B -q
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check changed lines for whitespace errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --check HEAD^ HEAD
+          else
+            git diff --check
+          fi
+
+      - name: Test release and container scripts
+        run: >-
+          python -m unittest discover
+          -s scripts/release/tests
+          -p "test_*.py"
+          -v
+
+      - name: Test backend
+        run: mvn -B -ntp -Dstyle.color=never clean test
         env:
+          MYSQL_HOST: 127.0.0.1
+          MYSQL_PORT: "3306"
+          MYSQL_DATABASE: codecoachai_v1
+          MYSQL_USERNAME: root
           MYSQL_PASSWORD: ci_password
-          DEEPSEEK_API_KEY: sk-test-placeholder
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: "6379"
+          CODECOACHAI_INTERNAL_SECRET: ci-internal-secret-placeholder-32
+          DEEPSEEK_API_KEY: test-placeholder
 
-      - name: Upload build artifacts
-        if: success()
+      - name: Package backend
+        run: mvn -B -ntp -Dstyle.color=never -DskipTests package
+
+      - name: Stage deployable backend JARs
+        shell: bash
+        run: |
+          set -euo pipefail
+          services=(
+            codecoachai-gateway
+            codecoachai-auth
+            codecoachai-user
+            codecoachai-question
+            codecoachai-resume
+            codecoachai-interview
+            codecoachai-ai
+            codecoachai-system
+            codecoachai-file
+            codecoachai-task
+            codecoachai-search
+          )
+          for service in "${services[@]}"; do
+            mapfile -t jars < <(
+              find "$service/target" -maxdepth 1 -type f \
+                -name '*.jar' \
+                ! -name '*-sources.jar' \
+                ! -name '*-javadoc.jar' \
+                ! -name '*-tests.jar' \
+                ! -name 'original-*' \
+                | sort
+            )
+            if [ "${#jars[@]}" -ne 1 ]; then
+              printf 'Expected one deployable JAR for %s, found %s\n' \
+                "$service" "${#jars[@]}" >&2
+              exit 1
+            fi
+            mkdir -p ".ci-artifacts/backend/$service/target"
+            cp -- "${jars[0]}" ".ci-artifacts/backend/$service/target/"
+          done
+
+      - name: Upload backend JARs
         uses: actions/upload-artifact@v4
         with:
-          name: jars
-          path: '**/target/*.jar'
-          retention-days: 3
+          name: backend-jars
+          if-no-files-found: error
+          retention-days: 7
+          path: .ci-artifacts/backend/
 
-  code-quality:
+  frontend:
+    name: Frontend type-check, test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      source_sha: ${{ steps.frontend-source.outputs.sha }}
+
+    steps:
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.CODECOACHAI_FRONTEND_REPOSITORY || 'wbn-2020/codecoch-ai-vue' }}
+          ref: ${{ vars.CODECOACHAI_FRONTEND_REF || 'dev-260703' }}
+          path: frontend
+          token: ${{ secrets.CODECOACHAI_FRONTEND_READ_TOKEN || github.token }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
+
+      - name: Type-check frontend
+        working-directory: frontend
+        run: npm run type-check
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm run test:unit:run
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Reject historical archives from frontend dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find frontend/dist -type f \( -name '*.tar.gz' -o -name '*.tgz' \) -print -quit | grep -q .; then
+            echo "Historical tar archives must not be published from frontend/dist" >&2
+            exit 1
+          fi
+
+      - name: Record frontend source
+        id: frontend-source
+        shell: bash
+        run: echo "sha=$(git -C frontend rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Build immutable release directory
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: build
+    needs:
+      - backend
+      - frontend
 
     steps:
-      - name: Checkout
+      - name: Checkout backend release tooling
         uses: actions/checkout@v4
-
-      - name: Setup JDK
-        uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: 'maven'
+          persist-credentials: false
 
-      - name: Checkstyle (compile only)
-        run: mvn compile -DskipTests -B -q
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download backend JARs
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jars
+          path: .artifacts/backend
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: .artifacts/frontend
+
+      - name: Build and verify release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:12}"
+          python scripts/release/build_release.py \
+            --backend-artifacts .artifacts/backend \
+            --frontend-dist .artifacts/frontend \
+            --output-root .release \
+            --release-id "$release_id" \
+            --backend-source-sha "$GITHUB_SHA" \
+            --frontend-source-sha "${{ needs.frontend.outputs.source_sha }}"
+          python scripts/release/verify_release.py ".release/$release_id"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ steps.release.outputs.release_id }}
+          path: .release/${{ steps.release.outputs.release_id }}/
+          if-no-files-found: error
+          retention-days: 14
 
   docker:
+    name: Docker ${{ matrix.service }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: build
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev-v3'
-
+    timeout-minutes: 25
+    needs:
+      - backend
     strategy:
+      fail-fast: false
       matrix:
-        service:
-          - codecoachai-gateway
-          - codecoachai-auth
-          - codecoachai-user
-          - codecoachai-ai
-          - codecoachai-resume
-          - codecoachai-interview
-          - codecoachai-question
-          - codecoachai-file
-          - codecoachai-system
-          - codecoachai-task
-          - codecoachai-search
+        include:
+          - service: codecoachai-gateway
+            port: 8080
+          - service: codecoachai-auth
+            port: 9201
+          - service: codecoachai-user
+            port: 9202
+          - service: codecoachai-question
+            port: 9203
+          - service: codecoachai-resume
+            port: 9204
+          - service: codecoachai-interview
+            port: 9205
+          - service: codecoachai-ai
+            port: 9206
+          - service: codecoachai-system
+            port: 9207
+          - service: codecoachai-file
+            port: 9208
+          - service: codecoachai-task
+            port: 8090
+          - service: codecoachai-search
+            port: 8091
 
     steps:
-      - name: Checkout
+      - name: Checkout backend
         uses: actions/checkout@v4
-
-      - name: Setup JDK
-        uses: actions/setup-java@v4
         with:
-          java-version: ${{ env.JAVA_VERSION }}
-          distribution: 'temurin'
-          cache: 'maven'
+          persist-credentials: false
 
-      - name: Build JAR
-        run: mvn clean package -DskipTests -pl ${{ matrix.service }} -am -B -q
+      - name: Download backend JARs
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-jars
+          path: .artifacts/backend
 
-      - name: Build Docker image
+      - name: Build runtime image from tested JAR
+        id: image
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          SERVICE_PORT: ${{ matrix.port }}
         run: |
+          set -euo pipefail
+          mapfile -t jars < <(
+            find ".artifacts/backend/$SERVICE/target" -maxdepth 1 -type f \
+              -name '*.jar' \
+              ! -name '*-sources.jar' \
+              ! -name '*-javadoc.jar' \
+              ! -name '*-tests.jar' \
+              | sort
+          )
+          if [ "${#jars[@]}" -ne 1 ]; then
+            printf 'Expected one JAR for %s, found %s\n' "$SERVICE" "${#jars[@]}" >&2
+            exit 1
+          fi
+          image="codecoachai/$SERVICE:${GITHUB_SHA}"
           docker build \
-            --build-arg SERVICE=${{ matrix.service }} \
-            -t codecoachai/${{ matrix.service }}:${{ github.sha }} \
-            -t codecoachai/${{ matrix.service }}:latest \
+            --target runtime-prebuilt \
+            --build-arg "JAR_FILE=${jars[0]}" \
+            --build-arg "SERVICE_PORT=$SERVICE_PORT" \
+            --tag "$image" \
             .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
-      # 推送到 registry（需要配置 secrets）
-      # - name: Push to registry
-      #   run: |
-      #     echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-      #     docker push codecoachai/${{ matrix.service }}:${{ github.sha }}
-      #     docker push codecoachai/${{ matrix.service }}:latest
+      - name: Verify image runtime contract
+        shell: bash
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = "10001:10001"
+          docker image inspect "$IMAGE" --format '{{json .Config.Healthcheck.Test}}' \
+            | grep -q 'HealthProbe'

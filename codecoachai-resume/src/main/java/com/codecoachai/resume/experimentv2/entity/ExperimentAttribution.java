@@ -14,6 +14,12 @@ public class ExperimentAttribution extends BaseEntity {
     private Long hypothesisId;
     private Long cohortId;
     private LocalDateTime asOf;
+    private LocalDateTime dataCutoffAt;
+    private String inputHash;
+    private String algorithmVersion;
+    private String sourceWatermark;
+    private String resultSource;
+    private Integer fallback;
     private String method;
     private Integer comparableFlag;
     private Integer sampleCount;

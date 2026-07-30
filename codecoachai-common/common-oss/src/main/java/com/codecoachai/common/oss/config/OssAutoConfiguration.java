@@ -27,10 +27,11 @@ public class OssAutoConfiguration {
     @ConditionalOnMissingBean
     public OSS ossClient(OssProperties properties) {
         validateOssProperties(properties);
+        String endpoint = normalizeClientEndpoint(properties.getEndpoint());
         log.info("Initializing Aliyun OSS client endpoint={} bucket={}",
-                properties.getEndpoint(), properties.getBucket());
+                endpoint, properties.getBucket());
         return new OSSClientBuilder().build(
-                properties.getEndpoint(),
+                endpoint,
                 properties.getAccessKeyId(),
                 properties.getAccessKeySecret());
     }
@@ -60,5 +61,17 @@ public class OssAutoConfiguration {
         if (!StringUtils.hasText(properties.getAccessKeySecret())) {
             throw new IllegalStateException("codecoachai.oss.access-key-secret must be configured when OSS is enabled");
         }
+    }
+
+    static String normalizeClientEndpoint(String endpoint) {
+        String value = endpoint == null ? "" : endpoint.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        if (value.regionMatches(true, 0, "http://", 0, 7)
+                || value.regionMatches(true, 0, "https://", 0, 8)) {
+            return value;
+        }
+        return "https://" + value;
     }
 }

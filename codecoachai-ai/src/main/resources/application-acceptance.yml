@@ -1,4 +1,9 @@
 codecoachai:
+  features:
+    v9:
+      evidence-learning: true
+    v13:
+      agent-skill-gap-context: true
   v4:
     features:
       growth-enabled: true

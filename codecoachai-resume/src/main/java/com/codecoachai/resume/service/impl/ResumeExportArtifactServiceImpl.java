@@ -68,7 +68,8 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactService {
 
     private static final String DEFAULT_TEMPLATE = "ATS_SINGLE_COLUMN";
-    private static final String BIZ_TYPE = "RESUME";
+    private static final String RESUME_BIZ_TYPE = "RESUME";
+    private static final String APPLICATION_PACKAGE_ARCHIVE_BIZ_TYPE = "APPLICATION_PACKAGE_ARCHIVE";
     private static final String STATUS_GENERATING = "GENERATING";
     private static final String STATUS_READY = "READY";
     private static final String STATUS_FAILED = "FAILED";
@@ -160,7 +161,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                                         mimeType,
                                         validated.maxBytes(),
                                         validated.fileKey()),
-                                BIZ_TYPE,
+                                RESUME_BIZ_TYPE,
                                 userId)));
                 log.debug("Resume export upload completed artifactId={} exportId={} artifactSize={} durationMs={}",
                         artifact.getId(), export.getId(), size, elapsedMillis(uploadStartedAt));
@@ -184,7 +185,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                     "Resume export record was not finalized");
             return toExportVO(export, artifact);
         } catch (Exception ex) {
-            deleteUploadedFileQuietly(uploadedFileId, userId);
+            deleteUploadedFileQuietly(uploadedFileId, userId, RESUME_BIZ_TYPE);
             markFailed(artifact, export, ex);
             throw generationException(ex);
         } finally {
@@ -284,7 +285,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                                         mimeType,
                                         validated.maxBytes(),
                                         validated.fileKey()),
-                                BIZ_TYPE,
+                                APPLICATION_PACKAGE_ARCHIVE_BIZ_TYPE,
                                 userId)));
                 log.debug("Application package upload completed artifactId={} artifactSize={} durationMs={}",
                         zipArtifact.getId(), size, elapsedMillis(uploadStartedAt));
@@ -304,7 +305,8 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                     "Application package artifact record was not finalized");
             return toArtifactVO(zipArtifact);
         } catch (Exception ex) {
-            deleteUploadedFileQuietly(uploadedZipFileId, userId);
+            deleteUploadedFileQuietly(
+                    uploadedZipFileId, userId, APPLICATION_PACKAGE_ARCHIVE_BIZ_TYPE);
             markPackageArtifactFailed(zipArtifact, ex);
             compensatePackageChildren(generatedChildren, userId, ex);
             throw generationException(ex);
@@ -362,7 +364,8 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Artifact file is missing");
         }
         try {
-            ResponseEntity<Resource> response = fileFeignClient.download(artifact.getFileId(), userId, BIZ_TYPE);
+            ResponseEntity<Resource> response = fileFeignClient.download(
+                    artifact.getFileId(), userId, fileBizType(artifact));
             Resource resource = response == null ? null : response.getBody();
             if (resource == null) {
                 throw new IOException("Artifact file is unavailable");
@@ -532,7 +535,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         temps.add(temp);
         ResponseEntity<Resource> response;
         try {
-            response = fileFeignClient.download(artifact.getFileId(), userId, BIZ_TYPE);
+            response = fileFeignClient.download(artifact.getFileId(), userId, RESUME_BIZ_TYPE);
         } catch (RuntimeException ex) {
             throw new IOException("Generated child artifact cannot be downloaded", ex);
         }
@@ -876,7 +879,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             if (artifactId != null) {
                 try {
                     ResumeArtifact child = ownedArtifact(artifactId, userId);
-                    deleteUploadedFileQuietly(child.getFileId(), userId);
+                    deleteUploadedFileQuietly(child.getFileId(), userId, RESUME_BIZ_TYPE);
                     child.setStatus(STATUS_FAILED);
                     child.setErrorMessage(error);
                     artifactMapper.updateById(child);
@@ -929,12 +932,18 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
                 + safeError(ex);
     }
 
-    private void deleteUploadedFileQuietly(Long fileId, Long userId) {
+    private String fileBizType(ResumeArtifact artifact) {
+        return "APPLICATION_ZIP".equals(artifact.getArtifactType())
+                ? APPLICATION_PACKAGE_ARCHIVE_BIZ_TYPE
+                : RESUME_BIZ_TYPE;
+    }
+
+    private void deleteUploadedFileQuietly(Long fileId, Long userId, String bizType) {
         if (fileId == null) {
             return;
         }
         try {
-            fileFeignClient.delete(fileId, userId, BIZ_TYPE);
+            fileFeignClient.delete(fileId, userId, bizType);
         } catch (RuntimeException ignored) {
         }
     }

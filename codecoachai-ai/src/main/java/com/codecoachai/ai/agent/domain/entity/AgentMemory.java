@@ -15,6 +15,7 @@ public class AgentMemory extends BaseEntity {
     private String content;
     private String sourceType;
     private Long sourceId;
+    private String promotionKeyHash;
     private BigDecimal confidence;
     private Integer enabled;
 }

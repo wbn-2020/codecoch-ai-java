@@ -5,32 +5,23 @@ import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
+import com.codecoachai.ai.security.AiProviderEndpointPolicy;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.ConnectException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.net.SocketTimeoutException;
-import java.time.Duration;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
-import java.util.stream.Stream;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
+import org.apache.hc.client5.http.ConnectTimeoutException;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientResponseException;
 
 /**
  * 可指定 provider 的 OpenAI 兼容协议调用器。
@@ -42,24 +33,12 @@ import org.springframework.web.client.RestClientResponseException;
 @RequiredArgsConstructor
 public class ProviderAiCaller {
 
-    /**
-     * 共享 SimpleClientHttpRequestFactory，复用 JDK HttpURLConnection 的 Keep-Alive 连接缓存。
-     * connectTimeout=5000ms, readTimeout=60000ms。
-     * 如需更大规模的连接池（例如 maxTotal=50, defaultMaxPerRoute=20），
-     * 可添加 org.apache.httpcomponents:httpclient 依赖并改用 HttpComponentsClientHttpRequestFactory。
-     */
-    private static final org.springframework.http.client.SimpleClientHttpRequestFactory SHARED_REQUEST_FACTORY;
-
-    static {
-        SHARED_REQUEST_FACTORY = new org.springframework.http.client.SimpleClientHttpRequestFactory();
-        SHARED_REQUEST_FACTORY.setConnectTimeout(5000);
-        SHARED_REQUEST_FACTORY.setReadTimeout(60000);
-    }
-
     private final AiRouterProperties routerProperties;
     private final AiModelConfigMapper modelConfigMapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
     private final ObjectMapper objectMapper;
+    private final AiProviderEndpointPolicy endpointPolicy;
+    private final SecureProviderHttpClient providerHttpClient;
 
     /**
      * 按 provider 名调用 chat 接口。
@@ -83,7 +62,7 @@ public class ProviderAiCaller {
                 ? (StringUtils.hasText(cfg.getReasonerModel()) ? cfg.getReasonerModel() : cfg.getChatModel())
                 : cfg.getChatModel();
 
-        String url = normalizeUrl(cfg.getBaseUrl());
+        URI url = resolveChatEndpoint(providerName, cfg.getBaseUrl());
         Map<String, Object> body = Map.of(
                 "model", model,
                 "temperature", cfg.getTemperature(),
@@ -93,16 +72,8 @@ public class ProviderAiCaller {
 
         long started = System.currentTimeMillis();
         try {
-            String response = RestClient.builder()
-                    .requestFactory(SHARED_REQUEST_FACTORY)
-                    .build()
-                    .post()
-                    .uri(url)
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + cfg.getApiKey())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
-                    .retrieve()
-                    .body(String.class);
+            String response = providerHttpClient.postJson(
+                    url, cfg.getApiKey(), objectMapper.writeValueAsString(body), cfg.timeout());
             JsonNode root = objectMapper.readTree(response);
             JsonNode choice = root.path("choices").path(0).path("message").path("content");
             if (!choice.isTextual() || !StringUtils.hasText(choice.asText())) {
@@ -122,20 +93,12 @@ public class ProviderAiCaller {
             return result;
         } catch (AiProviderException ex) {
             throw ex;
-        } catch (RestClientResponseException ex) {
-            int code = ex.getStatusCode().value();
-            AiFailureType type = code == 429 ? AiFailureType.HTTP_ERROR : AiFailureType.HTTP_ERROR;
-            throw new AiProviderException(type,
-                    "Provider " + providerName + " HTTP " + code, code, ex);
-        } catch (ResourceAccessException ex) {
-            AiFailureType type = containsCause(ex, SocketTimeoutException.class)
-                    || containsCause(ex, ConnectException.class)
-                    ? AiFailureType.TIMEOUT
-                    : AiFailureType.UNKNOWN_ERROR;
-            throw new AiProviderException(type,
-                    "Provider " + providerName + " failed: " + ex.getMessage(), null, ex);
+        } catch (SecureProviderHttpClient.ProviderHttpStatusException ex) {
+            throw new AiProviderException(AiFailureType.HTTP_ERROR,
+                    "Provider " + providerName + " HTTP " + ex.getStatusCode(), ex.getStatusCode(), ex);
         } catch (Exception ex) {
-            throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
+            AiFailureType type = isTimeout(ex) ? AiFailureType.TIMEOUT : AiFailureType.UNKNOWN_ERROR;
+            throw new AiProviderException(type,
                     "Provider " + providerName + " failed: " + ex.getMessage(), null, ex);
         }
     }
@@ -157,18 +120,11 @@ public class ProviderAiCaller {
         }
 
         Map<String, Object> body = Map.of("model", model, "input", inputs);
+        URI url = resolveEmbeddingEndpoint(providerName, cfg.getBaseUrl());
         long started = System.currentTimeMillis();
         try {
-            String response = RestClient.builder()
-                    .requestFactory(SHARED_REQUEST_FACTORY)
-                    .build()
-                    .post()
-                    .uri(normalizeEmbeddingUrl(cfg.getBaseUrl()))
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + cfg.getApiKey())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
-                    .retrieve()
-                    .body(String.class);
+            String response = providerHttpClient.postJson(
+                    url, cfg.getApiKey(), objectMapper.writeValueAsString(body), cfg.timeout());
             JsonNode root = objectMapper.readTree(response);
             List<List<Float>> vectors = new java.util.ArrayList<>();
             for (JsonNode item : root.path("data")) {
@@ -193,19 +149,13 @@ public class ProviderAiCaller {
             return result;
         } catch (AiProviderException ex) {
             throw ex;
-        } catch (RestClientResponseException ex) {
+        } catch (SecureProviderHttpClient.ProviderHttpStatusException ex) {
             throw new AiProviderException(AiFailureType.HTTP_ERROR,
-                    "Provider " + providerName + " embedding HTTP " + ex.getStatusCode().value(),
-                    ex.getStatusCode().value(), ex);
-        } catch (ResourceAccessException ex) {
-            AiFailureType type = containsCause(ex, SocketTimeoutException.class)
-                    || containsCause(ex, ConnectException.class)
-                    ? AiFailureType.TIMEOUT
-                    : AiFailureType.UNKNOWN_ERROR;
-            throw new AiProviderException(type,
-                    "Provider " + providerName + " embedding failed: " + ex.getMessage(), null, ex);
+                    "Provider " + providerName + " embedding HTTP " + ex.getStatusCode(),
+                    ex.getStatusCode(), ex);
         } catch (Exception ex) {
-            throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
+            AiFailureType type = isTimeout(ex) ? AiFailureType.TIMEOUT : AiFailureType.UNKNOWN_ERROR;
+            throw new AiProviderException(type,
                     "Provider " + providerName + " embedding failed: " + ex.getMessage(), null, ex);
         }
     }
@@ -229,7 +179,7 @@ public class ProviderAiCaller {
         String model = "reasoner".equalsIgnoreCase(modelType)
                 ? (StringUtils.hasText(cfg.getReasonerModel()) ? cfg.getReasonerModel() : cfg.getChatModel())
                 : cfg.getChatModel();
-        String url = normalizeUrl(cfg.getBaseUrl());
+        URI url = resolveChatEndpoint(providerName, cfg.getBaseUrl());
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("temperature", cfg.getTemperature());
@@ -242,56 +192,40 @@ public class ProviderAiCaller {
         StringBuilder fullContent = new StringBuilder();
         int[] usage = new int[]{0, 0, 0}; // prompt, completion, total
         try {
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(cfg.timeout())
-                    .build();
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(cfg.timeout())
-                    .header("Authorization", "Bearer " + cfg.getApiKey())
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                    .build();
-            HttpResponse<Stream<String>> response = client.send(request, HttpResponse.BodyHandlers.ofLines());
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new AiProviderException(AiFailureType.HTTP_ERROR,
-                        "Provider " + providerName + " stream HTTP " + response.statusCode(), response.statusCode(), null);
-            }
-            try (Stream<String> bodyLines = response.body()) {
-                Iterator<String> lines = bodyLines.iterator();
-                while (lines.hasNext()) {
-                    String line = lines.next();
-                    if (line == null || line.isBlank() || !line.startsWith("data:")) {
-                        continue;
-                    }
-                    String payload = line.substring("data:".length()).trim();
-                    if ("[DONE]".equals(payload)) {
-                        break;
-                    }
-                    try {
-                        JsonNode node = objectMapper.readTree(payload);
-                        JsonNode delta = node.path("choices").path(0).path("delta").path("content");
-                        if (delta.isTextual() && !delta.asText().isEmpty()) {
-                            String piece = delta.asText();
-                            fullContent.append(piece);
-                            if (onDelta != null) {
-                                onDelta.accept(piece);
+            providerHttpClient.postJsonLines(
+                    url,
+                    cfg.getApiKey(),
+                    objectMapper.writeValueAsString(body),
+                    cfg.timeout(),
+                    line -> {
+                        if (line == null || line.isBlank() || !line.startsWith("data:")) {
+                            return;
+                        }
+                        String payload = line.substring("data:".length()).trim();
+                        if ("[DONE]".equals(payload)) {
+                            return;
+                        }
+                        try {
+                            JsonNode node = objectMapper.readTree(payload);
+                            JsonNode delta = node.path("choices").path(0).path("delta").path("content");
+                            if (delta.isTextual() && !delta.asText().isEmpty()) {
+                                String piece = delta.asText();
+                                fullContent.append(piece);
+                                if (onDelta != null) {
+                                    onDelta.accept(piece);
+                                }
                             }
+                            JsonNode usageNode = node.path("usage");
+                            if (usageNode.isObject()) {
+                                usage[0] = intOrZero(usageNode.path("prompt_tokens"));
+                                usage[1] = intOrZero(usageNode.path("completion_tokens"));
+                                usage[2] = intOrZero(usageNode.path("total_tokens"));
+                            }
+                        } catch (Exception ex) {
+                            throw new AiProviderException(AiFailureType.UNKNOWN_ERROR,
+                                    "Provider " + providerName + " returned an invalid stream frame", null, ex);
                         }
-                        JsonNode usageNode = node.path("usage");
-                        if (usageNode.isObject()) {
-                            usage[0] = intOrZero(usageNode.path("prompt_tokens"));
-                            usage[1] = intOrZero(usageNode.path("completion_tokens"));
-                            usage[2] = intOrZero(usageNode.path("total_tokens"));
-                        }
-                    } catch (AiProviderException ex) {
-                        throw ex;
-                    } catch (Exception ignore) {
-                        // 单帧解析失败不致命，跳过
-                    }
-                }
-            }
+                    });
             if (fullContent.length() == 0) {
                 throw new AiProviderException(AiFailureType.EMPTY_RESPONSE,
                         "Provider " + providerName + " empty stream response");
@@ -308,14 +242,12 @@ public class ProviderAiCaller {
             return result;
         } catch (AiProviderException ex) {
             throw ex;
-        } catch (java.net.http.HttpConnectTimeoutException ex) {
-            throw new AiProviderException(AiFailureType.TIMEOUT,
-                    "Provider " + providerName + " stream timeout: " + ex.getMessage(), null, ex);
+        } catch (SecureProviderHttpClient.ProviderHttpStatusException ex) {
+            throw new AiProviderException(AiFailureType.HTTP_ERROR,
+                    "Provider " + providerName + " stream HTTP " + ex.getStatusCode(),
+                    ex.getStatusCode(), ex);
         } catch (Exception ex) {
-            AiFailureType type = containsCause(ex, SocketTimeoutException.class)
-                    || containsCause(ex, ConnectException.class)
-                    ? AiFailureType.TIMEOUT
-                    : AiFailureType.UNKNOWN_ERROR;
+            AiFailureType type = isTimeout(ex) ? AiFailureType.TIMEOUT : AiFailureType.UNKNOWN_ERROR;
             throw new AiProviderException(type,
                     "Provider " + providerName + " stream failed: " + ex.getMessage(), null, ex);
         }
@@ -368,17 +300,22 @@ public class ProviderAiCaller {
         }
     }
 
-    private String normalizeUrl(String baseUrl) {
-        String b = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        return b.endsWith("/chat/completions") ? b : b + "/chat/completions";
+    private URI resolveChatEndpoint(String providerName, String baseUrl) {
+        try {
+            return endpointPolicy.chatEndpoint(baseUrl);
+        } catch (IllegalArgumentException ex) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider endpoint rejected: " + providerName, null, ex);
+        }
     }
 
-    private String normalizeEmbeddingUrl(String baseUrl) {
-        String b = baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
-        if (b.endsWith("/chat/completions")) {
-            b = b.substring(0, b.length() - "/chat/completions".length());
+    private URI resolveEmbeddingEndpoint(String providerName, String baseUrl) {
+        try {
+            return endpointPolicy.embeddingEndpoint(baseUrl);
+        } catch (IllegalArgumentException ex) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider endpoint rejected: " + providerName, null, ex);
         }
-        return b.endsWith("/embeddings") ? b : b + "/embeddings";
     }
 
     private int intOrZero(JsonNode node) {
@@ -400,6 +337,12 @@ public class ProviderAiCaller {
             cursor = cursor.getCause();
         }
         return false;
+    }
+
+    private boolean isTimeout(Throwable throwable) {
+        return containsCause(throwable, SocketTimeoutException.class)
+                || containsCause(throwable, ConnectException.class)
+                || containsCause(throwable, ConnectTimeoutException.class);
     }
 
     /** chat 结果（含计费信息） */

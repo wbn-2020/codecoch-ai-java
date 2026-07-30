@@ -4,19 +4,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.ai.agent.config.V13FeatureGate;
 import com.codecoachai.ai.agent.domain.context.JobApplicationAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ApplicationSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.JobExperimentSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.ProjectEvidenceSnapshot;
+import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext.SkillGapSnapshot;
 import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.SkillGapAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.ai.agent.domain.entity.AgentMemory;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
@@ -56,6 +60,8 @@ class AgentContextBuilderImplTest {
     private PersonalKnowledgeDocumentMapper personalKnowledgeDocumentMapper;
     @Mock
     private PersonalKnowledgeChunkMapper personalKnowledgeChunkMapper;
+    @Mock
+    private V13FeatureGate v13FeatureGate;
 
     private AgentContextBuilderImpl builder;
 
@@ -74,7 +80,8 @@ class AgentContextBuilderImplTest {
                 agentTaskMapper,
                 agentMemoryMapper,
                 personalKnowledgeDocumentMapper,
-                personalKnowledgeChunkMapper);
+                personalKnowledgeChunkMapper,
+                v13FeatureGate);
         when(resumeFeignClient.getTargetJob(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(targetJob()));
         when(resumeFeignClient.getAnalysis(USER_ID, TARGET_JOB_ID)).thenReturn(Result.success(null));
         when(resumeFeignClient.requirementReadinessContext(USER_ID, TARGET_JOB_ID))
@@ -208,6 +215,47 @@ class AgentContextBuilderImplTest {
         }
     }
 
+    @Test
+    void buildIncludesSkillGapsWhenGateOn() {
+        when(v13FeatureGate.isAgentSkillGapContext()).thenReturn(true);
+        when(resumeFeignClient.listSkillGapAgentContext(USER_ID, TARGET_JOB_ID))
+                .thenReturn(Result.success(List.of(skillGap(88L))));
+
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertEquals(1, context.getSkillGaps().size());
+        SkillGapSnapshot snapshot = context.getSkillGaps().get(0);
+        assertEquals(88L, snapshot.getId());
+        assertEquals("Redis 分布式锁", snapshot.getSkillName());
+        assertEquals("EVIDENCE_USAGE_FEEDBACK", snapshot.getCategory());
+        assertEquals("MEDIUM", snapshot.getSeverity());
+        assertEquals(2, snapshot.getGapLevel());
+        assertEquals("EVIDENCE_USAGE_RESULT", snapshot.getSourceType());
+        assertEquals(List.of("复盘讲述结构"), snapshot.getRecommendedActions());
+        verify(resumeFeignClient).listSkillGapAgentContext(USER_ID, TARGET_JOB_ID);
+    }
+
+    @Test
+    void buildSkipsSkillGapsWhenGateOff() {
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertTrue(context.getSkillGaps().isEmpty());
+        verify(resumeFeignClient, never()).listSkillGapAgentContext(USER_ID, TARGET_JOB_ID);
+    }
+
+    @Test
+    void buildContinuesWhenSkillGapContextUnavailable() {
+        when(v13FeatureGate.isAgentSkillGapContext()).thenReturn(true);
+        when(resumeFeignClient.listSkillGapAgentContext(USER_ID, TARGET_JOB_ID))
+                .thenThrow(new RuntimeException("resume unavailable"));
+
+        JobCoachAgentContext context = builder.build(USER_ID, TARGET_JOB_ID, PLAN_DATE);
+
+        assertTrue(context.getSkillGaps().isEmpty());
+        assertTrue(context.getContextWarnings().stream()
+                .anyMatch(warning -> warning.contains("Skill gap context is temporarily unavailable")));
+    }
+
     private TargetJobContextVO targetJob() {
         TargetJobContextVO targetJob = new TargetJobContextVO();
         targetJob.setId(TARGET_JOB_ID);
@@ -274,5 +322,19 @@ class AgentContextBuilderImplTest {
         project.setTargetJobId(TARGET_JOB_ID);
         project.setSuggestedActionPath("/project-evidence/" + id);
         return project;
+    }
+
+    private SkillGapAgentContextVO skillGap(Long id) {
+        SkillGapAgentContextVO gap = new SkillGapAgentContextVO();
+        gap.setId(id);
+        gap.setTargetJobId(TARGET_JOB_ID);
+        gap.setSkillName("Redis 分布式锁");
+        gap.setCategory("EVIDENCE_USAGE_FEEDBACK");
+        gap.setSeverity("MEDIUM");
+        gap.setGapLevel(2);
+        gap.setGapDescription("证据在面试中讲述结构不清");
+        gap.setSourceType("EVIDENCE_USAGE_RESULT");
+        gap.setRecommendedActions(List.of("复盘讲述结构"));
+        return gap;
     }
 }

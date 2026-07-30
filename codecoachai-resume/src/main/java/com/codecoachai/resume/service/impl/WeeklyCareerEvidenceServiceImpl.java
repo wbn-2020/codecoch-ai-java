@@ -74,7 +74,7 @@ public class WeeklyCareerEvidenceServiceImpl implements WeeklyCareerEvidenceServ
     private static final Pattern LONG_DIGIT_PATTERN = Pattern.compile(".*\\d{8,}.*");
     private static final Set<String> APPLICATION_STATUSES = Set.of(
             "SAVED", "PREPARING", "APPLIED", "INTERVIEWING", "OFFER",
-            "REJECTED", "CLOSED", "WITHDRAWN");
+            "ACCEPTED", "DECLINED", "REJECTED", "CLOSED", "WITHDRAWN");
     private static final Set<String> EXPERIMENT_STATUSES = Set.of(
             "DRAFT", "RUNNING", "REVIEWED", "ARCHIVED");
     private static final Set<String> RELATION_TYPES = Set.of(

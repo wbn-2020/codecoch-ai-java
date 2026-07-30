@@ -1,8 +1,12 @@
 package com.codecoachai.ai.service;
 
+import com.codecoachai.ai.agent.feign.ResumeEvidenceUsageFactsVO;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.AnalyzeSkillGapDTO;
 import com.codecoachai.ai.domain.dto.EvaluateAnswerDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceLearningCandidateDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceReuseMaterialDraftDTO;
+import com.codecoachai.ai.domain.dto.GenerateEvidenceUsageResultDraftDTO;
 import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
 import com.codecoachai.ai.domain.dto.GenerateAgentWeeklyReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateApplicationEventReviewDTO;
@@ -21,6 +25,9 @@ import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceLearningCandidateVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceReuseMaterialDraftVO;
+import com.codecoachai.ai.domain.vo.GenerateEvidenceUsageResultDraftVO;
 import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
 import com.codecoachai.ai.domain.vo.GenerateAgentWeeklyReportVO;
 import com.codecoachai.ai.domain.vo.GenerateApplicationEventReviewVO;
@@ -37,6 +44,24 @@ import com.codecoachai.ai.domain.vo.PracticeReviewVO;
 import com.codecoachai.ai.domain.vo.ResumeOptimizeAiResponseVO;
 
 public interface AiService {
+
+    GenerateEvidenceUsageResultDraftVO generateEvidenceUsageResultDraft(
+            GenerateEvidenceUsageResultDraftDTO dto);
+
+    GenerateEvidenceUsageResultDraftVO generateEvidenceUsageResultDraft(
+            GenerateEvidenceUsageResultDraftDTO dto, ResumeEvidenceUsageFactsVO facts);
+
+    GenerateEvidenceLearningCandidateVO generateEvidenceLearningCandidate(
+            GenerateEvidenceLearningCandidateDTO dto);
+
+    GenerateEvidenceLearningCandidateVO generateEvidenceLearningCandidate(
+            GenerateEvidenceLearningCandidateDTO dto, ResumeEvidenceUsageFactsVO facts);
+
+    GenerateEvidenceReuseMaterialDraftVO generateEvidenceReuseMaterialDraft(
+            GenerateEvidenceReuseMaterialDraftDTO dto);
+
+    GenerateEvidenceReuseMaterialDraftVO generateEvidenceReuseMaterialDraft(
+            GenerateEvidenceReuseMaterialDraftDTO dto, ResumeEvidenceUsageFactsVO facts);
 
     GenerateInterviewQuestionVO generateQuestion(GenerateInterviewQuestionDTO dto);
 

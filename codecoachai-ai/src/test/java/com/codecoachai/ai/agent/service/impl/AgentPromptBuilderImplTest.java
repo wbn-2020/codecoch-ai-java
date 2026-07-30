@@ -10,6 +10,7 @@ import com.codecoachai.ai.agent.domain.context.JobCoachAgentContext;
 import com.codecoachai.ai.agent.domain.enums.AgentTaskTypeEnum;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
+import com.codecoachai.ai.service.PromptSceneContracts;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
@@ -42,6 +43,8 @@ class AgentPromptBuilderImplTest {
         assertTrue(prompt.contains("QUESTION_PRACTICE|RESUME_OPTIMIZE|INTERVIEW|SKILL_REVIEW|KNOWLEDGE_REVIEW|APPLICATION_FOLLOW_UP"));
         assertTrue(prompt.contains("\"type\":\"APPLICATION_FOLLOW_UP\""));
         assertTrue(prompt.contains("\"candidateId\":\"application-follow-up-11\""));
+        assertTrue(prompt.contains("SKILL_GAP_ITEM"));
+        assertEquals(PromptSceneContracts.JOB_COACH_DAILY_PLAN_VERSION, result.getPromptVersion());
     }
 
     @Test

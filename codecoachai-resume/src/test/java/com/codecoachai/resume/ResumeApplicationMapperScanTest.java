@@ -14,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ResumeApplicationMapperScanTest {
 
     @Test
-    void scansAllV7MapperPackagesWithoutTreatingServiceInterfacesAsMappers() {
+    void scansMapperPackagesWithoutTreatingServiceInterfacesAsMappers() {
         MapperScans mapperScans = ResumeApplication.class.getAnnotation(MapperScans.class);
 
         assertThat(mapperScans).isNotNull();
@@ -29,11 +29,17 @@ class ResumeApplicationMapperScanTest {
                 "com.codecoachai.resume.careeroffer.mapper",
                 "com.codecoachai.resume.careercontact.mapper",
                 "com.codecoachai.resume.careerresearch.mapper",
-                "com.codecoachai.resume.careercampaign"
+                "com.codecoachai.resume.careercampaign",
+                "com.codecoachai.resume.campaignarchive"
             );
         assertThat(Arrays.asList(mapperScans.value()))
             .filteredOn(scan -> Arrays.asList(scan.value()).contains("com.codecoachai.resume.careercampaign")
                 || Arrays.asList(scan.basePackages()).contains("com.codecoachai.resume.careercampaign"))
+            .singleElement()
+            .satisfies(scan -> assertThat(scan.annotationClass()).isEqualTo(Mapper.class));
+        assertThat(Arrays.asList(mapperScans.value()))
+            .filteredOn(scan -> Arrays.asList(scan.value()).contains("com.codecoachai.resume.campaignarchive")
+                || Arrays.asList(scan.basePackages()).contains("com.codecoachai.resume.campaignarchive"))
             .singleElement()
             .satisfies(scan -> assertThat(scan.annotationClass()).isEqualTo(Mapper.class));
     }

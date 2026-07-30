@@ -22,3 +22,7 @@ Thumbs.db
 .env.*
 application-local.yml
 application-*.local.yml
+
+# Python bytecode (release scripts)
+__pycache__/
+*.pyc

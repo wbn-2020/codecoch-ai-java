@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReview;
 import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReviewMemoryCandidate;
+import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReviewSnapshot;
+import com.codecoachai.ai.agent.campaignreview.domain.vo.CareerCampaignReviewVO;
 import com.codecoachai.ai.agent.campaignreview.mapper.CareerCampaignReviewMapper;
 import com.codecoachai.ai.agent.campaignreview.mapper.CareerCampaignReviewMemoryCandidateMapper;
 import com.codecoachai.ai.agent.campaignreview.mapper.CareerCampaignReviewSnapshotMapper;
@@ -20,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
@@ -72,6 +76,39 @@ class CareerCampaignReviewPersistenceServiceImplTest {
 
         assertThrows(BusinessException.class,
                 () -> service().confirmCandidate(9L, 11L, "reject-key", false));
+    }
+
+    @Test
+    void savesEvidenceEnvelopeMetadataOnImmutableSnapshot() {
+        CareerCampaignReview root = new CareerCampaignReview();
+        root.setId(3L);
+        root.setCampaignId(7L);
+        root.setSnapshotVersion(0);
+        root.setGenerationClaimToken("claim");
+        root.setGenerationClaimFingerprint("fingerprint");
+        when(reviewMapper.selectIdentityForUpdate(9L, 7L)).thenReturn(root);
+        when(snapshotMapper.insertSnapshot(any())).thenAnswer(invocation -> {
+            CareerCampaignReviewSnapshot snapshot = invocation.getArgument(0);
+            snapshot.setId(21L);
+            return 1;
+        });
+        when(reviewMapper.publishSnapshot(
+                9L, 3L, 21L, 1, "COMPLETED", "claim")).thenReturn(1);
+        CareerCampaignReviewVO result = new CareerCampaignReviewVO();
+        result.setReportStatus("COMPLETED");
+        result.setConfidenceLevel("LOW");
+        result.setFallback(true);
+
+        service().saveClaimed(
+                9L, root, "claim", "key", "payload", result, "input", "request",
+                "{\"evidenceHash\":\"abc\"}", "schema-v1", "rule-v1", java.util.List.of());
+
+        ArgumentCaptor<CareerCampaignReviewSnapshot> captor =
+                ArgumentCaptor.forClass(CareerCampaignReviewSnapshot.class);
+        verify(snapshotMapper).insertSnapshot(captor.capture());
+        assertEquals("{\"evidenceHash\":\"abc\"}", captor.getValue().getEvidenceManifestJson());
+        assertEquals("schema-v1", captor.getValue().getEvidenceSchemaVersion());
+        assertEquals("rule-v1", captor.getValue().getRuleVersion());
     }
 
     private CareerCampaignReviewPersistenceServiceImpl service() {

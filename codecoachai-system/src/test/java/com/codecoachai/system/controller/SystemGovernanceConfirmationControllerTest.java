@@ -133,7 +133,8 @@ class SystemGovernanceConfirmationControllerTest {
                 "role-menu-grant-1234");
         verify(roleMenuMapper).delete(any());
         verify(roleMenuMapper, times(2)).insert(any(SysRoleMenu.class));
-        verify(adminPermissionCache).invalidateUsersByRoleId(3L);
+        verify(adminPermissionCache).invalidateUsersByRoleIdAfterCommit(3L);
+        verify(adminPermissionCache, never()).invalidateUsersByRoleId(3L);
     }
 
     @Test
@@ -152,7 +153,7 @@ class SystemGovernanceConfirmationControllerTest {
         assertThrows(IllegalStateException.class, () -> adminMenuController.assignRoleMenus(3L, dto));
 
         verify(operationConfirmationGuard).release("role-menu-lock");
-        verify(adminPermissionCache, never()).invalidateUsersByRoleId(3L);
+        verify(adminPermissionCache, never()).invalidateUsersByRoleIdAfterCommit(3L);
     }
 
     @Test

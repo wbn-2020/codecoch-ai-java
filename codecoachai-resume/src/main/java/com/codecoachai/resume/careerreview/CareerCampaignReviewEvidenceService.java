@@ -4,5 +4,14 @@ import java.time.LocalDateTime;
 
 public interface CareerCampaignReviewEvidenceService {
 
-    CareerCampaignReviewEvidenceVO get(Long userId, Long campaignId, LocalDateTime dataCutoffAt);
+    default CareerCampaignReviewEvidenceVO get(
+            Long userId, Long campaignId, LocalDateTime dataCutoffAt) {
+        return get(userId, campaignId, dataCutoffAt, null, null);
+    }
+
+    CareerCampaignReviewEvidenceVO get(Long userId,
+                                       Long campaignId,
+                                       LocalDateTime dataCutoffAt,
+                                       Integer applicationLimit,
+                                       Integer eventLimitPerSection);
 }

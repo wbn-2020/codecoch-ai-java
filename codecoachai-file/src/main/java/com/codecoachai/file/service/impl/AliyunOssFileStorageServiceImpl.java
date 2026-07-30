@@ -153,10 +153,24 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     public void deleteUserFile(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
         String key = storageKey(fileInfo);
-        deleteOssRequired(key);
-        fileInfoMapper.deleteById(fileInfo.getId());
-        log.info("OSS file physically deleted fileId={} userId={} bizType={} keyMeta={}",
-                fileId, userId, fileInfo.getBizType(), safeKeyMeta(key));
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        int deleted = fileInfoMapper.deleteById(fileInfo.getId());
+        if (deleted != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "文件状态已变化，请刷新后重试");
+        }
+        runAfterCommit(() -> {
+            try {
+                deleteOssRequired(key);
+                log.info("OSS file physically deleted after metadata commit fileId={} userId={} bizType={} keyMeta={}",
+                        fileId, userId, fileInfo.getBizType(), safeKeyMeta(key));
+            } catch (BusinessException ex) {
+                log.error("OSS metadata committed but physical deletion failed fileId={} userId={} bizType={} keyMeta={}",
+                        fileId, userId, fileInfo.getBizType(), safeKeyMeta(key), ex);
+            }
+        });
     }
 
     @Override
@@ -477,6 +491,19 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
                 }
             }
         });
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 
     private void deleteOssQuietly(String ossKey, AtomicBoolean cleaned, String reason) {

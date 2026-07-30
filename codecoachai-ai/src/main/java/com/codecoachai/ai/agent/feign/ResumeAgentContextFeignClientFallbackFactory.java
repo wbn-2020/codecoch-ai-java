@@ -5,6 +5,7 @@ import com.codecoachai.ai.agent.domain.context.JobExperimentAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.JobDescriptionAnalysisContextVO;
 import com.codecoachai.ai.agent.domain.context.ProjectEvidenceAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.RequirementReadinessAgentContextVO;
+import com.codecoachai.ai.agent.domain.context.SkillGapAgentContextVO;
 import com.codecoachai.ai.agent.domain.context.TargetJobContextVO;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.util.TextFingerprintUtils;
@@ -71,6 +72,12 @@ public class ResumeAgentContextFeignClientFallbackFactory
             public Result<List<JobExperimentAgentContextVO>> listJobExperimentAgentContext(Long userId,
                                                                                            Long targetJobId) {
                 return Result.success(Collections.emptyList());
+            }
+
+            @Override
+            public Result<List<SkillGapAgentContextVO>> listSkillGapAgentContext(Long userId,
+                                                                                 Long targetJobId) {
+                return Result.fail(50000, "Resume skill-gap context is temporarily unavailable");
             }
         };
     }

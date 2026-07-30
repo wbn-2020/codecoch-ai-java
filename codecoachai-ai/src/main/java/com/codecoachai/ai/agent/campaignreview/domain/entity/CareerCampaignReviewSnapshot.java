@@ -29,6 +29,9 @@ public class CareerCampaignReviewSnapshot {
     private String memoryCandidatesJson;
     private String experimentCandidatesJson;
     private String nextCycleActionsJson;
+    private String evidenceManifestJson;
+    private String evidenceSchemaVersion;
+    private String ruleVersion;
     private String resultSource;
     private Integer fallback;
     private String fallbackReason;

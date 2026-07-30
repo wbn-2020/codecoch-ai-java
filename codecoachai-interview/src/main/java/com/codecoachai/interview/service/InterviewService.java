@@ -18,6 +18,10 @@ public interface InterviewService {
 
     CreateInterviewVO create(CreateInterviewDTO dto);
 
+    CreateInterviewVO createClone(CreateInterviewDTO dto, Long sourceSessionId);
+
+    void validateClone(CreateInterviewDTO dto, Long sourceSessionId);
+
     StartInterviewVO start(Long id);
 
     CurrentInterviewVO current(Long id);

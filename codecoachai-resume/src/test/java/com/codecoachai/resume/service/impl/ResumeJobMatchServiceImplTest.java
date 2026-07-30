@@ -1,6 +1,7 @@
 package com.codecoachai.resume.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -12,11 +13,13 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.domain.dto.ResumeJobMatchCreateDTO;
+import com.codecoachai.resume.domain.dto.ResumeJobMatchQueryDTO;
 import com.codecoachai.resume.domain.entity.JobDescriptionAnalysis;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
@@ -38,6 +41,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
+import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -113,6 +117,7 @@ class ResumeJobMatchServiceImplTest {
                 .userId(USER_ID)
                 .username("match-user")
                 .build());
+        ObjectMapper objectMapper = new ObjectMapper();
         service = new ResumeJobMatchServiceImpl(
                 resumeMapper,
                 projectMapper,
@@ -123,9 +128,10 @@ class ResumeJobMatchServiceImplTest {
                 detailMapper,
                 resumeVersionMapper,
                 aiFeignClient,
-                new ObjectMapper(),
+                objectMapper,
                 transactionTemplate,
-                Optional.of(mqDispatcher));
+                Optional.of(mqDispatcher),
+                new ResumeJobMatchTrustPolicy(objectMapper));
     }
 
     @AfterEach
@@ -232,6 +238,86 @@ class ResumeJobMatchServiceImplTest {
     void getReportEvidenceRejectsMissingOrUnsuccessfulReport() {
         when(reportMapper.selectOne(any())).thenReturn(null);
 
+        assertThrows(BusinessException.class, () -> service.getReportEvidence(USER_ID, 99L));
+    }
+
+    @Test
+    void schemaWarningReportIsPartialNonFallbackAndRejectedByTrustedConsumers() {
+        ResumeJobMatchReport report = successReport(99L, REPORT_TIME);
+        report.setRawResultJson("""
+                {
+                  "trustStatus": "PARTIAL",
+                  "fallback": false,
+                  "schemaWarnings": [
+                    {
+                      "field": "evidenceBoundary",
+                      "message": "已移除输入证据中未出现的具体事实或技术名词，报告需结合原始资料复核"
+                    }
+                  ]
+                }
+                """);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(detailMapper.selectList(any())).thenReturn(List.of());
+
+        var detail = service.getReport(99L);
+
+        assertEquals("PARTIAL", detail.getTrustStatus());
+        assertFalse(detail.getFallback());
+        assertEquals(1, detail.getSchemaWarningCount());
+        assertEquals("evidenceBoundary", detail.getSchemaWarnings().path(0).path("field").asText());
+        assertThrows(BusinessException.class, () -> service.getInnerSuccessReport(99L));
+        assertThrows(BusinessException.class, () -> service.getReportEvidence(USER_ID, 99L));
+    }
+
+    @Test
+    void cleanSuccessReportPassesTrustedConsumerGate() {
+        ResumeJobMatchReport report = successReport(99L, REPORT_TIME);
+        report.setOverallScore(0);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(detailMapper.selectList(any())).thenReturn(List.of());
+
+        var detail = service.getInnerSuccessReport(99L);
+
+        assertEquals(99L, detail.getReportId());
+        assertEquals(0, detail.getOverallScore());
+        assertEquals("VERIFIED", detail.getTrustStatus());
+        assertFalse(detail.getFallback());
+    }
+
+    @Test
+    void persistedFieldWarningsAreMergedIdenticallyForListAndDetail() {
+        ResumeJobMatchReport report = successReport(99L, REPORT_TIME);
+        report.setRawResultJson("""
+                {
+                  "trustStatus":"VERIFIED",
+                  "fallback":false,
+                  "schemaWarnings":[{"field":"rawResult","message":"source warning"}]
+                }
+                """);
+        report.setGapsJson("{}");
+        report.setOptimizationSuggestionsJson("{not-json");
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(detailMapper.selectList(any())).thenReturn(List.of());
+        Page<ResumeJobMatchReport> page = new Page<>(1, 10);
+        page.setRecords(List.of(report));
+        page.setTotal(1);
+        when(reportMapper.selectPage(any(), any())).thenReturn(page);
+
+        var detail = service.getReport(99L);
+        var listItem = service.listReports(new ResumeJobMatchQueryDTO()).getRecords().get(0);
+
+        assertEquals("PARTIAL", detail.getTrustStatus());
+        assertEquals("PARTIAL", listItem.getTrustStatus());
+        assertFalse(detail.getFallback());
+        assertFalse(listItem.getFallback());
+        assertEquals(3, detail.getSchemaWarningCount());
+        assertEquals(3, listItem.getSchemaWarningCount());
+        assertEquals(detail.getSchemaWarnings(), listItem.getSchemaWarnings());
+        assertEquals("rawResult", detail.getSchemaWarnings().path(0).path("field").asText());
+        assertEquals("gaps", detail.getSchemaWarnings().path(1).path("field").asText());
+        assertEquals("optimizationSuggestions",
+                detail.getSchemaWarnings().path(2).path("field").asText());
+        assertThrows(BusinessException.class, () -> service.getInnerSuccessReport(99L));
         assertThrows(BusinessException.class, () -> service.getReportEvidence(USER_ID, 99L));
     }
 

@@ -2,6 +2,8 @@ package com.codecoachai.ai.agent.campaignreview.service;
 
 import com.codecoachai.ai.agent.campaignreview.domain.dto.CareerCampaignMemoryCandidateConfirmDTO;
 import com.codecoachai.ai.agent.campaignreview.domain.dto.CareerCampaignReviewGenerateDTO;
+import com.codecoachai.ai.agent.campaignreview.CareerCampaignReviewEvidenceEnvelope;
+import com.codecoachai.ai.agent.campaignreview.CareerCampaignReviewVersions;
 import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReview;
 import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReviewMemoryCandidate;
 import com.codecoachai.ai.agent.campaignreview.domain.entity.CareerCampaignReviewSnapshot;
@@ -20,7 +22,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -38,18 +39,18 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
 
     @Override
     public CareerCampaignReviewVO generate(Long userId, CareerCampaignReviewGenerateDTO request) {
-        CareerCampaignReviewGenerateDTO actualRequest = enrichFromResume(userId, request);
+        CareerCampaignReviewEvidenceEnvelope evidence = enrichFromResume(userId, request);
+        CareerCampaignReviewGenerateDTO actualRequest = evidence.trustedRequest(request);
         validateRequest(actualRequest);
         String idempotencyKeyHash = AgentAdaptivePlanHashUtils.sha256(actualRequest.getIdempotencyKey().trim());
-        String payloadHash = hashPayload(actualRequest);
+        String payloadHash = evidence.payloadHash();
         CareerCampaignReviewPersistenceService.Replay replay =
                 persistenceService.findIdempotentReplay(
                         userId, actualRequest.getCampaignId(), idempotencyKeyHash, payloadHash);
         if (replay != null) {
             return toVO(replay.review(), replay.snapshot(), userId);
         }
-        String generationFingerprint = AgentAdaptivePlanHashUtils.sha256(
-                actualRequest.getCampaignId() + "|" + actualRequest.getDataCutoffAt() + "|" + payloadHash);
+        String generationFingerprint = evidence.generationFingerprint();
         CareerCampaignReviewPersistenceService.GenerationClaim claim =
                 persistenceService.claimGeneration(userId, actualRequest.getCampaignId(),
                         generationFingerprint, idempotencyKeyHash, payloadHash);
@@ -69,9 +70,12 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
                     idempotencyKeyHash,
                     payloadHash,
                     result,
-                    payloadHash,
+                    evidence.getInputHash(),
                     actualRequest.getRequestId(),
-                    sources(userId, actualRequest.getSources()));
+                    evidence.manifestJson(),
+                    CareerCampaignReviewVersions.EVIDENCE_SCHEMA_VERSION,
+                    CareerCampaignReviewVersions.RULE_VERSION,
+                    sources(userId, evidence));
             saved = true;
             return toVO(claim.review(), snapshot, userId);
         } finally {
@@ -81,10 +85,11 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
         }
     }
 
-    private CareerCampaignReviewGenerateDTO enrichFromResume(
+    private CareerCampaignReviewEvidenceEnvelope enrichFromResume(
             Long userId, CareerCampaignReviewGenerateDTO request) {
         if (request == null || request.getCampaignId() == null) {
-            return request;
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "campaignId 不能为空");
         }
         if (evidenceClient == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
@@ -92,25 +97,18 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
         }
         try {
             Result<CareerCampaignReviewEvidenceVO> response = evidenceClient.get(
-                    userId, request.getCampaignId(), request.getDataCutoffAt());
+                    userId, request.getCampaignId(), LocalDateTime.now());
             if (response == null || !response.isSuccess() || response.getData() == null) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                         "周期事实证据校验失败，暂时无法生成复盘");
             }
             CareerCampaignReviewEvidenceVO evidence = response.getData();
-            if (!Objects.equals(userId, evidence.getUserId())
-                    || !Objects.equals(request.getCampaignId(), evidence.getCampaignId())) {
+            if (!userId.equals(evidence.getUserId())
+                    || !request.getCampaignId().equals(evidence.getCampaignId())) {
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                         "周期事实证据与当前用户或周期不匹配");
             }
-            request.setCampaignStatus(evidence.getCampaignStatus());
-            request.setCampaignTitle(evidence.getCampaignTitle());
-            request.setCompleted(evidence.getCompleted());
-            request.setAllOpportunitiesClosed(evidence.getAllOpportunitiesClosed());
-            request.setSampleSize(evidence.getSampleSize());
-            request.setFacts(toFacts(evidence.getFacts()));
-            request.setSources(toSources(evidence.getSources()));
-            return request;
+            return CareerCampaignReviewEvidenceEnvelope.from(evidence, LocalDateTime.now());
         } catch (RuntimeException ex) {
             log.warn("Campaign review evidence lookup failed; generation is blocked campaignId={}",
                     request.getCampaignId(), ex);
@@ -120,48 +118,6 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
             throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                     "周期事实证据校验失败，暂时无法生成复盘");
         }
-    }
-
-    private List<CareerCampaignReviewGenerateDTO.Fact> toFacts(
-            List<CareerCampaignReviewEvidenceVO.Fact> values) {
-        List<CareerCampaignReviewGenerateDTO.Fact> result = new ArrayList<>();
-        if (values == null) {
-            return result;
-        }
-        for (CareerCampaignReviewEvidenceVO.Fact value : values) {
-            if (value == null) {
-                continue;
-            }
-            CareerCampaignReviewGenerateDTO.Fact fact = new CareerCampaignReviewGenerateDTO.Fact();
-            fact.setKey(value.getKey());
-            fact.setLabel(value.getLabel());
-            fact.setValue(value.getValue());
-            fact.setSourceRef(value.getSourceRef());
-            result.add(fact);
-        }
-        return result;
-    }
-
-    private List<CareerCampaignReviewGenerateDTO.Source> toSources(
-            List<CareerCampaignReviewEvidenceVO.Source> values) {
-        List<CareerCampaignReviewGenerateDTO.Source> result = new ArrayList<>();
-        if (values == null) {
-            return result;
-        }
-        for (CareerCampaignReviewEvidenceVO.Source value : values) {
-            if (value == null) {
-                continue;
-            }
-            CareerCampaignReviewGenerateDTO.Source source = new CareerCampaignReviewGenerateDTO.Source();
-            source.setSourceType(value.getSourceType());
-            source.setSourceId(value.getSourceId());
-            source.setSourceVersion(value.getSourceVersion());
-            source.setSourceTime(value.getSourceTime());
-            source.setSourceUpdatedAt(value.getSourceUpdatedAt());
-            source.setSourceHash(value.getSourceHash());
-            result.add(source);
-        }
-        return result;
     }
 
     @Override
@@ -201,7 +157,9 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
         }
         CareerCampaignReviewMemoryCandidate candidate = persistenceService.confirmCandidate(
                 userId, candidateId,
-                AgentAdaptivePlanHashUtils.sha256(request.getIdempotencyKey().trim()),
+                AgentAdaptivePlanHashUtils.sha256(candidateId + "|"
+                        + (Boolean.TRUE.equals(request.getConfirmed()) ? "KEEP" : "REJECT")
+                        + "|" + request.getIdempotencyKey().trim()),
                 Boolean.TRUE.equals(request.getConfirmed()));
         CareerCampaignReview review = persistenceService.findOwned(
                 userId, candidate.getReviewId());
@@ -222,17 +180,10 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
         }
     }
 
-    private String hashPayload(CareerCampaignReviewGenerateDTO request) {
-        try {
-            return AgentAdaptivePlanHashUtils.sha256(objectMapper.writeValueAsString(request));
-        } catch (JsonProcessingException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "周期复盘请求无法规范化");
-        }
-    }
-
     private List<CareerCampaignReviewSource> sources(
-            Long userId, List<CareerCampaignReviewGenerateDTO.Source> values) {
+            Long userId, CareerCampaignReviewEvidenceEnvelope evidence) {
         List<CareerCampaignReviewSource> result = new ArrayList<>();
+        List<CareerCampaignReviewGenerateDTO.Source> values = evidence.getSources();
         if (values == null) {
             return result;
         }
@@ -245,8 +196,7 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
             source.setSourceUpdatedAt(value.getSourceUpdatedAt());
             source.setSourceHash(value.getSourceHash());
             source.setInclusionStatus("INCLUDED");
-            source.setMetadataJson(value.getSourceVersion() == null
-                    ? null : "{\"sourceVersion\":" + value.getSourceVersion() + "}");
+            source.setMetadataJson(evidence.sourceMetadataJson(value.getSourceVersion()));
             result.add(source);
         }
         return result;
@@ -288,8 +238,17 @@ public class CareerCampaignReviewServiceImpl implements CareerCampaignReviewServ
                     .findFirst()
                     .ifPresent(seed -> {
                         seed.setCandidateId(candidate.getId());
+                        seed.setCandidateScopeType(candidate.getCandidateScopeType());
+                        seed.setCandidateScopeKey(candidate.getCandidateScopeKey());
+                        seed.setCandidateType(candidate.getCandidateType());
+                        seed.setUsageSourceHash(candidate.getUsageSourceHash());
+                        seed.setEvidenceCount(candidate.getEvidenceCount());
+                        seed.setSampleCount(candidate.getSampleCount());
+                        seed.setDecisionCode(candidate.getDecisionCode());
+                        seed.setPromotedMemoryId(candidate.getPromotedMemoryId());
                         seed.setStatus(candidate.getStatus());
-                        seed.setEffective("CONFIRMED".equals(candidate.getStatus())
+                        seed.setEffective(List.of("CONFIRMED", "CONFIRMED_BY_USER")
+                                .contains(candidate.getStatus())
                                 && (candidate.getExpiresAt() == null
                                 || candidate.getExpiresAt().isAfter(LocalDateTime.now())));
                     });

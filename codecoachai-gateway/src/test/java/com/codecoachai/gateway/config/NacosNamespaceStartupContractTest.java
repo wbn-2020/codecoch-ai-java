@@ -12,10 +12,10 @@ import org.springframework.core.io.ClassPathResource;
 
 class NacosNamespaceStartupContractTest {
 
-    private static final String NAMESPACE_PLACEHOLDER = "${NACOS_NAMESPACE}";
+    private static final String NAMESPACE_PLACEHOLDER = "${NACOS_NAMESPACE:}";
 
     @Test
-    void discoveryAndConfigRequireTheSameExplicitNamespace() {
+    void discoveryAndConfigUseTheSameNamespacePlaceholder() {
         YamlPropertiesFactoryBean factory = new YamlPropertiesFactoryBean();
         factory.setResources(new ClassPathResource("application.yml"));
         Properties properties = factory.getObject();

@@ -34,12 +34,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class PracticeServiceImpl implements PracticeService {
 
     private static final String DEFAULT_SOURCE = "QUESTION_BANK";
@@ -79,11 +81,22 @@ public class PracticeServiceImpl implements PracticeService {
         try {
             Result<PracticeReviewVO> result = aiPracticeFeignClient.review(toReviewDTO(userId, record, question));
             if (result == null || !result.isSuccess() || result.getData() == null) {
+                log.warn(
+                        "AI practice review returned an unsuccessful result, recordId={}, questionId={}, code={}",
+                        record.getId(),
+                        question.getId(),
+                        result == null ? null : result.getCode());
                 markFailed(record, result == null ? "AI practice review failed" : result.getMessage());
             } else {
                 applyReview(record, result.getData());
             }
         } catch (RuntimeException ex) {
+            log.warn(
+                    "AI practice review request failed, recordId={}, questionId={}, exceptionType={}",
+                    record.getId(),
+                    question.getId(),
+                    ex.getClass().getSimpleName(),
+                    ex);
             markFailed(record, ex.getMessage());
         }
         practiceRecordMapper.updateById(record);

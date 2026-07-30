@@ -29,6 +29,17 @@ public interface CareerOfferDecisionMapper extends BaseMapper<CareerOfferDecisio
     CareerOfferDecision selectByIdempotency(@Param("campaignId") Long campaignId, @Param("userId") Long userId,
                                            @Param("idempotencyKeyHash") String idempotencyKeyHash);
 
+    @Select("""
+            SELECT *
+              FROM career_offer_decision
+             WHERE campaign_id = #{campaignId}
+               AND user_id = #{userId}
+               AND deleted = 0
+             ORDER BY id DESC
+             LIMIT 1
+            """)
+    CareerOfferDecision selectLiveByCampaign(@Param("campaignId") Long campaignId, @Param("userId") Long userId);
+
     @Update("""
             UPDATE career_offer_decision
                SET status = #{status},

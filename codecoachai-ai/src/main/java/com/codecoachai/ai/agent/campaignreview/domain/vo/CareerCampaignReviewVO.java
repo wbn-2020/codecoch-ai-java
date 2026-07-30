@@ -47,6 +47,13 @@ public class CareerCampaignReviewVO {
     @Data
     public static class Seed {
         private Long candidateId;
+        private String candidateScopeType;
+        private String candidateScopeKey;
+        private String candidateType;
+        private String usageSourceHash;
+        private Integer evidenceCount;
+        private Integer sampleCount;
+        private List<String> limits = new ArrayList<>();
         private String semanticKey;
         private String title;
         private String description;
@@ -54,6 +61,8 @@ public class CareerCampaignReviewVO {
         private String confidenceLevel;
         private Integer validityDays;
         private String status = "PENDING_CONFIRMATION";
+        private String decisionCode;
+        private Long promotedMemoryId;
         private Boolean effective = false;
     }
 }

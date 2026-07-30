@@ -9,6 +9,8 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 @Component
@@ -43,6 +45,13 @@ public class AdminPermissionCache {
         deleteQuietly(buildKey(userId));
     }
 
+    public void invalidateUserPermissionsAfterCommit(Long userId) {
+        if (userId == null) {
+            return;
+        }
+        runAfterCommit(() -> invalidateUserPermissions(userId));
+    }
+
     public void invalidateUsersByRoleId(Long roleId) {
         if (roleId == null) {
             return;
@@ -54,6 +63,19 @@ public class AdminPermissionCache {
                   AND ur.role_id = ?
                 """, Long.class, roleId);
         userIds.forEach(this::invalidateUserPermissions);
+    }
+
+    public void invalidateUsersByRoleIdAfterCommit(Long roleId) {
+        if (roleId == null) {
+            return;
+        }
+        List<Long> userIds = jdbcTemplate.queryForList("""
+                SELECT DISTINCT ur.user_id
+                FROM sys_user_role ur
+                WHERE ur.deleted = 0
+                  AND ur.role_id = ?
+                """, Long.class, roleId);
+        runAfterCommit(() -> userIds.forEach(this::invalidateUserPermissions));
     }
 
     private Set<String> loadUserPermissions(Long userId) {
@@ -105,6 +127,20 @@ public class AdminPermissionCache {
         } catch (RuntimeException ignored) {
             // Cache invalidation failure should not block the write path.
         }
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()
+                || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            action.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                action.run();
+            }
+        });
     }
 
     private String serialize(Set<String> permissions) {

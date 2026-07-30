@@ -79,9 +79,18 @@ public class InnerInterviewReportController {
                         .eq(InterviewMessage::getSessionId, sessionId)
                         .orderByAsc(InterviewMessage::getCreatedAt)
                         .orderByAsc(InterviewMessage::getId));
+        if (messages == null) {
+            messages = List.of();
+        }
 
+        Map<Long, InterviewMessage> messagesById = new LinkedHashMap<>();
+        for (InterviewMessage message : messages) {
+            if (message != null && message.getId() != null) {
+                messagesById.put(message.getId(), message);
+            }
+        }
         List<String> msgTexts = messages.stream()
-                .map(m -> firstText(m.getQuestionContent(), m.getUserAnswer(), m.getAiComment(), m.getContent()))
+                .map(message -> reportMessageText(message, messagesById))
                 .filter(StringUtils::hasText)
                 .toList();
 
@@ -137,6 +146,7 @@ public class InnerInterviewReportController {
         }
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
+            recoverReportFromStoredEvidence(sessionId, report);
             InterviewReportScoringContract.Validation scoringContract =
                     InterviewReportScoringContract.validate(
                             objectMapper,
@@ -486,6 +496,199 @@ public class InnerInterviewReportController {
         return first != null ? first : second;
     }
 
+    private String reportMessageText(
+            InterviewMessage message,
+            Map<Long, InterviewMessage> messagesById) {
+        if (message == null) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        appendReportLine(builder, "Role", message.getRole());
+        appendReportLine(builder, "Type", message.getMessageType());
+        appendReportLine(builder, "Question",
+                firstText(message.getQuestionContent(), parentQuestionContent(message, messagesById)));
+        appendReportLine(builder, "CandidateAnswer", message.getUserAnswer());
+        appendReportLine(builder, "AiComment", firstText(message.getAiComment(), message.getComment()));
+        Integer score = firstPositive(message.getAiScore(), message.getScore());
+        appendReportLine(builder, "Score", score == null ? null : score.toString());
+        appendReportLine(builder, "Content", message.getContent());
+        return builder.toString().trim();
+    }
+
+    private String parentQuestionContent(
+            InterviewMessage message,
+            Map<Long, InterviewMessage> messagesById) {
+        if (message == null || message.getParentMessageId() == null || messagesById == null) {
+            return null;
+        }
+        InterviewMessage parent = messagesById.get(message.getParentMessageId());
+        return parent == null ? null : firstText(parent.getQuestionContent(), parent.getContent());
+    }
+
+    private void appendReportLine(StringBuilder builder, String label, String value) {
+        if (StringUtils.hasText(value)) {
+            builder.append(label).append(':').append(value.trim()).append('\n');
+        }
+    }
+
+    private void recoverReportFromStoredEvidence(Long sessionId, InterviewReport report) {
+        List<InterviewMessage> messages = messageMapper.selectList(
+                new LambdaQueryWrapper<InterviewMessage>()
+                        .eq(InterviewMessage::getSessionId, sessionId)
+                        .orderByAsc(InterviewMessage::getCreatedAt)
+                        .orderByAsc(InterviewMessage::getId));
+        if (messages == null) {
+            messages = List.of();
+        }
+        List<InterviewMessage> answers = messages.stream()
+                .filter(this::isUserAnswer)
+                .toList();
+        if (answers.isEmpty()) {
+            return;
+        }
+
+        Map<Long, InterviewMessage> messagesById = new LinkedHashMap<>();
+        for (InterviewMessage message : messages) {
+            if (message != null && message.getId() != null) {
+                messagesById.put(message.getId(), message);
+            }
+        }
+
+        Integer evidenceScore = averageEvaluationScore(messages);
+        if (report.getTotalScore() == null) {
+            report.setTotalScore(evidenceScore);
+        }
+        Integer totalScore = report.getTotalScore();
+        if (totalScore == null) {
+            return;
+        }
+
+        if (!StringUtils.hasText(report.getRubricVersion())) {
+            report.setRubricVersion(InterviewRubricVersion.CURRENT);
+        }
+        if (!StringUtils.hasText(report.getRubricScores())) {
+            int fivePointScore = Math.max(1, Math.min(5, Math.round(totalScore / 20.0f)));
+            Map<String, Object> rubric = new LinkedHashMap<>();
+            rubric.put("dimension", "ANSWER_QUALITY");
+            rubric.put("score", fivePointScore);
+            rubric.put("evidenceCount", answers.size());
+            rubric.put("evidenceSource", "STORED_INTERVIEW_EVALUATION");
+            report.setRubricScores(writeJson(List.of(rubric), "[]"));
+        }
+        if (!StringUtils.hasText(report.getQaReview())) {
+            report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
+        }
+        String evidenceSummary = "本场面试包含 " + answers.size()
+                + " 条有效回答，已依据逐题评分生成结构化报告，综合得分 "
+                + totalScore + " 分。";
+        if (!StringUtils.hasText(report.getSummary())) {
+            report.setSummary(evidenceSummary);
+        }
+        if (!StringUtils.hasText(report.getReportContent())) {
+            report.setReportContent(evidenceSummary + " 请结合逐题点评复盘技术细节、边界条件和表达完整性。");
+        }
+        if (!StringUtils.hasText(report.getStageScores())) {
+            report.setStageScores(writeJson(Map.of("answerQuality", totalScore), "{}"));
+        }
+        report.setFailureReason(null);
+    }
+
+    private String buildStoredQaReview(
+            List<InterviewMessage> answers,
+            List<InterviewMessage> messages,
+            Map<Long, InterviewMessage> messagesById) {
+        List<Map<String, Object>> reviews = new ArrayList<>();
+        for (InterviewMessage answer : answers) {
+            InterviewMessage evaluation = firstMessage(
+                    messages,
+                    answer.getParentMessageId(),
+                    "AI",
+                    "EVALUATION");
+            Map<String, Object> review = new LinkedHashMap<>();
+            review.put("answerId", answer.getId());
+            review.put("questionId", answer.getQuestionId());
+            review.put("questionContent",
+                    firstText(answer.getQuestionContent(), parentQuestionContent(answer, messagesById)));
+            review.put("userAnswer", firstText(answer.getUserAnswer(), answer.getContent()));
+            review.put("score", firstPositive(
+                    answer.getAiScore(),
+                    answer.getScore(),
+                    evaluation == null ? null : evaluation.getAiScore(),
+                    evaluation == null ? null : evaluation.getScore()));
+            review.put("comment", firstText(
+                    answer.getAiComment(),
+                    answer.getComment(),
+                    evaluation == null ? null : evaluation.getAiComment(),
+                    evaluation == null ? null : evaluation.getComment(),
+                    evaluation == null ? null : evaluation.getContent()));
+            review.put("evidenceSource", "STORED_INTERVIEW_MESSAGE");
+            reviews.add(review);
+        }
+        return writeJson(reviews, "[]");
+    }
+
+    private Integer averageEvaluationScore(List<InterviewMessage> messages) {
+        int total = 0;
+        int count = 0;
+        for (InterviewMessage message : messages == null ? List.<InterviewMessage>of() : messages) {
+            if (message == null
+                    || !"AI".equalsIgnoreCase(message.getRole())
+                    || !"EVALUATION".equalsIgnoreCase(message.getMessageType())) {
+                continue;
+            }
+            Integer score = firstPositive(message.getAiScore(), message.getScore());
+            if (score != null && score <= 100) {
+                total += score;
+                count++;
+            }
+        }
+        return count == 0 ? null : Math.round((float) total / count);
+    }
+
+    private boolean isUserAnswer(InterviewMessage message) {
+        return message != null
+                && "USER".equalsIgnoreCase(message.getRole())
+                && "ANSWER".equalsIgnoreCase(message.getMessageType())
+                && StringUtils.hasText(firstText(message.getUserAnswer(), message.getContent()));
+    }
+
+    private InterviewMessage firstMessage(
+            List<InterviewMessage> messages,
+            Long parentMessageId,
+            String role,
+            String type) {
+        if (messages == null || parentMessageId == null) {
+            return null;
+        }
+        return messages.stream()
+                .filter(message -> parentMessageId.equals(message.getParentMessageId()))
+                .filter(message -> role.equalsIgnoreCase(message.getRole()))
+                .filter(message -> type.equalsIgnoreCase(message.getMessageType()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    private Integer firstPositive(Integer... values) {
+        if (values == null) {
+            return null;
+        }
+        for (Integer value : values) {
+            if (value != null && value > 0) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String writeJson(Object value, String fallback) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception ex) {
+            log.warn("Failed to serialize stored interview report evidence", ex);
+            return fallback;
+        }
+    }
+
     private void applySuccessfulReportPayload(InterviewReport report, CompleteReportDTO dto, LocalDateTime now) {
         GenerateReportVO payload = parseCompletedReport(dto.getReportJson());
         report.setTotalScore(firstNonNull(dto.getTotalScore(), payload == null ? null : payload.getTotalScore()));
@@ -512,7 +715,7 @@ public class InnerInterviewReportController {
         report.setAdviceEvidence(payload.getAdviceEvidence());
         report.setAbilityProfileUpdates(payload.getAbilityProfileUpdates());
         report.setSuggestions(payload.getSuggestions());
-        report.setReportContent(firstText(payload.getReportContent(), payload.getSummary(), dto.getReportJson()));
+        report.setReportContent(firstText(payload.getReportContent(), payload.getSummary()));
     }
 
     private void clearStructuredReportFields(InterviewReport report) {

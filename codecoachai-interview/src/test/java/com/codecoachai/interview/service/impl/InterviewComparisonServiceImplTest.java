@@ -45,6 +45,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -115,6 +116,23 @@ class InterviewComparisonServiceImplTest {
         assertEquals("INTERVIEW_COMPARISON_V2", result.getContractVersion());
         assertFalse(result.getLegacySnapshotNormalized());
         assertEquals(900L, result.getId());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"COMPLETED", "SUCCESS"})
+    void acceptsLegacySuccessfulReportStatusAliasesForComparison(String status) {
+        InterviewReport first = stubReport(11L, 101L, 10L, 300L, "INTERVIEW_RUBRIC_V1", 70, 2,
+                LocalDateTime.of(2026, 7, 1, 10, 0));
+        InterviewReport latest = stubReport(12L, 102L, 10L, 300L, "INTERVIEW_RUBRIC_V1", 82, 4,
+                LocalDateTime.of(2026, 7, 8, 10, 0));
+        first.setStatus(status);
+        latest.setStatus(status);
+
+        InterviewComparisonVO result = service.compare(
+                request("compare-status-" + status.toLowerCase()));
+
+        assertTrue(result.getComparable());
+        assertEquals(12, result.getTotalScoreDelta());
     }
 
     @Test

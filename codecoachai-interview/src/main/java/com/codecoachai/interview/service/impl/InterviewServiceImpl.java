@@ -45,6 +45,7 @@ import com.codecoachai.interview.feign.dto.EvaluateAnswerDTO;
 import com.codecoachai.interview.feign.dto.GenerateFollowUpDTO;
 import com.codecoachai.interview.feign.dto.GenerateInterviewQuestionDTO;
 import com.codecoachai.interview.feign.dto.GenerateReportDTO;
+import com.codecoachai.interview.feign.dto.InnerKnowledgeSearchDTO;
 import com.codecoachai.interview.feign.dto.InnerSelectQuestionDTO;
 import com.codecoachai.interview.feign.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.interview.feign.vo.EvaluateAnswerVO;
@@ -53,6 +54,7 @@ import com.codecoachai.interview.feign.vo.GenerateInterviewQuestionVO;
 import com.codecoachai.interview.feign.vo.GenerateReportVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationPackageVO;
 import com.codecoachai.interview.feign.vo.InnerJobApplicationSummaryVO;
+import com.codecoachai.interview.feign.vo.InnerKnowledgeSearchResultVO;
 import com.codecoachai.interview.feign.vo.InnerProjectEvidenceTrainingContextVO;
 import com.codecoachai.interview.feign.vo.InnerQuestionVO;
 import com.codecoachai.interview.feign.vo.InnerResumeDetailVO;
@@ -131,6 +133,13 @@ public class InterviewServiceImpl implements InterviewService {
             "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
     private static final String TRAINING_SCENE_JAVA_SPECIALTY = "JAVA_SPECIALTY";
     private static final String TRAINING_SCENE_PROJECT_DEEP_DIVE = "PROJECT_DEEP_DIVE";
+    // Knowledge-base enrichment of the interview training context. Kept intentionally small so only a
+    // few strongly-relevant hits reach the AI prompt: too many low-signal snippets dilute question
+    // quality. The AI service re-clamps limit to [1,50] and minScore to [0,1], so these are just the
+    // interview module's preferred narrow defaults.
+    private static final int KNOWLEDGE_REFERENCE_LIMIT = 3;
+    private static final double KNOWLEDGE_REFERENCE_MIN_SCORE = 0.35D;
+    private static final int KNOWLEDGE_QUERY_TERM_LIMIT = 6;
 
     private final InterviewSessionMapper sessionMapper;
     private final InterviewStageMapper stageMapper;
@@ -155,8 +164,71 @@ public class InterviewServiceImpl implements InterviewService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CreateInterviewVO create(CreateInterviewDTO dto) {
-        CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long userId = requireCurrentUserId();
+        return createPrepared(prepareCreate(dto, null, userId), null);
+    }
+
+    @Override
+    public CreateInterviewVO createClone(CreateInterviewDTO dto, Long sourceSessionId) {
+        InterviewClonePreparation preparation = prepareClone(dto, sourceSessionId);
+        return transactionTemplate.execute(status -> createPreparedClone(preparation));
+    }
+
+    InterviewClonePreparation prepareClone(
+            CreateInterviewDTO dto, Long sourceSessionId) {
+        Long userId = requireCurrentUserId();
+        InterviewSession sourceSession =
+                requireCloneSourceSession(userId, sourceSessionId);
+        validateCloneScenarioBinding(
+                userId,
+                sourceSessionId,
+                dto == null ? null : dto.getScenarioVersionId());
+        return new InterviewClonePreparation(
+                prepareCreate(dto, sourceSession, userId), sourceSession);
+    }
+
+    CreateInterviewVO createPreparedClone(
+            InterviewClonePreparation clonePreparation) {
+        if (clonePreparation == null
+                || clonePreparation.preparation() == null
+                || clonePreparation.sourceSession() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "克隆准备上下文不能为空");
+        }
+        InterviewCreatePreparation preparation = clonePreparation.preparation();
+        Long userId = requireCurrentUserId();
+        if (!userId.equals(preparation.userId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "克隆准备上下文已失效");
+        }
+        InterviewSession sourceSession = requireCloneSourceSession(
+                userId, clonePreparation.sourceSession().getId());
+        validateCloneScenarioBinding(
+                userId,
+                sourceSession.getId(),
+                preparation.request().getScenarioVersionId());
+        return createPrepared(preparation, clonePreparation.sourceSession());
+    }
+
+    @Override
+    public void validateClone(CreateInterviewDTO dto, Long sourceSessionId) {
+        prepareClone(dto, sourceSessionId);
+    }
+
+    private InterviewSession requireCloneSourceSession(
+            Long userId, Long sourceSessionId) {
+        InterviewSession sourceSession = sessionMapper.selectById(sourceSessionId);
+        if (sourceSession == null
+                || CommonConstants.YES.equals(sourceSession.getDeleted())
+                || !userId.equals(sourceSession.getUserId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "源面试场次不存在或不可用");
+        }
+        return sourceSession;
+    }
+
+    private InterviewCreatePreparation prepareCreate(
+            CreateInterviewDTO dto,
+            InterviewSession cloneSourceSession,
+            Long userId) {
+        CreateInterviewDTO request = dto == null ? new CreateInterviewDTO() : dto;
         Long applicationPackageId = parseApplicationPackageId(request.getApplicationPackageId());
         InnerJobApplicationPackageVO applicationPackage =
                 validateApplicationPackageBinding(userId, applicationPackageId, request);
@@ -170,13 +242,54 @@ public class InterviewServiceImpl implements InterviewService {
         InnerTargetJobVO targetJob = resolveTargetJob(userId, request);
         resolveDefaultResumeIfNeeded(mode, request);
         validateResumeOwnership(userId, mode, request);
-        IndustryTemplateSnapshot industrySnapshot = withRecommendationContext(resolveIndustrySnapshot(request), request);
+        IndustryTemplateSnapshot industrySnapshot = cloneSourceSession == null
+                ? withRecommendationContext(resolveIndustrySnapshot(request), request)
+                : withRecommendationContext(
+                        new IndustryTemplateSnapshot(
+                                cloneSourceSession.getIndustryTemplateId(),
+                                cloneSourceSession.getIndustryDirection(),
+                                cloneSourceSession.getIndustryContext()),
+                        request);
         ScenarioVersionVO scenario = request.getScenarioVersionId() == null
                 ? null
-                : scenarioRubricService.getPublishedScenarioVersion(request.getScenarioVersionId());
+                : cloneSourceSession == null
+                        ? scenarioRubricService.getPublishedScenarioVersion(request.getScenarioVersionId())
+                        : scenarioRubricService.getCloneableScenarioVersion(request.getScenarioVersionId());
         List<String> targetSkillCodes = sanitizeStrings(request.getTargetSkillCodes());
         List<Long> projectEvidenceIds = sanitizeLongs(request.getProjectEvidenceIds());
-        String trainingContextSummary = buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds);
+        String trainingContextSummary = cloneSourceSession == null
+                ? buildTrainingContextSummary(userId, request, targetSkillCodes, projectEvidenceIds)
+                : appendRecommendationContext(
+                        cloneSourceSession.getTrainingContextSummary(), request);
+
+        return new InterviewCreatePreparation(
+                request,
+                userId,
+                applicationPackageId,
+                mode,
+                targetJob,
+                industrySnapshot,
+                scenario,
+                targetSkillCodes,
+                projectEvidenceIds,
+                trainingContextSummary);
+    }
+
+    private CreateInterviewVO createPrepared(
+            InterviewCreatePreparation preparation,
+            InterviewSession cloneSourceSession) {
+        CreateInterviewDTO request = preparation.request();
+        Long userId = preparation.userId();
+        Long applicationPackageId = preparation.applicationPackageId();
+        String mode = preparation.mode();
+        InnerTargetJobVO targetJob = preparation.targetJob();
+        IndustryTemplateSnapshot industrySnapshot =
+                preparation.industrySnapshot();
+        ScenarioVersionVO scenario = preparation.scenario();
+        List<String> targetSkillCodes = preparation.targetSkillCodes();
+        List<Long> projectEvidenceIds = preparation.projectEvidenceIds();
+        String trainingContextSummary =
+                preparation.trainingContextSummary();
 
         InterviewSession session = new InterviewSession();
         session.setUserId(userId);
@@ -213,7 +326,8 @@ public class InterviewServiceImpl implements InterviewService {
         session.setTotalScore(0);
         sessionMapper.insert(session);
 
-        ScenarioBindingVO scenarioBinding = bindScenario(session, scenario);
+        ScenarioBindingVO scenarioBinding =
+                bindScenario(session, scenario, cloneSourceSession != null);
         List<InterviewStage> stages = createStages(session, scenario);
         int totalQuestionCount = totalExpectedQuestionCount(stages);
         if (!Integer.valueOf(totalQuestionCount).equals(session.getMaxQuestionCount())) {
@@ -1095,14 +1209,8 @@ public class InterviewServiceImpl implements InterviewService {
         if (vo == null || session == null || vo.getId() == null || session.getUserId() == null) {
             return vo;
         }
-        InterviewRemediation remediation = remediationMapper.selectOne(
-                new LambdaQueryWrapper<InterviewRemediation>()
-                        .eq(InterviewRemediation::getUserId, session.getUserId())
-                        .eq(InterviewRemediation::getSourceReportId, vo.getId())
-                        .eq(InterviewRemediation::getDeleted, CommonConstants.NO)
-                        .orderByDesc(InterviewRemediation::getCreatedAt)
-                        .orderByDesc(InterviewRemediation::getId)
-                        .last("limit 1"));
+        InterviewRemediation remediation = remediationMapper.selectPreferredBySourceReport(
+                session.getUserId(), vo.getId());
         if (remediation == null) {
             vo.setRemediationCreated(false);
             return vo;
@@ -1725,14 +1833,37 @@ public class InterviewServiceImpl implements InterviewService {
                 .eq(InterviewMessage::getMessageType, "QUESTION"));
     }
 
-    private ScenarioBindingVO bindScenario(InterviewSession session, ScenarioVersionVO scenario) {
+    private ScenarioBindingVO bindScenario(
+            InterviewSession session, ScenarioVersionVO scenario, boolean historicalClone) {
         if (scenario == null) {
             return null;
+        }
+        if (historicalClone) {
+            return scenarioRubricService.bindCloneScenario(
+                    session.getId(), scenario.getScenarioVersionId());
         }
         ScenarioBindingCreateDTO binding = new ScenarioBindingCreateDTO();
         binding.setScenarioVersionId(scenario.getScenarioVersionId());
         binding.setBindingSource("INTERVIEW_CREATE");
         return scenarioRubricService.bindScenario(session.getId(), binding);
+    }
+
+    private void validateCloneScenarioBinding(
+            Long userId, Long sourceSessionId, Long requestedScenarioVersionId) {
+        InterviewScenarioBinding sourceBinding =
+                scenarioBindingMapper.selectOne(
+                        new LambdaQueryWrapper<InterviewScenarioBinding>()
+                                .eq(InterviewScenarioBinding::getSessionId, sourceSessionId)
+                                .eq(InterviewScenarioBinding::getUserId, userId)
+                                .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                                .last("limit 1"));
+        Long sourceScenarioVersionId = sourceBinding == null
+                ? null : sourceBinding.getScenarioVersionId();
+        if (!Objects.equals(sourceScenarioVersionId, requestedScenarioVersionId)) {
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "克隆场景必须与源面试场次绑定一致");
+        }
     }
 
     private int scenarioQuestionCount(ScenarioVersionVO scenario, Integer requestedCount) {
@@ -3124,23 +3255,34 @@ public class InterviewServiceImpl implements InterviewService {
     }
 
     private IndustryTemplateSnapshot withRecommendationContext(IndustryTemplateSnapshot snapshot, CreateInterviewDTO dto) {
-        if (dto == null) {
+        String context = appendRecommendationContext(snapshot.industryContext(), dto);
+        if (Objects.equals(context, snapshot.industryContext())) {
             return snapshot;
+        }
+        return new IndustryTemplateSnapshot(
+                snapshot.industryTemplateId(),
+                snapshot.industryDirection(),
+                context);
+    }
+
+    private String appendRecommendationContext(String existingContext, CreateInterviewDTO dto) {
+        if (dto == null) {
+            return existingContext;
         }
         String source = normalizeText(dto.getRecommendationSource());
         String reason = normalizeText(dto.getRecommendationReason());
         String practiceMode = normalizeText(dto.getPracticeMode());
         if (!StringUtils.hasText(source) && !StringUtils.hasText(reason) && !StringUtils.hasText(practiceMode)) {
-            return snapshot;
+            return existingContext;
         }
-        StringBuilder builder = new StringBuilder(firstText(snapshot.industryContext(), ""));
+        StringBuilder builder = new StringBuilder();
+        if (StringUtils.hasText(existingContext)) {
+            builder.append(existingContext.trim()).append('\n');
+        }
         appendLine(builder, "推荐配置来源", source);
         appendLine(builder, "推荐配置依据", reason);
         appendLine(builder, "训练模式", practiceMode);
-        return new IndustryTemplateSnapshot(
-                snapshot.industryTemplateId(),
-                snapshot.industryDirection(),
-                builder.toString().trim());
+        return builder.toString().trim();
     }
 
     private String buildIndustryContext(IndustryTemplate template, String direction) {
@@ -3365,7 +3507,97 @@ public class InterviewServiceImpl implements InterviewService {
             }
             summary.put("projectEvidenceSummaries", projects);
         }
+        List<Map<String, Object>> knowledgeReferences = loadKnowledgeReferences(userId, request, trainingScene);
+        if (!knowledgeReferences.isEmpty()) {
+            summary.put("knowledgeReferences", knowledgeReferences);
+        }
         return toJsonOrNull(summary);
+    }
+
+    /**
+     * Retrieve summary-level hits from the candidate's personal knowledge base to enrich the AI
+     * question context. Best-effort: any failure (feature disabled, feign error, empty query) yields
+     * an empty list so interview creation is never blocked. Only summary-level fields (title, snippet,
+     * type, score) are carried; raw document bodies never leave the knowledge module.
+     */
+    private List<Map<String, Object>> loadKnowledgeReferences(Long userId, CreateInterviewDTO request,
+                                                              String trainingScene) {
+        if (userId == null) {
+            return List.of();
+        }
+        String keyword = buildKnowledgeQuery(request, trainingScene);
+        if (!StringUtils.hasText(keyword)) {
+            return List.of();
+        }
+        try {
+            InnerKnowledgeSearchDTO searchDto = new InnerKnowledgeSearchDTO();
+            searchDto.setUserId(userId);
+            searchDto.setKeyword(keyword);
+            searchDto.setLimit(KNOWLEDGE_REFERENCE_LIMIT);
+            searchDto.setMinScore(KNOWLEDGE_REFERENCE_MIN_SCORE);
+            List<InnerKnowledgeSearchResultVO> hits =
+                    FeignResultUtils.unwrap(aiFeignClient.searchKnowledge(searchDto));
+            if (hits == null || hits.isEmpty()) {
+                return List.of();
+            }
+            List<Map<String, Object>> references = new ArrayList<>();
+            for (InnerKnowledgeSearchResultVO hit : hits) {
+                if (hit == null) {
+                    continue;
+                }
+                String snippet = normalizeText(hit.getSnippet());
+                String title = normalizeText(hit.getTitle());
+                if (!StringUtils.hasText(snippet) && !StringUtils.hasText(title)) {
+                    continue;
+                }
+                Map<String, Object> reference = new LinkedHashMap<>();
+                putIfPresent(reference, "title", title);
+                putIfPresent(reference, "documentType", normalizeText(hit.getDocumentType()));
+                putIfPresent(reference, "snippet", snippet);
+                if (hit.getScore() != null) {
+                    reference.put("score", hit.getScore());
+                }
+                references.add(reference);
+                if (references.size() >= KNOWLEDGE_REFERENCE_LIMIT) {
+                    break;
+                }
+            }
+            return references;
+        } catch (RuntimeException ex) {
+            // Knowledge enrichment is optional; never let a retrieval failure break interview creation.
+            log.warn("Knowledge reference retrieval failed, continuing without it. userId={}, error={}",
+                    userId, ex.getClass().getSimpleName());
+            return List.of();
+        }
+    }
+
+    /**
+     * Build the knowledge-base query from the strongest available training signals: the target skill
+     * domain and explicit skill codes, falling back to the training scene. Returns null when there is
+     * nothing meaningful to search on.
+     */
+    private String buildKnowledgeQuery(CreateInterviewDTO request, String trainingScene) {
+        if (request == null) {
+            return null;
+        }
+        List<String> parts = new ArrayList<>();
+        String targetSkillDomain = normalizeText(request.getTargetSkillDomain());
+        if (StringUtils.hasText(targetSkillDomain)) {
+            parts.add(targetSkillDomain);
+        }
+        for (String code : sanitizeStrings(request.getTargetSkillCodes())) {
+            parts.add(code);
+            if (parts.size() >= KNOWLEDGE_QUERY_TERM_LIMIT) {
+                break;
+            }
+        }
+        if (parts.isEmpty() && StringUtils.hasText(trainingScene)) {
+            parts.add(trainingScene);
+        }
+        if (parts.isEmpty()) {
+            return null;
+        }
+        return String.join(" ", parts);
     }
 
     private Map<String, Object> buildApplicationContextSummary(CreateInterviewDTO request) {
@@ -3515,7 +3747,25 @@ public class InterviewServiceImpl implements InterviewService {
         return null;
     }
 
-    private record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
+    record InterviewClonePreparation(
+            InterviewCreatePreparation preparation,
+            InterviewSession sourceSession) {
+    }
+
+    record InterviewCreatePreparation(
+            CreateInterviewDTO request,
+            Long userId,
+            Long applicationPackageId,
+            String mode,
+            InnerTargetJobVO targetJob,
+            IndustryTemplateSnapshot industrySnapshot,
+            ScenarioVersionVO scenario,
+            List<String> targetSkillCodes,
+            List<Long> projectEvidenceIds,
+            String trainingContextSummary) {
+    }
+
+    record IndustryTemplateSnapshot(Long industryTemplateId, String industryDirection, String industryContext) {
     }
 
     private record StartContext(InterviewSession session, InterviewStage stage) {

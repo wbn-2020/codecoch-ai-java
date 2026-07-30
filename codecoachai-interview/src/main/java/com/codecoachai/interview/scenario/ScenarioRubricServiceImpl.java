@@ -176,19 +176,50 @@ public class ScenarioRubricServiceImpl implements ScenarioRubricService {
     }
 
     @Override
+    public ScenarioVersionVO getCloneableScenarioVersion(Long scenarioVersionId) {
+        return toScenarioVO(requireCloneableScenario(scenarioVersionId));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class, noRollbackFor = DuplicateKeyException.class)
     public ScenarioBindingVO bindScenario(Long sessionId, ScenarioBindingCreateDTO dto) {
+        return bindScenarioInternal(
+                sessionId,
+                dto.getScenarioVersionId(),
+                defaultBindingSource(dto.getBindingSource()),
+                false);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class, noRollbackFor = DuplicateKeyException.class)
+    public ScenarioBindingVO bindCloneScenario(Long sessionId, Long scenarioVersionId) {
+        return bindScenarioInternal(
+                sessionId, scenarioVersionId, "INTERVIEW_CLONE", true);
+    }
+
+    private ScenarioBindingVO bindScenarioInternal(
+            Long sessionId,
+            Long scenarioVersionId,
+            String bindingSource,
+            boolean allowRetired) {
         Long userId = requireUserId();
         requireOwnedSession(sessionId, userId);
-        String bindingSource = defaultBindingSource(dto.getBindingSource());
         InterviewScenarioBinding existing = findBinding(sessionId, userId);
         if (existing != null) {
-            validateBindingReplay(existing, dto.getScenarioVersionId(), bindingSource);
+            validateBindingReplay(existing, scenarioVersionId, bindingSource);
             return toBindingVO(existing);
         }
-        InterviewScenarioVersion scenario = requireScenario(dto.getScenarioVersionId());
-        if (!ScenarioVersionStatus.PUBLISHED.name().equals(scenario.getVersionStatus())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Only published scenario versions can be bound");
+        InterviewScenarioVersion scenario = allowRetired
+                ? requireCloneableScenario(scenarioVersionId)
+                : requireScenario(scenarioVersionId);
+        if (allowRetired
+                ? !isCloneableScenarioStatus(scenario.getVersionStatus())
+                : !ScenarioVersionStatus.PUBLISHED.name().equals(scenario.getVersionStatus())) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    allowRetired
+                            ? "Only published or retired scenario versions can be cloned"
+                            : "Only published scenario versions can be bound");
         }
         InterviewScenarioBinding binding = new InterviewScenarioBinding();
         binding.setUserId(userId);
@@ -437,6 +468,27 @@ public class ScenarioRubricServiceImpl implements ScenarioRubricService {
 
     private String defaultBindingSource(String source) {
         return StringUtils.hasText(source) ? source.trim().toUpperCase(Locale.ROOT) : "USER_SELECTED";
+    }
+
+    private boolean isCloneableScenarioStatus(String status) {
+        return ScenarioVersionStatus.PUBLISHED.name().equals(status)
+                || ScenarioVersionStatus.RETIRED.name().equals(status);
+    }
+
+    private InterviewScenarioVersion requireCloneableScenario(Long scenarioVersionId) {
+        InterviewScenarioVersion scenario = requireScenario(scenarioVersionId);
+        if (!isCloneableScenarioStatus(scenario.getVersionStatus())) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "Only published or retired scenario versions can be cloned");
+        }
+        InterviewRubricVersion rubric = requireRubric(scenario.getRubricVersionId());
+        if (RubricVersionStatus.DRAFT.name().equals(rubric.getVersionStatus())) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "Historical scenario rubric is not cloneable");
+        }
+        return scenario;
     }
 
     private String trimToNull(String value) {

@@ -401,51 +401,57 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
     private QuestionDuplicateCheckResultVO checkDuplicate(List<Long> questionIds, Long operatorId) {
         List<Long> createdIds = new ArrayList<>();
         int checkedCount = 0;
+        Map<Long, Question> sourceMap = new LinkedHashMap<>();
+        for (Question question : questionMapper.selectBatchIds(questionIds)) {
+            sourceMap.put(question.getId(), question);
+        }
         for (Long questionId : questionIds) {
-            Question source = questionMapper.selectById(questionId);
+            Question source = sourceMap.get(questionId);
             if (source == null) {
                 continue;
             }
             checkedCount++;
-            Set<String> handledPairs = new LinkedHashSet<>();
-            for (Question target : findHardFingerprintCandidates(source)) {
+            List<Question> hardCandidates = findHardFingerprintCandidates(source);
+            List<Question> ruleCandidates = findTargetCandidates(source);
+            List<SemanticCandidate> semanticCandidates = findSemanticCandidates(source, ruleCandidates);
+            Set<Long> candidateIds = collectCandidateIds(source.getId(), hardCandidates, ruleCandidates,
+                    semanticCandidates);
+            Set<String> handledPairs = loadExistingPairKeys(source.getId(), candidateIds);
+
+            for (Question target : hardCandidates) {
                 MatchResult match = hardFingerprintMatch(source, target);
-                if (match == null || relationExists(source.getId(), target.getId())
-                        || duplicateReviewExists(source.getId(), target.getId())) {
+                String pairKey = pairKey(source.getId(), target.getId());
+                if (match == null || !handledPairs.add(pairKey)) {
                     continue;
                 }
                 QuestionDuplicateReview review = buildReview(source, target, match, operatorId);
                 duplicateReviewMapper.insert(review);
                 createdIds.add(review.getId());
-                handledPairs.add(pairKey(source.getId(), target.getId()));
             }
-            List<Question> ruleCandidates = findTargetCandidates(source);
             for (Question target : ruleCandidates) {
                 MatchResult match = match(source, target);
-                if (match == null || relationExists(source.getId(), target.getId())
-                        || duplicateReviewExists(source.getId(), target.getId())) {
+                String pairKey = pairKey(source.getId(), target.getId());
+                if (match == null || !handledPairs.add(pairKey)) {
                     continue;
                 }
                 QuestionDuplicateReview review = buildReview(source, target, match, operatorId);
                 duplicateReviewMapper.insert(review);
                 createdIds.add(review.getId());
-                handledPairs.add(pairKey(source.getId(), target.getId()));
             }
-            for (SemanticCandidate candidate : findSemanticCandidates(source, ruleCandidates)) {
+            for (SemanticCandidate candidate : semanticCandidates) {
                 Question target = candidate.question();
                 String pairKey = pairKey(source.getId(), target.getId());
-                if (handledPairs.contains(pairKey) || relationExists(source.getId(), target.getId())
-                        || duplicateReviewExists(source.getId(), target.getId())) {
+                if (handledPairs.contains(pairKey)) {
                     continue;
                 }
                 MatchResult match = semanticMatch(source, target, candidate.score());
                 if (match == null) {
                     continue;
                 }
+                handledPairs.add(pairKey);
                 QuestionDuplicateReview review = buildReview(source, target, match, operatorId);
                 duplicateReviewMapper.insert(review);
                 createdIds.add(review.getId());
-                handledPairs.add(pairKey);
             }
         }
         QuestionDuplicateCheckResultVO vo = new QuestionDuplicateCheckResultVO();
@@ -453,6 +459,44 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         vo.setCreatedCount(createdIds.size());
         vo.setReviewIds(createdIds);
         return vo;
+    }
+
+    private Set<Long> collectCandidateIds(Long sourceQuestionId,
+                                          List<Question> hardCandidates,
+                                          List<Question> ruleCandidates,
+                                          List<SemanticCandidate> semanticCandidates) {
+        Set<Long> candidateIds = new LinkedHashSet<>();
+        for (Question candidate : hardCandidates) {
+            addCandidateId(candidateIds, sourceQuestionId, candidate);
+        }
+        for (Question candidate : ruleCandidates) {
+            addCandidateId(candidateIds, sourceQuestionId, candidate);
+        }
+        for (SemanticCandidate candidate : semanticCandidates) {
+            addCandidateId(candidateIds, sourceQuestionId, candidate.question());
+        }
+        return candidateIds;
+    }
+
+    private void addCandidateId(Set<Long> candidateIds, Long sourceQuestionId, Question candidate) {
+        if (candidate != null && candidate.getId() != null && !candidate.getId().equals(sourceQuestionId)) {
+            candidateIds.add(candidate.getId());
+        }
+    }
+
+    private Set<String> loadExistingPairKeys(Long sourceQuestionId, Set<Long> candidateIds) {
+        Set<String> pairKeys = new LinkedHashSet<>();
+        if (candidateIds.isEmpty()) {
+            return pairKeys;
+        }
+        List<Long> ids = List.copyOf(candidateIds);
+        for (QuestionRelation relation : relationMapper.selectExistingActivePairs(sourceQuestionId, ids)) {
+            pairKeys.add(pairKey(relation.getSourceQuestionId(), relation.getTargetQuestionId()));
+        }
+        for (QuestionDuplicateReview review : duplicateReviewMapper.selectExistingPairs(sourceQuestionId, ids)) {
+            pairKeys.add(pairKey(review.getSourceQuestionId(), review.getTargetQuestionId()));
+        }
+        return pairKeys;
     }
 
     private List<Long> normalizeQuestionIds(QuestionDuplicateCheckDTO dto) {
@@ -937,27 +981,6 @@ public class QuestionDuplicateServiceImpl implements QuestionDuplicateService {
         }
         question.setGroupId(groupId);
         questionMapper.updateById(question);
-    }
-
-    private boolean relationExists(Long leftQuestionId, Long rightQuestionId) {
-        QuestionPairIds pair = sortedPairIds(leftQuestionId, rightQuestionId);
-        Long count = relationMapper.selectCount(new LambdaQueryWrapper<QuestionRelation>()
-                .eq(QuestionRelation::getSourceQuestionId, pair.sourceQuestionId())
-                .eq(QuestionRelation::getTargetQuestionId, pair.targetQuestionId())
-                .eq(QuestionRelation::getRelationStatus, QuestionRelationStatus.ACTIVE.name()));
-        return count != null && count > 0;
-    }
-
-    private boolean duplicateReviewExists(Long leftQuestionId, Long rightQuestionId) {
-        QuestionPairIds pair = sortedPairIds(leftQuestionId, rightQuestionId);
-        Long count = duplicateReviewMapper.selectCount(new LambdaQueryWrapper<QuestionDuplicateReview>()
-                .eq(QuestionDuplicateReview::getSourceQuestionId, pair.sourceQuestionId())
-                .eq(QuestionDuplicateReview::getTargetQuestionId, pair.targetQuestionId())
-                .in(QuestionDuplicateReview::getReviewStatus,
-                        QuestionDuplicateReviewStatus.PENDING.name(),
-                        QuestionDuplicateReviewStatus.CONFIRMED.name(),
-                        QuestionDuplicateReviewStatus.IGNORED.name()));
-        return count != null && count > 0;
     }
 
     private Question getQuestionOrThrow(Long id) {

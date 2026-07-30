@@ -26,8 +26,7 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
 class GatewayRouteContractTest {
 
     private static final List<String> GATEWAY_CONFIGS = List.of(
-            "docs/nacos/codecoachai-gateway-dev.yml",
-            "config/nacos/codecoachai-gateway-dev.yml");
+            "docs/nacos/codecoachai-gateway-dev.yml");
 
     private static final String DEDUPE_RESPONSE_HEADER_FILTER =
             "DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE";
@@ -48,11 +47,28 @@ class GatewayRouteContractTest {
             "/career-calendar",
             "/career-imports",
             "/portfolio-demo",
+            "/evidence-assets/overview",
+            "/evidence-assets/usages",
+            "/evidence-assets/results",
+            "/evidence-assets/candidates",
+            "/evidence-usages",
+            "/evidence-usage-results",
+            "/career-campaigns",
+            "/career-campaign-archive-exports",
+            "/offers",
+            "/career-contacts",
+            "/career-activities",
+            "/research-sources",
+            "/research-snapshots",
+            "/interview-processes",
+            "/interview-rounds",
+            "/interview-round-contacts",
             "/interview-comparisons",
             "/interview-scenarios",
             "/interview-remediations",
             "/interview-tts",
             "/interview-streaming-asr",
+            "/ai/feedback",
             "/notifications");
 
     private static final Set<String> REQUIRED_WILDCARD_PUBLIC_ROUTES = Set.of(
@@ -96,12 +112,29 @@ class GatewayRouteContractTest {
             routeFamily("career calendar", "/career-calendar/contract-probe", "resume"),
             routeFamily("career imports", "/career-imports/contract-probe", "resume"),
             routeFamily("portfolio demo", "/portfolio-demo/contract-probe", "resume"),
+            routeFamily("evidence assets overview", "/evidence-assets/overview/contract-probe", "resume"),
+            routeFamily("evidence assets usages", "/evidence-assets/usages/contract-probe", "resume"),
+            routeFamily("evidence assets results", "/evidence-assets/results/contract-probe", "resume"),
+            routeFamily("evidence assets candidates", "/evidence-assets/candidates/contract-probe", "ai"),
+            routeFamily("evidence usages", "/evidence-usages/contract-probe", "resume"),
+            routeFamily("evidence usage results", "/evidence-usage-results/contract-probe", "resume"),
+            routeFamily("career campaigns", "/career-campaigns/contract-probe", "resume"),
+            routeFamily("career campaign archive exports", "/career-campaign-archive-exports/contract-probe", "resume"),
+            routeFamily("offers", "/offers/contract-probe", "resume"),
+            routeFamily("career contacts", "/career-contacts/contract-probe", "resume"),
+            routeFamily("career activities", "/career-activities/contract-probe", "resume"),
+            routeFamily("research sources", "/research-sources/contract-probe", "resume"),
+            routeFamily("research snapshots", "/research-snapshots/contract-probe", "resume"),
+            routeFamily("interview processes", "/interview-processes/contract-probe", "resume"),
+            routeFamily("interview rounds", "/interview-rounds/contract-probe", "resume"),
+            routeFamily("interview round contacts", "/interview-round-contacts/contract-probe", "resume"),
             routeFamily("interviews", "/interviews/contract-probe", "interview"),
             routeFamily("interview comparisons", "/interview-comparisons/contract-probe", "interview"),
             routeFamily("interview scenarios", "/interview-scenarios/contract-probe", "interview"),
             routeFamily("interview remediations", "/interview-remediations/contract-probe", "interview"),
             routeFamily("interview TTS", "/interview-tts/contract-probe", "interview"),
             routeFamily("interview streaming ASR", "/interview-streaming-asr/contract-probe", "interview"),
+            routeFamily("ai result feedback", "/ai/feedback/contract-probe", "ai"),
             routeFamily("growth", "/growth/contract-probe", "ai"),
             routeFamily("analytics", "/analytics/contract-probe", "ai"),
             routeFamily("files", "/files/contract-probe", "file"),
@@ -137,7 +170,9 @@ class GatewayRouteContractTest {
             "/inner/job-targets/users/42/current",
             "/inner/agent/reminders/candidates");
 
-    private static final String DEV_ORIGIN = "http://nqx.githubpage.com:30080";
+    private static final Set<String> DEV_ORIGINS = Set.of(
+            "http://nqx.githubpage.com:30080",
+            "http://103.236.97.252:30080");
 
     @Test
     void devGatewayConfigsExposeTheReleaseRoutesAndCorsOriginWithoutInnerRoutes() throws IOException {
@@ -175,11 +210,11 @@ class GatewayRouteContractTest {
             }
 
             assertTrue(
-                    config.globalCorsAllowedOriginPatterns().contains(DEV_ORIGIN),
-                    () -> config.relativePath() + " globalcors must allow " + DEV_ORIGIN);
+                    config.globalCorsAllowedOriginPatterns().containsAll(DEV_ORIGINS),
+                    () -> config.relativePath() + " globalcors must allow " + DEV_ORIGINS);
             assertTrue(
-                    config.applicationCorsAllowedOriginPatterns().contains(DEV_ORIGIN),
-                    () -> config.relativePath() + " codecoachai.gateway.cors must allow " + DEV_ORIGIN);
+                    config.applicationCorsAllowedOriginPatterns().containsAll(DEV_ORIGINS),
+                    () -> config.relativePath() + " codecoachai.gateway.cors must allow " + DEV_ORIGINS);
             assertTrue(
                     config.globalCorsExposedHeaders().contains("X-Trace-Id"),
                     () -> config.relativePath() + " globalcors must expose X-Trace-Id");
@@ -231,6 +266,29 @@ class GatewayRouteContractTest {
     }
 
     @Test
+    void resumeEvidenceResultsUseTheirDedicatedGatewayRoute() throws IOException {
+        List<String> expectedPatterns = routeGroupTokens(
+                "/evidence-assets/overview",
+                "/evidence-assets/usages",
+                "/evidence-assets/results",
+                "/evidence-usages",
+                "/evidence-usage-results");
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            GatewayRoute route = config.routesMatching("/evidence-usages/contract-probe").get(0);
+            assertTrue(
+                    route.id().contains("evidence-results"),
+                    () -> config.relativePath()
+                            + " must keep evidence result routes on a dedicated route; actual route="
+                            + route.id());
+            assertEquals(
+                    expectedPatterns,
+                    route.pathPatterns(),
+                    () -> config.relativePath()
+                            + " must keep evidence result routes isolated from the aggregate resume route");
+        }
+    }
+
+    @Test
     void knownOverlapsKeepSpecificRoutesBeforeBroadRoutes() throws IOException {
         for (GatewayConfig config : readGatewayConfigs().values()) {
             for (KnownOverlap overlap : KNOWN_OVERLAPS) {
@@ -250,7 +308,7 @@ class GatewayRouteContractTest {
     }
 
     @Test
-    void pathTokenDeclarationsStayUniqueAndMirroredWithOccurrenceCounts() throws IOException {
+    void pathTokenDeclarationsStayUnique() throws IOException {
         Map<String, GatewayConfig> configs = readGatewayConfigs();
         for (GatewayConfig config : configs.values()) {
             Map<String, Long> duplicates = config.routeTokenOccurrences().entrySet().stream()
@@ -265,28 +323,6 @@ class GatewayRouteContractTest {
                     () -> config.relativePath() + " must not declare an exact Path token more than once"
                             + "; duplicate occurrence counts=" + duplicates);
         }
-
-        String docsPath = GATEWAY_CONFIGS.get(0);
-        String configPath = GATEWAY_CONFIGS.get(1);
-        Map<String, Long> docsOccurrences = configs.get(docsPath).routeTokenOccurrences();
-        Map<String, Long> configOccurrences = configs.get(configPath).routeTokenOccurrences();
-        Set<String> differingTokens = new TreeSet<>();
-        differingTokens.addAll(docsOccurrences.keySet());
-        differingTokens.addAll(configOccurrences.keySet());
-        differingTokens.removeIf(token ->
-                docsOccurrences.getOrDefault(token, 0L).equals(configOccurrences.getOrDefault(token, 0L)));
-
-        assertTrue(
-                differingTokens.isEmpty(),
-                () -> docsPath + " and " + configPath
-                        + " Path token occurrence counts must stay equal"
-                        + "; differences=" + differingTokens.stream()
-                                .collect(Collectors.toMap(
-                                        token -> token,
-                                        token -> "docs=" + docsOccurrences.getOrDefault(token, 0L)
-                                                + ", config=" + configOccurrences.getOrDefault(token, 0L),
-                                        (left, right) -> left,
-                                        LinkedHashMap::new)));
     }
 
     @Test

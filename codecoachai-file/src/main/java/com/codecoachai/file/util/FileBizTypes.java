@@ -9,13 +9,26 @@ import org.springframework.util.StringUtils;
 
 public final class FileBizTypes {
 
-    private static final Set<String> ALLOWED = Set.of(
+    private static final Set<String> USER_ALLOWED = Set.of(
             "RESUME",
             "AVATAR",
             "ATTACHMENT",
             "INTERVIEW_VOICE"
     );
+    private static final Set<String> INTERNAL_ARCHIVE_TYPES = Set.of(
+            "APPLICATION_PACKAGE_ARCHIVE",
+            "CAREER_CAMPAIGN_ARCHIVE"
+    );
+    private static final Set<String> ALLOWED = Set.of(
+            "RESUME",
+            "AVATAR",
+            "ATTACHMENT",
+            "INTERVIEW_VOICE",
+            "APPLICATION_PACKAGE_ARCHIVE",
+            "CAREER_CAMPAIGN_ARCHIVE"
+    );
     private static final Set<String> INTERVIEW_VOICE_EXTENSIONS = Set.of("webm", "wav", "mp3", "m4a", "ogg");
+    private static final Set<String> ARCHIVE_EXTENSIONS = Set.of("zip");
 
     private FileBizTypes() {
     }
@@ -23,6 +36,14 @@ public final class FileBizTypes {
     public static String requireAllowed(String bizType) {
         String normalized = normalizeOrNull(bizType);
         if (normalized == null || !ALLOWED.contains(normalized)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file bizType is not supported");
+        }
+        return normalized;
+    }
+
+    public static String requireUserAllowed(String bizType) {
+        String normalized = normalizeOrNull(bizType);
+        if (normalized == null || !USER_ALLOWED.contains(normalized)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "file bizType is not supported");
         }
         return normalized;
@@ -45,7 +66,10 @@ public final class FileBizTypes {
         if ("INTERVIEW_VOICE".equals(normalizedBizType)) {
             return INTERVIEW_VOICE_EXTENSIONS.contains(ext);
         }
-        if (INTERVIEW_VOICE_EXTENSIONS.contains(ext)) {
+        if (INTERNAL_ARCHIVE_TYPES.contains(normalizedBizType)) {
+            return ARCHIVE_EXTENSIONS.contains(ext);
+        }
+        if (INTERVIEW_VOICE_EXTENSIONS.contains(ext) || ARCHIVE_EXTENSIONS.contains(ext)) {
             return false;
         }
         boolean configuredAllowed = configuredExtensions != null && configuredExtensions.stream()

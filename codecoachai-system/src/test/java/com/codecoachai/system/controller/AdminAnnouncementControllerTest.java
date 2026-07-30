@@ -1,6 +1,8 @@
 package com.codecoachai.system.controller;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -15,6 +17,7 @@ import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.system.domain.entity.SysAnnouncement;
 import com.codecoachai.system.mapper.SysAnnouncementMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -182,6 +185,37 @@ class AdminAnnouncementControllerTest {
         assertThrows(RuntimeException.class, () -> controller.update(12L, dto));
 
         verify(operationConfirmationGuard).release("lock-key");
+    }
+
+    @Test
+    void announcementIdSerializesAsStringWithoutJavaScriptPrecisionLoss() throws Exception {
+        SysAnnouncement announcement = announcement();
+        announcement.setId(2082011113656750082L);
+
+        String json = new ObjectMapper().writeValueAsString(announcement);
+
+        assertTrue(json.contains("\"id\":\"2082011113656750082\""));
+    }
+
+    @Test
+    void createReturnsAnnouncementIdAsString() {
+        AdminAnnouncementController.AnnouncementSaveDTO dto = saveDto(false, "create announcement",
+                "announcement-create-precise-id");
+        when(operationConfirmationGuard.requireConfirmed(
+                eq("announcement-create:Maintenance Window"),
+                eq(true),
+                eq(false),
+                eq("create announcement"),
+                eq("announcement-create-precise-id")))
+                .thenReturn("lock-key");
+        when(announcementMapper.insert(any(SysAnnouncement.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, SysAnnouncement.class).setId(2082011113656750082L);
+            return 1;
+        });
+
+        var result = controller.create(dto);
+
+        assertEquals("2082011113656750082", result.getData());
     }
 
     private static AdminAnnouncementController.AnnouncementSaveDTO saveDto(

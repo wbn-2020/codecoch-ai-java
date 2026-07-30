@@ -74,8 +74,9 @@ class RoleServiceImplTest {
         when(sysRoleMapper.selectList(any()))
                 .thenReturn(List.of(enabledRole(1L, "USER")))
                 .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")));
-        when(jdbcTemplate.queryForObject(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN"), eq(9L)))
-                .thenReturn(0L);
+        when(jdbcTemplate.queryForList(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN")))
+                .thenReturn(List.of(7L))
+                .thenReturn(List.of(9L));
 
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> roleService.assignRolesToUser(9L, List.of(1L)));
@@ -92,14 +93,15 @@ class RoleServiceImplTest {
         when(sysRoleMapper.selectList(any()))
                 .thenReturn(List.of(enabledRole(1L, "USER")))
                 .thenReturn(List.of(enabledRole(7L, "ROLE_ADMIN")));
-        when(jdbcTemplate.queryForObject(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN"), eq(9L)))
-                .thenReturn(1L);
+        when(jdbcTemplate.queryForList(any(String.class), eq(Long.class), eq("ADMIN"), eq("ADMIN")))
+                .thenReturn(List.of(7L))
+                .thenReturn(List.of(9L, 10L));
 
         assertDoesNotThrow(() -> roleService.assignRolesToUser(9L, List.of(1L)));
 
         verify(sysUserRoleMapper, never()).delete(any());
         verify(sysUserRoleMapper, never()).insert(any(SysUserRole.class));
-        verify(adminPermissionCache).invalidateUserPermissions(9L);
+        verify(adminPermissionCache).invalidateUserPermissionsAfterCommit(9L);
     }
 
     @Test
@@ -110,7 +112,7 @@ class RoleServiceImplTest {
         roleService.updateRoleStatus(7L, CommonConstants.NO);
 
         verify(sysRoleMapper).updateById(role);
-        verify(adminPermissionCache).invalidateUsersByRoleId(7L);
+        verify(adminPermissionCache).invalidateUsersByRoleIdAfterCommit(7L);
     }
 
     private static SysUser enabledUser(Long id) {

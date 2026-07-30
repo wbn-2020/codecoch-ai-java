@@ -25,7 +25,7 @@ public final class PromptTemplateVariableValidator {
     }
 
     public static void validateDefinition(String content, String variablesDeclaration) {
-        Set<String> placeholders = placeholders(content);
+        Set<String> placeholders = placeholderNames(content);
         VariableDeclaration declaration = parseDeclaration(variablesDeclaration);
         Set<String> undeclared = difference(placeholders, declaration.declared());
         Set<String> unused = difference(declaration.declared(), placeholders);
@@ -165,13 +165,17 @@ public final class PromptTemplateVariableValidator {
         }
     }
 
-    private static Set<String> placeholders(String content) {
+    static Set<String> placeholderNames(String content) {
         Set<String> names = new LinkedHashSet<>();
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(content == null ? "" : content);
         while (matcher.find()) {
             names.add(matcher.group(1));
         }
-        return names;
+        return Collections.unmodifiableSet(names);
+    }
+
+    static Set<String> declaredVariables(String variablesDeclaration) {
+        return parseDeclaration(variablesDeclaration).declared();
     }
 
     private static Set<String> difference(Set<String> left, Set<String> right) {

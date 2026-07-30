@@ -111,10 +111,22 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteUserFile(Long fileId, Long userId, String bizType) {
         FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
-        deleteRequired(resolveStoragePath(fileInfo.getStoragePath()));
-        fileInfoMapper.deleteById(fileInfo.getId());
-        log.info("Local file physically deleted fileId={} userId={} bizType={}",
-                fileId, userId, fileInfo.getBizType());
+        Path target = resolveStoragePath(fileInfo.getStoragePath());
+        int deleted = fileInfoMapper.deleteById(fileInfo.getId());
+        if (deleted != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "文件状态已变化，请刷新后重试");
+        }
+        runAfterCommit(() -> {
+            try {
+                deleteRequired(target);
+                log.info("Local file physically deleted after metadata commit fileId={} userId={} bizType={}",
+                        fileId, userId, fileInfo.getBizType());
+            } catch (BusinessException ex) {
+                log.error("Local file metadata committed but physical deletion failed fileId={} userId={} bizType={}",
+                        fileId, userId, fileInfo.getBizType(), ex);
+            }
+        });
     }
 
     @Override
@@ -480,5 +492,18 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
                 }
             }
         });
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 }

@@ -12,6 +12,13 @@ spring:
           uri: lb://codecoachai-auth
           predicates:
             - Path=/auth/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@ipKeyResolver}"
+                redis-rate-limiter.replenishRate: 3
+                redis-rate-limiter.burstCapacity: 10
+                redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-user-users
           uri: lb://codecoachai-user
           predicates:
@@ -85,13 +92,19 @@ spring:
         - id: codecoachai-resume
           uri: lb://codecoachai-resume
           predicates:
-            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/ai/sse/resume/**
+            - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/career-campaigns,/career-campaigns/**,/career-campaign-archive-exports,/career-campaign-archive-exports/**,/offers,/offers/**,/career-contacts,/career-contacts/**,/career-activities,/career-activities/**,/research-sources,/research-sources/**,/research-snapshots,/research-snapshots/**,/interview-processes,/interview-processes/**,/interview-rounds,/interview-rounds/**,/interview-round-contacts,/interview-round-contacts/**,/ai/sse/resume/**
         # Kept separate from the large resume route because the current Gateway runtime
         # does not reliably register this token when it is part of that aggregate predicate.
         - id: codecoachai-resume-claim-audits
           uri: lb://codecoachai-resume
           predicates:
             - Path=/resume-claim-audits,/resume-claim-audits/**
+        # Evidence result routes must remain isolated from the aggregate predicate. In the
+        # current Gateway runtime, late tokens in that predicate can be silently omitted.
+        - id: codecoachai-resume-evidence-results
+          uri: lb://codecoachai-resume
+          predicates:
+            - Path=/evidence-assets/overview,/evidence-assets/overview/**,/evidence-assets/usages,/evidence-assets/usages/**,/evidence-assets/results,/evidence-assets/results/**,/evidence-usages,/evidence-usages/**,/evidence-usage-results,/evidence-usage-results/**
         - id: codecoachai-resume-job-targets
           uri: lb://codecoachai-resume
           predicates:
@@ -135,7 +148,7 @@ spring:
         - id: codecoachai-ai-admin
           uri: lb://codecoachai-ai
           predicates:
-            - Path=/ai/health,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**
+            - Path=/ai/health,/ai/feedback,/ai/feedback/**,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
         - id: codecoachai-file-admin
           uri: lb://codecoachai-file
           predicates:
@@ -152,6 +165,13 @@ spring:
           uri: lb://codecoachai-search
           predicates:
             - Path=/search,/search/**,/admin/search,/admin/search/**
+          filters:
+            - name: RequestRateLimiter
+              args:
+                key-resolver: "#{@userKeyResolver}"
+                redis-rate-limiter.replenishRate: 10
+                redis-rate-limiter.burstCapacity: 20
+                redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-system-admin
           uri: lb://codecoachai-system
           predicates:
@@ -174,6 +194,7 @@ spring:
               - "http://localhost:3000"
               - "http://127.0.0.1:3000"
               - "http://nqx.githubpage.com:30080"
+              - "http://103.236.97.252:30080"
             allowedMethods:
               - GET
               - POST
@@ -197,15 +218,21 @@ spring:
       default-filters:
         - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE
 
+      filter:
+        request-rate-limiter:
+          deny-empty-key: true
+          empty-key-status-code: 429
+
 codecoachai:
   gateway:
     # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
-      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080"
+      allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080,http://103.236.97.252:30080"
       allowed-methods: "GET,POST,PUT,PATCH,DELETE,OPTIONS"
       allowed-headers: "Authorization,Content-Type,Accept,Origin,X-Requested-With,X-Request-Id,X-Trace-Id"
       exposed-headers: "X-Trace-Id"
-    trusted-proxies: "127.0.0.1,::1,0:0:0:0:0:0:0:1"
+    # Exact IPs and CIDR ranges are supported. Set the Docker network subnet in deployed environments.
+    trusted-proxies: "${CODECOACHAI_GATEWAY_TRUSTED_PROXIES:127.0.0.1,::1,0:0:0:0:0:0:0:1}"
     auth:
       white-paths:
         - /auth/login

@@ -42,10 +42,12 @@ import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
 import com.codecoachai.resume.service.ResumeJobMatchService;
+import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -57,6 +59,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
@@ -71,9 +74,13 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private static final long MAX_PAGE_SIZE = 100L;
     private static final String MATCH_SOURCE_TYPE = "RESUME_JOB_MATCH";
     private static final String MATCH_ASYNC_BIZ_TYPE = "resume-job-match.analyze";
-    private static final String TRUST_VERIFIED = "VERIFIED";
-    private static final String TRUST_PARTIAL = "PARTIAL";
-    private static final String TRUST_FALLBACK = "FALLBACK";
+    private static final String TRUST_VERIFIED = ResumeJobMatchTrustPolicy.TRUST_VERIFIED;
+    private static final String TRUST_PARTIAL = ResumeJobMatchTrustPolicy.TRUST_PARTIAL;
+    private static final String TRUST_FALLBACK = ResumeJobMatchTrustPolicy.TRUST_FALLBACK;
+    private static final int DETAIL_DIMENSION_MAX_CHARS = 255;
+    private static final int DETAIL_SKILL_NAME_MAX_BYTES = 65_535;
+    private static final int DETAIL_MATCH_LEVEL_MAX_CHARS = 32;
+    private static final int DETAIL_NARRATIVE_MAX_BYTES = 16_777_215;
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
@@ -87,6 +94,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final Optional<ResumeJobMatchMqDispatcher> resumeJobMatchMqDispatcher;
+    private final ResumeJobMatchTrustPolicy resumeJobMatchTrustPolicy;
 
     @Override
     public ResumeJobMatchSubmitVO createReport(ResumeJobMatchCreateDTO dto) {
@@ -175,10 +183,11 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     public ResumeJobMatchReportDetailVO getInnerSuccessReport(Long id) {
         Long userId = requireCurrentUserId();
         ResumeJobMatchReport report = getOwnedReport(id, userId);
-        if (!isTrustedSuccessReport(report)) {
+        ResumeJobMatchTrustPolicy.Assessment assessment = resumeJobMatchTrustPolicy.assess(report);
+        if (!assessment.trustedSuccess()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "当前匹配报告来源或内容仍需复核，暂不适合继续生成训练或面试建议，请重新生成后再试");
         }
-        return toDetailVO(report);
+        return toDetailVO(report, assessment);
     }
 
     @Override
@@ -192,7 +201,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
                 .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.SUCCESS.getCode())
                 .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
-        if (report == null) {
+        if (report == null || !resumeJobMatchTrustPolicy.assess(report).trustedSuccess()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "resume job match report evidence not found");
         }
         ResumeJobMatchReportAgentEvidenceVO vo = new ResumeJobMatchReportAgentEvidenceVO();
@@ -238,13 +247,31 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
                     report.getResumeVersionId(), report.getJdAnalysisId());
             AnalyzeResumeJobMatchVO response = FeignResultUtils.unwrap(aiFeignClient.analyzeResumeJobMatch(toAiRequest(report, context)));
             JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
-            ResumeJobMatchReport success = transactionTemplate.execute(status ->
-                    markSuccess(report.getId(), resultJson, response == null ? null : response.getAiCallLogId()));
+            ResumeJobMatchReport success = persistGeneratedMatchResult(
+                    report.getId(), resultJson, response == null ? null : response.getAiCallLogId());
             return toSubmitVO(success);
         } catch (RuntimeException ex) {
             log.warn("Resume job match generation failed, reportId={}", report.getId(), ex);
             ResumeJobMatchReport failed = transactionTemplate.execute(status -> markFailed(report.getId(), ex));
             return toSubmitVO(failed);
+        }
+    }
+
+    private ResumeJobMatchReport persistGeneratedMatchResult(
+            Long reportId, JsonNode resultJson, Long aiCallLogId) {
+        try {
+            ResumeJobMatchReport persisted = transactionTemplate.execute(
+                    status -> markSuccess(reportId, resultJson, aiCallLogId));
+            if (persisted == null) {
+                throw new ResumeJobMatchPersistenceException(
+                        reportId, "success transaction returned no report");
+            }
+            return persisted;
+        } catch (ResumeJobMatchPersistenceException ex) {
+            throw ex;
+        } catch (DataAccessException ex) {
+            throw new ResumeJobMatchPersistenceException(
+                    reportId, "database rejected generated report or detail evidence", ex);
         }
     }
 
@@ -434,11 +461,64 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private void replaceDetails(ResumeJobMatchReport report, List<ResumeJobMatchDetail> details) {
+        for (ResumeJobMatchDetail detail : details) {
+            validateDetailPersistenceContract(report.getId(), detail);
+        }
         detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
                 .eq(ResumeJobMatchDetail::getReportId, report.getId())
                 .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
         for (ResumeJobMatchDetail detail : details) {
-            detailMapper.insert(detail);
+            int affectedRows = detailMapper.insert(detail);
+            if (affectedRows != 1) {
+                throw new ResumeJobMatchPersistenceException(
+                        report.getId(), "detail insert affected " + affectedRows + " rows");
+            }
+        }
+    }
+
+    private void validateDetailPersistenceContract(Long reportId, ResumeJobMatchDetail detail) {
+        if (detail == null) {
+            throw new ResumeJobMatchPersistenceException(reportId, "detail row is null");
+        }
+        requireMaxCharacters(
+                reportId, "dimension", detail.getDimension(), DETAIL_DIMENSION_MAX_CHARS);
+        requireMaxUtf8Bytes(
+                reportId, "skill_name", detail.getSkillName(), DETAIL_SKILL_NAME_MAX_BYTES);
+        requireMaxCharacters(
+                reportId, "match_level", detail.getMatchLevel(), DETAIL_MATCH_LEVEL_MAX_CHARS);
+        requireMaxUtf8Bytes(
+                reportId, "evidence", detail.getEvidence(), DETAIL_NARRATIVE_MAX_BYTES);
+        requireMaxUtf8Bytes(
+                reportId, "gap_description", detail.getGapDescription(), DETAIL_NARRATIVE_MAX_BYTES);
+        requireMaxUtf8Bytes(
+                reportId, "suggestion", detail.getSuggestion(), DETAIL_NARRATIVE_MAX_BYTES);
+    }
+
+    private void requireMaxCharacters(
+            Long reportId, String fieldName, String value, int maxCharacters) {
+        if (value == null) {
+            return;
+        }
+        int actualCharacters = value.codePointCount(0, value.length());
+        if (actualCharacters > maxCharacters) {
+            throw new ResumeJobMatchPersistenceException(
+                    reportId,
+                    "detail field " + fieldName + " exceeds character capacity: actual="
+                            + actualCharacters + ", max=" + maxCharacters);
+        }
+    }
+
+    private void requireMaxUtf8Bytes(
+            Long reportId, String fieldName, String value, int maxBytes) {
+        if (value == null) {
+            return;
+        }
+        int actualBytes = value.getBytes(StandardCharsets.UTF_8).length;
+        if (actualBytes > maxBytes) {
+            throw new ResumeJobMatchPersistenceException(
+                    reportId,
+                    "detail field " + fieldName + " exceeds byte capacity: actual="
+                            + actualBytes + ", max=" + maxBytes);
         }
     }
 
@@ -663,6 +743,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private ResumeJobMatchReportListVO toListVO(ResumeJobMatchReport report) {
+        ResumeJobMatchTrustPolicy.Assessment assessment = resumeJobMatchTrustPolicy.assess(report);
         Resume resume = resumeMapper.selectById(report.getResumeId());
         TargetJob job = targetJobMapper.selectById(report.getTargetJobId());
         ResumeVersion version = findReportVersion(report);
@@ -686,17 +767,22 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         vo.setErrorMessage(report.getErrorMessage());
         vo.setSourceType(MATCH_SOURCE_TYPE);
         vo.setSourceId(report.getId());
-        vo.setTrustStatus(matchTrustStatus(report));
-        vo.setEvidenceSummary(matchEvidenceSummary(report));
-        vo.setFallback(matchFallback(report));
-        vo.setSchemaWarnings(matchSchemaWarnings(report));
-        vo.setSchemaWarningCount(matchSchemaWarningCount(report));
+        vo.setTrustStatus(assessment.trustStatus());
+        vo.setEvidenceSummary(matchEvidenceSummary(report, assessment));
+        vo.setFallback(assessment.fallback());
+        vo.setSchemaWarnings(assessment.schemaWarnings());
+        vo.setSchemaWarningCount(assessment.schemaWarningCount());
         vo.setCreatedAt(report.getCreatedAt());
         vo.setUpdatedAt(report.getUpdatedAt());
         return vo;
     }
 
     private ResumeJobMatchReportDetailVO toDetailVO(ResumeJobMatchReport report) {
+        return toDetailVO(report, resumeJobMatchTrustPolicy.assess(report));
+    }
+
+    private ResumeJobMatchReportDetailVO toDetailVO(
+            ResumeJobMatchReport report, ResumeJobMatchTrustPolicy.Assessment assessment) {
         Resume resume = resumeMapper.selectById(report.getResumeId());
         TargetJob job = targetJobMapper.selectById(report.getTargetJobId());
         ResumeVersion version = findReportVersion(report);
@@ -717,28 +803,23 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         vo.setProjectExperienceScore(report.getProjectExperienceScore());
         vo.setBusinessFitScore(report.getBusinessFitScore());
         vo.setCommunicationScore(report.getCommunicationScore());
-        ArrayNode storedFieldWarnings = objectMapper.createArrayNode();
-        vo.setStrengths(readStoredReportArrayOrEmpty(report.getStrengthsJson(), "strengths", storedFieldWarnings));
-        vo.setGaps(readStoredReportArrayOrEmpty(report.getGapsJson(), "gaps", storedFieldWarnings));
-        vo.setResumeRisks(readStoredReportArrayOrEmpty(report.getResumeRisksJson(), "resumeRisks", storedFieldWarnings));
-        vo.setOptimizationSuggestions(readStoredReportArrayOrEmpty(report.getOptimizationSuggestionsJson(),
-                "optimizationSuggestions", storedFieldWarnings));
-        vo.setRecommendedLearningTopics(readStoredReportArrayOrEmpty(report.getRecommendedLearningTopicsJson(),
-                "recommendedLearningTopics", storedFieldWarnings));
-        vo.setRecommendedInterviewTopics(readStoredReportArrayOrEmpty(report.getRecommendedInterviewTopicsJson(),
-                "recommendedInterviewTopics", storedFieldWarnings));
+        vo.setStrengths(readStoredReportArrayOrEmpty(report.getStrengthsJson()));
+        vo.setGaps(readStoredReportArrayOrEmpty(report.getGapsJson()));
+        vo.setResumeRisks(readStoredReportArrayOrEmpty(report.getResumeRisksJson()));
+        vo.setOptimizationSuggestions(readStoredReportArrayOrEmpty(report.getOptimizationSuggestionsJson()));
+        vo.setRecommendedLearningTopics(readStoredReportArrayOrEmpty(report.getRecommendedLearningTopicsJson()));
+        vo.setRecommendedInterviewTopics(readStoredReportArrayOrEmpty(report.getRecommendedInterviewTopicsJson()));
         vo.setSummary(report.getSummary());
         vo.setStatus(report.getStatus());
         vo.setErrorMessage(report.getErrorMessage());
         vo.setAiCallLogId(report.getAiCallLogId());
         vo.setSourceType(MATCH_SOURCE_TYPE);
         vo.setSourceId(report.getId());
-        vo.setTrustStatus(matchTrustStatus(report));
-        vo.setEvidenceSummary(matchEvidenceSummary(report));
-        vo.setFallback(matchFallback(report));
-        JsonNode schemaWarnings = mergeSchemaWarnings(matchSchemaWarnings(report), storedFieldWarnings);
-        vo.setSchemaWarnings(schemaWarnings);
-        vo.setSchemaWarningCount(schemaWarnings.isArray() ? schemaWarnings.size() : 0);
+        vo.setTrustStatus(assessment.trustStatus());
+        vo.setEvidenceSummary(matchEvidenceSummary(report, assessment));
+        vo.setFallback(assessment.fallback());
+        vo.setSchemaWarnings(assessment.schemaWarnings());
+        vo.setSchemaWarningCount(assessment.schemaWarningCount());
         vo.setAsyncBizType(MATCH_ASYNC_BIZ_TYPE);
         vo.setAsyncBizId(String.valueOf(report.getId()));
         vo.setAsyncSendStatus("QUERY_BY_BIZ_ID");
@@ -775,6 +856,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private ResumeJobMatchSubmitVO toSubmitVO(ResumeJobMatchReport report) {
+        ResumeJobMatchTrustPolicy.Assessment assessment = resumeJobMatchTrustPolicy.assess(report);
         ResumeVersion version = findReportVersion(report);
         ResumeJobMatchSubmitVO vo = new ResumeJobMatchSubmitVO();
         vo.setReportId(report.getId());
@@ -789,11 +871,11 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         vo.setErrorMessage(report.getErrorMessage());
         vo.setSourceType(MATCH_SOURCE_TYPE);
         vo.setSourceId(report.getId());
-        vo.setTrustStatus(matchTrustStatus(report));
-        vo.setEvidenceSummary(matchEvidenceSummary(report));
-        vo.setFallback(matchFallback(report));
-        vo.setSchemaWarnings(matchSchemaWarnings(report));
-        vo.setSchemaWarningCount(matchSchemaWarningCount(report));
+        vo.setTrustStatus(assessment.trustStatus());
+        vo.setEvidenceSummary(matchEvidenceSummary(report, assessment));
+        vo.setFallback(assessment.fallback());
+        vo.setSchemaWarnings(assessment.schemaWarnings());
+        vo.setSchemaWarningCount(assessment.schemaWarningCount());
         vo.setCreatedAt(report.getCreatedAt());
         vo.setUpdatedAt(report.getUpdatedAt());
         return vo;
@@ -818,52 +900,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return vo;
     }
 
-    private String matchTrustStatus(ResumeJobMatchReport report) {
-        if (report == null) {
-            return TRUST_PARTIAL;
-        }
-        if (ResumeJobMatchStatus.FAILED.getCode().equals(report.getStatus())) {
-            return TRUST_FALLBACK;
-        }
-        if (!ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())) {
-            return TRUST_PARTIAL;
-        }
-        if (matchRawFallback(report)) {
-            return TRUST_FALLBACK;
-        }
-        boolean hasScore = report.getOverallScore() != null && report.getOverallScore() > 0;
-        boolean hasAiLog = report.getAiCallLogId() != null;
-        boolean hasEvidence = StringUtils.hasText(report.getStrengthsJson())
-                || StringUtils.hasText(report.getGapsJson())
-                || StringUtils.hasText(report.getSummary());
-        String rawTrustStatus = matchRawTrustStatus(report);
-        if (TRUST_FALLBACK.equals(rawTrustStatus)) {
-            return TRUST_FALLBACK;
-        }
-        if (TRUST_PARTIAL.equals(rawTrustStatus) || hasMatchSchemaWarnings(report)) {
-            return TRUST_PARTIAL;
-        }
-        return hasScore && hasAiLog && hasEvidence ? TRUST_VERIFIED : TRUST_PARTIAL;
-    }
-
-    private Boolean matchFallback(ResumeJobMatchReport report) {
-        return report == null
-                || ResumeJobMatchStatus.FAILED.getCode().equals(report.getStatus())
-                || matchRawFallback(report)
-                || TRUST_FALLBACK.equals(matchRawTrustStatus(report))
-                || report.getResumeId() == null
-                || report.getTargetJobId() == null
-                || hasMatchSchemaWarnings(report);
-    }
-
     private boolean isTrustedSuccessReport(ResumeJobMatchReport report) {
-        return report != null
-                && ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())
-                && !matchFallback(report)
-                && TRUST_VERIFIED.equals(matchTrustStatus(report));
+        return resumeJobMatchTrustPolicy.assess(report).trustedSuccess();
     }
 
-    private String matchEvidenceSummary(ResumeJobMatchReport report) {
+    private String matchEvidenceSummary(
+            ResumeJobMatchReport report, ResumeJobMatchTrustPolicy.Assessment assessment) {
         if (report == null) {
             return "匹配报告缺少上下文来源。";
         }
@@ -879,58 +921,12 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         if (ResumeJobMatchStatus.SUCCESS.getCode().equals(report.getStatus())) {
             String aiLog = report.getAiCallLogId() == null ? "处理记录待补充" : "处理记录已保存";
             String score = report.getOverallScore() == null ? "评分待确认" : "综合匹配 " + report.getOverallScore() + " 分";
-            String fallbackNote = matchRawFallback(report) || TRUST_FALLBACK.equals(matchRawTrustStatus(report))
-                    ? " · 当前资料不完整，建议复核后使用" : "";
-            String schemaNote = hasMatchSchemaWarnings(report) ? " · 部分内容已整理，部分来源待复核" : "";
+            String fallbackNote = assessment.fallback() ? " · 当前资料不完整，建议复核后使用" : "";
+            String schemaNote = assessment.schemaWarningCount() > 0
+                    ? " · 部分内容已整理，部分来源待复核" : "";
             return context + " · " + jdAnalysis + " · " + aiLog + " · " + score + fallbackNote + schemaNote;
         }
         return context + " · " + jdAnalysis + " · 匹配报告正在生成，来源待确认。";
-    }
-
-    private String matchRawTrustStatus(ResumeJobMatchReport report) {
-        JsonNode rawResult = rawResultJsonOrNull(report);
-        if (rawResult == null) {
-            return null;
-        }
-        String value = normalizeTrustStatus(textValue(rawResult, "trustStatus"));
-        if (TRUST_PARTIAL.equals(value) || TRUST_VERIFIED.equals(value) || TRUST_FALLBACK.equals(value)) {
-            return value;
-        }
-        return null;
-    }
-
-    private boolean matchRawFallback(ResumeJobMatchReport report) {
-        JsonNode rawResult = rawResultJsonOrNull(report);
-        return rawResult != null && rawResult.path("fallback").asBoolean(false);
-    }
-
-    private boolean hasMatchSchemaWarnings(ResumeJobMatchReport report) {
-        return matchSchemaWarningCount(report) > 0;
-    }
-
-    private JsonNode matchSchemaWarnings(ResumeJobMatchReport report) {
-        JsonNode rawResult = rawResultJsonOrNull(report);
-        if (rawResult == null || !rawResult.path("schemaWarnings").isArray()) {
-            return objectMapper.createArrayNode();
-        }
-        return rawResult.path("schemaWarnings");
-    }
-
-    private JsonNode mergeSchemaWarnings(JsonNode rawWarnings, ArrayNode storedFieldWarnings) {
-        if (storedFieldWarnings == null || storedFieldWarnings.isEmpty()) {
-            return rawWarnings == null || !rawWarnings.isArray() ? objectMapper.createArrayNode() : rawWarnings;
-        }
-        ArrayNode merged = objectMapper.createArrayNode();
-        if (rawWarnings != null && rawWarnings.isArray()) {
-            rawWarnings.forEach(merged::add);
-        }
-        storedFieldWarnings.forEach(merged::add);
-        return merged;
-    }
-
-    private int matchSchemaWarningCount(ResumeJobMatchReport report) {
-        JsonNode warnings = matchSchemaWarnings(report);
-        return warnings.isArray() ? warnings.size() : 0;
     }
 
     private String failedMatchDiagnosticJson(RuntimeException ex) {
@@ -949,6 +945,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private String matchFailureCategory(RuntimeException ex) {
+        if (isMatchResultPersistenceFailure(ex)) {
+            return "MATCH_RESULT_PERSISTENCE_FAILED";
+        }
         String message = ex == null ? "" : firstText(ex.getMessage(), "");
         String lower = message.toLowerCase();
         if (lower.contains("jd analysis") || lower.contains("job description") || lower.contains("target job jd")) {
@@ -986,17 +985,6 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
 
     private String normalizeTrustStatus(String value) {
         return StringUtils.hasText(value) ? value.trim().toUpperCase() : null;
-    }
-
-    private JsonNode rawResultJsonOrNull(ResumeJobMatchReport report) {
-        if (report == null || !StringUtils.hasText(report.getRawResultJson())) {
-            return null;
-        }
-        try {
-            return objectMapper.readTree(report.getRawResultJson());
-        } catch (Exception ignored) {
-            return null;
-        }
     }
 
     private Map<String, Object> resumeSnapshot(Resume resume, List<ResumeProject> projects) {
@@ -1655,7 +1643,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         }
     }
 
-    private ArrayNode readStoredReportArrayOrEmpty(String raw, String fieldName, ArrayNode warnings) {
+    private ArrayNode readStoredReportArrayOrEmpty(String raw) {
         if (!StringUtils.hasText(raw)) {
             return objectMapper.createArrayNode();
         }
@@ -1669,10 +1657,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             }
             ArrayNode array = objectMapper.createArrayNode();
             array.add(node);
-            markStoredSchemaWarning(warnings, fieldName, "stored field was not an array and was wrapped for display");
             return array;
         } catch (Exception ex) {
-            markStoredSchemaWarning(warnings, fieldName, "stored field JSON was malformed and was hidden for display");
             return objectMapper.createArrayNode();
         }
     }
@@ -1775,6 +1761,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private String safeUserFacingMatchError(RuntimeException ex) {
+        if (isMatchResultPersistenceFailure(ex)) {
+            return "简历匹配报告保存失败，系统未截断或写入不完整的 AI 证据。请稍后重试；若持续失败，请联系管理员检查数据库迁移。";
+        }
         String message = ex == null ? null : ex.getMessage();
         if (!StringUtils.hasText(message)) {
             return "\u7b80\u5386\u5339\u914d\u62a5\u544a\u751f\u6210\u5931\u8d25\uff0c\u4efb\u52a1\u8bb0\u5f55\u5df2\u4fdd\u7559\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5\u3002";
@@ -1801,6 +1790,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private String userFacingMatchError(RuntimeException ex) {
+        if (isMatchResultPersistenceFailure(ex)) {
+            return "简历匹配报告保存失败，系统未截断或写入不完整的 AI 证据。请稍后重试；若持续失败，请联系管理员检查数据库迁移。";
+        }
         String message = ex == null ? null : ex.getMessage();
         if (!StringUtils.hasText(message)) {
             return "简历匹配报告生成失败，任务记录已保留，请稍后重试。";
@@ -1822,6 +1814,19 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return "简历或目标岗位数据不完整，请检查后重新生成匹配报告。";
     }
 
+    private boolean isMatchResultPersistenceFailure(Throwable error) {
+        Throwable current = error;
+        int depth = 0;
+        while (current != null && depth++ < 12) {
+            if (current instanceof ResumeJobMatchPersistenceException
+                    || current instanceof DataAccessException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
     private String firstText(String... values) {
         if (values == null) {
             return null;
@@ -1840,5 +1845,21 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private record ExecutionClaim(ResumeJobMatchReport report, boolean claimed) {
+    }
+
+    private static final class ResumeJobMatchPersistenceException extends RuntimeException {
+
+        private ResumeJobMatchPersistenceException(Long reportId, String reason) {
+            super(message(reportId, reason));
+        }
+
+        private ResumeJobMatchPersistenceException(Long reportId, String reason, Throwable cause) {
+            super(message(reportId, reason), cause);
+        }
+
+        private static String message(Long reportId, String reason) {
+            return "Resume job match result persistence failed, reportId="
+                    + reportId + ", reason=" + reason;
+        }
     }
 }

@@ -32,6 +32,9 @@ public interface CareerCampaignReviewPersistenceService {
                                              CareerCampaignReviewVO result,
                                              String inputHash,
                                              String requestId,
+                                             String evidenceManifestJson,
+                                             String evidenceSchemaVersion,
+                                             String ruleVersion,
                                              List<CareerCampaignReviewSource> sources);
 
     void releaseClaim(Long userId, Long reviewId, String claimToken);
@@ -40,6 +43,13 @@ public interface CareerCampaignReviewPersistenceService {
                                                          Long candidateId,
                                                          String idempotencyKeyHash,
                                                          boolean confirmed);
+
+    CareerCampaignReviewMemoryCandidate decideCandidate(Long userId,
+                                                        Long candidateId,
+                                                        String decisionCode,
+                                                        String idempotencyKeyHash,
+                                                        String payloadHash,
+                                                        String editedContent);
 
     record GenerationClaim(CareerCampaignReview review,
                            CareerCampaignReviewSnapshot replay,

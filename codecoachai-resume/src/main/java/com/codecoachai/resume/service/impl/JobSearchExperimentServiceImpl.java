@@ -29,6 +29,7 @@ import com.codecoachai.resume.domain.vo.JobSearchExperimentMetricsVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentRelationVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentReviewVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentStrategyVO;
+import com.codecoachai.resume.export.ResumeArtifactHashes;
 import com.codecoachai.resume.mapper.JobApplicationEventMapper;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
@@ -41,17 +42,22 @@ import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mapper.UserAbilityProfileMapper;
 import com.codecoachai.resume.service.JobSearchExperimentService;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy.QualityDecision;
+import com.codecoachai.resume.service.support.ExperimentQualityGatePolicy.SampleState;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -59,7 +65,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = @Autowired)
 public class JobSearchExperimentServiceImpl implements JobSearchExperimentService {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
@@ -81,6 +87,28 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     private final UserAbilityProfileMapper userAbilityProfileMapper;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final ExperimentQualityGatePolicy qualityGatePolicy;
+
+    public JobSearchExperimentServiceImpl(
+            JobSearchExperimentMapper experimentMapper,
+            JobSearchExperimentRelationMapper relationMapper,
+            JobSearchExperimentReviewMapper reviewMapper,
+            ResumeVersionMapper resumeVersionMapper,
+            TargetJobMapper targetJobMapper,
+            JobDescriptionAnalysisMapper jobDescriptionAnalysisMapper,
+            ResumeJobMatchReportMapper matchReportMapper,
+            JobApplicationMapper jobApplicationMapper,
+            JobApplicationEventMapper jobApplicationEventMapper,
+            ProjectEvidenceMapper projectEvidenceMapper,
+            UserAbilityProfileMapper userAbilityProfileMapper,
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper) {
+        this(experimentMapper, relationMapper, reviewMapper, resumeVersionMapper,
+                targetJobMapper, jobDescriptionAnalysisMapper, matchReportMapper,
+                jobApplicationMapper, jobApplicationEventMapper, projectEvidenceMapper,
+                userAbilityProfileMapper, jdbcTemplate, objectMapper,
+                new ExperimentQualityGatePolicy());
+    }
 
     @Override
     public PageResult<JobSearchExperimentListVO> list(JobSearchExperimentQueryDTO query) {
@@ -230,7 +258,8 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         review.setDemoFlag(experiment.getDemoFlag());
         reviewMapper.insert(review);
         updateExperimentReviewSnapshot(experiment, review, metrics);
-        return toReviewVO(review);
+        return toReviewVO(review, reviewEvidenceSummary(
+                review.getUserId(), review.getExperimentId()));
     }
 
     @Override
@@ -273,12 +302,17 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     @Override
     public List<JobSearchExperimentReviewVO> listReviews(Long experimentId) {
         JobSearchExperiment experiment = ownedExperiment(experimentId);
-        return reviewMapper.selectList(new LambdaQueryWrapper<JobSearchExperimentReview>()
+        List<JobSearchExperimentReview> reviews =
+                reviewMapper.selectList(new LambdaQueryWrapper<JobSearchExperimentReview>()
                         .eq(JobSearchExperimentReview::getUserId, experiment.getUserId())
                         .eq(JobSearchExperimentReview::getExperimentId, experimentId)
                         .eq(JobSearchExperimentReview::getDeleted, CommonConstants.NO)
-                        .orderByDesc(JobSearchExperimentReview::getCreatedAt))
-                .stream().map(this::toReviewVO).toList();
+                        .orderByDesc(JobSearchExperimentReview::getCreatedAt));
+        ReviewEvidenceSummary evidenceSummary =
+                reviewEvidenceSummary(experiment.getUserId(), experimentId);
+        return reviews.stream()
+                .map(review -> toReviewVO(review, evidenceSummary))
+                .toList();
     }
 
     @Override
@@ -353,27 +387,35 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                 .collect(Collectors.groupingBy(JobSearchExperimentRelationVO::getRelationType));
         List<Long> appIds = ids(grouped.get("JOB_APPLICATION"));
         List<Long> relatedResumeVersionIds = ids(grouped.get("RESUME_VERSION"));
-        metrics.setApplicationCount(appIds.size());
         metrics.setTargetJobCount(ids(grouped.get("TARGET_JOB")).size());
         metrics.setProjectEvidenceCount(ids(grouped.get("PROJECT_EVIDENCE")).size());
         metrics.setAgentTaskCount(ids(grouped.get("AGENT_TASK")).size());
         List<JobApplication> apps = List.of();
+        List<JobApplicationEvent> events = List.of();
         if (!appIds.isEmpty()) {
             apps = safeList(jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                     .eq(JobApplication::getUserId, experiment.getUserId())
                     .eq(JobApplication::getDeleted, CommonConstants.NO)
                     .in(JobApplication::getId, appIds)));
+            Set<Long> activeAppIds = apps.stream()
+                    .map(JobApplication::getId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            metrics.setApplicationCount(activeAppIds.size());
             metrics.setFeedbackCount((int) apps.stream().filter(app -> !"SAVED".equalsIgnoreCase(app.getStatus())).count());
             metrics.setInterviewInviteCount((int) apps.stream().filter(app -> "INTERVIEWING".equalsIgnoreCase(app.getStatus())
                     || "OFFER".equalsIgnoreCase(app.getStatus())).count());
             metrics.setOfferCount((int) apps.stream().filter(app -> "OFFER".equalsIgnoreCase(app.getStatus())).count());
             metrics.setRejectedCount((int) apps.stream().filter(app -> "REJECTED".equalsIgnoreCase(app.getStatus())).count());
-            List<JobApplicationEvent> events = safeList(jobApplicationEventMapper.selectList(new LambdaQueryWrapper<JobApplicationEvent>()
-                    .eq(JobApplicationEvent::getUserId, experiment.getUserId())
-                    .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
-                    .in(JobApplicationEvent::getApplicationId, appIds)));
-            metrics.setInterviewCompletedCount((int) events.stream()
-                    .filter(event -> "INTERVIEW_COMPLETED".equalsIgnoreCase(event.getEventType())).count());
+            if (!activeAppIds.isEmpty()) {
+                events = safeList(jobApplicationEventMapper.selectList(
+                        new LambdaQueryWrapper<JobApplicationEvent>()
+                                .eq(JobApplicationEvent::getUserId, experiment.getUserId())
+                                .eq(JobApplicationEvent::getDeleted, CommonConstants.NO)
+                                .in(JobApplicationEvent::getApplicationId, activeAppIds)));
+            }
+        } else {
+            metrics.setApplicationCount(0);
         }
         Map<Long, Integer> resumeUsageCounts = apps.stream()
                 .map(JobApplication::getResumeVersionId)
@@ -382,11 +424,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         relatedResumeVersionIds.forEach(id -> resumeUsageCounts.putIfAbsent(id, 0));
         metrics.setResumeVersionUsageCounts(resumeUsageCounts);
         metrics.setResumeVersionCount(resumeUsageCounts.isEmpty() ? relatedResumeVersionIds.size() : resumeUsageCounts.size());
+        Set<Long> completedInterviewSessionIds = completedInterviewSessionIds(
+                experiment.getUserId(), grouped, events);
+        metrics.setInterviewCompletedCount(completedInterviewSessionIds.size());
         int sample = Math.max(metrics.getApplicationCount(), metrics.getInterviewCompletedCount());
-        metrics.setSampleCount(sample);
-        int relationInterviewCount = ids(grouped.get("INTERVIEW_REPORT")).size() + ids(grouped.get("INTERVIEW_SESSION")).size();
-        metrics.setInterviewCompletedCount(Math.max(metrics.getInterviewCompletedCount(), relationInterviewCount));
-        sample = Math.max(metrics.getApplicationCount(), metrics.getInterviewCompletedCount());
         metrics.setSampleCount(sample);
         metrics.getFacts().add("投递数：" + metrics.getApplicationCount());
         metrics.getFacts().add("反馈数：" + metrics.getFeedbackCount());
@@ -394,20 +435,118 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         metrics.getFacts().add("完成面试数：" + metrics.getInterviewCompletedCount());
         metrics.getFacts().add("关联简历版本数：" + metrics.getResumeVersionCount());
         metrics.getFacts().add("关联项目证据数：" + metrics.getProjectEvidenceCount());
-        metrics.setResumeVersionSampleInsufficient(resumeVersionSampleInsufficient(metrics));
-        metrics.setSampleInsufficient(metrics.getApplicationCount() < 10 || metrics.getInterviewCompletedCount() < 3);
-        metrics.setConfidenceLevel(confidenceLevel(metrics));
-        metrics.getUnsupportedConclusions().addAll(unsupportedConclusions(metrics));
-        if (metrics.getApplicationCount() >= 5 && metrics.getApplicationCount() < 10) {
-            metrics.getWeakObservations().add("低置信度弱观察：当前投递已有 5-9 条，可以记录反馈方向，但不能判断策略优劣。");
-        } else if (metrics.getApplicationCount() >= 10 && metrics.getInterviewCompletedCount() < 3) {
-            metrics.getWeakObservations().add("趋势观察：投递样本达到 10 条，可观察反馈趋势，但面试样本不足，不能判断面试能力变化。");
-        } else if (metrics.getApplicationCount() >= 10) {
-            metrics.getWeakObservations().add("趋势观察：投递和面试样本达到复盘口径，可观察反馈节奏，但仍需保留岗位、渠道和时间窗口边界。");
-        }
+        QualityDecision qualityGate = qualityDecision(metrics);
+        metrics.setResumeVersionSampleInsufficient(!qualityGate.versionComparisonAllowed());
+        metrics.setSampleInsufficient(qualityGate.state() == SampleState.BLOCKED_FACT_ONLY);
+        metrics.setConfidenceLevel(qualityGate.confidenceLevel());
+        metrics.getUnsupportedConclusions().addAll(qualityGate.unsupportedConclusions());
+        metrics.getWeakObservations().addAll(qualityGate.weakObservations());
         metrics.setSampleWarning(sampleWarning(metrics));
         metrics.setSampleBoundary(buildSampleBoundary(metrics));
         return metrics;
+    }
+
+    private Set<Long> completedInterviewSessionIds(
+            Long userId,
+            Map<String, List<JobSearchExperimentRelationVO>> grouped,
+            List<JobApplicationEvent> events) {
+        Set<Long> directCandidates =
+                new LinkedHashSet<>(ids(grouped.get("INTERVIEW_SESSION")));
+        Set<InterviewEventReference> eventReferences = new LinkedHashSet<>();
+        for (JobApplicationEvent event : safeList(events)) {
+            if (!"INTERVIEW_COMPLETED".equalsIgnoreCase(event.getEventType())) {
+                continue;
+            }
+            Long sessionId = asLong(readMap(event.getReviewJson()).get("interviewId"));
+            if (sessionId != null && event.getApplicationId() != null) {
+                eventReferences.add(
+                        new InterviewEventReference(sessionId, event.getApplicationId()));
+            }
+        }
+        try {
+            directCandidates.addAll(completedReportSessionIds(
+                    userId, ids(grouped.get("INTERVIEW_REPORT"))));
+            if (directCandidates.isEmpty() && eventReferences.isEmpty()) {
+                return Set.of();
+            }
+            List<String> candidatePredicates = new ArrayList<>();
+            List<Object> args = new ArrayList<>();
+            args.add(userId);
+            if (!directCandidates.isEmpty()) {
+                String placeholders = directCandidates.stream()
+                        .map(ignored -> "?")
+                        .collect(Collectors.joining(","));
+                candidatePredicates.add("id IN (" + placeholders + ")");
+                args.addAll(directCandidates);
+            }
+            for (InterviewEventReference reference : eventReferences) {
+                candidatePredicates.add("(id = ? AND application_id = ?)");
+                args.add(reference.sessionId());
+                args.add(reference.applicationId());
+            }
+            List<Long> completed = safeList(jdbcTemplate.query("""
+                    SELECT DISTINCT id
+                      FROM interview_session
+                     WHERE user_id = ?
+                       AND status = 'COMPLETED'
+                       AND deleted = 0
+                       AND (%s)
+                    """.formatted(String.join(" OR ", candidatePredicates)),
+                    (rs, rowNum) -> rs.getLong("id"),
+                    args.toArray()));
+            return completed.stream()
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+        } catch (DataAccessException ex) {
+            return Set.of();
+        }
+    }
+
+    private record InterviewEventReference(Long sessionId, Long applicationId) {
+    }
+
+    private Set<Long> completedReportSessionIds(Long userId, List<Long> reportIds) {
+        if (reportIds == null || reportIds.isEmpty()) {
+            return Set.of();
+        }
+        String placeholders = reportIds.stream()
+                .map(ignored -> "?")
+                .collect(Collectors.joining(","));
+        List<Object> args = new ArrayList<>();
+        args.add(userId);
+        args.addAll(reportIds);
+        List<Long> sessionIds = safeList(jdbcTemplate.query("""
+                SELECT DISTINCT r.session_id
+                  FROM interview_report r
+                  JOIN interview_session s
+                    ON s.id = r.session_id
+                   AND s.user_id = r.user_id
+                   AND s.deleted = 0
+                   AND s.status = 'COMPLETED'
+                 WHERE r.user_id = ?
+                   AND r.id IN (%s)
+                   AND r.status = 'GENERATED'
+                   AND r.deleted = 0
+                """.formatted(placeholders),
+                (rs, rowNum) -> rs.getLong("session_id"),
+                args.toArray()));
+        return sessionIds.stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private Long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Long.valueOf(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private JobSearchExperimentStrategyVO buildStrategy(JobSearchExperiment experiment, JobSearchExperimentMetricsVO metrics,
@@ -423,15 +562,19 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         strategy.getUnsupportedConclusions().addAll(metrics.getUnsupportedConclusions());
         strategy.getWeakObservations().addAll(metrics.getWeakObservations());
         strategy.setQualityGate(buildStrategyQualityGate(metrics));
-        if (metrics.getApplicationCount() < 5) {
-            strategy.setContent("当前只展示事实：继续记录投递、反馈和岗位来源，累计到 5 条可比较投递前不判断策略有效性。");
-        } else if (metrics.getApplicationCount() < 10) {
-            strategy.setContent("可以给低置信度弱观察：保留当前实验方向，补足到 10 条可比较投递后再做策略判断。");
-        } else if (metrics.getInterviewCompletedCount() < 3) {
-            strategy.setContent("投递样本达到 10 条，可做带边界的趋势观察；先补齐面试复盘样本，完成面试达到 3 次前不判断面试能力变化。");
-        } else {
-            strategy.setContent("基于当前样本进入下一轮实验：复盘 JD 关键词、项目证据、渠道和反馈节奏，并标注这些影响因素。");
-        }
+        strategy.setContent(switch (qualityDecision(metrics).state()) {
+            case BLOCKED_FACT_ONLY ->
+                    "当前只展示事实：继续记录投递、反馈和岗位来源，累计到 5 条投递前不判断策略有效性。";
+            case WARN_WEAK_OBSERVATION ->
+                    "当前只给弱观察：保留当前实验方向，补足到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条投递后再做强策略判断或排名。";
+            case WARN_INTERVIEW_BOUNDARY ->
+                    "投递样本达到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条，可做带边界的过程趋势观察；先补齐面试复盘样本，完成面试达到 "
+                            + qualityGatePolicy.minInterviewTrendSamples() + " 次前不判断面试能力变化。";
+            case PASS_REVIEWABLE ->
+                    "基于当前样本进入下一轮实验：复盘 JD 关键词、项目证据、渠道和反馈节奏，并标注这些影响因素。";
+        });
         if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
             strategy.setContent(strategy.getContent() + " 简历版本样本不足，本轮不比较简历版本优劣。");
         }
@@ -457,8 +600,9 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private Map<String, Object> buildSampleBoundary(JobSearchExperimentMetricsVO metrics) {
-        Map<String, Object> boundary = new LinkedHashMap<>();
-        boundary.put("sampleLevel", sampleLevel(metrics));
+        QualityDecision decision = qualityDecision(metrics);
+        Map<String, Object> boundary = new LinkedHashMap<>(decision.sampleBoundary());
+        boundary.put("sampleLevel", decision.observationLevel());
         boundary.put("applicationCount", metrics.getApplicationCount());
         boundary.put("feedbackCount", metrics.getFeedbackCount());
         boundary.put("interviewCompletedCount", metrics.getInterviewCompletedCount());
@@ -467,38 +611,45 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         boundary.put("resumeVersionSampleInsufficient", metrics.getResumeVersionSampleInsufficient());
         boundary.put("sampleWarning", metrics.getSampleWarning());
         boundary.put("blockedConclusionTypes", blockedConclusionTypes(metrics));
-        boundary.put("minComparableApplications", 10);
-        boundary.put("minInterviewTrendSamples", 3);
+        boundary.put("minComparableApplications", qualityGatePolicy.minReviewableApplications());
+        boundary.put("minInterviewTrendSamples", qualityGatePolicy.minInterviewTrendSamples());
         boundary.put("minResumeVersionUsage", 3);
         return boundary;
     }
 
     private String sampleLevel(JobSearchExperimentMetricsVO metrics) {
-        if (metrics.getApplicationCount() < 5) {
-            return "FACT_ONLY";
+        return qualityDecision(metrics).observationLevel();
+    }
+
+    private QualityDecision qualityDecision(JobSearchExperimentMetricsVO metrics) {
+        if (metrics == null) {
+            return qualityGatePolicy.evaluate(0, 0, Map.of());
         }
-        if (metrics.getApplicationCount() < 10) {
-            return "LOW_CONFIDENCE_OBSERVATION";
-        }
-        if (metrics.getInterviewCompletedCount() < 3) {
-            return "TREND_WITH_INTERVIEW_BOUNDARY";
-        }
-        return "REVIEWABLE_WITH_BOUNDARY";
+        return qualityGatePolicy.evaluate(
+                metrics.getApplicationCount() == null ? 0 : metrics.getApplicationCount(),
+                metrics.getInterviewCompletedCount() == null
+                        ? 0 : metrics.getInterviewCompletedCount(),
+                metrics.getResumeVersionUsageCounts());
     }
 
     private List<String> blockedConclusionTypes(JobSearchExperimentMetricsVO metrics) {
         List<String> types = new ArrayList<>();
-        if (metrics.getApplicationCount() < 5) {
-            types.add("STRATEGY_EFFECTIVENESS");
-            types.add("CHANNEL_QUALITY");
-        } else if (metrics.getApplicationCount() < 10) {
-            types.add("STRONG_STRATEGY");
-            types.add("DIRECTION_WINNER");
+        switch (qualityDecision(metrics).state()) {
+            case BLOCKED_FACT_ONLY -> {
+                types.add("STRATEGY_EFFECTIVENESS");
+                types.add("CHANNEL_QUALITY");
+                types.add("INTERVIEW_ABILITY_TREND");
+            }
+            case WARN_WEAK_OBSERVATION -> {
+                types.add("STRONG_STRATEGY");
+                types.add("DIRECTION_WINNER");
+                types.add("INTERVIEW_ABILITY_TREND");
+            }
+            case WARN_INTERVIEW_BOUNDARY -> types.add("INTERVIEW_ABILITY_TREND");
+            case PASS_REVIEWABLE -> {
+            }
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
-            types.add("INTERVIEW_ABILITY_TREND");
-        }
-        if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
+        if (!qualityDecision(metrics).versionComparisonAllowed()) {
             types.add("RESUME_VERSION_COMPARISON");
         }
         types.add("SINGLE_FACTOR_CAUSAL_ATTRIBUTION");
@@ -509,10 +660,11 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                                                             JobSearchExperimentMetricsVO metrics) {
         List<Map<String, Object>> actions = new ArrayList<>();
         String evidenceRoute = "/job-experiments/" + experiment.getId() + "?tab=evidence";
-        if (metrics.getApplicationCount() < 10) {
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             actions.add(actionCandidate(experiment, metrics, "COLLECT_APPLICATION_SAMPLE",
                     "补充投递样本",
-                    "继续记录投递、反馈和岗位来源，达到 10 条可比较投递前不做强策略判断。",
+                    "继续记录投递、反馈和岗位来源，达到 " + qualityGatePolicy.minReviewableApplications()
+                            + " 条投递前不做强策略判断或排名。",
                     "当前投递数为 " + metrics.getApplicationCount() + "，样本门槛未达到。",
                     "/applications?experimentId=" + experiment.getId(),
                     metrics.getApplicationCount() < 5 ? "HIGH" : "MEDIUM",
@@ -553,11 +705,13 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                     "MEDIUM",
                     false));
         }
-        if (metrics.getApplicationCount() >= 10 && metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getApplicationCount() >= qualityGatePolicy.minReviewableApplications()
+                && metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             actions.add(actionCandidate(experiment, metrics, "COLLECT_INTERVIEW_REVIEW_SAMPLE",
                     "补充面试复盘样本",
-                    "记录面试完成事件或面试复盘；少于 3 次完成面试前不判断面试能力趋势。",
-                    "投递样本已达到 10 条，但面试样本不足。",
+                    "记录面试完成事件或面试复盘；少于 " + qualityGatePolicy.minInterviewTrendSamples()
+                            + " 次完成面试前不判断面试能力趋势。",
+                    "投递样本已达到 " + qualityGatePolicy.minReviewableApplications() + " 条，但面试样本不足。",
                     null,
                     "MEDIUM",
                     false));
@@ -683,25 +837,29 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     private String requiredSampleHint(String conclusion) {
         String type = conclusionType(conclusion);
         if ("INTERVIEW_ABILITY_TREND".equals(type)) {
-            return "完成面试至少 3 次后再观察面试能力趋势。";
+            return "完成面试至少 " + qualityGatePolicy.minInterviewTrendSamples() + " 次后再观察面试能力趋势。";
         }
         if ("RESUME_VERSION_COMPARISON".equals(type)) {
             return "每个参与比较的简历版本至少使用 3 次。";
         }
         if ("STRONG_STRATEGY".equals(type)) {
-            return "投递达到 10 条后才允许观察趋势，仍不能做强因果归因。";
+            return "投递达到 " + qualityGatePolicy.minReviewableApplications()
+                    + " 条后才允许观察过程趋势，仍不能做强因果归因。";
         }
         return "需要结合岗位、渠道、时间窗口和多类证据人工复核。";
     }
 
     private String sampleWarning(JobSearchExperimentMetricsVO metrics) {
+        int minApplications = qualityGatePolicy.minReviewableApplications();
+        int minInterviews = qualityGatePolicy.minInterviewTrendSamples();
         String base;
         if (metrics.getApplicationCount() < 5) {
             base = "样本不足：投递少于 5 条。当前只展示事实，不判断策略有效性。";
-        } else if (metrics.getApplicationCount() < 10) {
-            base = "样本有限：投递处于 5-9 条。允许低置信度弱建议，不输出强结论。";
-        } else if (metrics.getInterviewCompletedCount() < 3) {
-            base = "面试样本不足：投递已达到 10 条，但完成面试少于 3 次。可做趋势观察，不判断面试能力变化。";
+        } else if (metrics.getApplicationCount() < minApplications) {
+            base = "样本有限：投递处于 5-" + (minApplications - 1) + " 条。只允许弱观察，不输出强策略或排名。";
+        } else if (metrics.getInterviewCompletedCount() < minInterviews) {
+            base = "面试样本不足：投递已达到 " + minApplications + " 条，但完成面试少于 " + minInterviews
+                    + " 次。可做过程趋势观察，不判断面试能力变化。";
         } else {
             base = "样本可用于高置信复盘，但仍需说明岗位、渠道、时间窗口等影响因素。";
         }
@@ -712,10 +870,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private String confidenceLevel(JobSearchExperimentMetricsVO metrics) {
-        if (metrics.getApplicationCount() < 10) {
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
             return "LOW";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             return "MEDIUM";
         }
         return "HIGH";
@@ -732,10 +890,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         List<String> conclusions = new ArrayList<>();
         if (metrics.getApplicationCount() < 5) {
             conclusions.add("不能判断策略有效性或渠道质量。");
-        } else if (metrics.getApplicationCount() < 10) {
-            conclusions.add("不能输出强策略结论或判断岗位方向明显更优。");
+        } else if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
+            conclusions.add("不能输出强策略结论、排名或判断岗位方向明显更优。");
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             conclusions.add("不判断面试能力变化或面试表现趋势。");
         }
         if (Boolean.TRUE.equals(metrics.getResumeVersionSampleInsufficient())) {
@@ -748,14 +906,15 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private String insightSummary(JobSearchExperimentMetricsVO metrics) {
+        int minApplications = qualityGatePolicy.minReviewableApplications();
         if (metrics.getApplicationCount() < 5) {
             return "当前投递样本少于 5 条，只展示事实，不给策略强判断。";
         }
-        if (metrics.getApplicationCount() < 10) {
-            return "当前投递样本为 5-9 条，只给低置信度弱建议。";
+        if (metrics.getApplicationCount() < minApplications) {
+            return "当前投递样本为 5-" + (minApplications - 1) + " 条，只给弱观察，不输出强策略或排名。";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
-            return "投递样本达到 10 条，可做趋势观察，但面试样本不足。";
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
+            return "投递样本达到 " + minApplications + " 条，可做过程趋势观察，但面试样本不足。";
         }
         return "样本达到阶段二高置信复盘门槛，但仍需结合影响因素人工复核。";
     }
@@ -764,10 +923,10 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         if (metrics.getApplicationCount() < 5) {
             return "继续积累事实样本";
         }
-        if (metrics.getApplicationCount() < 10) {
-            return "低置信度弱建议";
+        if (metrics.getApplicationCount() < qualityGatePolicy.minReviewableApplications()) {
+            return "弱观察与样本积累";
         }
-        if (metrics.getInterviewCompletedCount() < 3) {
+        if (metrics.getInterviewCompletedCount() < qualityGatePolicy.minInterviewTrendSamples()) {
             return "趋势观察与面试补样本";
         }
         return "下一轮实验策略";
@@ -829,30 +988,32 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
 
     private Map<String, Object> buildStrategyQualityGate(JobSearchExperimentMetricsVO metrics) {
         Map<String, Object> gate = new LinkedHashMap<>();
+        QualityDecision decision = qualityDecision(metrics);
         List<String> reasons = new ArrayList<>();
-        if (Boolean.TRUE.equals(metrics.getSampleInsufficient())) {
-            gate.put("gateStatus", "WARN");
+        if (decision.state() == SampleState.BLOCKED_FACT_ONLY) {
+            gate.put("gateStatus", "BLOCKED");
             gate.put("suggestionStrength", "LOW_SAMPLE");
             reasons.add(StringUtils.hasText(metrics.getSampleWarning())
-                    ? metrics.getSampleWarning()
-                    : "样本不足，仅作为下一轮实验假设");
-        } else if ("LOW".equalsIgnoreCase(metrics.getConfidenceLevel())) {
+                    ? metrics.getSampleWarning() : "样本少于 5 条，只展示事实和补样本行动。");
+        } else if (decision.state() != SampleState.PASS_REVIEWABLE) {
             gate.put("gateStatus", "WARN");
             gate.put("suggestionStrength", "WEAK");
-            reasons.add("置信度较低，不能作为强结论");
+            reasons.addAll(decision.weakObservations());
+            reasons.addAll(decision.unsupportedConclusions());
         } else {
             gate.put("gateStatus", "PASS");
             gate.put("suggestionStrength", "NORMAL");
             reasons.add("样本边界、弱观察和不可下结论项已标注");
         }
-        gate.put("reasons", reasons);
+        gate.put("reasons", new ArrayList<>(new LinkedHashSet<>(reasons)));
         gate.put("blockedConclusions", metrics.getUnsupportedConclusions());
         gate.put("sampleSize", metrics.getApplicationCount());
-        gate.put("minSampleSize", 10);
+        gate.put("minSampleSize",
+                decision.state() == SampleState.BLOCKED_FACT_ONLY
+                        ? 5 : qualityGatePolicy.minReviewableApplications());
         gate.put("sampleBoundary", metrics.getSampleBoundary());
         gate.put("sampleLevel", sampleLevel(metrics));
-        gate.put("strongRecommendationAllowed", !Boolean.TRUE.equals(metrics.getSampleInsufficient())
-                && !"LOW".equalsIgnoreCase(metrics.getConfidenceLevel()));
+        gate.put("strongRecommendationAllowed", decision.strongConclusionAllowed());
         return gate;
     }
 
@@ -1117,7 +1278,9 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         return vo;
     }
 
-    private JobSearchExperimentReviewVO toReviewVO(JobSearchExperimentReview review) {
+    private JobSearchExperimentReviewVO toReviewVO(
+            JobSearchExperimentReview review,
+            ReviewEvidenceSummary evidenceSummary) {
         JobSearchExperimentReviewVO vo = new JobSearchExperimentReviewVO();
         vo.setId(review.getId());
         vo.setExperimentId(review.getExperimentId());
@@ -1147,10 +1310,133 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         Object qualityGate = strategy.get("qualityGate");
         vo.setQualityGate(toStringKeyMap(qualityGate));
         vo.setConfidenceLevel(review.getConfidenceLevel());
+        vo.setEvidenceUsageCount(evidenceSummary.evidenceUsageCount());
+        vo.setOutcomeSampleCount(evidenceSummary.outcomeSampleCount());
+        vo.setUsageSourceHash(evidenceSummary.usageSourceHash());
+        vo.setAttributionSnapshotId(evidenceSummary.attributionSnapshotId());
         vo.setDemoFlag(review.getDemoFlag());
         vo.setCreatedAt(review.getCreatedAt());
         vo.setUpdatedAt(review.getUpdatedAt());
         return vo;
+    }
+
+    /**
+     * Live V9 compatibility projection for legacy reviews. Authoritative facts stay
+     * in the V9 usage, result, and attribution tables instead of strategyJson.
+     */
+    private ReviewEvidenceSummary reviewEvidenceSummary(Long userId, Long experimentId) {
+        if (experimentId == null || userId == null) {
+            return ReviewEvidenceSummary.unavailable();
+        }
+        try {
+            List<EvidenceUsageRow> rows = jdbcTemplate.query("""
+                            SELECT u.id,
+                                   u.source_hash,
+                                   u.content_hash,
+                                   u.asset_version,
+                                   u.used_at,
+                                   r.id AS result_id,
+                                   r.status AS result_status
+                              FROM career_evidence_usage u
+                              JOIN job_experiment_hypothesis h
+                                ON h.legacy_experiment_id = ?
+                               AND h.user_id = ?
+                               AND h.deleted = 0
+                              JOIN job_search_experiment_relation relation_row
+                                ON relation_row.experiment_id = h.legacy_experiment_id
+                               AND relation_row.user_id = h.user_id
+                               AND relation_row.relation_type = 'JOB_APPLICATION'
+                               AND relation_row.relation_id = u.application_id
+                               AND relation_row.deleted = 0
+                              LEFT JOIN job_experiment_assignment assignment_row
+                                ON assignment_row.id = u.assignment_id
+                               AND assignment_row.user_id = u.user_id
+                               AND assignment_row.hypothesis_id = h.id
+                               AND assignment_row.application_id = u.application_id
+                               AND assignment_row.deleted = 0
+                              LEFT JOIN job_experiment_variant variant_row
+                                ON variant_row.id = u.variant_id
+                               AND variant_row.user_id = u.user_id
+                               AND variant_row.hypothesis_id = h.id
+                               AND variant_row.deleted = 0
+                              LEFT JOIN career_evidence_usage_result r
+                                ON r.usage_id = u.id
+                               AND r.user_id = u.user_id
+                               AND r.deleted = 0
+                               AND r.status IN ('CONFIRMED', 'CORRECTED')
+                             WHERE u.user_id = ?
+                               AND u.deleted = 0
+                               AND u.stale = 0
+                               AND u.status = 'CAPTURED'
+                               AND (
+                                    u.hypothesis_id = h.id
+                                    OR assignment_row.id IS NOT NULL
+                                    OR variant_row.id IS NOT NULL
+                               )
+                             ORDER BY u.id, r.id
+                            """,
+                    (rs, rowNum) -> new EvidenceUsageRow(
+                            rs.getLong("id"),
+                            rs.getString("source_hash"),
+                            rs.getString("content_hash"),
+                            rs.getString("asset_version"),
+                            rs.getTimestamp("used_at"),
+                            rs.getObject("result_id", Long.class),
+                            rs.getString("result_status")),
+                    experimentId, userId, userId);
+            Map<Long, EvidenceUsageRow> distinctUsage = new LinkedHashMap<>();
+            Set<Long> outcomeIds = new java.util.HashSet<>();
+            for (EvidenceUsageRow row : rows) {
+                distinctUsage.putIfAbsent(row.id(), row);
+                if (row.resultId() != null
+                        && Set.of("CONFIRMED", "CORRECTED").contains(
+                        String.valueOf(row.resultStatus()).toUpperCase())) {
+                    outcomeIds.add(row.resultId());
+                }
+            }
+            String usageSourceHash = distinctUsage.isEmpty()
+                    ? null
+                    : ResumeArtifactHashes.sha256(distinctUsage.values().stream()
+                            .map(EvidenceUsageRow::canonical)
+                            .collect(Collectors.joining("\n")));
+            return new ReviewEvidenceSummary(
+                    (long) distinctUsage.size(),
+                    (long) outcomeIds.size(),
+                    usageSourceHash,
+                    latestAttributionSnapshotId(userId, experimentId));
+        } catch (DataAccessException | IllegalStateException ex) {
+            // V9 tables may not exist while a legacy installation is being upgraded.
+            return ReviewEvidenceSummary.unavailable();
+        }
+    }
+
+    private Long latestAttributionSnapshotId(Long userId, Long experimentId) {
+        try {
+            return jdbcTemplate.query("""
+                            SELECT a.id
+                              FROM job_experiment_attribution a
+                              JOIN job_experiment_cohort c
+                                ON c.id = a.cohort_id
+                               AND c.user_id = a.user_id
+                               AND c.deleted = 0
+                              JOIN job_experiment_hypothesis h
+                                ON h.id = c.hypothesis_id
+                               AND h.legacy_experiment_id = ?
+                               AND h.user_id = ?
+                               AND h.deleted = 0
+                             WHERE a.user_id = ?
+                               AND a.deleted = 0
+                             ORDER BY COALESCE(a.data_cutoff_at, a.as_of) DESC, a.id DESC
+                             LIMIT 1
+                            """,
+                    (rs, rowNum) -> rs.getLong("id"),
+                    experimentId, userId, userId)
+                    .stream()
+                    .findFirst()
+                    .orElse(null);
+        } catch (DataAccessException | IllegalStateException ex) {
+            return null;
+        }
     }
 
     private List<String> toStringList(Object value) {
@@ -1294,5 +1580,35 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
     }
 
     private record RelationSummary(String summary, Map<String, Object> metadata) {
+    }
+
+    private record EvidenceUsageRow(
+            Long id,
+            String sourceHash,
+            String contentHash,
+            String assetVersion,
+            java.sql.Timestamp usedAt,
+            Long resultId,
+            String resultStatus) {
+
+        private String canonical() {
+            return String.join("|",
+                    String.valueOf(id),
+                    String.valueOf(sourceHash),
+                    String.valueOf(contentHash),
+                    String.valueOf(assetVersion),
+                    String.valueOf(usedAt));
+        }
+    }
+
+    private record ReviewEvidenceSummary(
+            Long evidenceUsageCount,
+            Long outcomeSampleCount,
+            String usageSourceHash,
+            Long attributionSnapshotId) {
+
+        private static ReviewEvidenceSummary unavailable() {
+            return new ReviewEvidenceSummary(null, null, null, null);
+        }
     }
 }

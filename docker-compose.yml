@@ -1,10 +1,20 @@
-version: '3.8'
-
 x-default-logging: &default-logging
   driver: json-file
   options:
     max-size: "20m"
     max-file: "3"
+
+x-application-healthcheck: &application-healthcheck
+  test:
+    - CMD-SHELL
+    - >-
+      JAVA_TOOL_OPTIONS='' exec java -cp /opt/codecoachai/health-probe HealthProbe
+      "$${HEALTHCHECK_URL}" "$${HEALTHCHECK_TIMEOUT_MILLIS}"
+      "$${HEALTHCHECK_EXPECTED_STATUS}"
+  interval: 15s
+  timeout: 5s
+  start_period: 90s
+  retries: 3
 
 # ============================================================
 # CodeCoachAI V3 本地开发环境 docker-compose
@@ -77,7 +87,7 @@ services:
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep PONG"]
+      test: ["CMD-SHELL", "test \"$$(redis-cli -a \"$${REDIS_PASSWORD}\" ping 2>/dev/null)\" = PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -108,12 +118,14 @@ services:
     profiles:
       - mq
       - mq-dashboard
+      - search-service
     logging: *default-logging
     ports:
       - "127.0.0.1:9876:9876"
     command: sh mqnamesrv
     environment:
       JAVA_OPT_EXT: "-Xms256m -Xmx256m"
+    restart: unless-stopped
 
   # ---------- RocketMQ Broker ----------
   rocketmq-broker:
@@ -121,16 +133,25 @@ services:
     container_name: codecoachai-rocketmq-broker
     profiles:
       - mq
+      - search-service
     logging: *default-logging
     ports:
       - "127.0.0.1:10911:10911"
       - "127.0.0.1:10909:10909"
     depends_on:
-      - rocketmq-namesrv
+      rocketmq-namesrv:
+        condition: service_started
     command: sh mqbroker -n rocketmq-namesrv:9876 --enable-proxy
     environment:
       JAVA_OPT_EXT: "-Xms256m -Xmx512m"
       NAMESRV_ADDR: rocketmq-namesrv:9876
+    healthcheck:
+      test: ["CMD-SHELL", "sh mqadmin clusterList -n rocketmq-namesrv:9876 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 8s
+      start_period: 30s
+      retries: 12
+    restart: unless-stopped
 
   # ---------- RocketMQ Dashboard（可选） ----------
   rocketmq-dashboard:
@@ -152,6 +173,7 @@ services:
     container_name: codecoachai-elasticsearch
     profiles:
       - search
+      - search-service
     logging: *default-logging
     ports:
       - "127.0.0.1:9200:9200"
@@ -168,6 +190,69 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  # ---------- Search application ----------
+  # The image entrypoint exits non-zero if Spring never becomes healthy. Combined
+  # with on-failure restart, this avoids a false "Up" container after startup
+  # failed while RocketMQ client threads remained alive.
+  codecoachai-search:
+    profiles:
+      - search-service
+    build:
+      context: .
+      target: runtime
+      args:
+        SERVICE: codecoachai-search
+        SERVICE_PORT: 8091
+    image: codecoachai/codecoachai-search:${CODECOACHAI_IMAGE_TAG:-local}
+    container_name: codecoachai-search
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:${CODECOACHAI_SEARCH_PORT:-8091}:8091"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: codecoachai_v1
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Search}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Search}
+      NACOS_SERVER_ADDR: nacos:8848
+      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: elastic
+      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      SPRING_ELASTICSEARCH_USERNAME: elastic
+      SPRING_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
+      CODECOACHAI_ELASTICSEARCH_URIS: http://elasticsearch:9200
+      CODECOACHAI_ELASTICSEARCH_USERNAME: elastic
+      CODECOACHAI_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
+      CODECOACHAI_INTERNAL_SECRET: ${CODECOACHAI_INTERNAL_SECRET:?CODECOACHAI_INTERNAL_SECRET is required for Search}
+      CODECOACHAI_VECTOR_ENABLED: "false"
+      HEALTHCHECK_URL: http://127.0.0.1:8091/actuator/health
+      HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
+      HEALTHCHECK_EXPECTED_STATUS: UP
+      HEALTH_STARTUP_TIMEOUT_SECONDS: ${CODECOACHAI_SEARCH_STARTUP_TIMEOUT_SECONDS:-240}
+      HEALTH_MONITOR_INTERVAL_SECONDS: ${CODECOACHAI_HEALTH_INTERVAL_SECONDS:-10}
+      HEALTH_MONITOR_FAILURE_THRESHOLD: ${CODECOACHAI_HEALTH_FAILURE_THRESHOLD:-6}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      flyway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      rocketmq-broker:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck: *application-healthcheck
+    restart: on-failure
 
   # ---------- Qdrant ----------
   qdrant:
@@ -183,11 +268,8 @@ services:
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY is required for local Qdrant}
     volumes:
       - qdrant-data:/qdrant/storage
-    healthcheck:
-      test: ["CMD-SHELL", "wget --header=\"api-key: $${QDRANT__SERVICE__API_KEY}\" -qO- http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+    # The upstream image does not guarantee curl/wget. Do not declare a probe
+    # that can fail solely because an HTTP client is absent from the image.
 
 volumes:
   mysql-data:

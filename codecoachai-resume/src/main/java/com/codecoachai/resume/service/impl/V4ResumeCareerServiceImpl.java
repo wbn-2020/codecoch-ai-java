@@ -55,6 +55,7 @@ import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
+import com.codecoachai.resume.service.support.JobApplicationLifecyclePolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -596,6 +597,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         if (existing != null) {
             return toApplicationVOWithDetails(existing);
         }
+        if (request.getCampaignId() != null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "周期归属请在创建投递后使用周期关联接口设置");
+        }
         JobApplication app = new JobApplication();
         app.setUserId(userId);
         fillApplication(app, request);
@@ -612,16 +617,70 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         ensureMatchReportNotLinkedToAnotherApplication(request.getMatchReportId(), app.getUserId(), app.getId());
         String requestedStatus = normalizeApplicationStatus(request.getStatus());
         String currentStatus = normalizeApplicationStatus(app.getStatus());
+        boolean statusTransitioned = false;
         if (jobApplicationLifecycleService != null
                 && StringUtils.hasText(request.getStatus())
                 && !Objects.equals(requestedStatus, currentStatus)) {
-            app = jobApplicationLifecycleService.transitionForUser(
-                    app.getUserId(), id, requestedStatus, request.getExpectedLockVersion(),
-                    request.getIdempotencyKey());
+            if (StringUtils.hasText(request.getNote())) {
+                app = jobApplicationLifecycleService.transitionForUser(
+                        app.getUserId(), id, requestedStatus, request.getExpectedLockVersion(),
+                        request.getIdempotencyKey(), request.getNote());
+            } else {
+                app = jobApplicationLifecycleService.transitionForUser(
+                        app.getUserId(), id, requestedStatus, request.getExpectedLockVersion(),
+                        request.getIdempotencyKey());
+            }
+            statusTransitioned = true;
+        } else if (StringUtils.hasText(request.getStatus())
+                && !Objects.equals(requestedStatus, currentStatus)) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "Application lifecycle service is unavailable");
         }
-        fillApplication(app, request);
-        jobApplicationMapper.updateById(app);
+        if (request.getCampaignId() != null
+                && !Objects.equals(request.getCampaignId(), app.getCampaignId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "周期归属请使用周期关联或移出接口");
+        }
+        if (hasApplicationDetailUpdates(request)) {
+            int currentVersion = app.getLockVersion() == null ? 1 : app.getLockVersion();
+            if (!statusTransitioned && request.getExpectedLockVersion() != null
+                    && !Objects.equals(request.getExpectedLockVersion(), currentVersion)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Application was changed by another request");
+            }
+            LambdaUpdateWrapper<JobApplication> update = new LambdaUpdateWrapper<JobApplication>()
+                    .eq(JobApplication::getId, app.getId())
+                    .eq(JobApplication::getUserId, app.getUserId())
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .eq(JobApplication::getLockVersion, currentVersion)
+                    .set(request.getTargetJobId() != null, JobApplication::getTargetJobId, request.getTargetJobId())
+                    .set(request.getResumeVersionId() != null, JobApplication::getResumeVersionId, request.getResumeVersionId())
+                    .set(request.getMatchReportId() != null, JobApplication::getMatchReportId, request.getMatchReportId())
+                    .set(request.getCompanyName() != null, JobApplication::getCompanyName, request.getCompanyName())
+                    .set(StringUtils.hasText(request.getJobTitle()), JobApplication::getJobTitle, request.getJobTitle())
+                    .set(request.getSource() != null, JobApplication::getSource, request.getSource())
+                    .set(request.getAppliedAt() != null, JobApplication::getAppliedAt, request.getAppliedAt())
+                    .set(request.getNextFollowUpAt() != null, JobApplication::getNextFollowUpAt, request.getNextFollowUpAt())
+                    .set(request.getNote() != null, JobApplication::getNote, request.getNote())
+                    .setSql("lock_version = lock_version + 1");
+            if (jobApplicationMapper.update(null, update) != 1) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Application was changed by another request");
+            }
+        }
         return toApplicationVOWithDetails(jobApplicationMapper.selectById(id));
+    }
+
+    private boolean hasApplicationDetailUpdates(JobApplicationSaveDTO request) {
+        return request.getTargetJobId() != null
+                || request.getResumeVersionId() != null
+                || request.getMatchReportId() != null
+                || request.getCompanyName() != null
+                || StringUtils.hasText(request.getJobTitle())
+                || request.getSource() != null
+                || request.getAppliedAt() != null
+                || request.getNextFollowUpAt() != null
+                || request.getNote() != null;
     }
 
     @Override
@@ -1169,8 +1228,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     }
 
     private boolean isTerminalStatus(String status) {
-        String normalized = normalizeApplicationStatus(status);
-        return "REJECTED".equals(normalized) || "CLOSED".equals(normalized);
+        return JobApplicationLifecyclePolicy.isTerminal(status);
     }
 
     private int normalizeInsightRangeDays(Integer days) {
@@ -1323,11 +1381,17 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private void syncApplicationStatusFromEvent(JobApplication app, JobApplicationEvent event) {
         String nextStatus = statusFromEventType(event == null ? null : event.getEventType());
-        if (!shouldTransitionApplicationStatus(app == null ? null : app.getStatus(), nextStatus)) {
+        if (app == null || event == null || !shouldTransitionApplicationStatus(app.getStatus(), nextStatus)
+                || jobApplicationLifecycleService == null) {
             return;
         }
-        app.setStatus(nextStatus);
-        jobApplicationMapper.updateById(app);
+        String eventKey = event.getId() == null
+                ? "legacy-event:" + hashLegacyEvent(app, event)
+                : "legacy-event:" + event.getId();
+        jobApplicationLifecycleService.transitionForUser(
+                app.getUserId(), app.getId(), nextStatus,
+                app.getLockVersion() == null ? 1 : app.getLockVersion(),
+                eventKey, event.getSummary());
     }
 
     private JobApplicationEvent findExistingInterviewCompletedEvent(JobApplication app, JobApplicationEventSaveDTO dto) {
@@ -1437,12 +1501,25 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         if (Objects.equals(normalizedCurrent, normalizedNext)) {
             return false;
         }
-        Integer currentRank = applicationStatusRank(normalizedCurrent);
-        Integer nextRank = applicationStatusRank(normalizedNext);
-        if (nextRank == null) {
-            return false;
+        return jobApplicationLifecycleService != null
+                && jobApplicationLifecycleService.allowedTransitions(normalizedCurrent)
+                .contains(normalizedNext);
+    }
+
+    private String hashLegacyEvent(JobApplication app, JobApplicationEvent event) {
+        String value = String.join("|",
+                String.valueOf(app.getId()),
+                String.valueOf(event.getEventType()),
+                String.valueOf(event.getEventTime()),
+                String.valueOf(event.getSummary()),
+                String.valueOf(event.getReviewJson()));
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
         }
-        return currentRank == null || nextRank > currentRank;
     }
 
     private String normalizeApplicationStatus(String status) {
@@ -1622,9 +1699,6 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     }
 
     private void fillApplication(JobApplication app, JobApplicationSaveDTO dto) {
-        if (dto != null && dto.getCampaignId() != null) {
-            app.setCampaignId(dto.getCampaignId());
-        }
         app.setTargetJobId(dto == null ? null : dto.getTargetJobId());
         app.setResumeVersionId(dto == null ? null : dto.getResumeVersionId());
         app.setMatchReportId(dto == null ? null : dto.getMatchReportId());
