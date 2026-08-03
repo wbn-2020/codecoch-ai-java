@@ -109,6 +109,8 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
     private static final String SCENE_PRACTICE_REVIEW = "PRACTICE_ANSWER_REVIEW";
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
+    private static final Pattern KUBERNETES_OR_K8S_PATTERN =
+            Pattern.compile("(?i)(?<![a-z0-9])(?:kubernetes|k8s)(?![a-z0-9])");
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
     private static final String TRUST_VERIFIED = "VERIFIED";
     private static final String TRUST_PARTIAL = "PARTIAL";
@@ -800,7 +802,7 @@ public class AiServiceImpl implements AiService {
             } else {
                 RouteResult routeResult = callAndLog(promptResult, dto.getUserId(), businessId(dto.getTargetJobId()));
                 rawResponse = routeResult.getContent();
-                resultJson = parseJobDescriptionJson(rawResponse);
+                resultJson = parseJobDescriptionJson(rawResponse, dto.getJdText());
                 logId = routeResult.getAiCallLogId();
             }
             ParseJobDescriptionVO vo = new ParseJobDescriptionVO();
@@ -3426,10 +3428,24 @@ public class AiServiceImpl implements AiService {
         return null;
     }
 
-    private String parseJobDescriptionJson(String raw) {
+    private String parseJobDescriptionJson(String raw, String jdText) {
         JsonNode json = normalizeJobDescriptionJson(parseJson(raw));
         validateJobDescriptionJson(json);
+        validateJobDescriptionKubernetesEvidence(json, jdText);
         return json.toString();
+    }
+
+    private void validateJobDescriptionKubernetesEvidence(JsonNode json, String jdText) {
+        if (!containsKubernetesOrK8s(json == null ? null : json.toString())
+                || containsKubernetesOrK8s(jdText)) {
+            return;
+        }
+        throw new AiProviderException(AiFailureType.PARSE_ERROR,
+                "岗位分析结果包含 JD 原文未出现的 Kubernetes/K8s 技术事实");
+    }
+
+    private boolean containsKubernetesOrK8s(String text) {
+        return StringUtils.hasText(text) && KUBERNETES_OR_K8S_PATTERN.matcher(text).find();
     }
 
     private JsonNode unwrapResumeOptimizeRoot(JsonNode json) {
@@ -6229,7 +6245,11 @@ public class AiServiceImpl implements AiService {
                 requiredSkills and bonusSkills items should contain name, category, requiredLevel, weight, and evidence.
                 interviewFocusPoints items should contain topic and reason.
                 skillWeights should be an object keyed by skill name.
-                Do not invent company facts beyond the JD. If a field is not available, use an empty string, empty array, or empty object.
+                Strict fact constraints:
+                1. JD is the only source of technical facts. jobTitle, companyName, jobLevel, and userTargetDirection provide role context only; userTargetDirection must not supply technical facts.
+                2. Do not infer a specific product from a general concept. Containerized deployment, cloud native, and microservices do not imply Kubernetes/K8s or any other concrete product.
+                3. A concrete technology product may appear in any output field only when it is explicitly stated in the JD. If a fact is unavailable, keep the field generic or use an empty string, empty array, or empty object.
+                Do not invent company facts beyond the JD.
                 Example:
                 {"jobTitle":"Java Backend Engineer","companyName":"","jobLevel":"Mid-level","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"Framework","requiredLevel":4,"weight":90,"evidence":"JD requires Spring Boot experience"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
                 """;

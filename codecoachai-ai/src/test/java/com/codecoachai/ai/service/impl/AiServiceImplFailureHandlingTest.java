@@ -207,6 +207,44 @@ class AiServiceImplFailureHandlingTest {
     }
 
     @Test
+    void parseJobDescriptionRejectsInferredKubernetesWhenJdOnlyMentionsContainerizationAndNacos() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("Kubernetes"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署与 Nacos 配置管理。");
+        dto.setUserTargetDirection("Java 后端，期望学习 Kubernetes");
+
+        assertThrows(BusinessException.class, () -> service.parseJobDescription(dto));
+
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
+    void parseJobDescriptionRejectsInferredK8sWhenJdOnlyMentionsContainerizationAndNacos() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("k8s"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署与 Nacos 配置管理。");
+
+        assertThrows(BusinessException.class, () -> service.parseJobDescription(dto));
+
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
+    void parseJobDescriptionAllowsK8sWhenJdExplicitlyMentionsKubernetes() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("K8s"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署，要求具备 Kubernetes 集群运维经验。");
+
+        var result = assertDoesNotThrow(() -> service.parseJobDescription(dto));
+
+        assertEquals(915L, result.getAiCallLogId());
+        assertTrue(result.getResultJson().contains("K8s"));
+    }
+
+    @Test
     void optimizeResumeAcceptsDoubleEncodedJsonAndNormalizesAliases() throws Exception {
         RouteResult routeResult = new RouteResult();
         routeResult.setContent("""
@@ -471,6 +509,28 @@ class AiServiceImplFailureHandlingTest {
         dto.setCompanyName("上海星云数据科技有限公司");
         dto.setJdText("负责核心交易服务研发，要求熟悉 Java、Spring Boot 与 MySQL。");
         return dto;
+    }
+
+    private RouteResult jobDescriptionRouteResult(String technology) {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责 Java 服务交付"],
+                  "requiredSkills": [
+                    {
+                      "name": "%s",
+                      "category": "deployment",
+                      "requiredLevel": 3,
+                      "weight": 70,
+                      "evidence": "模型输出的技术要求"
+                    }
+                  ],
+                  "techStackKeywords": ["%s"],
+                  "summary": "岗位要求具备 %s 相关能力。"
+                }
+                """.formatted(technology, technology, technology));
+        routeResult.setAiCallLogId(915L);
+        return routeResult;
     }
 
     private ResumeOptimizeAiRequestDTO resumeOptimizeDTO() {
