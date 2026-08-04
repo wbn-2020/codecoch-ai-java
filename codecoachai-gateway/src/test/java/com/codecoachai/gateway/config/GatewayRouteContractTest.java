@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -178,6 +179,16 @@ class GatewayRouteContractTest {
     private static final Set<String> DEV_ORIGINS = Set.of(
             "http://nqx.githubpage.com:30080",
             "http://103.236.97.252:30080");
+
+    private static final Set<String> UNSIGNED_UPLOAD_PATHS = Set.of(
+            "/resumes/upload",
+            "/files/upload",
+            "/admin/questions/import",
+            "/agent/knowledge/documents/upload",
+            "/career-imports/csv/preview",
+            "/career-imports/csv",
+            "/career-imports/ics/preview",
+            "/career-imports/ics");
 
     @Test
     void devGatewayConfigsExposeTheReleaseRoutesAndCorsOriginWithoutInnerRoutes() throws IOException {
@@ -352,6 +363,39 @@ class GatewayRouteContractTest {
     }
 
     @Test
+    void adminAiQuestionRouteHasExplicitPriorityOverBroadAiRoute() throws IOException {
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            GatewayRoute questionRoute = config.routeById("codecoachai-question-admin-ai-generate");
+            GatewayRoute broadAiRoute = config.routeById("codecoachai-ai-admin");
+
+            assertTrue(
+                    questionRoute.order() < broadAiRoute.order(),
+                    () -> config.relativePath()
+                            + " must give /admin/ai/questions/** a lower order than /admin/ai/**"
+                            + "; question order=" + questionRoute.order()
+                            + ", broad AI order=" + broadAiRoute.order());
+        }
+    }
+
+    @Test
+    void gatewaySecurityConfigLimitsUnsignedBodiesAndDisablesLegacyFallbacks() throws IOException {
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            assertEquals(
+                    1024 * 1024,
+                    config.maxSignedBodyBytes(),
+                    () -> config.relativePath() + " must align with the downstream signed-body limit");
+            assertEquals(
+                    UNSIGNED_UPLOAD_PATHS,
+                    config.unsignedBodyPaths(),
+                    () -> config.relativePath()
+                            + " may use unsigned payloads only for reviewed upload endpoints");
+            assertFalse(
+                    config.legacyFallbacksEnabled(),
+                    () -> config.relativePath() + " must keep hard-coded fallback routes disabled");
+        }
+    }
+
+    @Test
     void pathTokenDeclarationsStayUnique() throws IOException {
         Map<String, GatewayConfig> configs = readGatewayConfigs();
         for (GatewayConfig config : configs.values()) {
@@ -469,7 +513,7 @@ class GatewayRouteContractTest {
             String specificTargetUri,
             String broadTargetUri) {}
 
-    private record GatewayRoute(String id, String uri, List<String> pathPatterns) {
+    private record GatewayRoute(String id, String uri, int order, List<String> pathPatterns) {
 
         private static final PathPatternParser PATH_PATTERN_PARSER = new PathPatternParser();
 
@@ -490,7 +534,10 @@ class GatewayRouteContractTest {
             Set<String> applicationCorsAllowedOriginPatterns,
             Set<String> globalCorsExposedHeaders,
             Set<String> applicationCorsExposedHeaders,
-            List<String> defaultFilters) {
+            List<String> defaultFilters,
+            int maxSignedBodyBytes,
+            Set<String> unsignedBodyPaths,
+            boolean legacyFallbacksEnabled) {
 
         private static GatewayConfig parse(String relativePath, String yamlText) {
             LoaderOptions loaderOptions = new LoaderOptions();
@@ -515,8 +562,9 @@ class GatewayRouteContractTest {
             Set<String> globalExposedHeaders =
                     new LinkedHashSet<>(optionalStringListValue(allPathsCors, "exposedHeaders"));
 
-            Map<String, Object> applicationCors =
-                    mapValue(mapValue(mapValue(root, "codecoachai"), "gateway"), "cors");
+            Map<String, Object> applicationGateway =
+                    mapValue(mapValue(root, "codecoachai"), "gateway");
+            Map<String, Object> applicationCors = mapValue(applicationGateway, "cors");
             Set<String> applicationOrigins = Arrays.stream(
                             String.valueOf(applicationCors.get("allowed-origin-patterns")).split(","))
                     .map(String::trim)
@@ -527,6 +575,15 @@ class GatewayRouteContractTest {
                     .filter(value -> !value.isEmpty())
                     .collect(Collectors.toCollection(LinkedHashSet::new));
 
+            Map<String, Object> internal = mapValue(applicationGateway, "internal");
+            Set<String> unsignedBodyPaths = Arrays.stream(
+                            String.valueOf(internal.getOrDefault("unsigned-body-paths", "")).split(","))
+                    .map(String::trim)
+                    .filter(value -> !value.isEmpty())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            Map<String, Object> legacyFallbacks =
+                    mapValue(mapValue(applicationGateway, "routes"), "legacy-fallbacks");
+
             return new GatewayConfig(
                     relativePath,
                     routes,
@@ -534,7 +591,10 @@ class GatewayRouteContractTest {
                     Set.copyOf(applicationOrigins),
                     Set.copyOf(globalExposedHeaders),
                     Set.copyOf(applicationExposedHeaders),
-                    List.copyOf(optionalStringListValue(gateway, "default-filters")));
+                    List.copyOf(optionalStringListValue(gateway, "default-filters")),
+                    Integer.parseInt(String.valueOf(internal.get("max-signed-body-bytes"))),
+                    Set.copyOf(unsignedBodyPaths),
+                    Boolean.parseBoolean(String.valueOf(legacyFallbacks.get("enabled"))));
         }
 
         private static GatewayRoute parseRoute(Object value) {
@@ -554,6 +614,7 @@ class GatewayRouteContractTest {
             return new GatewayRoute(
                     String.valueOf(route.get("id")),
                     String.valueOf(route.get("uri")),
+                    route.containsKey("order") ? Integer.parseInt(String.valueOf(route.get("order"))) : 0,
                     pathPatterns);
         }
 
@@ -571,7 +632,18 @@ class GatewayRouteContractTest {
         }
 
         private List<GatewayRoute> routesMatching(String requestPath) {
-            return routes.stream().filter(route -> route.matches(requestPath)).toList();
+            return routes.stream()
+                    .filter(route -> route.matches(requestPath))
+                    .sorted(Comparator.comparingInt(GatewayRoute::order))
+                    .toList();
+        }
+
+        private GatewayRoute routeById(String routeId) {
+            return routes.stream()
+                    .filter(route -> route.id().equals(routeId))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException(
+                            relativePath + " does not define route " + routeId));
         }
     }
 }

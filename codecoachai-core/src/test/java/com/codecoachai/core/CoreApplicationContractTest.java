@@ -5,16 +5,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.codecoachai.auth.AuthApplication;
 import com.codecoachai.file.FileApplication;
+import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.InterviewApplication;
 import com.codecoachai.question.QuestionApplication;
+import com.codecoachai.question.feign.AiQuestionFeignClient;
 import com.codecoachai.resume.ResumeApplication;
 import com.codecoachai.system.SystemApplication;
 import com.codecoachai.task.TaskApplication;
 import com.codecoachai.user.UserApplication;
-import java.util.Arrays;
+import java.lang.annotation.Annotation;
 import java.util.LinkedHashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
+import org.apache.ibatis.annotations.Mapper;
 import org.junit.jupiter.api.Test;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.cloud.openfeign.EnableFeignClients;
@@ -29,9 +31,7 @@ class CoreApplicationContractTest {
 
         assertEquals(Set.of("com.codecoachai"), Set.of(componentScan.basePackages()));
 
-        Set<Class<?>> excludedTypes = Arrays.stream(componentScan.excludeFilters())
-                .flatMap(filter -> Arrays.stream(filter.classes()))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Class<?>> excludedTypes = CoreApplicationContractSupport.componentScanExcludedTypes();
 
         assertTrue(excludedTypes.containsAll(Set.of(
                 CoreApplication.class,
@@ -57,16 +57,34 @@ class CoreApplicationContractTest {
         EnableFeignClients enableFeignClients = CoreApplication.class.getAnnotation(EnableFeignClients.class);
 
         assertEquals(11, enableFeignClients.clients().length);
+        Set<String> contextIds = new LinkedHashSet<>();
         for (Class<?> clientType : enableFeignClients.clients()) {
             FeignClient feignClient = clientType.getAnnotation(FeignClient.class);
             assertEquals("codecoachai-ai", feignClient.name(), clientType.getName());
+            assertTrue(!feignClient.contextId().isBlank(), clientType.getName());
+            assertTrue(contextIds.add(feignClient.contextId()), feignClient.contextId());
         }
     }
 
     @Test
+    void interviewAiFeignClientUsesItsLongRunningConfigurationContext() {
+        FeignClient feignClient = AiFeignClient.class.getAnnotation(FeignClient.class);
+
+        assertEquals("interviewAiFeignClient", feignClient.contextId());
+    }
+
+    @Test
+    void questionAiFeignClientUsesItsNamedConfigurationContext() {
+        FeignClient feignClient = AiQuestionFeignClient.class.getAnnotation(FeignClient.class);
+
+        assertEquals("aiQuestionFeignClient", feignClient.contextId());
+    }
+
+    @Test
     void scansEveryCoreBusinessMapperPackage() {
-        MapperScan mapperScan = CoreApplication.class.getAnnotation(MapperScan.class);
-        Set<String> mapperPackages = Set.of(mapperScan.basePackages());
+        MapperScan[] mapperScans = CoreApplication.class.getAnnotationsByType(MapperScan.class);
+        Set<String> mapperPackages = CoreApplicationContractSupport.mapperPackages(mapperScans, Annotation.class);
+        Set<String> annotatedMapperPackages = CoreApplicationContractSupport.mapperPackages(mapperScans, Mapper.class);
 
         assertTrue(mapperPackages.containsAll(Set.of(
                 "com.codecoachai.user.mapper",
@@ -76,5 +94,8 @@ class CoreApplicationContractTest {
                 "com.codecoachai.question.mapper",
                 "com.codecoachai.interview.mapper",
                 "com.codecoachai.task.mapper")));
+        assertEquals(Set.of(
+                "com.codecoachai.resume.careercampaign",
+                "com.codecoachai.resume.campaignarchive"), annotatedMapperPackages);
     }
 }

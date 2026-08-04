@@ -1,15 +1,17 @@
 package com.codecoachai.gateway.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.route.RouteLocator;
 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
-import org.springframework.context.support.GenericApplicationContext;
+import org.springframework.cloud.gateway.handler.predicate.PathRoutePredicateFactory;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
 import reactor.core.publisher.Mono;
@@ -34,26 +36,47 @@ class V7CareerRouteConfigTest {
                     V7CareerRouteConfig.RESEARCH_SNAPSHOT_PATH));
 
     @Test
-    void matchesAllV7CareerRootsAndNestedPathsOnCoreService() {
-        try (GenericApplicationContext context = new GenericApplicationContext()) {
-            context.registerBean(org.springframework.cloud.gateway.handler.predicate.PathRoutePredicateFactory.class);
-            context.refresh();
+    void fallbackRoutesAreNotRegisteredByDefault() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(V7CareerRouteConfig.class)
+                .run(context -> assertFalse(context.containsBean("v7CareerRouteLocator")));
+    }
 
-            RouteLocator routeLocator = new V7CareerRouteConfig()
-                    .v7CareerRouteLocator(new RouteLocatorBuilder(context));
-            List<Route> routes = routeLocator.getRoutes().collectList().block();
+    @Test
+    void explicitlyEnabledFallbackMatchesAllV7CareerRootsAndNestedPathsOnCoreService() {
+        routeContextRunner()
+                .withPropertyValues("codecoachai.gateway.routes.legacy-fallbacks.enabled=true")
+                .run(context -> {
+                    assertTrue(context.containsBean("v7CareerRouteLocator"));
+                    RouteLocator routeLocator = context.getBean(
+                            "v7CareerRouteLocator",
+                            RouteLocator.class);
+                    List<Route> routes = routeLocator.getRoutes().collectList().block();
 
-            assertEquals(ROUTE_PATHS.size(), routes.size());
-            assertEquals("lb://codecoachai-core", V7CareerRouteConfig.TARGET_URI);
-            for (Route route : routes) {
-                assertEquals(V7CareerRouteConfig.TARGET_URI, route.getUri().toString());
-                for (String root : ROUTE_PATHS.get(route.getId())) {
-                    assertTrue(Mono.from(route.getPredicate().apply(MockServerWebExchange.from(
-                            MockServerHttpRequest.get(root).build()))).block());
-                    assertTrue(Mono.from(route.getPredicate().apply(MockServerWebExchange.from(
-                            MockServerHttpRequest.get(root + "/17").build()))).block());
-                }
-            }
-        }
+                    assertEquals(ROUTE_PATHS.size(), routes.size());
+                    assertEquals("lb://codecoachai-core", V7CareerRouteConfig.TARGET_URI);
+                    for (Route route : routes) {
+                        assertEquals(V7CareerRouteConfig.TARGET_URI, route.getUri().toString());
+                        for (String root : ROUTE_PATHS.get(route.getId())) {
+                            assertTrue(Mono.from(route.getPredicate().apply(MockServerWebExchange.from(
+                                    MockServerHttpRequest.get(root).build()))).block());
+                            assertTrue(Mono.from(route.getPredicate().apply(MockServerWebExchange.from(
+                                    MockServerHttpRequest.get(root + "/17").build()))).block());
+                        }
+                    }
+                });
+    }
+
+    private ApplicationContextRunner routeContextRunner() {
+        return new ApplicationContextRunner()
+                .withInitializer(context -> {
+                    context.getBeanFactory().registerSingleton(
+                            "pathRoutePredicateFactory",
+                            new PathRoutePredicateFactory());
+                    context.getBeanFactory().registerSingleton(
+                            "routeLocatorBuilder",
+                            new RouteLocatorBuilder(context));
+                })
+                .withUserConfiguration(V7CareerRouteConfig.class);
     }
 }

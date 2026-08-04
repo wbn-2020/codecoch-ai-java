@@ -54,21 +54,43 @@ class CommonNacosInternalAuthContractTest {
     }
 
     @Test
-    void defaultPublicNamespaceIsRepresentedByEmptyValues() throws IOException {
+    void gatewayKeysAreDirectionalAndCoreMayCallAiEmbeddings() throws IOException {
+        Path repositoryRoot = findRepositoryRoot();
+
+        Map<String, Object> coreGateway = callerRing(
+                internalAuth(repositoryRoot, "codecoachai-core-dev.yml"),
+                "codecoachai-gateway");
+        assertEquals(List.of("${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}"), coreGateway.get("secrets"));
+
+        Map<String, Object> aiAuth = internalAuth(repositoryRoot, "codecoachai-ai-dev.yml");
+        Map<String, Object> aiGateway = callerRing(aiAuth, "codecoachai-gateway");
+        assertEquals(List.of("${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}"), aiGateway.get("secrets"));
+        Map<String, Object> coreRing = callerRing(aiAuth, "codecoachai-core");
+        assertTrue(((List<?>) coreRing.get("permissions")).contains("POST /inner/ai/embeddings"));
+
+        Map<String, Object> searchGateway = callerRing(
+                internalAuth(repositoryRoot, "codecoachai-search-dev.yml"),
+                "codecoachai-gateway");
+        assertEquals(List.of("${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET}"), searchGateway.get("secrets"));
+    }
+
+    @Test
+    void allDeployableServicesRequireOneExplicitNacosNamespace() throws IOException {
         Path repositoryRoot = findRepositoryRoot();
         Path envExample = repositoryRoot.resolve(".env.example");
 
-        assertEquals("", envValue(envExample, "SPRING_CLOUD_NACOS_CONFIG_NAMESPACE"));
-        assertEquals("", envValue(envExample, "SPRING_CLOUD_NACOS_DISCOVERY_NAMESPACE"));
         assertEquals("", envValue(envExample, "NACOS_NAMESPACE"));
 
-        String gatewayConfig = Files.readString(repositoryRoot.resolve(
-                "codecoachai-gateway/src/main/resources/application.yml"));
-        assertEquals(
-                2,
-                gatewayConfig.lines()
-                        .filter(line -> line.trim().equals("namespace: ${NACOS_NAMESPACE:}"))
-                        .count());
+        for (String service : List.of("gateway", "core", "ai", "search")) {
+            String applicationConfig = Files.readString(repositoryRoot.resolve(
+                    "codecoachai-" + service + "/src/main/resources/application.yml"));
+            assertEquals(
+                    2,
+                    applicationConfig.lines()
+                            .filter(line -> line.trim().equals("namespace: ${NACOS_NAMESPACE}"))
+                            .count(),
+                    service + " must use the same required namespace for Config and Discovery");
+        }
     }
 
     private static Path findRepositoryRoot() {
@@ -88,6 +110,10 @@ class CommonNacosInternalAuthContractTest {
                 repositoryRoot.resolve("docs/nacos").resolve(fileName)));
         Map<String, Object> codecoachai = mapping(config.get("codecoachai"));
         return mapping(mapping(codecoachai.get("internal")).get("auth"));
+    }
+
+    private static Map<String, Object> callerRing(Map<String, Object> auth, String caller) {
+        return mapping(mapping(auth.get("caller-key-rings")).get(caller));
     }
 
     @SuppressWarnings("unchecked")

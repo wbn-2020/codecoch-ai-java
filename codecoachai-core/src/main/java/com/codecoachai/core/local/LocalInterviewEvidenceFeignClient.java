@@ -16,8 +16,11 @@ public class LocalInterviewEvidenceFeignClient implements InterviewEvidenceFeign
 
     @Override
     public Result<InterviewWeaknessSummaryVO> weaknessSummary(Long userId, Integer days) {
-        return resultMapper.value(
-                innerInterviewReportController.weaknessSummary(userId, days),
-                InterviewWeaknessSummaryVO.class);
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(userId, "userId");
+            return resultMapper.value(
+                    innerInterviewReportController.weaknessSummary(userId, days),
+                    InterviewWeaknessSummaryVO.class);
+        });
     }
 }

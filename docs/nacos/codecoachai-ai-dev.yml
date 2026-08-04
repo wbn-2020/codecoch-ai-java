@@ -7,6 +7,10 @@ spring:
     url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD}
+  servlet:
+    multipart:
+      max-file-size: 8MB
+      max-request-size: 9MB
 
 codecoachai:
   internal:
@@ -17,12 +21,12 @@ codecoachai:
       caller-key-rings:
         codecoachai-gateway:
           secrets:
-            - ${CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT}
+            - ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}
           permissions: []
           forward-user-context: true
         codecoachai-core:
           secrets:
-            - ${CODECOACHAI_CALLER_CORE_KEY_CURRENT}
+            - ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET}
           permissions:
             - GET /inner/agent/campaign-archive-sources/users/{userId}/campaigns/{campaignId}
             - GET /inner/agent/reminders/candidates
@@ -31,6 +35,7 @@ codecoachai:
             - POST /inner/agent/job-coach/daily-plan/runs/{runId}/fail
             - POST /inner/agent/knowledge/search
             - POST /inner/ai/application-event-reviews/generate
+            - POST /inner/ai/embeddings
             - POST /inner/ai/interview/evaluate
             - POST /inner/ai/interview/evaluate/stream
             - POST /inner/ai/interview/follow-up

@@ -1,14 +1,19 @@
 package com.codecoachai.gateway.config;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cloud.gateway.route.RouteLocator;
 import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Keeps V7 career resources reachable when a stale or shortened Nacos route snapshot is loaded.
+ * Optional emergency fallback for V7 career routes.
  */
 @Configuration
+@ConditionalOnProperty(
+        prefix = "codecoachai.gateway.routes.legacy-fallbacks",
+        name = "enabled",
+        havingValue = "true")
 public class V7CareerRouteConfig {
 
     static final String TARGET_URI = "lb://codecoachai-core";

@@ -8,7 +8,7 @@ import com.codecoachai.auth.domain.vo.InnerUserBasicVO;
 import com.codecoachai.auth.domain.vo.InnerUserRoleVO;
 import com.codecoachai.auth.feign.UserFeignClient;
 import com.codecoachai.common.core.domain.Result;
-import com.codecoachai.user.controller.InnerUserController;
+import com.codecoachai.user.service.UserService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -16,40 +16,69 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class LocalUserFeignClient implements UserFeignClient {
 
-    private final InnerUserController innerUserController;
+    private final UserService userService;
     private final LocalResultMapper resultMapper;
 
     @Override
     public Result<InnerUserAuthVO> getByUsername(String username) {
-        return resultMapper.value(innerUserController.getByUsername(username), InnerUserAuthVO.class);
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(username, "username");
+            return resultMapper.value(
+                    Result.success(userService.getInnerUserByUsername(username)),
+                    InnerUserAuthVO.class);
+        });
     }
 
     @Override
     public Result<InnerUserAuthVO> getByEmail(String email) {
-        return resultMapper.value(innerUserController.getByEmail(email), InnerUserAuthVO.class);
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(email, "email");
+            return resultMapper.value(
+                    Result.success(userService.getInnerUserByEmail(email)),
+                    InnerUserAuthVO.class);
+        });
     }
 
     @Override
     public Result<InnerCreateUserVO> createUser(InnerCreateUserDTO dto) {
-        return resultMapper.value(
-                innerUserController.createUser(
-                        resultMapper.convert(dto, com.codecoachai.user.domain.dto.InnerCreateUserDTO.class)),
-                InnerCreateUserVO.class);
+        return resultMapper.invoke(() -> resultMapper.value(
+                Result.success(userService.createInnerUser(
+                        resultMapper.convertValidatedBody(
+                                dto,
+                                com.codecoachai.user.domain.dto.InnerCreateUserDTO.class))),
+                InnerCreateUserVO.class));
     }
 
     @Override
     public Result<InnerUserRoleVO> getUserRoles(Long id) {
-        return resultMapper.value(innerUserController.getRoles(id), InnerUserRoleVO.class);
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(id, "id");
+            return resultMapper.value(
+                    Result.success(userService.getInnerUserRoles(id)),
+                    InnerUserRoleVO.class);
+        });
     }
 
     @Override
     public Result<InnerUserBasicVO> getInnerUser(Long id) {
-        return resultMapper.value(innerUserController.getUser(id), InnerUserBasicVO.class);
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(id, "id");
+            return resultMapper.value(
+                    Result.success(userService.getInnerUser(id)),
+                    InnerUserBasicVO.class);
+        });
     }
 
     @Override
     public Result<Void> resetPassword(Long id, InnerResetPasswordDTO dto) {
-        return resultMapper.empty(innerUserController.resetPassword(
-                id, resultMapper.convert(dto, com.codecoachai.user.domain.dto.InnerResetPasswordDTO.class)));
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(id, "id");
+            userService.resetInnerPassword(
+                    id,
+                    resultMapper.convertRequiredBody(
+                            dto,
+                            com.codecoachai.user.domain.dto.InnerResetPasswordDTO.class));
+            return Result.success();
+        });
     }
 }

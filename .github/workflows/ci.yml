@@ -208,13 +208,58 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  runtime-image:
+    name: Build immutable runtime base image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs:
+      - backend
+    outputs:
+      release_id: ${{ steps.image.outputs.release_id }}
+
+    steps:
+      - name: Checkout backend runtime tooling
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build, verify, and save runtime base image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_id="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:12}"
+          image="codecoachai/runtime-base:${release_id}"
+          docker build \
+            --target runtime-base \
+            --tag "$image" \
+            .
+          test "$(docker image inspect "$image" --format '{{.Config.User}}')" = "10001:10001"
+          docker image inspect "$image" --format '{{json .Config.Healthcheck.Test}}' \
+            | grep -q 'HealthProbe'
+          mkdir -p .ci-artifacts/runtime
+          docker save \
+            --output .ci-artifacts/runtime/codecoachai-runtime-base.tar \
+            "$image"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable runtime image
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-image-${{ steps.image.outputs.release_id }}
+          path: .ci-artifacts/runtime/codecoachai-runtime-base.tar
+          if-no-files-found: error
+          retention-days: 14
+
   release:
     name: Build immutable release directory
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     needs:
       - backend
       - frontend
+      - runtime-image
+      - docker
 
     steps:
       - name: Checkout backend release tooling
@@ -239,15 +284,24 @@ jobs:
           name: frontend-dist
           path: .artifacts/frontend
 
+      - name: Download immutable runtime image
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-image-${{ needs.runtime-image.outputs.release_id }}
+          path: .artifacts/runtime
+
       - name: Build and verify release
         id: release
         shell: bash
         run: |
           set -euo pipefail
-          release_id="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA:0:12}"
+          release_id="${{ needs.runtime-image.outputs.release_id }}"
           python scripts/release/build_release.py \
             --backend-artifacts .artifacts/backend \
+            --backend-control-source . \
             --frontend-dist .artifacts/frontend \
+            --runtime-image .artifacts/runtime/codecoachai-runtime-base.tar \
+            --runtime-image-tag "$release_id" \
             --output-root .release \
             --release-id "$release_id" \
             --backend-source-sha "$GITHUB_SHA" \

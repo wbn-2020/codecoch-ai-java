@@ -60,7 +60,14 @@ services:
       mysql:
         condition: service_healthy
     environment:
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codecoachai_v1}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Flyway}
+      FLYWAY_URL: jdbc:mysql://${MYSQL_HOST:-mysql}:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-codecoachai_v1}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      FLYWAY_USER: ${MYSQL_USERNAME:-root}
+      FLYWAY_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Flyway}
       MAVEN_OPTS: "-Xms128m -Xmx384m"
     volumes:
       - ./:/workspace:ro
@@ -68,9 +75,8 @@ services:
     command:
       - mvn
       - -q
-      - -DskipTests
-      - -Dflyway.url=jdbc:mysql://mysql:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-      - -Dflyway.user=root
+      - -f
+      - /workspace/scripts/release/flyway-pom.xml
       - flyway:migrate
     restart: "no"
 
@@ -105,11 +111,52 @@ services:
       SPRING_DATASOURCE_PLATFORM: ""
       JVM_XMS: 256m
       JVM_XMX: 512m
+      NACOS_AUTH_ENABLE: ${NACOS_AUTH_ENABLE:-false}
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-}
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN:-}
+    volumes:
+      - nacos-data:/home/nacos/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8848/nacos/actuator/health"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # ---------- Nacos configuration gate ----------
+  # Existing remote configurations are never overwritten. For a disposable local
+  # environment, set NACOS_CONFIG_BOOTSTRAP_ENABLED=true to publish only missing
+  # checked-in profile configuration. Existing drift blocks application startup.
+  # The current reviewed set contains common/redis/gateway/core/ai/search for dev.
+  # A non-dev profile intentionally fails closed until all six matching files exist.
+  nacos-config-init:
+    image: python:3.12-alpine
+    container_name: codecoachai-nacos-config-init
+    profiles:
+      - app-services
+      - search-service
+    logging: *default-logging
+    depends_on:
+      nacos:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      NACOS_NAMESPACE: "${NACOS_NAMESPACE:-}"
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      NACOS_ACCESS_TOKEN: ${NACOS_ACCESS_TOKEN:-}
+      NACOS_CONFIG_BOOTSTRAP_ENABLED: ${NACOS_CONFIG_BOOTSTRAP_ENABLED:-true}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_CONFIG_SCHEME: ${NACOS_CONFIG_SCHEME:-http}
+      NACOS_CONFIG_CONTEXT_PATH: ${NACOS_CONFIG_CONTEXT_PATH:-/nacos}
+      NACOS_CONFIG_DIRECTORY: /config
+      NACOS_CONFIG_AUDIT_DIRECTORY: /tmp/nacos-config-audit
+    volumes:
+      - ./docs/nacos:/config:ro
+      - ./scripts/docker/nacos-config-init.sh:/scripts/nacos-config-init.sh:ro
+      - ./scripts/nacos/nacos_config_guard.py:/scripts/nacos_config_guard.py:ro
+    entrypoint: ["/bin/sh", "/scripts/nacos-config-init.sh"]
+    restart: "no"
 
   # ---------- Gateway application ----------
   codecoachai-gateway:
@@ -128,11 +175,17 @@ services:
       - "127.0.0.1:${CODECOACHAI_GATEWAY_PORT:-8080}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:-6379}"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Gateway}
-      NACOS_SERVER_ADDR: nacos:8848
-      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Gateway}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_NAMESPACE: "${NACOS_NAMESPACE:-}"
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: "${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:-}"
       HEALTHCHECK_URL: http://127.0.0.1:8080/actuator/health
       HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
       HEALTHCHECK_EXPECTED_STATUS: UP
@@ -144,6 +197,8 @@ services:
         condition: service_healthy
       nacos:
         condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
     healthcheck: *application-healthcheck
     restart: on-failure
 
@@ -165,20 +220,36 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
       SERVER_PORT: "9200"
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: codecoachai_v1
-      MYSQL_USERNAME: root
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: "${MYSQL_PORT:-3306}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codecoachai_v1}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Core}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:-6379}"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Core}
-      NACOS_SERVER_ADDR: nacos:8848
-      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
-      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for Core}
-      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Core}
-      CODECOACHAI_CALLER_AI_KEY_CURRENT: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for Core}
-      CODECOACHAI_CALLER_SEARCH_KEY_CURRENT: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for Core}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_NAMESPACE: "${NACOS_NAMESPACE:-}"
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:-rocketmq-namesrv:9876}
+      CODECOACHAI_VECTOR_ENABLED: ${CODECOACHAI_VECTOR_ENABLED:-true}
+      QDRANT_BASE_URL: "${QDRANT_BASE_URL:-}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-oss-cn-hangzhou.aliyuncs.com}
+      OSS_BUCKET: "${OSS_BUCKET:-}"
+      OSS_AK: "${OSS_AK:-}"
+      OSS_SK: "${OSS_SK:-}"
+      OSS_DOMAIN: ${OSS_DOMAIN:-}
+      OSS_KEY_PREFIX: ${OSS_KEY_PREFIX:-dev}
+      OSS_STS_ENDPOINT: ${OSS_STS_ENDPOINT:-sts.cn-hangzhou.aliyuncs.com}
+      OSS_STS_REGION_ID: ${OSS_STS_REGION_ID:-cn-hangzhou}
+      OSS_STS_ROLE_ARN: ${OSS_STS_ROLE_ARN:-}
+      CODECOACHAI_TASK_CONSUMERS_ENABLED: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:-false}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: "${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:-}"
+      CODECOACHAI_CALLER_AI_SIGNING_SECRET: "${CODECOACHAI_CALLER_AI_SIGNING_SECRET:-}"
+      CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET: "${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:-}"
       HEALTHCHECK_URL: http://127.0.0.1:9200/actuator/health
       HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
       HEALTHCHECK_EXPECTED_STATUS: UP
@@ -194,8 +265,12 @@ services:
         condition: service_healthy
       nacos:
         condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       rocketmq-broker:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     healthcheck: *application-healthcheck
     restart: on-failure
 
@@ -217,21 +292,27 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
       SERVER_PORT: "9206"
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: codecoachai_v1
-      MYSQL_USERNAME: root
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: "${MYSQL_PORT:-3306}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codecoachai_v1}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for AI}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:-6379}"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for AI}
-      NACOS_SERVER_ADDR: nacos:8848
-      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required for AI}
-      CODECOACHAI_AI_CRYPTO_SECRET_KEY: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY:?CODECOACHAI_AI_CRYPTO_SECRET_KEY is required for AI}
-      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for AI}
-      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for AI}
-      CODECOACHAI_CALLER_CORE_KEY_CURRENT: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for AI}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_NAMESPACE: "${NACOS_NAMESPACE:-}"
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:-rocketmq-namesrv:9876}
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      CODECOACHAI_VECTOR_ENABLED: ${CODECOACHAI_VECTOR_ENABLED:-true}
+      QDRANT_BASE_URL: "${QDRANT_BASE_URL:-}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      CODECOACHAI_AI_CRYPTO_SECRET_KEY: "${CODECOACHAI_AI_CRYPTO_SECRET_KEY:-}"
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: "${CODECOACHAI_CALLER_AI_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET:-}"
+      CODECOACHAI_CALLER_CORE_SIGNING_SECRET: "${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:-}"
       HEALTHCHECK_URL: http://127.0.0.1:9206/actuator/health
       HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
       HEALTHCHECK_EXPECTED_STATUS: UP
@@ -247,8 +328,12 @@ services:
         condition: service_healthy
       nacos:
         condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       rocketmq-broker:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     healthcheck: *application-healthcheck
     restart: on-failure
 
@@ -288,6 +373,9 @@ services:
     environment:
       JAVA_OPT_EXT: "-Xms256m -Xmx512m"
       NAMESRV_ADDR: rocketmq-namesrv:9876
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+      - rocketmq-logs:/home/rocketmq/logs
     healthcheck:
       test: ["CMD-SHELL", "sh mqadmin clusterList -n rocketmq-namesrv:9876 >/dev/null 2>&1"]
       interval: 10s
@@ -324,7 +412,7 @@ services:
     environment:
       discovery.type: single-node
       xpack.security.enabled: "true"
-      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for local Elasticsearch}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-codecoachai-local-elastic}
       ES_JAVA_OPTS: "-Xms256m -Xmx512m"
     volumes:
       - es-data:/usr/share/elasticsearch/data
@@ -354,27 +442,31 @@ services:
     ports:
       - "127.0.0.1:${CODECOACHAI_SEARCH_PORT:-8091}:8091"
     environment:
-      MYSQL_HOST: mysql
-      MYSQL_PORT: "3306"
-      MYSQL_DATABASE: codecoachai_v1
-      MYSQL_USERNAME: root
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: "${MYSQL_PORT:-3306}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codecoachai_v1}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Search}
-      SPRING_DATA_REDIS_HOST: redis
-      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:-6379}"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Search}
-      NACOS_SERVER_ADDR: nacos:8848
-      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
-      ELASTICSEARCH_URIS: http://elasticsearch:9200
-      ELASTICSEARCH_USERNAME: elastic
-      SPRING_ELASTICSEARCH_URIS: http://elasticsearch:9200
-      SPRING_ELASTICSEARCH_USERNAME: elastic
-      SPRING_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
-      CODECOACHAI_ELASTICSEARCH_URIS: http://elasticsearch:9200
-      CODECOACHAI_ELASTICSEARCH_USERNAME: elastic
-      CODECOACHAI_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
-      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
-      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for Search}
-      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Search}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:-nacos:8848}
+      NACOS_NAMESPACE: "${NACOS_NAMESPACE:-}"
+      NACOS_USERNAME: ${NACOS_USERNAME:-}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:-}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:-rocketmq-namesrv:9876}
+      ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:-http://elasticsearch:9200}
+      ELASTICSEARCH_USERNAME: ${ELASTICSEARCH_USERNAME:-elastic}
+      SPRING_ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:-http://elasticsearch:9200}
+      SPRING_ELASTICSEARCH_USERNAME: ${ELASTICSEARCH_USERNAME:-elastic}
+      SPRING_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-codecoachai-local-elastic}
+      CODECOACHAI_ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:-http://elasticsearch:9200}
+      CODECOACHAI_ELASTICSEARCH_USERNAME: ${ELASTICSEARCH_USERNAME:-elastic}
+      CODECOACHAI_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:-codecoachai-local-elastic}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-codecoachai-local-elastic}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: "${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:-}"
+      CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:-}"
       CODECOACHAI_VECTOR_ENABLED: "false"
       HEALTHCHECK_URL: http://127.0.0.1:8091/actuator/health
       HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
@@ -391,6 +483,8 @@ services:
         condition: service_healthy
       nacos:
         condition: service_healthy
+      nacos-config-init:
+        condition: service_completed_successfully
       rocketmq-broker:
         condition: service_healthy
       elasticsearch:
@@ -404,12 +498,13 @@ services:
     container_name: codecoachai-qdrant
     profiles:
       - vector
+      - app-services
     logging: *default-logging
     ports:
       - "127.0.0.1:6333:6333"
       - "127.0.0.1:6334:6334"
     environment:
-      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY is required for local Qdrant}
+      QDRANT__SERVICE__API_KEY: "${QDRANT_API_KEY:-}"
     volumes:
       - qdrant-data:/qdrant/storage
     # The upstream image does not guarantee curl/wget. Do not declare a probe
@@ -419,5 +514,8 @@ volumes:
   mysql-data:
   maven-cache:
   redis-data:
+  nacos-data:
+  rocketmq-store:
+  rocketmq-logs:
   es-data:
   qdrant-data:

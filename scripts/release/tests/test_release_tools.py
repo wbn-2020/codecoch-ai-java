@@ -8,6 +8,7 @@ import os
 import pathlib
 import stat
 import sys
+import tarfile
 import tempfile
 import types
 import unittest
@@ -35,12 +36,41 @@ def create_jar(path: pathlib.Path, marker: str) -> None:
         archive.writestr("marker.txt", marker)
 
 
+def add_tar_bytes(archive: tarfile.TarFile, name: str, content: bytes) -> None:
+    info = tarfile.TarInfo(name)
+    info.size = len(content)
+    archive.addfile(info, io.BytesIO(content))
+
+
+def create_runtime_image(
+    path: pathlib.Path,
+    tag: str,
+) -> None:
+    manifest = [
+        {
+            "Config": "config.json",
+            "RepoTags": [f"{release_common.RUNTIME_IMAGE_REPOSITORY}:{tag}"],
+            "Layers": ["layer/layer.tar"],
+        }
+    ]
+    with tarfile.open(path, "w") as archive:
+        add_tar_bytes(
+            archive,
+            "manifest.json",
+            json.dumps(manifest).encode("utf-8"),
+        )
+        add_tar_bytes(archive, "config.json", b"{}")
+        add_tar_bytes(archive, "layer/layer.tar", b"layer")
+
+
 class ReleaseBuildTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temporary.name)
         self.backend = self.root / "backend"
         self.frontend = self.root / "frontend-dist"
+        self.control = self.root / "backend-control"
+        self.runtime_image = self.root / "codecoachai-runtime-base.tar"
         self.output = self.root / "releases"
         for service in release_common.SERVICE_MODULES:
             create_jar(
@@ -56,6 +86,15 @@ class ReleaseBuildTest(unittest.TestCase):
         assets.mkdir()
         (assets / "app.js").write_text("console.log('ok');\n", encoding="utf-8")
         (self.frontend / "historical.tar.gz").write_bytes(b"must not ship")
+        for relative_name in build_release.CONTROL_FILES:
+            path = self.control.joinpath(*pathlib.PurePosixPath(relative_name).parts)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"fixture: {relative_name}\n", encoding="utf-8")
+        for relative_name in build_release.CONTROL_DIRECTORIES:
+            path = self.control.joinpath(*pathlib.PurePosixPath(relative_name).parts)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "V1__fixture.sql").write_text("select 1;\n", encoding="ascii")
+        create_runtime_image(self.runtime_image, "release-001")
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -63,7 +102,10 @@ class ReleaseBuildTest(unittest.TestCase):
     def arguments(self, release_id: str = "release-001") -> argparse.Namespace:
         return argparse.Namespace(
             backend_artifacts=self.backend,
+            backend_control_source=self.control,
             frontend_dist=self.frontend,
+            runtime_image=self.runtime_image,
+            runtime_image_tag=release_id,
             output_root=self.output,
             release_id=release_id,
             backend_repo=None,
@@ -93,6 +135,15 @@ class ReleaseBuildTest(unittest.TestCase):
             len(list((release_path / "backend").glob("*.jar"))),
         )
         self.assertTrue((release_path / "frontend" / "index.html").is_file())
+        self.assertTrue(
+            (release_path / "runtime" / build_release.RUNTIME_IMAGE_NAME).is_file()
+        )
+        self.assertTrue(
+            (release_path / "control" / "docker-compose.release.yml").is_file()
+        )
+        self.assertTrue(
+            (release_path / "control" / "sql" / "migration" / "V1__fixture.sql").is_file()
+        )
         self.assertFalse((release_path / "frontend" / "historical.tar.gz").exists())
         self.assertFalse(
             any(
@@ -108,9 +159,20 @@ class ReleaseBuildTest(unittest.TestCase):
                 encoding="ascii"
             )
         )
+        self.assertEqual(release_common.RELEASE_FORMAT_VERSION, metadata["formatVersion"])
         self.assertEqual(["historical.tar.gz"], metadata["excludedFrontendArchives"])
         self.assertEqual(TEST_SHA, metadata["backendSource"]["sha"])
         self.assertEqual(TEST_FRONTEND_SHA, metadata["frontendSource"]["sha"])
+        self.assertEqual("release-001", metadata["runtimeImage"]["tag"])
+        self.assertEqual(
+            "runtime/codecoachai-runtime-base.tar",
+            metadata["runtimeImage"]["path"],
+        )
+        self.assertEqual("control", metadata["controlBundle"]["path"])
+        self.assertEqual(
+            TEST_SHA,
+            metadata["controlBundle"]["backendSourceSha"],
+        )
 
     def test_verifier_detects_tampering(self) -> None:
         release_path = build_release.build_release(self.arguments())
@@ -124,6 +186,29 @@ class ReleaseBuildTest(unittest.TestCase):
     def test_rejects_release_id_path_injection(self) -> None:
         with self.assertRaises(ValueError):
             build_release.build_release(self.arguments("../escape"))
+
+    def test_rejects_runtime_image_tag_that_does_not_match_release(self) -> None:
+        arguments = self.arguments()
+        arguments.runtime_image_tag = "different-release"
+        with self.assertRaisesRegex(ValueError, "must match release ID"):
+            build_release.build_release(arguments)
+
+    def test_rejects_runtime_archive_with_wrong_repo_tag(self) -> None:
+        create_runtime_image(self.runtime_image, "different-release")
+        with self.assertRaisesRegex(ValueError, "must contain exactly tag"):
+            build_release.build_release(self.arguments())
+
+    def test_verifier_rejects_runtime_archive_manifest_tampering(self) -> None:
+        release_path = build_release.build_release(self.arguments())
+        runtime_path = (
+            release_path
+            / "runtime"
+            / release_common.RUNTIME_IMAGE_NAME
+        )
+        create_runtime_image(runtime_path, "different-release")
+        release_common.write_manifest(release_path)
+        with self.assertRaisesRegex(ValueError, "must contain exactly tag"):
+            release_common.verify_release(release_path)
 
 
 class DeploymentConfigTest(unittest.TestCase):

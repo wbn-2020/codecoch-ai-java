@@ -66,6 +66,7 @@ spring:
             - Path=/admin/question-relations,/admin/question-relations/**
         # Order is intentional: question-owned /admin/ai/questions/** must precede the broad AI /admin/ai/** route.
         - id: codecoachai-question-admin-ai-generate
+          order: -100
           uri: lb://codecoachai-core
           predicates:
             - Path=/admin/ai/questions/generate,/admin/ai/questions/**
@@ -146,6 +147,7 @@ spring:
           predicates:
             - Path=/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
         - id: codecoachai-ai-admin
+          order: 0
           uri: lb://codecoachai-ai
           predicates:
             - Path=/ai/health,/ai/feedback,/ai/feedback/**,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
@@ -225,6 +227,17 @@ spring:
 
 codecoachai:
   gateway:
+    internal:
+      max-signed-body-bytes: 1048576
+      # Only these multipart upload endpoints may use STREAMING-UNSIGNED-PAYLOAD.
+      unsigned-body-paths: "/resumes/upload,/files/upload,/admin/questions/import,/agent/knowledge/documents/upload,/career-imports/csv/preview,/career-imports/csv,/career-imports/ics/preview,/career-imports/ics"
+      target-secrets:
+        codecoachai-core: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}
+        codecoachai-ai: ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}
+        codecoachai-search: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET}
+    routes:
+      legacy-fallbacks:
+        enabled: false
     # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
       allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080,http://103.236.97.252:30080"

@@ -33,13 +33,6 @@ sa-token:
   token-prefix: Bearer
   is-print: false
 
-rocketmq:
-  consumer:
-    # Core takes over task consumers. Stop legacy task instances before enabling
-    # this group in the test environment to avoid duplicate business execution.
-    group: codecoachai-core-consumer
-    max-reconsume-times: 16
-
 codecoachai:
   internal:
     auth:
@@ -49,13 +42,13 @@ codecoachai:
       caller-key-rings:
         codecoachai-gateway:
           secrets:
-            - ${CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT}
+            - ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}
           permissions:
             - GET /inner/auth/token-info
           forward-user-context: true
         codecoachai-ai:
           secrets:
-            - ${CODECOACHAI_CALLER_AI_KEY_CURRENT}
+            - ${CODECOACHAI_CALLER_AI_SIGNING_SECRET}
           permissions:
             - GET /inner/career-campaigns/users/{userId}/campaigns/{campaignId}/review-evidence
             - GET /inner/interviews/reports/users/{userId}/{reportId}/agent-evidence
@@ -78,7 +71,7 @@ codecoachai:
           forward-user-context: true
         codecoachai-search:
           secrets:
-            - ${CODECOACHAI_CALLER_SEARCH_KEY_CURRENT}
+            - ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET}
           permissions:
             - GET /inner/resumes/{id}/search-doc
             - GET /inner/questions/{id}/search-doc
@@ -142,6 +135,11 @@ codecoachai:
       streaming-asr:
         provider: ""
         cleanup-fixed-delay-ms: 30000
+  task:
+    consumers:
+      # Do not join the legacy Task consumer groups until all legacy Task
+      # instances are stopped. Enabling this requires a Core restart.
+      enabled: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:false}
   resume:
     export:
       max-concurrent-uploads: ${RESUME_EXPORT_MAX_CONCURRENT_UPLOADS:2}

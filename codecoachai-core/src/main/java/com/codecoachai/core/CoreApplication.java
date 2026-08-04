@@ -15,6 +15,7 @@ import com.codecoachai.resume.ResumeApplication;
 import com.codecoachai.system.SystemApplication;
 import com.codecoachai.task.TaskApplication;
 import com.codecoachai.user.UserApplication;
+import org.apache.ibatis.annotations.Mapper;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -53,12 +54,17 @@ import org.springframework.scheduling.annotation.EnableScheduling;
         "com.codecoachai.resume.careeroffer.mapper",
         "com.codecoachai.resume.careercontact.mapper",
         "com.codecoachai.resume.careerresearch.mapper",
-        "com.codecoachai.resume.careercampaign",
-        "com.codecoachai.resume.campaignarchive",
         "com.codecoachai.question.mapper",
         "com.codecoachai.interview.mapper",
         "com.codecoachai.task.mapper"
 })
+@MapperScan(
+        basePackages = {
+                "com.codecoachai.resume.careercampaign",
+                "com.codecoachai.resume.campaignarchive"
+        },
+        annotationClass = Mapper.class
+)
 @ComponentScan(
         basePackages = "com.codecoachai",
         excludeFilters = @ComponentScan.Filter(

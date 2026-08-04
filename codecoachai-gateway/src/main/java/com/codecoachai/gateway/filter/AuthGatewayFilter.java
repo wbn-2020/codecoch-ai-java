@@ -11,22 +11,30 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
+import org.springframework.cloud.gateway.route.Route;
+import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.core.Ordered;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferLimitException;
+import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpRequestDecorator;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 @Component
@@ -53,10 +61,34 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
     @Value("${codecoachai.internal.auth.secret:}")
     private String internalSecret;
 
+    @Value("${codecoachai.gateway.internal.target-secrets.codecoachai-core:}")
+    private String coreTargetSecret;
+
+    @Value("${codecoachai.gateway.internal.target-secrets.codecoachai-ai:}")
+    private String aiTargetSecret;
+
+    @Value("${codecoachai.gateway.internal.target-secrets.codecoachai-search:}")
+    private String searchTargetSecret;
+
+    @Value("${codecoachai.gateway.internal.max-signed-body-bytes:1048576}")
+    private int maxSignedBodyBytes;
+
+    @Value("${codecoachai.gateway.internal.unsigned-body-paths:}")
+    private String unsignedBodyPaths = "";
+
     @PostConstruct
     public void validateInternalAuthSecret() {
-        if (internalAuthEnabled && !StringUtils.hasText(internalSecret)) {
-            throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
+        if (internalAuthEnabled
+                && (!StringUtils.hasText(internalSecret)
+                        || !StringUtils.hasText(coreTargetSecret)
+                        || !StringUtils.hasText(aiTargetSecret)
+                        || !StringUtils.hasText(searchTargetSecret))) {
+            throw new IllegalStateException(
+                    "Gateway internal signing secrets for Core, AI, and Search must be configured");
+        }
+        if (maxSignedBodyBytes < 1 || maxSignedBodyBytes > 16 * 1024 * 1024) {
+            throw new IllegalStateException(
+                    "codecoachai.gateway.internal.max-signed-body-bytes must be between 1 and 16777216");
         }
     }
 
@@ -95,10 +127,11 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
                     if (result.getData() == null) {
                         return writeError(exchange, ErrorCode.TOKEN_INVALID);
                     }
-                    ServerHttpRequest mutated = request.mutate()
-                            .headers(headers -> enrichUserHeaders(headers, authorization, result.getData(), request))
-                            .build();
-                    return chain.filter(exchange.mutate().request(mutated).build());
+                    return forwardAuthenticated(
+                            exchange,
+                            chain,
+                            authorization,
+                            result.getData());
                 });
     }
 
@@ -111,8 +144,159 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         return WHITE_PATHS.stream().anyMatch(path::equals);
     }
 
+    private Mono<Void> forwardAuthenticated(
+            ServerWebExchange exchange,
+            GatewayFilterChain chain,
+            String authorization,
+            TokenInfo tokenInfo) {
+        ServerHttpRequest request = exchange.getRequest();
+        if (allowsUnsignedBody(request)) {
+            return forwardSigned(
+                    exchange,
+                    chain,
+                    request,
+                    authorization,
+                    tokenInfo,
+                    InternalSignatureUtils.STREAMING_BODY_SHA256);
+        }
+        if (hasNoBody(request)) {
+            return forwardSigned(
+                    exchange,
+                    chain,
+                    request,
+                    authorization,
+                    tokenInfo,
+                    InternalSignatureUtils.EMPTY_BODY_SHA256);
+        }
+        if (request.getHeaders().getContentLength() > maxSignedBodyBytes) {
+            return writePayloadTooLarge(exchange);
+        }
+
+        Mono<byte[]> cachedBody = DataBufferUtils.join(request.getBody(), maxSignedBodyBytes)
+                .map(this::readAndRelease)
+                .defaultIfEmpty(new byte[0])
+                .onErrorMap(
+                        DataBufferLimitException.class,
+                        SignedBodyTooLargeException::new);
+        return cachedBody
+                .flatMap(body -> {
+                    String bodySha256 = InternalSignatureUtils.sha256Hex(body);
+                    ServerHttpRequest signed = signedRequest(
+                            exchange,
+                            request,
+                            authorization,
+                            tokenInfo,
+                            bodySha256,
+                            body.length);
+                    ServerHttpRequest replayable = replayableRequest(
+                            exchange,
+                            signed,
+                            body);
+                    return chain.filter(exchange.mutate().request(replayable).build());
+                })
+                .onErrorResume(SignedBodyTooLargeException.class, ignored -> writePayloadTooLarge(exchange));
+    }
+
+    private Mono<Void> forwardSigned(
+            ServerWebExchange exchange,
+            GatewayFilterChain chain,
+            ServerHttpRequest request,
+            String authorization,
+            TokenInfo tokenInfo,
+            String bodySha256) {
+        ServerHttpRequest signed = signedRequest(
+                exchange,
+                request,
+                authorization,
+                tokenInfo,
+                bodySha256,
+                null);
+        return chain.filter(exchange.mutate().request(signed).build());
+    }
+
+    private ServerHttpRequest signedRequest(
+            ServerWebExchange exchange,
+            ServerHttpRequest request,
+            String authorization,
+            TokenInfo tokenInfo,
+            String bodySha256,
+            Integer cachedBodyLength) {
+        return request.mutate()
+                .headers(headers -> {
+                    enrichUserHeaders(
+                            headers,
+                            authorization,
+                            tokenInfo,
+                            request,
+                            exchange,
+                            bodySha256);
+                    if (cachedBodyLength != null) {
+                        headers.remove(HttpHeaders.TRANSFER_ENCODING);
+                        headers.setContentLength(cachedBodyLength);
+                    }
+                })
+                .build();
+    }
+
+    private ServerHttpRequest replayableRequest(
+            ServerWebExchange exchange,
+            ServerHttpRequest request,
+            byte[] body) {
+        return new ServerHttpRequestDecorator(request) {
+            @Override
+            public Flux<DataBuffer> getBody() {
+                return Flux.defer(() -> Mono.just(exchange.getResponse().bufferFactory().wrap(body)));
+            }
+        };
+    }
+
+    private byte[] readAndRelease(DataBuffer buffer) {
+        try {
+            byte[] body = new byte[buffer.readableByteCount()];
+            buffer.read(body);
+            return body;
+        } finally {
+            DataBufferUtils.release(buffer);
+        }
+    }
+
+    private boolean hasNoBody(ServerHttpRequest request) {
+        long contentLength = request.getHeaders().getContentLength();
+        if (contentLength == 0L) {
+            return true;
+        }
+        boolean transferEncoded =
+                !request.getHeaders().getOrEmpty(HttpHeaders.TRANSFER_ENCODING).isEmpty();
+        HttpMethod method = request.getMethod();
+        return contentLength < 0L
+                && !transferEncoded
+                && (HttpMethod.GET.equals(method)
+                        || HttpMethod.HEAD.equals(method)
+                        || HttpMethod.OPTIONS.equals(method));
+    }
+
+    private boolean allowsUnsignedBody(ServerHttpRequest request) {
+        HttpMethod method = request.getMethod();
+        if (!HttpMethod.POST.equals(method)
+                && !HttpMethod.PUT.equals(method)
+                && !HttpMethod.PATCH.equals(method)) {
+            return false;
+        }
+        MediaType contentType = request.getHeaders().getContentType();
+        if (contentType == null
+                || !"multipart".equals(contentType.getType().toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        String path = request.getURI().getPath();
+        return StringUtils.hasText(unsignedBodyPaths)
+                && Arrays.stream(StringUtils.commaDelimitedListToStringArray(unsignedBodyPaths))
+                        .filter(StringUtils::hasText)
+                        .map(String::trim)
+                        .anyMatch(path::equals);
+    }
+
     private void enrichUserHeaders(HttpHeaders headers, String authorization, TokenInfo tokenInfo,
-            ServerHttpRequest request) {
+            ServerHttpRequest request, ServerWebExchange exchange, String bodySha256) {
         removeUserHeaders(headers);
         headers.set(HeaderConstants.AUTHORIZATION, authorization);
         headers.set(HeaderConstants.USER_ID, String.valueOf(tokenInfo.getUserId()));
@@ -121,7 +305,7 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         if (roles != null && !roles.isEmpty()) {
             headers.set(HeaderConstants.ROLES, String.join(",", roles));
         }
-        signUserContext(headers, tokenInfo, request);
+        signUserContext(headers, tokenInfo, request, targetSecret(exchange), bodySha256);
     }
 
     private void removeUserHeaders(HttpHeaders headers) {
@@ -143,9 +327,14 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         headers.remove(HeaderConstants.INTERNAL_BODY_SHA256);
     }
 
-    private void signUserContext(HttpHeaders headers, TokenInfo tokenInfo, ServerHttpRequest request) {
-        if (!internalAuthEnabled || !StringUtils.hasText(internalSecret)) {
-            throw new IllegalStateException("codecoachai.internal.auth.secret must be configured");
+    private void signUserContext(
+            HttpHeaders headers,
+            TokenInfo tokenInfo,
+            ServerHttpRequest request,
+            String targetSecret,
+            String bodySha256) {
+        if (!internalAuthEnabled || !StringUtils.hasText(targetSecret)) {
+            throw new IllegalStateException("Gateway target signing secret must be configured");
         }
         String timestamp = String.valueOf(System.currentTimeMillis());
         String nonce = UUID.randomUUID().toString();
@@ -154,7 +343,6 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         String roles = headers.getFirst(HeaderConstants.ROLES);
         String path = request.getURI().getRawPath();
         String rawQuery = request.getURI().getRawQuery();
-        String bodySha256 = bodySha256(request);
         String legacyPayload = InternalSignatureUtils.userContextPayload(
                 String.valueOf(request.getMethod()), path, timestamp, userId, username, roles);
         String payloadV2 = InternalSignatureUtils.userContextPayloadV2(
@@ -174,26 +362,33 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         headers.set(HeaderConstants.INTERNAL_BODY_SHA256, bodySha256);
         headers.set(
                 HeaderConstants.USER_CONTEXT_SIGNATURE,
-                InternalSignatureUtils.hmacSha256Hex(internalSecret, legacyPayload));
+                InternalSignatureUtils.hmacSha256Hex(targetSecret, legacyPayload));
         headers.set(
                 HeaderConstants.USER_CONTEXT_SIGNATURE_V2,
-                InternalSignatureUtils.hmacSha256Hex(internalSecret, payloadV2));
+                InternalSignatureUtils.hmacSha256Hex(targetSecret, payloadV2));
     }
 
-    private String bodySha256(ServerHttpRequest request) {
-        long contentLength = request.getHeaders().getContentLength();
-        boolean transferEncoded = !request.getHeaders().getOrEmpty(HttpHeaders.TRANSFER_ENCODING).isEmpty();
-        HttpMethod method = request.getMethod();
-        if (contentLength == 0L
-                || (contentLength < 0L
-                        && !transferEncoded
-                        && (HttpMethod.GET.equals(method)
-                                || HttpMethod.HEAD.equals(method)
-                                || HttpMethod.OPTIONS.equals(method)))) {
-            return InternalSignatureUtils.EMPTY_BODY_SHA256;
-        }
-        // Gateway must preserve request streaming; payload bytes are intentionally not buffered here.
-        return InternalSignatureUtils.STREAMING_BODY_SHA256;
+    private String targetSecret(ServerWebExchange exchange) {
+        Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+        String targetService = route == null ? "codecoachai-core" : route.getUri().getHost();
+        return switch (targetService) {
+            case "codecoachai-ai" -> aiTargetSecret;
+            case "codecoachai-search" -> searchTargetSecret;
+            case "codecoachai-core" -> StringUtils.hasText(coreTargetSecret)
+                    ? coreTargetSecret
+                    : internalSecret;
+            default -> throw new IllegalStateException("Unsupported Gateway target: " + targetService);
+        };
+    }
+
+    private Mono<Void> writePayloadTooLarge(ServerWebExchange exchange) {
+        exchange.getResponse().setStatusCode(HttpStatus.PAYLOAD_TOO_LARGE);
+        exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        byte[] bytes = toJsonBytes(Result.fail(
+                ErrorCode.PARAM_ERROR.getCode(),
+                "Request body exceeds the signed payload limit"));
+        DataBuffer buffer = exchange.getResponse().bufferFactory().wrap(bytes);
+        return exchange.getResponse().writeWith(Mono.just(buffer));
     }
 
     private Mono<Void> writeError(ServerWebExchange exchange, ErrorCode errorCode) {
@@ -224,6 +419,13 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
             return objectMapper.writeValueAsBytes(result);
         } catch (JsonProcessingException ex) {
             return "{\"code\":50000,\"message\":\"系统内部错误\",\"data\":null}".getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
+    private static final class SignedBodyTooLargeException extends RuntimeException {
+
+        private SignedBodyTooLargeException(DataBufferLimitException cause) {
+            super(cause);
         }
     }
 }
