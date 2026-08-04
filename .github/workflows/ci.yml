@@ -6,11 +6,15 @@ on:
       - main
       - dev-v3
       - dev-260703
+      - dev-fb
+      - dev-fb-260803
   pull_request:
     branches:
       - main
       - dev-v3
       - dev-260703
+      - dev-fb
+      - dev-fb-260803
   workflow_dispatch:
 
 permissions:
@@ -111,15 +115,8 @@ jobs:
           set -euo pipefail
           services=(
             codecoachai-gateway
-            codecoachai-auth
-            codecoachai-user
-            codecoachai-question
-            codecoachai-resume
-            codecoachai-interview
+            codecoachai-core
             codecoachai-ai
-            codecoachai-system
-            codecoachai-file
-            codecoachai-task
             codecoachai-search
           )
           for service in "${services[@]}"; do
@@ -278,24 +275,10 @@ jobs:
         include:
           - service: codecoachai-gateway
             port: 8080
-          - service: codecoachai-auth
-            port: 9201
-          - service: codecoachai-user
-            port: 9202
-          - service: codecoachai-question
-            port: 9203
-          - service: codecoachai-resume
-            port: 9204
-          - service: codecoachai-interview
-            port: 9205
+          - service: codecoachai-core
+            port: 9200
           - service: codecoachai-ai
             port: 9206
-          - service: codecoachai-system
-            port: 9207
-          - service: codecoachai-file
-            port: 9208
-          - service: codecoachai-task
-            port: 8090
           - service: codecoachai-search
             port: 8091
 

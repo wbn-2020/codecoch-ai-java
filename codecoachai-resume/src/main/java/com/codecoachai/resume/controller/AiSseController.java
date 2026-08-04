@@ -34,7 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Slf4j
-@RestController
+@RestController("resumeAiSseController")
 @RequestMapping("/ai/sse")
 @Tag(name = "AI SSE")
 public class AiSseController {

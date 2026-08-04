@@ -4,6 +4,17 @@
 # ============================================================
 
 codecoachai:
+  internal:
+    auth:
+      legacy-shared-secret: ""
+      legacy-shared-secret-enabled: false
+      legacy-shared-secret-callers: []
+      caller-key-rings:
+        codecoachai-gateway:
+          secrets:
+            - ${CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT}
+          permissions: []
+          forward-user-context: true
   search:
     refresh-interval: 1s
     default-page-size: 10

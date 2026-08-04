@@ -21,6 +21,7 @@
     <modules>
         <module>codecoachai-common</module>
         <module>codecoachai-gateway</module>
+        <module>codecoachai-core</module>
         <module>codecoachai-auth</module>
         <module>codecoachai-user</module>
         <module>codecoachai-question</module>

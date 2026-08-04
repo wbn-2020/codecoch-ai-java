@@ -14,7 +14,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.server.PathContainer;
@@ -30,6 +29,12 @@ class GatewayRouteContractTest {
 
     private static final String DEDUPE_RESPONSE_HEADER_FILTER =
             "DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials, RETAIN_UNIQUE";
+
+    private static final String CORE_SERVICE_URI = serviceUri("core");
+    private static final Set<String> STANDALONE_SERVICE_NAMES = Set.of("ai", "search");
+    private static final Map<String, String> STANDALONE_ROUTE_TARGETS = Map.of(
+            "codecoachai-ai-admin", serviceUri("ai"),
+            "codecoachai-search", serviceUri("search"));
 
     private static final List<String> REQUIRED_PUBLIC_ROUTES = routeGroupTokens(
             "/resume-versions",
@@ -249,6 +254,45 @@ class GatewayRouteContractTest {
     }
 
     @Test
+    void onlyAiAndSearchRoutesRemainSeparateFromTheCoreService() throws IOException {
+        for (GatewayConfig config : readGatewayConfigs().values()) {
+            assertEquals(
+                    39,
+                    config.routes().size(),
+                    () -> config.relativePath() + " must retain its complete route set");
+
+            long coreRouteCount = 0;
+            for (GatewayRoute route : config.routes()) {
+                String standaloneTarget = STANDALONE_ROUTE_TARGETS.get(route.id());
+                if (standaloneTarget != null) {
+                    assertEquals(
+                            standaloneTarget,
+                            route.uri(),
+                            () -> config.relativePath() + " route " + route.id()
+                                    + " must retain its standalone target");
+                    continue;
+                }
+
+                assertEquals(
+                        CORE_SERVICE_URI,
+                        route.uri(),
+                        () -> config.relativePath() + " business route " + route.id()
+                                + " must target the Core service");
+                coreRouteCount++;
+            }
+
+            assertEquals(
+                    37,
+                    coreRouteCount,
+                    () -> config.relativePath() + " must direct 37 business routes to Core");
+            assertEquals(
+                    Set.of(CORE_SERVICE_URI, serviceUri("ai"), serviceUri("search")),
+                    config.routes().stream().map(GatewayRoute::uri).collect(Collectors.toSet()),
+                    () -> config.relativePath() + " may target only Core, AI, and Search");
+        }
+    }
+
+    @Test
     void resumeClaimAuditsUseTheirDedicatedGatewayRoute() throws IOException {
         for (GatewayConfig config : readGatewayConfigs().values()) {
             GatewayRoute route = config.routesMatching("/resume-claim-audits/contract-probe").get(0);
@@ -368,17 +412,23 @@ class GatewayRouteContractTest {
         return List.copyOf(tokens);
     }
 
-    private static RouteFamily routeFamily(String name, String representativePath, String service) {
-        return new RouteFamily(name, representativePath, serviceUri(service));
+    private static RouteFamily routeFamily(String name, String representativePath, String logicalService) {
+        return new RouteFamily(name, representativePath, deployableServiceUri(logicalService));
     }
 
     private static KnownOverlap knownOverlap(
-            String name, String representativePath, String specificService, String broadService) {
+            String name, String representativePath, String specificLogicalService, String broadLogicalService) {
         return new KnownOverlap(
                 name,
                 representativePath,
-                serviceUri(specificService),
-                serviceUri(broadService));
+                deployableServiceUri(specificLogicalService),
+                deployableServiceUri(broadLogicalService));
+    }
+
+    private static String deployableServiceUri(String logicalService) {
+        return STANDALONE_SERVICE_NAMES.contains(logicalService)
+                ? serviceUri(logicalService)
+                : CORE_SERVICE_URI;
     }
 
     private static String serviceUri(String service) {

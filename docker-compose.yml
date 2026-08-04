@@ -19,8 +19,8 @@ x-application-healthcheck: &application-healthcheck
 # ============================================================
 # CodeCoachAI V3 本地开发环境 docker-compose
 # 默认仅启动基础设施：MySQL + Redis + Nacos
-# 按需 profile：mq、mq-dashboard、search、vector
-# 业务服务建议在 IDE 中启动（方便调试）
+# 按需 profile：mq、mq-dashboard、search、vector、app-services、search-service
+# app-services 启动 Gateway、Core、AI；search-service 启动 Search 及其依赖。
 # 注意：该 compose 仅用于本机开发，端口默认绑定 127.0.0.1，不应直接用于公网或准生产。
 # MySQL 首次只导入 V2 基线 init.sql；随后由一次性 flyway-migrate 服务执行 V3+ migration。
 # 初始化仅在首次创建 mysql-data 时执行，使用前确认目标 volume 可丢弃。
@@ -111,6 +111,147 @@ services:
       timeout: 5s
       retries: 10
 
+  # ---------- Gateway application ----------
+  codecoachai-gateway:
+    profiles:
+      - app-services
+    build:
+      context: .
+      target: runtime
+      args:
+        SERVICE: codecoachai-gateway
+        SERVICE_PORT: 8080
+    image: codecoachai/codecoachai-gateway:${CODECOACHAI_IMAGE_TAG:-local}
+    container_name: codecoachai-gateway
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:${CODECOACHAI_GATEWAY_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Gateway}
+      NACOS_SERVER_ADDR: nacos:8848
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Gateway}
+      HEALTHCHECK_URL: http://127.0.0.1:8080/actuator/health
+      HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
+      HEALTHCHECK_EXPECTED_STATUS: UP
+      HEALTH_STARTUP_TIMEOUT_SECONDS: ${CODECOACHAI_GATEWAY_STARTUP_TIMEOUT_SECONDS:-180}
+      HEALTH_MONITOR_INTERVAL_SECONDS: ${CODECOACHAI_HEALTH_INTERVAL_SECONDS:-10}
+      HEALTH_MONITOR_FAILURE_THRESHOLD: ${CODECOACHAI_HEALTH_FAILURE_THRESHOLD:-6}
+    depends_on:
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+    healthcheck: *application-healthcheck
+    restart: on-failure
+
+  # ---------- Core application ----------
+  codecoachai-core:
+    profiles:
+      - app-services
+    build:
+      context: .
+      target: runtime
+      args:
+        SERVICE: codecoachai-core
+        SERVICE_PORT: 9200
+    image: codecoachai/codecoachai-core:${CODECOACHAI_IMAGE_TAG:-local}
+    container_name: codecoachai-core
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:${CODECOACHAI_CORE_PORT:-9200}:9200"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SERVER_PORT: "9200"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: codecoachai_v1
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for Core}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for Core}
+      NACOS_SERVER_ADDR: nacos:8848
+      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for Core}
+      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Core}
+      CODECOACHAI_CALLER_AI_KEY_CURRENT: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for Core}
+      CODECOACHAI_CALLER_SEARCH_KEY_CURRENT: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for Core}
+      HEALTHCHECK_URL: http://127.0.0.1:9200/actuator/health
+      HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
+      HEALTHCHECK_EXPECTED_STATUS: UP
+      HEALTH_STARTUP_TIMEOUT_SECONDS: ${CODECOACHAI_CORE_STARTUP_TIMEOUT_SECONDS:-240}
+      HEALTH_MONITOR_INTERVAL_SECONDS: ${CODECOACHAI_HEALTH_INTERVAL_SECONDS:-10}
+      HEALTH_MONITOR_FAILURE_THRESHOLD: ${CODECOACHAI_HEALTH_FAILURE_THRESHOLD:-6}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      flyway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      rocketmq-broker:
+        condition: service_healthy
+    healthcheck: *application-healthcheck
+    restart: on-failure
+
+  # ---------- AI application ----------
+  codecoachai-ai:
+    profiles:
+      - app-services
+    build:
+      context: .
+      target: runtime
+      args:
+        SERVICE: codecoachai-ai
+        SERVICE_PORT: 9206
+    image: codecoachai/codecoachai-ai:${CODECOACHAI_IMAGE_TAG:-local}
+    container_name: codecoachai-ai
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:${CODECOACHAI_AI_PORT:-9206}:9206"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      SERVER_PORT: "9206"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: codecoachai_v1
+      MYSQL_USERNAME: root
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for AI}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for AI}
+      NACOS_SERVER_ADDR: nacos:8848
+      ROCKETMQ_NAME_SERVER: rocketmq-namesrv:9876
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required for AI}
+      CODECOACHAI_AI_CRYPTO_SECRET_KEY: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY:?CODECOACHAI_AI_CRYPTO_SECRET_KEY is required for AI}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for AI}
+      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for AI}
+      CODECOACHAI_CALLER_CORE_KEY_CURRENT: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for AI}
+      HEALTHCHECK_URL: http://127.0.0.1:9206/actuator/health
+      HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}
+      HEALTHCHECK_EXPECTED_STATUS: UP
+      HEALTH_STARTUP_TIMEOUT_SECONDS: ${CODECOACHAI_AI_STARTUP_TIMEOUT_SECONDS:-240}
+      HEALTH_MONITOR_INTERVAL_SECONDS: ${CODECOACHAI_HEALTH_INTERVAL_SECONDS:-10}
+      HEALTH_MONITOR_FAILURE_THRESHOLD: ${CODECOACHAI_HEALTH_FAILURE_THRESHOLD:-6}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      flyway-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nacos:
+        condition: service_healthy
+      rocketmq-broker:
+        condition: service_healthy
+    healthcheck: *application-healthcheck
+    restart: on-failure
+
   # ---------- RocketMQ NameServer ----------
   rocketmq-namesrv:
     image: apache/rocketmq:5.1.4
@@ -118,6 +259,7 @@ services:
     profiles:
       - mq
       - mq-dashboard
+      - app-services
       - search-service
     logging: *default-logging
     ports:
@@ -133,6 +275,7 @@ services:
     container_name: codecoachai-rocketmq-broker
     profiles:
       - mq
+      - app-services
       - search-service
     logging: *default-logging
     ports:
@@ -176,7 +319,7 @@ services:
       - search-service
     logging: *default-logging
     ports:
-      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:${CODECOACHAI_ELASTICSEARCH_PORT:-9210}:9200"
       - "127.0.0.1:9300:9300"
     environment:
       discovery.type: single-node
@@ -230,7 +373,8 @@ services:
       CODECOACHAI_ELASTICSEARCH_USERNAME: elastic
       CODECOACHAI_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}
-      CODECOACHAI_INTERNAL_SECRET: ${CODECOACHAI_INTERNAL_SECRET:?CODECOACHAI_INTERNAL_SECRET is required for Search}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for Search}
+      CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT: ${CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET:?CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET is required for Search}
       CODECOACHAI_VECTOR_ENABLED: "false"
       HEALTHCHECK_URL: http://127.0.0.1:8091/actuator/health
       HEALTHCHECK_TIMEOUT_MILLIS: ${CODECOACHAI_HEALTH_TIMEOUT_MILLIS:-3000}

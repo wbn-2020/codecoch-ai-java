@@ -9,15 +9,8 @@ from dataclasses import dataclass
 
 SERVICE_MODULES = (
     "codecoachai-gateway",
-    "codecoachai-auth",
-    "codecoachai-user",
+    "codecoachai-core",
     "codecoachai-ai",
-    "codecoachai-resume",
-    "codecoachai-interview",
-    "codecoachai-question",
-    "codecoachai-file",
-    "codecoachai-system",
-    "codecoachai-task",
     "codecoachai-search",
 )
 

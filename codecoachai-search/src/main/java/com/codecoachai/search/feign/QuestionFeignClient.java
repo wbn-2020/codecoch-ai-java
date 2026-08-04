@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 /**
  * 题目服务 Feign 客户端（搜索同步用）。
  */
-@FeignClient(name = "codecoachai-question", contextId = "searchQuestionFeign")
+@FeignClient(name = "codecoachai-core", contextId = "searchQuestionFeign")
 public interface QuestionFeignClient {
 
     @GetMapping("/inner/questions/{id}/search-doc")

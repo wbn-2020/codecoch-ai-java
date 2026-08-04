@@ -75,19 +75,16 @@ codecoachai:
   internal:
     auth:
       enabled: true
-      # This is the current service's outbound signing key. During migration it also
-      # falls back to the old shared value until every deployment gets a unique key.
+      # The current service's outbound signing key. Every deployed service receives
+      # a different value through CODECOACHAI_INTERNAL_OUTBOUND_SECRET.
       secret: ${CODECOACHAI_INTERNAL_OUTBOUND_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
-      # Keep this separate while callers migrate. If omitted, code falls back to secret
-      # for compatibility with the old configuration shape.
-      legacy-shared-secret: ${CODECOACHAI_INTERNAL_LEGACY_SHARED_SECRET:${CODECOACHAI_INTERNAL_SECRET}}
-      legacy-shared-secret-enabled: true
-      # Empty means deny all legacy callers. During a migration window, list every
-      # still-legacy caller explicitly; caller rings can accept current and legacy
-      # keys at the same time until cutover is complete.
+      # The former shared key is disabled in the four-service topology. Keep the
+      # old Nacos data IDs for rollback instead of weakening the new receivers.
+      legacy-shared-secret: ${CODECOACHAI_INTERNAL_LEGACY_SHARED_SECRET:}
+      legacy-shared-secret-enabled: false
       legacy-shared-secret-callers: []
-      # Each caller ring must also declare its allowed METHOD /inner/path patterns
-      # and whether it may forward signed user context. See the migration guide.
+      # Each receiving service declares its own caller rings with exact endpoint
+      # permissions and a separate user-context forwarding capability.
       allowed-clock-skew-seconds: 300
       nonce-ttl-seconds: 300
       max-signed-body-bytes: 1048576
@@ -102,7 +99,7 @@ codecoachai:
     default-limit: 10
 
   ops:
-    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-auth|codecoachai-auth|9201|service,codecoachai-user|codecoachai-user|9202|service,codecoachai-resume|codecoachai-resume|9204|service,codecoachai-interview|codecoachai-interview|9205|service,codecoachai-question|codecoachai-question|9203|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-task|codecoachai-task|8090|service,codecoachai-file|codecoachai-file|9208|service}
+    health-services: ${CODECOACHAI_OPS_HEALTH_SERVICES:codecoachai-gateway|codecoachai-gateway|8080|gateway,codecoachai-core|codecoachai-core|9200|service,codecoachai-ai|codecoachai-ai|9206|service,codecoachai-search|codecoachai-search|8091|service}
 
 management:
   endpoints:

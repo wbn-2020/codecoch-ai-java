@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestBody;
  *  - 拉取面试上下文（题目 + 回答 + 简历）
  *  - 回写报告
  */
-@FeignClient(name = "codecoachai-interview", contextId = "taskInterviewFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "taskInterviewFeignClient")
 public interface InterviewFeignClient {
 
     @GetMapping("/inner/interviews/{sessionId}/report-context")

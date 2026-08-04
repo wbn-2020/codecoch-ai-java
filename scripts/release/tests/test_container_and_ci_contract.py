@@ -197,20 +197,47 @@ class ContainerContractTest(unittest.TestCase):
         self.assertNotIn("curl ", dockerfile)
         self.assertNotIn("StrictHostKeyChecking=accept-new", dockerfile)
 
-    def test_search_compose_has_health_gate_and_restart_recovery(self) -> None:
+    def test_docker_build_accepts_only_deployable_services(self) -> None:
+        dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        self.assertIn("COPY codecoachai-core ./codecoachai-core", dockerfile)
+        self.assertIn(
+            "codecoachai-gateway|codecoachai-core|codecoachai-ai|codecoachai-search) ;;",
+            dockerfile,
+        )
+        self.assertNotIn("codecoachai-auth|codecoachai-user", dockerfile)
+
+    def test_compose_has_four_deployable_services_and_core_health_gate(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
-        self.assertIn("codecoachai-search:", compose)
+        for service in (
+            "codecoachai-gateway",
+            "codecoachai-core",
+            "codecoachai-ai",
+            "codecoachai-search",
+        ):
+            self.assertIn(f"  {service}:", compose)
+            self.assertIn(f"SERVICE: {service}", compose)
+        self.assertIn('CODECOACHAI_CORE_PORT:-9200}:9200', compose)
+        self.assertIn("HEALTHCHECK_URL: http://127.0.0.1:9200/actuator/health", compose)
+        self.assertIn('CODECOACHAI_ELASTICSEARCH_PORT:-9210}:9200', compose)
         self.assertIn("rocketmq-broker:", compose)
         self.assertIn("condition: service_healthy", compose)
         self.assertIn("HEALTH_STARTUP_TIMEOUT_SECONDS", compose)
         self.assertIn("restart: on-failure", compose)
         self.assertNotIn("wget --header", compose)
+        self.assertNotIn("CODECOACHAI_INTERNAL_SECRET:", compose)
+        for secret in (
+            "CODECOACHAI_CALLER_GATEWAY_SIGNING_SECRET",
+            "CODECOACHAI_CALLER_CORE_SIGNING_SECRET",
+            "CODECOACHAI_CALLER_AI_SIGNING_SECRET",
+            "CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET",
+        ):
+            self.assertIn(secret, compose)
 
 
 class WorkflowContractTest(unittest.TestCase):
     def test_ci_covers_real_branches_and_quality_commands(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        for branch in ("main", "dev-v3", "dev-260703"):
+        for branch in ("main", "dev-v3", "dev-260703", "dev-fb", "dev-fb-260803"):
             self.assertIn(f"- {branch}", workflow)
         for command in (
             "clean test",
@@ -222,6 +249,15 @@ class WorkflowContractTest(unittest.TestCase):
             "verify_release.py",
         ):
             self.assertIn(command, workflow)
+        for service in (
+            "codecoachai-gateway",
+            "codecoachai-core",
+            "codecoachai-ai",
+            "codecoachai-search",
+        ):
+            self.assertIn(f"- service: {service}", workflow)
+        self.assertNotIn("- service: codecoachai-auth", workflow)
+        self.assertNotIn("- service: codecoachai-task", workflow)
         self.assertNotIn("dist-interview-layout", workflow)
 
 

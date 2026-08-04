@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
-@Component
+@Component("questionAgentBusinessActionNotifier")
 @Slf4j
 @RequiredArgsConstructor
 public class AgentBusinessActionNotifier {

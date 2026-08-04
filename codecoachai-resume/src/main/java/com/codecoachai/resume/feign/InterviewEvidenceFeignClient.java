@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-interview", contextId = "resumeInterviewEvidenceFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "resumeInterviewEvidenceFeignClient")
 public interface InterviewEvidenceFeignClient {
 
     @GetMapping("/inner/interviews/users/{userId}/weakness-summary")

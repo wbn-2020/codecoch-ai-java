@@ -9,6 +9,45 @@ spring:
     password: ${MYSQL_PASSWORD}
 
 codecoachai:
+  internal:
+    auth:
+      legacy-shared-secret: ""
+      legacy-shared-secret-enabled: false
+      legacy-shared-secret-callers: []
+      caller-key-rings:
+        codecoachai-gateway:
+          secrets:
+            - ${CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT}
+          permissions: []
+          forward-user-context: true
+        codecoachai-core:
+          secrets:
+            - ${CODECOACHAI_CALLER_CORE_KEY_CURRENT}
+          permissions:
+            - GET /inner/agent/campaign-archive-sources/users/{userId}/campaigns/{campaignId}
+            - GET /inner/agent/reminders/candidates
+            - POST /inner/agent/job-coach/business-actions/complete
+            - POST /inner/agent/job-coach/daily-plan/runs/{runId}/execute
+            - POST /inner/agent/job-coach/daily-plan/runs/{runId}/fail
+            - POST /inner/agent/knowledge/search
+            - POST /inner/ai/application-event-reviews/generate
+            - POST /inner/ai/interview/evaluate
+            - POST /inner/ai/interview/evaluate/stream
+            - POST /inner/ai/interview/follow-up
+            - POST /inner/ai/interview/question
+            - POST /inner/ai/interview/report
+            - POST /inner/ai/interview-preparations/generate
+            - POST /inner/ai/job-descriptions/parse
+            - POST /inner/ai/learning-plans/generate
+            - POST /inner/ai/practice/review
+            - POST /inner/ai/question-recommendations/generate
+            - POST /inner/ai/questions/generate
+            - POST /inner/ai/resume/optimize
+            - POST /inner/ai/resume/parse
+            - POST /inner/ai/resume-job-match/analyze
+            - POST /inner/ai/skill-gaps/analyze
+            - POST /inner/ai/study-plans/generate-from-gap
+          forward-user-context: true
   ai:
     enabled: true
     # Dev acceptance uses real DeepSeek calls. Set DEEPSEEK_API_KEY in env/private Nacos before startup.

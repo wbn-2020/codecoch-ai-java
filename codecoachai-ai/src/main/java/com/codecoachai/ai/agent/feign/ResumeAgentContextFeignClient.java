@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-resume", contextId = "resumeAgentContextFeignClient",
+@FeignClient(name = "codecoachai-core", contextId = "resumeAgentContextFeignClient",
         fallbackFactory = ResumeAgentContextFeignClientFallbackFactory.class)
 public interface ResumeAgentContextFeignClient {
 

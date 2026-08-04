@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class V7CareerRouteConfig {
 
-    static final String TARGET_URI = "lb://codecoachai-resume";
+    static final String TARGET_URI = "lb://codecoachai-core";
     static final String CAMPAIGN_ROUTE_ID = "v7-career-campaigns-fallback";
     static final String INTERVIEW_ROUTE_ID = "v7-career-interviews-fallback";
     static final String OFFER_ROUTE_ID = "v7-career-offers-fallback";

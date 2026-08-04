@@ -50,12 +50,15 @@ class InternalAuthPropertiesTest {
         properties.setLegacySharedSecret(LEGACY_SECRET);
         properties.setLegacySharedSecretEnabled(true);
         properties.setLegacySharedSecretCallers(
-                Set.of("codecoachai-question", "codecoachai-task"));
+                Set.of("codecoachai-core", "codecoachai-question", "codecoachai-task"));
         properties.setCallerKeyRings(Map.of("codecoachai-task", keyRing(TASK_CURRENT)));
 
         assertEquals(
                 List.of(LEGACY_SECRET),
                 properties.verificationSecretsFor("codecoachai-question"));
+        assertEquals(
+                List.of(LEGACY_SECRET),
+                properties.verificationSecretsFor("codecoachai-core"));
         assertEquals(
                 List.of(TASK_CURRENT, LEGACY_SECRET),
                 properties.verificationSecretsFor("codecoachai-task"));

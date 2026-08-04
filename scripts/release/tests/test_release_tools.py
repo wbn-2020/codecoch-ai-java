@@ -73,6 +73,17 @@ class ReleaseBuildTest(unittest.TestCase):
             allow_dirty=False,
         )
 
+    def test_release_contract_has_only_four_deployable_services(self) -> None:
+        self.assertEqual(
+            (
+                "codecoachai-gateway",
+                "codecoachai-core",
+                "codecoachai-ai",
+                "codecoachai-search",
+            ),
+            release_common.SERVICE_MODULES,
+        )
+
     def test_builds_manifested_release_without_historical_archives(self) -> None:
         release_path = build_release.build_release(self.arguments())
         entries = release_common.verify_release(release_path)

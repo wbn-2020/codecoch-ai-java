@@ -34,7 +34,7 @@ class V7CareerRouteConfigTest {
                     V7CareerRouteConfig.RESEARCH_SNAPSHOT_PATH));
 
     @Test
-    void matchesAllV7CareerRootsAndNestedPathsOnResumeService() {
+    void matchesAllV7CareerRootsAndNestedPathsOnCoreService() {
         try (GenericApplicationContext context = new GenericApplicationContext()) {
             context.registerBean(org.springframework.cloud.gateway.handler.predicate.PathRoutePredicateFactory.class);
             context.refresh();
@@ -44,6 +44,7 @@ class V7CareerRouteConfigTest {
             List<Route> routes = routeLocator.getRoutes().collectList().block();
 
             assertEquals(ROUTE_PATHS.size(), routes.size());
+            assertEquals("lb://codecoachai-core", V7CareerRouteConfig.TARGET_URI);
             for (Route route : routes) {
                 assertEquals(V7CareerRouteConfig.TARGET_URI, route.getUri().toString());
                 for (String root : ROUTE_PATHS.get(route.getId())) {

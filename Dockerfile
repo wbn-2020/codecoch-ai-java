@@ -13,6 +13,7 @@ WORKDIR /build
 
 COPY pom.xml .
 COPY codecoachai-common ./codecoachai-common
+COPY codecoachai-core ./codecoachai-core
 COPY codecoachai-gateway ./codecoachai-gateway
 COPY codecoachai-auth ./codecoachai-auth
 COPY codecoachai-user ./codecoachai-user
@@ -26,9 +27,7 @@ COPY codecoachai-task ./codecoachai-task
 COPY codecoachai-search ./codecoachai-search
 
 RUN case "${SERVICE}" in \
-      codecoachai-gateway|codecoachai-auth|codecoachai-user|codecoachai-ai|\
-      codecoachai-resume|codecoachai-interview|codecoachai-question|\
-      codecoachai-file|codecoachai-system|codecoachai-task|codecoachai-search) ;; \
+      codecoachai-gateway|codecoachai-core|codecoachai-ai|codecoachai-search) ;; \
       *) echo "Unsupported SERVICE: ${SERVICE}" >&2; exit 2 ;; \
     esac \
     && mvn -B -ntp -DskipTests -pl "${SERVICE}" -am package \

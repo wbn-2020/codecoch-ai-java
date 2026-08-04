@@ -75,6 +75,10 @@ public class InnerResumeAnalysisController {
                                         @RequestHeader(value = HeaderConstants.SERVICE_NAME, required = false)
                                         String serviceName) {
         requireTaskService(serviceName);
+        return getAnalysisRawForTask(id);
+    }
+
+    public Result<RawVO> getAnalysisRawForTask(Long id) {
         ResumeAnalysisRecord record = analysisRecordMapper.selectById(id);
         if (record == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
@@ -111,6 +115,10 @@ public class InnerResumeAnalysisController {
                                       String serviceName,
                                       @Valid @RequestBody CompleteDTO dto) {
         requireTaskService(serviceName);
+        return completeParseForTask(id, dto);
+    }
+
+    public Result<Void> completeParseForTask(Long id, CompleteDTO dto) {
         ResumeAnalysisRecord existing = analysisRecordMapper.selectById(id);
         if (existing == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);

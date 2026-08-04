@@ -5,8 +5,9 @@
 This runbook covers:
 
 - backend and frontend CI quality gates;
+- four deployable backend services: Gateway, Core, AI, and Search;
 - non-root application images and loopback Actuator probes;
-- Search startup failure detection and orchestrator recovery;
+- test-environment startup failure detection and orchestrator recovery;
 - immutable release directory generation and SHA-256 verification;
 - host-key-pinned SFTP upload, release pointer activation, and rollback.
 
@@ -35,6 +36,8 @@ frontend application service.
 - `main`;
 - `dev-v3`;
 - `dev-260703`;
+- `dev-fb`;
+- `dev-fb-260803`;
 - pull requests targeting those branches;
 - manual `workflow_dispatch`.
 
@@ -65,9 +68,10 @@ If the frontend repository is private, configure the
 `CODECOACHAI_FRONTEND_READ_TOKEN` Actions secret with read-only repository
 access. Prefer an immutable frontend commit for a formal release candidate.
 
-CI uploads tested JARs and frontend `dist` separately, builds one immutable
-release directory, verifies `SHA256SUMS`, and builds each runtime image from the
-tested JAR. Historical `*.tar.gz` and `*.tgz` files are not release inputs.
+CI uploads only the four tested deployable JARs and frontend `dist` separately,
+builds one immutable release directory, verifies `SHA256SUMS`, and builds one
+runtime image per deployable service. Historical `*.tar.gz` and `*.tgz` files
+are not release inputs.
 
 ## Local Quality Gates
 
@@ -87,7 +91,7 @@ bash -n scripts/rehearse-migrations.sh
 When Docker is available, expand Compose without starting containers:
 
 ```text
-docker compose --profile search-service config
+docker compose --profile app-services --profile search-service config
 ```
 
 Build one runtime image from a tested JAR:
@@ -95,9 +99,9 @@ Build one runtime image from a tested JAR:
 ```text
 docker build \
   --target runtime-prebuilt \
-  --build-arg JAR_FILE=codecoachai-search/target/codecoachai-search-1.0.0-SNAPSHOT.jar \
-  --build-arg SERVICE_PORT=8091 \
-  -t codecoachai/codecoachai-search:local \
+  --build-arg JAR_FILE=codecoachai-core/target/codecoachai-core-1.0.0-SNAPSHOT.jar \
+  --build-arg SERVICE_PORT=9200 \
+  -t codecoachai/codecoachai-core:local \
   .
 ```
 
@@ -110,17 +114,55 @@ The runtime contract is:
 - health URL restricted to loopback HTTP;
 - application PID monitored by the container entrypoint.
 
-## Search Recovery
+## Deployable Service Contract
 
-Start the complete local Search dependency graph with:
+Only these backend JARs and runtime images are deployable:
 
 ```text
-docker compose --profile search-service up --build codecoachai-search
+codecoachai-gateway  port 8080
+codecoachai-core     port 9200
+codecoachai-ai       port 9206
+codecoachai-search   port 8091
 ```
 
-The profile includes MySQL, Flyway, Redis, Nacos, RocketMQ NameServer/Broker,
-Elasticsearch, and Search. Search waits for the database migration job and the
-healthy dependency gates before it starts.
+The legacy `auth`, `user`, `resume`, `interview`, `question`, `file`, `system`,
+and `task` modules remain build-time libraries of Core. They must not be
+released as standalone JARs or started as standalone containers.
+
+Compose profiles are intentionally separate:
+
+- `app-services`: Gateway, Core, AI, and their MySQL, Redis, Nacos, Flyway, and
+  RocketMQ dependencies;
+- `search-service`: Search and its RocketMQ and Elasticsearch dependencies.
+
+Core listens on container and default host port `9200`. Elasticsearch retains
+container port `9200` but uses default host port `9210`, preventing a host-port
+collision. Override `CODECOACHAI_ELASTICSEARCH_PORT` only when the selected
+host port is available.
+
+## Test Environment Startup And Recovery
+
+The workstation does not have enough resources for application startup or
+end-to-end validation. Do not run Compose `up`, backend processes, Docker
+dependencies, or acceptance workflows locally for this refactor. Perform
+application startup and acceptance exclusively in the approved test
+environment after the release artifact is published.
+
+Before starting the four application containers in the test environment:
+
+1. Confirm the test database backup, completed Flyway migration, and required
+   secrets are available.
+2. Confirm Nacos contains the reviewed consolidated Gateway/Core/AI/Search
+   configuration, including the Core `9200` registration and routes targeting
+   Core. Configure four distinct outbound HMAC secrets for Gateway, Core, AI,
+   and Search, and verify the Core/AI/Search caller key rings use the matching
+   values with their reviewed `/inner/**` permissions.
+3. Stop all legacy standalone application containers before enabling Core.
+   In particular, stop the old Task consumer before Core's RocketMQ consumers
+   join the production-equivalent consumer groups.
+4. Start AI and confirm it is healthy, then enable Core and its MQ consumers.
+   Start Gateway and Search through the approved orchestrator after Core is
+   healthy. Keep the old application services scaled to zero.
 
 The image entrypoint checks Actuator independently of Docker's displayed
 container state:
@@ -133,16 +175,23 @@ container state:
 | `HEALTH_MONITOR_INTERVAL_SECONDS` | `10` | Probe interval |
 | `HEALTH_MONITOR_FAILURE_THRESHOLD` | `6` | Failures after first readiness |
 
-For Compose Search, startup timeout defaults to 240 seconds. If Spring startup
-fails but a RocketMQ non-daemon thread keeps the JVM alive, the entrypoint
-terminates the JVM and exits non-zero. `restart: on-failure` then retries. This
-prevents a container from remaining merely `Up` while port 8091 refuses
-connections.
+Core, AI, and Search default to a 240-second startup timeout. Gateway defaults
+to 180 seconds. If Spring startup fails but a RocketMQ non-daemon thread keeps
+the JVM alive, the entrypoint terminates the JVM and exits non-zero.
+`restart: on-failure` then retries. This prevents a container from remaining
+merely `Up` while its Actuator endpoint refuses connections.
 
-Use the parameterized operations probe after startup or deployment:
+Run the parameterized operations probe from the test environment after startup
+or deployment:
 
 ```text
 python scripts/release/check_health.py \
+  --service gateway=http://127.0.0.1:8080/actuator/health \
+  --container gateway=codecoachai-gateway \
+  --service core=http://127.0.0.1:9200/actuator/health \
+  --container core=codecoachai-core \
+  --service ai=http://127.0.0.1:9206/actuator/health \
+  --container ai=codecoachai-ai \
   --service search=http://127.0.0.1:8091/actuator/health \
   --container search=codecoachai-search \
   --attempts 5 \
@@ -194,10 +243,10 @@ Release layout:
   SHA256SUMS
 ```
 
-The builder requires exactly one deployable JAR for each service, validates each
-JAR as ZIP, copies only frontend `dist`, excludes historical tar archives,
-writes source SHAs to `release.json`, and atomically renames the completed local
-staging directory.
+The builder requires exactly one deployable JAR for Gateway, Core, AI, and
+Search, validates each JAR as ZIP, copies only frontend `dist`, excludes
+historical tar archives, writes source SHAs to `release.json`, and atomically
+renames the completed local staging directory.
 
 ## Pin The SSH Host Key
 
@@ -344,9 +393,12 @@ Do not activate a release until all are true:
 4. Required Docker images built as UID/GID `10001:10001`.
 5. Database migration rehearsal and backup passed.
 6. Nacos backup and intended configuration diff were reviewed.
-7. The current release ID and rollback target were recorded.
-8. Search Actuator reports `UP`, not only Docker `Up`.
+7. Legacy standalone services are stopped before Core workers are enabled,
+   preventing duplicate RocketMQ consumption.
+8. The current release ID and rollback target were recorded.
+9. Gateway, Core, AI, and Search Actuator endpoints report `UP`, not only
+   Docker `Up`.
 
 After activation, verify every expected Actuator endpoint, application login,
-critical API workflows, frontend static assets, container restart counts, and
-recent error logs before accepting the release.
+critical API workflows, asynchronous task consumption, frontend static assets,
+container restart counts, and recent error logs before accepting the release.

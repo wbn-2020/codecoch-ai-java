@@ -13,7 +13,7 @@ public class ResumeClaimAuditRouteConfig {
 
     static final String ROUTE_ID = "resume-claim-audits-fallback";
     static final String PATH = "/resume-claim-audits";
-    static final String TARGET_URI = "lb://codecoachai-resume";
+    static final String TARGET_URI = "lb://codecoachai-core";
 
     @Bean
     RouteLocator resumeClaimAuditRouteLocator(RouteLocatorBuilder builder) {

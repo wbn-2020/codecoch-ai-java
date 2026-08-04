@@ -17,7 +17,7 @@ import reactor.core.publisher.Mono;
 class ResumeClaimAuditRouteConfigTest {
 
     @Test
-    void matchesTheClaimAuditRootAndNestedPathsAndTargetsTheResumeService() {
+    void matchesTheClaimAuditRootAndNestedPathsAndTargetsTheCoreService() {
         try (GenericApplicationContext context = new GenericApplicationContext()) {
             context.registerBean(PathRoutePredicateFactory.class);
             context.refresh();
@@ -29,6 +29,7 @@ class ResumeClaimAuditRouteConfigTest {
             assertEquals(1, routes.size());
             Route route = routes.get(0);
             assertEquals(ResumeClaimAuditRouteConfig.ROUTE_ID, route.getId());
+            assertEquals("lb://codecoachai-core", ResumeClaimAuditRouteConfig.TARGET_URI);
             assertEquals(ResumeClaimAuditRouteConfig.TARGET_URI, route.getUri().toString());
             assertTrue(Mono.from(route.getPredicate().apply(MockServerWebExchange.from(
                     MockServerHttpRequest.get(ResumeClaimAuditRouteConfig.PATH).build()))).block());
