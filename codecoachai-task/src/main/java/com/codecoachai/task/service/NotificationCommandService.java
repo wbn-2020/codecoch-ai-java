@@ -12,6 +12,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 /**
@@ -101,6 +103,7 @@ public class NotificationCommandService {
         notificationService.createNotification(userId, type, bizType, bizId, title, content);
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public int resolveByBiz(Long userId, String type, String bizType, String bizId, String reason) {
         if (userId == null || userId <= BROADCAST_USER_ID || !StringUtils.hasText(type)
                 || !StringUtils.hasText(bizType) || !StringUtils.hasText(bizId)) {

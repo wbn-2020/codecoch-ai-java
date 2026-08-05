@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-user", contextId = "userFeignClient", configuration = OpenFeignConfig.class)
+@FeignClient(name = "codecoachai-core", contextId = "userFeignClient", configuration = OpenFeignConfig.class)
 public interface UserFeignClient {
 
     @GetMapping("/inner/users/by-username")

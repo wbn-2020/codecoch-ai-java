@@ -32,7 +32,11 @@ import org.springframework.util.StringUtils;
  */
 @Slf4j
 @Component
-@ConditionalOnProperty(prefix = "rocketmq", name = "name-server")
+@ConditionalOnProperty(
+        prefix = "codecoachai.task.consumers",
+        name = "enabled",
+        havingValue = "true",
+        matchIfMissing = false)
 @RequiredArgsConstructor
 @RocketMQMessageListener(
         topic = MqTopics.QUESTION,

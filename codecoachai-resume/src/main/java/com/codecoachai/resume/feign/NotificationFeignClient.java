@@ -6,7 +6,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
-@FeignClient(name = "codecoachai-task")
+@FeignClient(name = "codecoachai-core", contextId = "notificationFeignClient")
 public interface NotificationFeignClient {
 
     @PostMapping("/inner/notifications/resolve-by-biz")

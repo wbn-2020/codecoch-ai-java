@@ -16,7 +16,8 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.multipart.MultipartFile;
 
 @FeignClient(
-        name = "codecoachai-file",
+        name = "codecoachai-core",
+        contextId = "resumeFileFeignClient",
         configuration = StreamingMultipartFeignConfiguration.class)
 public interface FileFeignClient {
 

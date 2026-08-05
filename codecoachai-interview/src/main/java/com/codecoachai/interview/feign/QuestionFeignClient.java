@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
-@FeignClient(name = "codecoachai-question")
+@FeignClient(name = "codecoachai-core", contextId = "interviewQuestionFeignClient")
 public interface QuestionFeignClient {
 
     @PostMapping("/inner/questions/select")

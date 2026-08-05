@@ -385,6 +385,139 @@ class NacosConfigGuardTest(unittest.TestCase):
             )
         )
 
+    def test_create_missing_only_creates_missing_config(self) -> None:
+        namespace = "codecoachai-test"
+        state = FakeNacosState()
+        state.namespaces = [
+            {"namespace": "", "namespaceShowName": "public", "type": 0},
+            {"namespace": namespace, "namespaceShowName": namespace, "type": 2},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config_dir = self.create_config_dir(root, "new\n")
+            audit_dir = root / "audit"
+            with RunningFakeNacos(state) as address:
+                code, _, stderr = self.run_guard(
+                    [
+                        "publish",
+                        "--nacos-addr",
+                        address,
+                        "--config-dir",
+                        str(config_dir),
+                        "--target",
+                        "namespace",
+                        "--namespace-id",
+                        namespace,
+                        "--confirm-write",
+                        "--allow-create-config",
+                        "--create-missing-only",
+                        "--audit-dir",
+                        str(audit_dir),
+                    ]
+                )
+
+        self.assertEqual("", stderr)
+        self.assertEqual(guard.EXIT_OK, code)
+        self.assertEqual(
+            "new\n",
+            state.configs[(namespace, self.group, self.data_id)]["content"],
+        )
+
+    def test_create_missing_only_blocks_existing_drift(self) -> None:
+        namespace = "codecoachai-test"
+        state = FakeNacosState()
+        state.namespaces = [
+            {"namespace": "", "namespaceShowName": "public", "type": 0},
+            {"namespace": namespace, "namespaceShowName": namespace, "type": 2},
+        ]
+        state.configs[(namespace, self.group, self.data_id)] = {
+            "content": "old\n",
+            "type": "yaml",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config_dir = self.create_config_dir(root, "new\n")
+            audit_dir = root / "audit"
+            with RunningFakeNacos(state) as address:
+                code, _, stderr = self.run_guard(
+                    [
+                        "publish",
+                        "--nacos-addr",
+                        address,
+                        "--config-dir",
+                        str(config_dir),
+                        "--target",
+                        "namespace",
+                        "--namespace-id",
+                        namespace,
+                        "--confirm-write",
+                        "--allow-create-config",
+                        "--create-missing-only",
+                        "--audit-dir",
+                        str(audit_dir),
+                    ]
+                )
+
+        self.assertEqual(guard.EXIT_ERROR, code)
+        self.assertIn("no writes were attempted", stderr)
+        self.assertEqual(
+            "old\n",
+            state.configs[(namespace, self.group, self.data_id)]["content"],
+        )
+
+    def test_create_missing_only_preflight_writes_nothing_when_any_config_drifted(
+            self) -> None:
+        namespace = "codecoachai-test"
+        drifted_data_id = "codecoachai-core-dev.yml"
+        state = FakeNacosState()
+        state.namespaces = [
+            {"namespace": "", "namespaceShowName": "public", "type": 0},
+            {"namespace": namespace, "namespaceShowName": namespace, "type": 2},
+        ]
+        state.configs[(namespace, self.group, drifted_data_id)] = {
+            "content": "old\n",
+            "type": "yaml",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config_dir = self.create_config_dir(root, "new\n")
+            (config_dir / drifted_data_id).write_text("new\n", encoding="utf-8")
+            audit_dir = root / "audit"
+            with RunningFakeNacos(state) as address:
+                code, _, stderr = self.run_guard(
+                    [
+                        "publish",
+                        "--nacos-addr",
+                        address,
+                        "--config-dir",
+                        str(config_dir),
+                        "--target",
+                        "namespace",
+                        "--namespace-id",
+                        namespace,
+                        "--data-id",
+                        self.data_id,
+                        "--data-id",
+                        drifted_data_id,
+                        "--confirm-write",
+                        "--allow-create-config",
+                        "--create-missing-only",
+                        "--audit-dir",
+                        str(audit_dir),
+                    ]
+                )
+
+        self.assertEqual(guard.EXIT_ERROR, code)
+        self.assertIn("no writes were attempted", stderr)
+        self.assertNotIn((namespace, self.group, self.data_id), state.configs)
+        self.assertFalse(
+            any(
+                request["method"] == "POST"
+                and request["path"] == "/nacos/v1/cs/configs"
+                for request in state.requests
+            )
+        )
+
     def test_data_id_cannot_escape_config_directory(self) -> None:
         state = FakeNacosState()
         state.namespaces = [

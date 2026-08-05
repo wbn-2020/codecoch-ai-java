@@ -1,6 +1,7 @@
 package com.codecoachai.task.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -23,9 +24,21 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationCommandServiceTest {
+
+    @Test
+    void resolveByBizAlwaysUsesAnIndependentTransaction() throws NoSuchMethodException {
+        Transactional transactional = NotificationCommandService.class
+                .getMethod("resolveByBiz", Long.class, String.class, String.class, String.class, String.class)
+                .getAnnotation(Transactional.class);
+
+        assertNotNull(transactional);
+        assertEquals(Propagation.REQUIRES_NEW, transactional.propagation());
+    }
 
     @Mock
     private NotificationService notificationService;

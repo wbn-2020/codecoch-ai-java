@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
-@FeignClient(name = "codecoachai-question", contextId = "taskQuestionFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "taskQuestionFeignClient")
 public interface QuestionFeignClient {
 
     @PostMapping("/inner/questions/reviews/save-drafts")

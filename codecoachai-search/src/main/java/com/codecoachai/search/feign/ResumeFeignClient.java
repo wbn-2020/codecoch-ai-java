@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 /**
  * 简历服务 Feign 客户端（搜索同步用）。
  */
-@FeignClient(name = "codecoachai-resume", contextId = "searchResumeFeign")
+@FeignClient(name = "codecoachai-core", contextId = "searchResumeFeign")
 public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/{id}/search-doc")

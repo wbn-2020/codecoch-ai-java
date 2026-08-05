@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-@RestController
+@RestController("interviewAiSseController")
 @RequiredArgsConstructor
 @RequestMapping("/ai/sse")
 @Tag(name = "Interview AI SSE", description = "Interview SSE APIs. Synchronous report APIs remain available as fallback.")

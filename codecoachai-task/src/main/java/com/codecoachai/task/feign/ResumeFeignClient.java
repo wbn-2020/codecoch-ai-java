@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
  *  - 拉取待解析的简历元数据 + 抽取后的纯文本
  *  - 把 AI 解析结果回写
  */
-@FeignClient(name = "codecoachai-resume", contextId = "taskResumeFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "taskResumeFeignClient")
 public interface ResumeFeignClient {
 
     /**

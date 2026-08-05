@@ -10,7 +10,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-file")
+@FeignClient(name = "codecoachai-core", contextId = "interviewFileFeignClient")
 public interface FileFeignClient {
 
     @GetMapping("/inner/files/{id}")

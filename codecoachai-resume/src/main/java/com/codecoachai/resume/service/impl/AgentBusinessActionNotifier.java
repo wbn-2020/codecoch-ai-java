@@ -7,7 +7,7 @@ import com.codecoachai.resume.feign.vo.AgentTaskVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-@Component
+@Component("resumeAgentBusinessActionNotifier")
 @RequiredArgsConstructor
 public class AgentBusinessActionNotifier {
 

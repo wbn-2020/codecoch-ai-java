@@ -499,6 +499,37 @@ def execute(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
             raise GuardError("publish requires --audit-dir for rollback evidence")
         audit_dir.mkdir(parents=True, exist_ok=True)
         set_private_permissions(audit_dir, directory=True)
+        if args.create_missing_only:
+            drifted: list[str] = []
+            for target in targets:
+                for path in files:
+                    local_bytes = path.read_bytes()
+                    try:
+                        local_bytes.decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise GuardError(f"Config is not valid UTF-8: {path}") from exc
+                    remote = client.fetch_exact_config(
+                        path.name,
+                        args.group,
+                        target.tenant,
+                    )
+                    entry = compare_entry(
+                        target,
+                        path,
+                        args.group,
+                        local_bytes,
+                        remote,
+                    )
+                    if entry["status"] == "DRIFT":
+                        drifted.append(
+                            f"{path.name}/{args.group}/{target.tenant!r}"
+                        )
+            if drifted:
+                raise GuardError(
+                    "create-missing-only preflight found drifted config; "
+                    "no writes were attempted: "
+                    + ", ".join(drifted)
+                )
 
     drift = False
     for target in targets:
@@ -526,6 +557,12 @@ def execute(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
                 raise GuardError(
                     f"{path.name}/{args.group}/{target.tenant!r} is missing; "
                     "use --allow-create-config only after confirming the target namespace"
+                )
+            if before is not None and args.create_missing_only:
+                entry["action"] = "BLOCKED"
+                raise GuardError(
+                    f"{path.name}/{args.group}/{target.tenant!r} has drifted; "
+                    "create-missing-only mode refuses to overwrite existing config"
                 )
 
             if before is not None and audit_dir is not None:
@@ -647,6 +684,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(publish)
     publish.add_argument("--confirm-write", action="store_true")
     publish.add_argument("--allow-create-config", action="store_true")
+    publish.add_argument(
+        "--create-missing-only",
+        action="store_true",
+        help="Create missing config but fail instead of updating drifted config",
+    )
     publish.add_argument("--verify-timeout", type=float, default=20.0)
     return parser
 

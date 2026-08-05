@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-resume")
+@FeignClient(name = "codecoachai-core", contextId = "interviewResumeFeignClient")
 public interface ResumeFeignClient {
 
     @GetMapping("/inner/resumes/{id}")

@@ -7,7 +7,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 
-@FeignClient(name = "codecoachai-resume", contextId = "resumeCareerInsightFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "resumeCareerInsightFeignClient")
 public interface ResumeCareerInsightFeignClient {
 
     @GetMapping("/inner/applications/users/{userId}/career-insight-summary")

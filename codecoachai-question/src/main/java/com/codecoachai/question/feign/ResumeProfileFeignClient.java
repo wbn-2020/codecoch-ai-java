@@ -6,7 +6,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
-@FeignClient(name = "codecoachai-resume")
+@FeignClient(name = "codecoachai-core", contextId = "questionResumeProfileFeignClient")
 public interface ResumeProfileFeignClient {
 
     @GetMapping("/inner/skill-profiles/{profileId}")

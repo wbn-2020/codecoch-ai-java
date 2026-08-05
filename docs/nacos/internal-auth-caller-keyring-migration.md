@@ -31,20 +31,13 @@ codecoachai:
       caller-key-rings:
         codecoachai-gateway:
           secrets:
-            - ${CODECOACHAI_CALLER_GATEWAY_KEY_CURRENT}
-            - ${CODECOACHAI_CALLER_GATEWAY_KEY_PREVIOUS:}
+            - ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}
           permissions:
             - GET /inner/auth/token-info
           forward-user-context: true
-        codecoachai-task:
-          secrets:
-            - ${CODECOACHAI_CALLER_TASK_KEY_CURRENT}
-          permissions:
-            - POST /inner/questions/reviews/save-drafts
-          forward-user-context: true
         codecoachai-ai:
           secrets:
-            - ${CODECOACHAI_CALLER_AI_KEY_CURRENT}
+            - ${CODECOACHAI_CALLER_AI_SIGNING_SECRET}
           permissions:
             - GET /inner/practice-records/users/{userId}/{recordId}/agent-evidence
           forward-user-context: true
@@ -63,13 +56,52 @@ outbound `secret`. Every secret must contain at least 32 bytes, be unique across
 callers, and differ from the legacy shared secret. Each caller also has explicit
 HTTP method/path permissions and a separate user-context forwarding permission.
 
+For the consolidated topology, the permitted call edges are:
+
+- Gateway -> Core, AI, and Search uses the three directional
+  `CODECOACHAI_GATEWAY_TO_*_SIGNING_SECRET` values.
+- Core -> AI uses `CODECOACHAI_CALLER_CORE_SIGNING_SECRET`.
+- Core -> Search uses the same Core outbound key only where the reviewed Search
+  ACL explicitly permits that edge.
+- The old standalone Task, User, Resume, Interview, Question, File, and System
+  caller identities are not deployed. Those modules are libraries inside Core or
+  AI and must not be registered as independent callers.
+
 Do not put real keys in Git. Resolve them from private Nacos configuration,
 environment variables, or the deployment secret manager.
 
+## Multipart Integrity Boundary
+
+The V2 signature binds normal request bodies to
+`X-Internal-Body-Sha256`. Selected multipart upload endpoints use the explicit
+`STREAMING-UNSIGNED-PAYLOAD` marker so Gateway and Feign can preserve streaming
+without consuming the Servlet multipart stream before `getParts()` runs. For
+those requests, HMAC authenticates the caller, method, path, query, timestamp,
+nonce, and forwarded user context, but it does not authenticate file bytes or
+multipart form fields.
+
+Treat this as a transport security dependency, not as end-to-end body signing:
+
+- Keep the exact-path multipart allowlist minimal; never use wildcard paths.
+- Bind application ports to loopback or an isolated container network and do
+  not admit untrusted workloads to that network.
+- Require authenticated TLS for Gateway-to-Core/AI traffic before any
+  cross-host, shared-network, or production deployment. Use mTLS when certificate
+  automation is available.
+- Do not replace the marker by reading multipart data in
+  `TrustedRequestVerifier`. Its current repeatable-body wrapper does not
+  implement Servlet `Part` replay and would break
+  `StandardServletMultipartResolver`.
+
+Implementing HMAC protection for raw multipart bytes is a separate project. It
+requires bounded Gateway disk spooling plus a multipart-aware downstream parser,
+disk quotas, cancellation cleanup, and embedded-container contract tests.
+
 For Docker Compose, store each caller's source key as
-`CODECOACHAI_CALLER_<SERVICE>_SIGNING_SECRET`. Map that value to
-`CODECOACHAI_INTERNAL_OUTBOUND_SECRET` in the caller container and to
-`CODECOACHAI_CALLER_<SERVICE>_KEY_CURRENT` in each receiver container.
+the matching directional variable. Map that value to
+`CODECOACHAI_INTERNAL_OUTBOUND_SECRET` in the caller container and reference
+the same variable in each receiver's Nacos ring. Do not introduce a second
+`*_KEY_CURRENT` alias.
 Do not use per-service names such as `CODECOACHAI_INTERNAL_AUTH_SECRET`.
 Spring relaxed environment binding interprets that exact name as
 `codecoachai.internal.auth.secret`, so an `env_file` can silently override the
@@ -96,3 +128,7 @@ Nacos property in every container.
 - An unmapped caller is rejected after legacy compatibility is disabled.
 - A valid caller key is rejected from unlisted method/path combinations.
 - Forwarded user context is accepted only when `forward-user-context` is enabled.
+- Non-multipart request body tampering is rejected by the receiver.
+- Every unsigned multipart route is reviewed as an exact path, and its
+  Gateway-to-service transport remains inside the approved isolated network or
+  uses authenticated TLS.

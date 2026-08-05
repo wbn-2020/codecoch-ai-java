@@ -127,6 +127,7 @@ scripts/nacos/nacos_config_guard.py
 - 同时比较原始内容、MD5 和 SHA-256。
 - 发布前保存目标 tenant 的旧内容与 manifest。
 - 已存在配置通过 Nacos 2.3.1 要求的 `casMd5` HTTP Header 执行 CAS，并发修改时停止，不盲目覆盖。
+- Nacos HTTP API 不提供原子 `create-if-absent`。`--create-missing-only` 只用于可丢弃的本地环境；共享测试环境必须关闭自动创建，并通过串行、受审配置发布流程预置 Data ID。
 - 发布后轮询同一 tenant，只有内容、MD5、SHA-256 全部一致才成功。
 - 远端缺失配置时默认阻断，必须显式使用 `--allow-create-config`。
 - 没有 DELETE API，也不会删除 namespace、配置或客户端 snapshot。
@@ -228,22 +229,27 @@ python3 scripts/nacos/nacos_config_guard.py publish \
 以下动作尚未在测试服务器执行；当前只完成了只读诊断和本地脚本实现。
 
 1. 把本次脚本作为独立发布工件上传到测试服务器 release 目录，不覆盖正在运行的 JAR。
-2. 先对 Gateway 和 Resume 执行 `audit --target mirror-public`，保存 manifest。
-3. 仅对 `codecoachai-gateway-dev.yml`、`codecoachai-resume-dev.yml` 执行一次 `publish --target mirror-public`。
-4. 确认两个 tenant 的所有项目均为 `VERIFIED`，重点检查 Gateway 和 Resume。
-5. 等待 Nacos push 后运行 `diagnose-nacos-runtime.sh`，确认 Server 两个分支和客户端 snapshot 哈希一致。
-6. 新 Gateway JAR 部署前，在容器配置中显式设置 `NACOS_NAMESPACE=public`；未设置时不得发布该 JAR。
-7. 若 Server 已一致但客户端 snapshot 仍旧，只重启受影响应用容器以重新订阅；不要手工删除 `/root/nacos/config`。
-8. 重新验证 Gateway 动态路由、`resume-claim-audits`、Resume 上传限制和健康状态。
+2. 先对两个历史 public tenant 执行 `audit --target mirror-public`，保存 manifest，作为迁移前证据。
+3. 创建一个专用、非 `public` 的测试 namespace，并记录其真实 namespace ID。
+4. 对六个当前 Data ID（common、redis、gateway、core、ai、search）执行
+   `publish --target namespace --namespace-id <id>`，保存 audit 目录并逐项确认 `VERIFIED`。
+5. 在初始化器和四个服务中统一设置 `NACOS_NAMESPACE=<id>`；空值或字面量 `public`
+   均不得发布。
+6. 启动前运行同一 namespace 的只读 `audit`，任何 `MISSING` 或 `DRIFT` 都必须阻断。
+7. 启动后运行 `diagnose-nacos-runtime.sh`，确认 Config、Discovery、gRPC push 和客户端
+   snapshot 都指向该专用 namespace。
+8. 重新验证 Gateway 动态路由、`resume-claim-audits`、上传限制和健康状态。
 9. 保留 audit 目录、容器日志时间点、配置哈希和回归结果，禁止记录凭据。
 
-测试服务器两个 tenant 之间只有 Gateway 与 Resume 存在内容漂移，因此当前修复应限定这两个 Data ID。仓库其余 YAML 与服务器可能存在 CRLF/LF 等原始字节差异；核心守卫会按原始内容、MD5、SHA-256 严格报告，未审核前不要借本次修复顺带全量重发。
+历史两个 public tenant 之间只有 Gateway 与 Resume 存在内容漂移，这一结论只用于迁移
+取证。专用 namespace 是新的独立运行目标，必须对六个当前 Data ID 逐项审核后导入。
+核心守卫会按原始内容、MD5、SHA-256 严格报告；未审核的差异不得自动覆盖。
 
-## 6. 长期治理
+## 6. Namespace 稳定契约
 
-短期 `mirror-public` 用于消除运行时影响，不代表应永久保留两个重名 namespace。
+`mirror-public` 只用于迁移前取证和必要的历史环境恢复，不再作为新四服务的运行目标。
 
-长期建议：
+稳定拓扑要求：
 
 1. 建立专用 namespace，例如 `codecoachai-test`，不要复用保留显示名 `public`。
 2. 所有服务统一通过进程级 `NACOS_NAMESPACE` 指向同一 namespace ID。
@@ -257,16 +263,18 @@ Gateway 启动配置已经把 Config 与 Discovery 的 namespace 都显式绑定
 ${NACOS_NAMESPACE}
 ```
 
-不使用 `${NACOS_NAMESPACE:}`，因为 Nacos Client 3.0.3 会继续把空值解析为字面量 `public`；也不把 `public` 写成代码默认值。新 Gateway JAR 部署前必须先完成目标 namespace 同步，并在容器中显式设置 `NACOS_NAMESPACE`。测试环境短期可以在同步两个 public 分支后显式设置为 `public`，长期应切换到专用 namespace ID。
+不使用 `${NACOS_NAMESPACE:}`，因为 Nacos Client 3.0.3 会继续把空值解析为字面量
+`public`；也不把 `public` 写成代码默认值。新四服务 JAR 部署前必须完成专用 namespace
+同步，并在所有容器中显式设置同一个 `NACOS_NAMESPACE`。
 
 ## 7. 验证记录
 
 本地验证不启动后端服务或真实 Nacos：
 
-- Python 守卫单元测试：6 个通过。
+- Python 守卫单元测试：9 个通过。
 - Python 语法编译：通过。
 - Bash 两个脚本 `bash -n`：通过。
 - PowerShell 导入脚本 AST 解析：通过。
 - PowerShell、Bash 导入包装器连接本地假 Nacos 的只读 smoke：通过。
-- Gateway 全量测试：17 个通过，其中 namespace 启动契约 3 个。
+- Gateway 全量测试：35 个通过，其中 namespace 启动契约 3 个。
 - 通过 SSH 内存端口转发对测试服执行守卫只读审计：内建 public 的 Gateway、Resume 均 `MATCH`；字面量 `public` 的两项均 `DRIFT`，返回码 `2`，与人工取证一致。
