@@ -33,6 +33,7 @@ OPERATIONS_RUNBOOK = REPO_ROOT / "docs" / "operations" / "release-engineering-ru
 NACOS_INITIALIZER = REPO_ROOT / "scripts" / "docker" / "nacos-config-init.sh"
 NACOS_START_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "start-nacos-dev.ps1"
 NACOS_IMPORT_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "import-nacos-config.sh"
+NACOS_IMPORT_PS_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "import-nacos-config.ps1"
 HEALTH_CHECK_PATH = REPO_ROOT / "scripts" / "release" / "check_health.py"
 HEALTH_CHECK_SPEC = importlib.util.spec_from_file_location(
     "release_health_check",
@@ -182,7 +183,7 @@ class ContainerContractTest(unittest.TestCase):
         import_script = NACOS_IMPORT_SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn(
-            'if [[ -z "${NACOS_DATA_IDS}" && "${NACOS_TARGET}" == "namespace" ]]',
+            'if [[ -z "${NACOS_DATA_IDS}" ]]',
             import_script,
         )
         self.assertIn('profile="${SPRING_PROFILES_ACTIVE:-dev}"', import_script)
@@ -193,6 +194,22 @@ class ContainerContractTest(unittest.TestCase):
             "codecoachai-core-${profile}.yml",
             "codecoachai-ai-${profile}.yml",
             "codecoachai-search-${profile}.yml",
+        ):
+            self.assertIn(data_id, import_script)
+
+    def test_powershell_nacos_import_uses_the_same_default_data_id_policy(self) -> None:
+        import_script = NACOS_IMPORT_PS_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("$env:NACOS_DATA_IDS", import_script)
+        self.assertIn("ForEach-Object { $_.Trim() }", import_script)
+        self.assertIn("if ($DataId.Count -eq 0)", import_script)
+        for data_id in (
+            "codecoachai-common-$profile.yml",
+            "codecoachai-redis-$profile.yml",
+            "codecoachai-gateway-$profile.yml",
+            "codecoachai-core-$profile.yml",
+            "codecoachai-ai-$profile.yml",
+            "codecoachai-search-$profile.yml",
         ):
             self.assertIn(data_id, import_script)
 

@@ -17,7 +17,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG_DIR="${ROOT_DIR}/docs/nacos"
 GUARD_SCRIPT="${ROOT_DIR}/scripts/nacos/nacos_config_guard.py"
 
-if [[ -z "${NACOS_DATA_IDS}" && "${NACOS_TARGET}" == "namespace" ]]; then
+if [[ -z "${NACOS_DATA_IDS}" ]]; then
   profile="${SPRING_PROFILES_ACTIVE:-dev}"
   if [[ ! "${profile}" =~ ^[A-Za-z0-9_-]+$ ]]; then
     echo "SPRING_PROFILES_ACTIVE must be one simple profile name." >&2
@@ -72,6 +72,8 @@ fi
 if [[ -n "${NACOS_DATA_IDS}" ]]; then
   IFS=',' read -r -a selected_data_ids <<< "${NACOS_DATA_IDS}"
   for data_id in "${selected_data_ids[@]}"; do
+    data_id="${data_id#"${data_id%%[![:space:]]*}"}"
+    data_id="${data_id%"${data_id##*[![:space:]]}"}"
     if [[ -n "${data_id}" ]]; then
       args+=(--data-id "${data_id}")
     fi
