@@ -207,6 +207,36 @@ class Phase2MavenContractTest(unittest.TestCase):
                 f"{coordinate} must exclude commons-logging",
             )
 
+    def test_phase2_surefire_reports_directory_is_cli_overridable(self) -> None:
+        properties = self.root.find("m:properties", NS)
+        self.assertIsNotNone(properties)
+        reports_property = properties.find(
+            "m:phase2.surefire.reportsDirectory",
+            NS,
+        )
+        self.assertIsNotNone(reports_property)
+        self.assertEqual(
+            "${project.build.directory}/surefire-reports",
+            reports_property.text.strip(),
+        )
+
+        surefire_plugins = [
+            plugin
+            for plugin in self.root.findall("m:build/m:plugins/m:plugin", NS)
+            if dependency_coordinates(plugin)
+            == ("org.apache.maven.plugins", "maven-surefire-plugin")
+        ]
+        self.assertEqual(1, len(surefire_plugins))
+        reports_directory = surefire_plugins[0].find(
+            "m:configuration/m:reportsDirectory",
+            NS,
+        )
+        self.assertIsNotNone(reports_directory)
+        self.assertEqual(
+            "${phase2.surefire.reportsDirectory}",
+            reports_directory.text.strip(),
+        )
+
     def test_enforcer_profile_has_only_reviewed_exceptions(self) -> None:
         profiles = self.root.findall("m:profiles/m:profile", NS)
         profile = next(

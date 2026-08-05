@@ -65,6 +65,7 @@
         <jackson-bom.version>2.21.5</jackson-bom.version>
         <netty.version>4.1.135.Final</netty.version>
         <commons-fileupload.version>1.6.0</commons-fileupload.version>
+        <phase2.surefire.reportsDirectory>${project.build.directory}/surefire-reports</phase2.surefire.reportsDirectory>
     </properties>
 
     <dependencyManagement>
@@ -264,6 +265,15 @@
     </dependencies>
 
     <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <reportsDirectory>${phase2.surefire.reportsDirectory}</reportsDirectory>
+                </configuration>
+            </plugin>
+        </plugins>
         <pluginManagement>
             <plugins>
                 <!-- Flyway Maven 插件：手动执行 mvn flyway:migrate 时使用 -->
