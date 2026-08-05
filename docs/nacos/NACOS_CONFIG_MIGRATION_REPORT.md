@@ -1,5 +1,14 @@
 # Nacos Config Migration Report
 
+> Historical V1 report. It records the pre-convergence eight-service local runtime and
+> the original ten-Data-ID import. It is not the current second-stage configuration
+> contract and must not be used as a deployment or import instruction.
+>
+> The current second-stage contract uses only six effective Data IDs:
+> `common`, `redis`, `gateway`, `core`, `ai`, and `search`. The legacy Auth/User/System/
+> File/Question/Resume/Interview/Task Data IDs remain audit or rollback material until
+> the test-environment migration is explicitly closed.
+
 ## 1. Migration Goal
 
 Move CodeCoachAI V1 local development runtime configuration from each service `application.yml` into Nacos Config Center while preserving service names, API paths, Gateway route boundaries, and V1 feature scope.

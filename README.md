@@ -124,7 +124,11 @@ V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工�
 - Docker Compose、Nacos 配置、基础设施部署脚本。
 - AI workflow / traceId / ai_call_log 等 AI 调用治理基础。
 
-## 当前已实现的主要后端模块
+## 当前代码模块（第二阶段迁移前过渡态）
+
+> `dev-fb-260805` 当前仍保留旧业务 Maven 目录，第二阶段尚未执行源码物理迁移。
+> 下表描述的是当前代码边界，不等同于最终部署服务边界。源码收敛完成后，Auth、User、
+> System、File、Question、Resume、Interview、Task 将作为业务包进入 Core。
 
 | 模块 | 说明 |
 |---|---|
@@ -141,13 +145,25 @@ V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工�
 | `codecoachai-system` | 系统服务，负责系统配置、日志审计、后台治理能力。 |
 | `codecoachai-common` | 公共模块，包含 core、web、security、mybatis、redis、feign、log、ai、oss、mq 等通用能力。 |
 
+## 目标部署拓扑（第二阶段完成后）
+
+| 服务 | 责任 |
+|---|---|
+| `codecoachai-gateway` | 统一入口、鉴权、Header 透传和路由转发。 |
+| `codecoachai-core` | Auth、User、System、File、Question、Resume、Interview、Task 业务包及其测试。 |
+| `codecoachai-ai` | AI 模型调用和 AI 工程能力。 |
+| `codecoachai-search` | Elasticsearch 索引、搜索和索引同步。 |
+
+源码 Maven 模块数量和部署服务数量是两个不同指标；阶段二主要收敛前者，
+不改变上述运行时四服务拓扑。
+
 ## 技术栈
 
 | 类型 | 技术 |
 |---|---|
 | JDK | Java 17 |
-| 基础框架 | Spring Boot 3.2.x |
-| 微服务 | Spring Cloud 2023.x、Spring Cloud Alibaba 2023.x |
+| 基础框架 | Spring Boot 3.5.16 |
+| 微服务 | Spring Cloud 2025.0.3、Spring Cloud Alibaba 2025.0.0.0 |
 | 网关 | Spring Cloud Gateway |
 | 注册与配置 | Nacos |
 | 服务调用 | OpenFeign |
@@ -162,7 +178,7 @@ V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工�
 | AI 调用 | OpenAI Compatible Client，当前主要面向 DeepSeek 兼容接口 |
 | 部署 | Docker Compose、Nacos 配置导入脚本 |
 
-## 目录结构
+## 目录结构（第二阶段迁移前物理目录）
 
 ```text
 CodeCoachAI-java

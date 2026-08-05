@@ -1,5 +1,10 @@
 # Vector RAG And Dedupe Runbook
 
+> This runbook contains historical pre-convergence service examples. Commands that
+> reference standalone Auth/User/Question processes are non-executable migration
+> evidence only. For the current second-stage topology and test-environment sequence,
+> use the second-stage acceptance template under `文档相关/架构调整/阶段0基线`.
+
 This runbook validates the Qdrant-backed question dedupe and personal knowledge RAG flow in a local development environment. It is a runtime/manual-confirmation guide, not a static review checklist.
 
 During documentation-only or static review work, do not execute the Docker, Maven, service startup, frontend, migration, rebuild, retry, or HTTP calls below.
