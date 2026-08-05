@@ -32,6 +32,7 @@ NACOS_STARTUP_GUIDE = REPO_ROOT / "docs" / "nacos" / "CodeCoachAI_本地Nacos启
 OPERATIONS_RUNBOOK = REPO_ROOT / "docs" / "operations" / "release-engineering-runbook.md"
 NACOS_INITIALIZER = REPO_ROOT / "scripts" / "docker" / "nacos-config-init.sh"
 NACOS_START_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "start-nacos-dev.ps1"
+NACOS_IMPORT_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "import-nacos-config.sh"
 HEALTH_CHECK_PATH = REPO_ROOT / "scripts" / "release" / "check_health.py"
 HEALTH_CHECK_SPEC = importlib.util.spec_from_file_location(
     "release_health_check",
@@ -176,6 +177,24 @@ class ContainerContractTest(unittest.TestCase):
         self.assertIn('Namespace -or $Namespace -eq "public"', start_script)
         self.assertIn("-Namespace $Namespace", start_script)
         self.assertIn("-Target $Target", start_script)
+
+    def test_bash_nacos_import_defaults_to_current_service_configs(self) -> None:
+        import_script = NACOS_IMPORT_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if [[ -z "${NACOS_DATA_IDS}" && "${NACOS_TARGET}" == "namespace" ]]',
+            import_script,
+        )
+        self.assertIn('profile="${SPRING_PROFILES_ACTIVE:-dev}"', import_script)
+        for data_id in (
+            "codecoachai-common-${profile}.yml",
+            "codecoachai-redis-${profile}.yml",
+            "codecoachai-gateway-${profile}.yml",
+            "codecoachai-core-${profile}.yml",
+            "codecoachai-ai-${profile}.yml",
+            "codecoachai-search-${profile}.yml",
+        ):
+            self.assertIn(data_id, import_script)
 
     def test_entrypoint_exits_nonzero_when_spring_never_becomes_healthy(self) -> None:
         shell = shutil.which("sh")

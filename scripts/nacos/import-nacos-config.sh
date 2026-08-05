@@ -17,6 +17,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CONFIG_DIR="${ROOT_DIR}/docs/nacos"
 GUARD_SCRIPT="${ROOT_DIR}/scripts/nacos/nacos_config_guard.py"
 
+if [[ -z "${NACOS_DATA_IDS}" && "${NACOS_TARGET}" == "namespace" ]]; then
+  profile="${SPRING_PROFILES_ACTIVE:-dev}"
+  if [[ ! "${profile}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    echo "SPRING_PROFILES_ACTIVE must be one simple profile name." >&2
+    exit 1
+  fi
+  NACOS_DATA_IDS="codecoachai-common-${profile}.yml,codecoachai-redis-${profile}.yml,codecoachai-gateway-${profile}.yml,codecoachai-core-${profile}.yml,codecoachai-ai-${profile}.yml,codecoachai-search-${profile}.yml"
+fi
+
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [[ -z "${PYTHON_BIN}" ]]; then
   for candidate in python3 python; do
