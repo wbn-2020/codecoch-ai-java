@@ -9,10 +9,10 @@ import org.junit.jupiter.api.Test;
 
 class ResumeNacosConfigContractTest {
 
-    private static final String DOCS_CONFIG = "docs/nacos/codecoachai-resume-dev.yml";
-    private static final String APPLICATION_CONFIG = "codecoachai-resume/src/main/resources/application.yml";
+    private static final String DOCS_CONFIG = "docs/nacos/codecoachai-core-dev.yml";
+    private static final String APPLICATION_CONFIG = "codecoachai-core/src/main/resources/application.yml";
     private static final String STARTUP_ONLY_NOTICE =
-            "Upload admission concurrency and wait settings apply at resume service startup; restart is required after changes.";
+            "Upload admission concurrency and wait settings apply at Core startup; restart is required after changes.";
 
     @Test
     void uploadAdmissionConfigsExplainThatChangesRequireRestart() throws IOException {

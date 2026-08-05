@@ -30,14 +30,14 @@ class OpenFeignNacosConfigContractTest {
     }
 
     @Test
-    void interviewConfigBindsItsLongReadTimeoutFromCurrentPrefix() throws IOException {
-        StandardEnvironment environment = environment("docs/nacos/codecoachai-interview-dev.yml");
+    void coreConfigBindsInterviewLongReadTimeoutFromCurrentPrefix() throws IOException {
+        StandardEnvironment environment = environment("docs/nacos/codecoachai-core-dev.yml");
         FeignClientProperties properties = bind(environment);
 
-        FeignClientProperties.FeignClientConfiguration defaults =
-                properties.getConfig().get("default");
-        assertEquals(3000, defaults.getConnectTimeout());
-        assertEquals(40000, defaults.getReadTimeout());
+        FeignClientProperties.FeignClientConfiguration interview =
+                properties.getConfig().get("interviewAiFeignClient");
+        assertEquals(3000, interview.getConnectTimeout());
+        assertEquals(40000, interview.getReadTimeout());
         assertFalse(environment.containsProperty("feign.client.config.default.readTimeout"));
     }
 

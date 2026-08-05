@@ -19,13 +19,18 @@ import org.springframework.core.env.StandardEnvironment;
 
 class V7FeatureConfigContractTest {
 
+    private static final String CORE_APPLICATION_CONFIG =
+            "codecoachai-core/src/main/resources/application.yml";
+    private static final String CORE_NACOS_CONFIG = "docs/nacos/codecoachai-core-dev.yml";
+
     @Test
     void localDefaultsDoNotShadowNacosV7Flags() throws IOException {
+        Path root = repositoryRoot();
         String applicationYaml = Files.readString(
-                Path.of("src/main/resources/application.yml"),
+                root.resolve(CORE_APPLICATION_CONFIG),
                 StandardCharsets.UTF_8);
         String nacosYaml = Files.readString(
-                repositoryRoot().resolve("docs/nacos/codecoachai-resume-dev.yml"),
+                root.resolve(CORE_NACOS_CONFIG),
                 StandardCharsets.UTF_8);
 
         assertFalse(applicationYaml.contains("CODECOACHAI_V7_"));
@@ -38,8 +43,7 @@ class V7FeatureConfigContractTest {
 
     @Test
     void authoritativeNacosYamlBindsEveryResumeV7Capability() throws IOException {
-        V7FeatureGate gate = bindNacosGate(
-                repositoryRoot().resolve("docs/nacos/codecoachai-resume-dev.yml"));
+        V7FeatureGate gate = bindNacosGate(repositoryRoot().resolve(CORE_NACOS_CONFIG));
 
         assertDoesNotThrow(gate::requireCampaignWorkspace);
         assertDoesNotThrow(gate::requireRealInterview);
@@ -63,7 +67,7 @@ class V7FeatureConfigContractTest {
 
     private static Path repositoryRoot() {
         Path current = Path.of("").toAbsolutePath();
-        while (current != null && !Files.exists(current.resolve("docs/nacos/codecoachai-resume-dev.yml"))) {
+        while (current != null && !Files.exists(current.resolve(CORE_NACOS_CONFIG))) {
             current = current.getParent();
         }
         if (current == null) {
