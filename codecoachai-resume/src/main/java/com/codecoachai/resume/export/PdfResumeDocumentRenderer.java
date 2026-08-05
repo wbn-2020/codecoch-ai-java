@@ -15,6 +15,7 @@ import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
+import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -78,7 +79,7 @@ public class PdfResumeDocumentRenderer implements ResumeDocumentRenderer {
                 }
             }
         }
-        return PDType1Font.HELVETICA;
+        return new PDType1Font(Standard14Fonts.FontName.HELVETICA);
     }
 
     private static final class PageWriter implements AutoCloseable {

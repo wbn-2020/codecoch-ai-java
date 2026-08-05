@@ -12,6 +12,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
@@ -55,7 +56,7 @@ class ResumeDocumentRendererTest {
             new PdfResumeDocumentRenderer(properties).render(resume, limited);
         }
 
-        try (PDDocument document = PDDocument.load(output.toFile())) {
+        try (PDDocument document = Loader.loadPDF(output.toFile())) {
             PDFTextStripper stripper = new PDFTextStripper();
             String text = stripper.getText(document);
             assertTrue(text.contains("Alex Chen"));

@@ -3,10 +3,9 @@ package com.codecoachai.resume.service.extractor;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.resume.config.ResumeTextExtractProperties;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import lombok.RequiredArgsConstructor;
-import org.apache.pdfbox.io.MemoryUsageSetting;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.stereotype.Component;
@@ -25,9 +24,7 @@ public class PdfResumeTextExtractor extends AbstractResumeTextExtractor {
     @Override
     public String extract(byte[] content) {
         requireContent(content);
-        try (PDDocument document = PDDocument.load(
-                new ByteArrayInputStream(content),
-                MemoryUsageSetting.setupMixed(16L * 1024L * 1024L))) {
+        try (PDDocument document = Loader.loadPDF(content)) {
             int maxPages = properties.getMaxPdfPages() <= 0 ? 10 : properties.getMaxPdfPages();
             PDFTextStripper stripper = new PDFTextStripper();
             stripper.setEndPage(Math.min(document.getNumberOfPages(), maxPages));
