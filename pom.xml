@@ -40,9 +40,14 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <spring-cloud.version>2025.0.3</spring-cloud.version>
         <spring-cloud-alibaba.version>2025.0.0.0</spring-cloud-alibaba.version>
+        <maven-enforcer.version>3.6.3</maven-enforcer.version>
+        <maven-dependency.version>3.8.1</maven-dependency.version>
         <mybatis-plus.version>3.5.12</mybatis-plus.version>
         <sa-token.version>1.44.0</sa-token.version>
         <knife4j.version>4.5.0</knife4j.version>
+        <swagger.version>2.2.19</swagger.version>
+        <commons-io.version>2.18.0</commons-io.version>
+        <bouncycastle.version>1.80.2</bouncycastle.version>
         <!-- V3 工程化新增依赖版本 -->
         <aliyun-oss.version>3.17.4</aliyun-oss.version>
         <aliyun-sts.version>3.1.2</aliyun-sts.version>
@@ -131,8 +136,28 @@
             </dependency>
             <dependency>
                 <groupId>org.apache.poi</groupId>
+                <artifactId>poi</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
                 <artifactId>poi-scratchpad</artifactId>
                 <version>${poi.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>commons-io</groupId>
+                <artifactId>commons-io</artifactId>
+                <version>${commons-io.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations-jakarta</artifactId>
+                <version>${swagger.version}</version>
             </dependency>
             <dependency>
                 <groupId>commons-fileupload</groupId>
@@ -143,28 +168,58 @@
                 <groupId>org.apache.pdfbox</groupId>
                 <artifactId>pdfbox</artifactId>
                 <version>${pdfbox.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <!-- V3：阿里云 OSS / STS -->
             <dependency>
                 <groupId>com.aliyun.oss</groupId>
                 <artifactId>aliyun-sdk-oss</artifactId>
                 <version>${aliyun-oss.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>com.aliyun</groupId>
                 <artifactId>aliyun-java-sdk-sts</artifactId>
                 <version>${aliyun-sts.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>com.aliyun</groupId>
                 <artifactId>aliyun-java-sdk-core</artifactId>
                 <version>4.7.3</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <!-- V3：RocketMQ -->
             <dependency>
                 <groupId>org.apache.rocketmq</groupId>
                 <artifactId>rocketmq-spring-boot-starter</artifactId>
                 <version>${rocketmq-spring.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>commons-logging</groupId>
+                        <artifactId>commons-logging</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <!-- V3：Redisson 分布式锁 -->
             <dependency>
@@ -245,8 +300,78 @@
                         </dependency>
                     </dependencies>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-enforcer-plugin</artifactId>
+                    <version>${maven-enforcer.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency.version}</version>
+                </plugin>
             </plugins>
         </pluginManagement>
     </build>
+
+    <profiles>
+        <profile>
+            <id>phase2-dependency-gates</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>phase2-dependency-convergence</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <fail>true</fail>
+                                    <rules>
+                                        <!--
+                                          The two Aliyun SDKs currently resolve
+                                          different HttpClient metadata. Preserve
+                                          the existing runtime graph until the OSS
+                                          SDKs are upgraded in a separately tested
+                                          change. RocketMQ
+                                          2.3.0 also contains internally divergent
+                                          metadata; its runtime compatibility is a
+                                          separate test-environment gate.
+                                        -->
+                                        <dependencyConvergence>
+                                            <excludes>
+                                                <exclude>org.apache.httpcomponents:httpclient</exclude>
+                                                <exclude>com.alibaba.fastjson2:fastjson2</exclude>
+                                                <exclude>com.squareup.okio:okio-jvm</exclude>
+                                                <exclude>com.google.errorprone:error_prone_annotations</exclude>
+                                            </excludes>
+                                        </dependencyConvergence>
+                                        <!--
+                                          Boot 3.5.16 manages SnakeYAML 2.4 while
+                                          Redisson 3.27.2 metadata requests 2.5.
+                                          Keep the single Boot-managed version.
+                                        -->
+                                        <requireUpperBoundDeps>
+                                            <excludes>
+                                                <exclude>org.yaml:snakeyaml</exclude>
+                                                <exclude>org.apache.httpcomponents:httpclient</exclude>
+                                                <exclude>com.alibaba.fastjson2:fastjson2</exclude>
+                                                <exclude>com.squareup.okio:okio-jvm</exclude>
+                                                <exclude>com.google.errorprone:error_prone_annotations</exclude>
+                                            </excludes>
+                                        </requireUpperBoundDeps>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>
