@@ -124,26 +124,19 @@ V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工�
 - Docker Compose、Nacos 配置、基础设施部署脚本。
 - AI workflow / traceId / ai_call_log 等 AI 调用治理基础。
 
-## 当前代码模块（第二阶段迁移前过渡态）
+## 当前代码模块
 
-> `dev-fb-260805` 当前仍保留旧业务 Maven 目录，第二阶段尚未执行源码物理迁移。
-> 下表描述的是当前代码边界，不等同于最终部署服务边界。源码收敛完成后，Auth、User、
-> System、File、Question、Resume、Interview、Task 将作为业务包进入 Core。
+> 第二阶段源码收敛已完成工作区迁移：Auth、User、System、File、Question、Resume、
+> Interview、Task 业务包及其测试已进入 Core。旧业务目录不再属于 Maven Reactor；
+> 旧目录下若仍有本机空目录或 `target` 构建产物，不属于源码交付内容。
 
 | 模块 | 说明 |
 |---|---|
 | `codecoachai-gateway` | 网关服务，负责统一入口、鉴权、Header 透传、内部接口保护、路由转发。 |
-| `codecoachai-auth` | 认证服务，负责注册、登录、退出、Token、当前用户等能力。 |
-| `codecoachai-user` | 用户服务，负责用户资料、角色、权限、用户管理、Dashboard 聚合等。 |
-| `codecoachai-question` | 题库服务，负责题目、分类、标签、问题组、刷题、收藏、错题、AI 题目审核、去重等。 |
-| `codecoachai-resume` | 简历服务，负责简历 CRUD、项目经历、简历上传解析、AI 优化、目标岗位、简历-JD 匹配、能力画像等。 |
-| `codecoachai-interview` | 面试服务，负责模拟面试、面试状态机、答题、动态追问、报告、学习计划等。 |
+| `codecoachai-core` | Core 业务服务，包含 Auth、User、System、File、Question、Resume、Interview、Task 业务包及其测试。 |
 | `codecoachai-ai` | AI 服务，负责模型调用、Prompt 渲染、AI 日志、简历解析、简历优化、题目生成、JD 解析、匹配分析等。 |
-| `codecoachai-file` | 文件服务，负责文件上传、文件记录、存储 Provider、文件元数据管理。 |
-| `codecoachai-task` | 任务服务，负责异步任务、通知、死信、MQ 消费等工程化能力。 |
 | `codecoachai-search` | 搜索服务，负责 Elasticsearch 索引、搜索、索引同步和管理。 |
-| `codecoachai-system` | 系统服务，负责系统配置、日志审计、后台治理能力。 |
-| `codecoachai-common` | 公共模块，包含 core、web、security、mybatis、redis、feign、log、ai、oss、mq 等通用能力。 |
+| `codecoachai-common` | 公共 Maven 模块，包含 core、web、security、mybatis、redis、feign、log、ai、oss、mq 等通用能力。 |
 
 ## 目标部署拓扑（第二阶段完成后）
 
@@ -178,7 +171,7 @@ V3 重点把 V2 的能力串成更完整的求职训练闭环，同时补齐工�
 | AI 调用 | OpenAI Compatible Client，当前主要面向 DeepSeek 兼容接口 |
 | 部署 | Docker Compose、Nacos 配置导入脚本 |
 
-## 目录结构（第二阶段迁移前物理目录）
+## 目录结构
 
 ```text
 CodeCoachAI-java
@@ -193,16 +186,9 @@ CodeCoachAI-java
 │   ├── common-oss                      # OSS 存储能力
 │   └── common-mq                       # MQ 消息封装
 ├── codecoachai-gateway                 # API 网关
-├── codecoachai-auth                    # 认证服务
-├── codecoachai-user                    # 用户服务
-├── codecoachai-question                # 题库服务
-├── codecoachai-resume                  # 简历、岗位、匹配、画像服务
-├── codecoachai-interview               # 面试和学习计划服务
+├── codecoachai-core                    # 合并后的业务服务
 ├── codecoachai-ai                      # AI 调用、Prompt、AI 日志服务
-├── codecoachai-file                    # 文件服务
-├── codecoachai-task                    # 异步任务和通知服务
 ├── codecoachai-search                  # 搜索服务
-├── codecoachai-system                  # 系统配置和审计服务
 ├── docs                                # 后端相关文档，含官方 Nacos 配置源 docs/nacos
 ├── scripts                             # 辅助脚本
 ├── sql                                 # 初始化 SQL / migration 脚本
@@ -254,11 +240,11 @@ docs/nacos/
 
 `docs/nacos/` 是唯一的 Nacos 配置源。历史上曾存在 `config/nacos/` 遗留模板目录（残缺子集且与官方源漂移），已于 2026-07-25 删除，避免误读误改。
 
-dev 验收口径使用真实阿里云 OSS：`codecoachai.file.storage.provider=ALIYUN_OSS`，`codecoachai.oss.enabled=true`。启动文件服务前请在环境变量或私有 Nacos 配置中提供 `OSS_BUCKET`、`OSS_AK`、`OSS_SK`、`OSS_STS_ROLE_ARN` 等凭证；缺失时应用会在启动期明确失败，而不是等上传时才报错。
+dev 验收口径使用真实阿里云 OSS：`codecoachai.file.storage.provider=ALIYUN_OSS`，`codecoachai.oss.enabled=true`。启动 Core 服务的文件能力前请在环境变量或私有 Nacos 配置中提供 `OSS_BUCKET`、`OSS_AK`、`OSS_SK`、`OSS_STS_ROLE_ARN` 等凭证；缺失时应用会在启动期明确失败，而不是等上传时才报错。
 
 ### 后端服务运行边界
 
-后端服务需要在明确的本地联调、演示或发布验收环境中按模块启动，不作为阶段五静态收口动作。启动前应先确认：
+后端服务需要在明确的本地联调、演示或发布验收环境中按部署服务启动，不作为阶段五静态收口动作。启动前应先确认：
 
 - Nacos 配置已经导入到正确 namespace。
 - MySQL、Redis 等依赖指向可丢弃或受控的开发/演示环境。

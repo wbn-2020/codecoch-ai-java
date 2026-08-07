@@ -3,16 +3,8 @@ package com.codecoachai.core;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.codecoachai.auth.AuthApplication;
-import com.codecoachai.file.FileApplication;
 import com.codecoachai.interview.feign.AiFeignClient;
-import com.codecoachai.interview.InterviewApplication;
-import com.codecoachai.question.QuestionApplication;
 import com.codecoachai.question.feign.AiQuestionFeignClient;
-import com.codecoachai.resume.ResumeApplication;
-import com.codecoachai.system.SystemApplication;
-import com.codecoachai.task.TaskApplication;
-import com.codecoachai.user.UserApplication;
 import java.lang.annotation.Annotation;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -26,7 +18,7 @@ import org.springframework.context.annotation.ComponentScan;
 class CoreApplicationContractTest {
 
     @Test
-    void excludesEveryLegacyBootApplicationAndHealthController() {
+    void excludesOnlyTheCoreBootstrapClassFromComponentScan() {
         ComponentScan componentScan = CoreApplication.class.getAnnotation(ComponentScan.class);
 
         assertEquals(Set.of("com.codecoachai"), Set.of(componentScan.basePackages()));
@@ -34,22 +26,7 @@ class CoreApplicationContractTest {
         Set<Class<?>> excludedTypes = CoreApplicationContractSupport.componentScanExcludedTypes();
 
         assertTrue(excludedTypes.containsAll(Set.of(
-                CoreApplication.class,
-                AuthApplication.class,
-                UserApplication.class,
-                SystemApplication.class,
-                FileApplication.class,
-                ResumeApplication.class,
-                QuestionApplication.class,
-                InterviewApplication.class,
-                TaskApplication.class,
-                com.codecoachai.auth.controller.HealthController.class,
-                com.codecoachai.user.controller.HealthController.class,
-                com.codecoachai.system.controller.HealthController.class,
-                com.codecoachai.file.controller.HealthController.class,
-                com.codecoachai.resume.controller.HealthController.class,
-                com.codecoachai.question.controller.HealthController.class,
-                com.codecoachai.interview.controller.HealthController.class)));
+                CoreApplication.class)));
     }
 
     @Test

@@ -16,15 +16,14 @@ class CoreDeploymentConfigContractTest {
     @Test
     void interviewAiTimeoutMatchesFeignContextId() throws IOException {
         Map<String, Object> config = yaml("docs/nacos/codecoachai-core-dev.yml");
-        Map<String, Object> spring = mapping(config.get("spring"));
-        Map<String, Object> cloud = mapping(spring.get("cloud"));
-        Map<String, Object> openfeign = mapping(cloud.get("openfeign"));
-        Map<String, Object> client = mapping(openfeign.get("client"));
-        Map<String, Object> clients = mapping(client.get("config"));
-        Map<String, Object> interviewAi = mapping(clients.get("interviewAiFeignClient"));
+        Map<String, Object> clients = openFeignClients(config);
+        assertTimeout(clients, "interviewAiFeignClient");
+    }
 
-        assertEquals(3000, interviewAi.get("connectTimeout"));
-        assertEquals(40000, interviewAi.get("readTimeout"));
+    @Test
+    void interviewAgentBusinessActionTimeoutMatchesFeignContextId() throws IOException {
+        Map<String, Object> config = yaml("docs/nacos/codecoachai-core-dev.yml");
+        assertTimeout(openFeignClients(config), "interviewAgentBusinessActionFeignClient");
     }
 
     @Test
@@ -74,6 +73,20 @@ class CoreDeploymentConfigContractTest {
             candidate = candidate.getParent();
         }
         throw new IllegalStateException("Cannot locate backend repository root");
+    }
+
+    private static Map<String, Object> openFeignClients(Map<String, Object> config) {
+        Map<String, Object> spring = mapping(config.get("spring"));
+        Map<String, Object> cloud = mapping(spring.get("cloud"));
+        Map<String, Object> openfeign = mapping(cloud.get("openfeign"));
+        Map<String, Object> client = mapping(openfeign.get("client"));
+        return mapping(client.get("config"));
+    }
+
+    private static void assertTimeout(Map<String, Object> clients, String contextId) {
+        Map<String, Object> client = mapping(clients.get(contextId));
+        assertEquals(3000, client.get("connectTimeout"));
+        assertEquals(40000, client.get("readTimeout"));
     }
 
     @SuppressWarnings("unchecked")

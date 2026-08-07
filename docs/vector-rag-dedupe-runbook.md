@@ -96,16 +96,15 @@ Qdrant point ids must be valid UUIDs or unsigned integers. The application deriv
 
 ## Service Startup
 
-For focused validation, start at least these backend services:
+For focused validation, start the four current deployable backend services:
 
 运行期/人工确认，静态审查勿执行：
 
 ```text
 勿执行示例：mvn -pl codecoachai-gateway spring-boot:run
-勿执行示例：mvn -pl codecoachai-auth spring-boot:run
-勿执行示例：mvn -pl codecoachai-user spring-boot:run
-勿执行示例：mvn -pl codecoachai-question spring-boot:run
+勿执行示例：mvn -pl codecoachai-core spring-boot:run
 勿执行示例：mvn -pl codecoachai-ai spring-boot:run
+勿执行示例：mvn -pl codecoachai-search spring-boot:run
 ```
 
 Start the frontend from `<LOCAL_WORKSPACE>\CodeCoachAI-vue` when you need to validate the admin buttons:

@@ -679,6 +679,31 @@ class ReleaseDeploymentContractTest(unittest.TestCase):
             self.assertEqual("8MB", multipart["max-file-size"])
             self.assertEqual("9MB", multipart["max-request-size"])
 
+        for module in ("gateway", "core", "ai", "search"):
+            application = yaml.safe_load(
+                (
+                    REPO_ROOT
+                    / f"codecoachai-{module}"
+                    / "src"
+                    / "main"
+                    / "resources"
+                    / "application.yml"
+                ).read_text(encoding="utf-8")
+            )
+            imports = application["spring"]["config"]["import"]
+            self.assertTrue(
+                any("codecoachai-common-" in item for item in imports),
+                f"{module} must import the shared Nacos config",
+            )
+            self.assertTrue(
+                any("codecoachai-redis-" in item for item in imports),
+                f"{module} must import the shared Redis Nacos config",
+            )
+            self.assertTrue(
+                any(f"codecoachai-{module}-" in item for item in imports),
+                f"{module} must import its service-specific Nacos config",
+            )
+
 
 class WorkflowContractTest(unittest.TestCase):
     def test_ci_covers_real_branches_and_quality_commands(self) -> None:

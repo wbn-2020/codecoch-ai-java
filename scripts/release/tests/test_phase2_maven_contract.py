@@ -6,6 +6,32 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ROOT_POM = REPO_ROOT / "pom.xml"
 CORE_POM = REPO_ROOT / "codecoachai-core" / "pom.xml"
+TRUSTED_SERVICE_NAMES = (
+    REPO_ROOT
+    / "codecoachai-common"
+    / "common-security"
+    / "src"
+    / "main"
+    / "java"
+    / "com"
+    / "codecoachai"
+    / "common"
+    / "security"
+    / "internal"
+    / "TrustedServiceNames.java"
+)
+INNER_RESUME_ANALYSIS_CONTROLLER = (
+    REPO_ROOT
+    / "codecoachai-core"
+    / "src"
+    / "main"
+    / "java"
+    / "com"
+    / "codecoachai"
+    / "resume"
+    / "controller"
+    / "InnerResumeAnalysisController.java"
+)
 NS = {"m": "http://maven.apache.org/POM/4.0.0"}
 
 FINAL_REACTOR_MODULES = {
@@ -106,11 +132,10 @@ class Phase2MavenContractTest(unittest.TestCase):
             if element.text
         ]
         self.assertEqual(len(modules), len(set(modules)), "root modules must be unique")
-        self.assertTrue(FINAL_REACTOR_MODULES.issubset(modules))
         self.assertEqual(
+            FINAL_REACTOR_MODULES,
             set(modules),
-            FINAL_REACTOR_MODULES | (set(modules) & LEGACY_MODULES),
-            "phase two permits only final modules plus not-yet-migrated legacy modules",
+            "the completed four-service topology must have an exact five-module reactor",
         )
 
         core_dependencies = self.core.findall("m:dependencies/m:dependency", NS)
@@ -121,11 +146,15 @@ class Phase2MavenContractTest(unittest.TestCase):
             )
             if group_id == "com.codecoachai" and artifact_id in LEGACY_MODULES
         }
-        self.assertEqual(
-            set(modules) & LEGACY_MODULES,
+        self.assertFalse(
             legacy_artifacts,
-            "legacy root modules and Core transitional artifact dependencies must match",
+            "Core must not retain dependencies on removed legacy business artifacts",
         )
+        for module in LEGACY_MODULES:
+            self.assertFalse(
+                (REPO_ROOT / module / "pom.xml").exists(),
+                f"removed legacy module {module} must not remain a Maven project",
+            )
 
     def test_core_target_direct_dependencies_are_frozen(self) -> None:
         dependencies = self.core.findall("m:dependencies/m:dependency", NS)
@@ -285,6 +314,31 @@ class Phase2MavenContractTest(unittest.TestCase):
         }
         self.assertEqual(CONVERGENCE_EXCLUDES, convergence_excludes)
         self.assertEqual(UPPER_BOUND_EXCLUDES, upper_bound_excludes)
+
+    def test_current_service_identity_contract_excludes_removed_services(self) -> None:
+        trusted_names = TRUSTED_SERVICE_NAMES.read_text(encoding="utf-8")
+        for service in (
+            "codecoachai-gateway",
+            "codecoachai-core",
+            "codecoachai-ai",
+            "codecoachai-search",
+        ):
+            self.assertIn(f'"{service}"', trusted_names)
+        for service in (
+            "codecoachai-auth",
+            "codecoachai-user",
+            "codecoachai-question",
+            "codecoachai-resume",
+            "codecoachai-file",
+            "codecoachai-interview",
+            "codecoachai-system",
+            "codecoachai-task",
+        ):
+            self.assertNotIn(f'"{service}"', trusted_names)
+
+        controller = INNER_RESUME_ANALYSIS_CONTROLLER.read_text(encoding="utf-8")
+        self.assertIn('"codecoachai-core"', controller)
+        self.assertNotIn('"codecoachai-task"', controller)
 
 
 if __name__ == "__main__":

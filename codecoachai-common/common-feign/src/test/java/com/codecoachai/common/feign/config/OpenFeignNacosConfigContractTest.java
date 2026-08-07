@@ -38,6 +38,10 @@ class OpenFeignNacosConfigContractTest {
                 properties.getConfig().get("interviewAiFeignClient");
         assertEquals(3000, interview.getConnectTimeout());
         assertEquals(40000, interview.getReadTimeout());
+        FeignClientProperties.FeignClientConfiguration businessAction =
+                properties.getConfig().get("interviewAgentBusinessActionFeignClient");
+        assertEquals(3000, businessAction.getConnectTimeout());
+        assertEquals(40000, businessAction.getReadTimeout());
         assertFalse(environment.containsProperty("feign.client.config.default.readTimeout"));
     }
 

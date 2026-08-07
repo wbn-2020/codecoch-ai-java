@@ -62,48 +62,7 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Transitional artifact dependencies are removed one migration batch at a time. -->
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-auth</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-user</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-system</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-file</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-resume</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-question</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-interview</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.codecoachai</groupId>
-            <artifactId>codecoachai-task</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
+        <!-- Core owns the consolidated business packages; no legacy business artifacts remain. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-aop</artifactId>

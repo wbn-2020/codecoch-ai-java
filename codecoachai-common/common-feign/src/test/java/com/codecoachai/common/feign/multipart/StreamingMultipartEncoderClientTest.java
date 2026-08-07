@@ -199,11 +199,11 @@ class StreamingMultipartEncoderClientTest {
         Path source = Files.writeString(tempDir.resolve("balanced.pdf"), "%PDF-balanced", StandardCharsets.UTF_8);
         NoBytesMultipartFile file = new NoBytesMultipartFile(source, "balanced.pdf", "application/pdf");
         RequestTemplate template = baseTemplate(MediaType.MULTIPART_FORM_DATA_VALUE);
-        template.target("http://codecoachai-file");
+        template.target("http://codecoachai-core");
         template.feignTarget(new Target.HardCodedTarget<>(
                 FileServiceMarker.class,
-                "codecoachai-file",
-                "http://codecoachai-file"));
+                "codecoachai-core",
+                "http://codecoachai-core"));
         encoder().encode(Map.of("file", file), Map.class, template);
         RecordingLoadBalancerClient loadBalancer = new RecordingLoadBalancerClient();
         AtomicReference<URI> openedUri = new AtomicReference<>();
@@ -223,7 +223,7 @@ class StreamingMultipartEncoderClientTest {
         Response response = client.execute(request(template), new Request.Options());
         response.close();
 
-        assertEquals("codecoachai-file", loadBalancer.executedServiceId.get());
+        assertEquals("codecoachai-core", loadBalancer.executedServiceId.get());
         assertEquals("127.0.0.1", openedUri.get().getHost());
         assertEquals(18081, openedUri.get().getPort());
         assertEquals("/upload", openedUri.get().getPath());
@@ -453,7 +453,7 @@ class StreamingMultipartEncoderClientTest {
 
         private final ServiceInstance instance = new DefaultServiceInstance(
                 "file-1",
-                "codecoachai-file",
+                "codecoachai-core",
                 "127.0.0.1",
                 18081,
                 false);

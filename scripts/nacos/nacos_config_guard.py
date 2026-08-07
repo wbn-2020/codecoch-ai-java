@@ -470,6 +470,12 @@ def poll_verified(
 
 
 def execute(args: argparse.Namespace, manifest: dict[str, Any]) -> int:
+    if args.command == "publish" and not args.data_id:
+        raise GuardError(
+            "publish requires explicit --data-id arguments; "
+            "refusing to publish every YAML file in the config directory"
+        )
+
     client = NacosClient(
         address=args.nacos_addr,
         timeout=args.timeout,

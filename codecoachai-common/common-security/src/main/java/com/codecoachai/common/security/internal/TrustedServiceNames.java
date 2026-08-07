@@ -7,15 +7,7 @@ public final class TrustedServiceNames {
     private static final Set<String> ALLOWED_SERVICES = Set.of(
             "codecoachai-gateway",
             "codecoachai-core",
-            "codecoachai-auth",
-            "codecoachai-user",
-            "codecoachai-question",
-            "codecoachai-resume",
-            "codecoachai-file",
-            "codecoachai-interview",
             "codecoachai-ai",
-            "codecoachai-system",
-            "codecoachai-task",
             "codecoachai-search"
     );
 

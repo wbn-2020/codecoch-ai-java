@@ -1,20 +1,12 @@
 package com.codecoachai.core;
 
-import com.codecoachai.auth.AuthApplication;
 import com.codecoachai.interview.feign.AgentBusinessActionFeignClient;
 import com.codecoachai.interview.feign.AiFeignClient;
-import com.codecoachai.file.FileApplication;
-import com.codecoachai.interview.InterviewApplication;
 import com.codecoachai.question.feign.AiEmbeddingFeignClient;
 import com.codecoachai.question.feign.AiPracticeFeignClient;
 import com.codecoachai.question.feign.AiQuestionFeignClient;
 import com.codecoachai.question.feign.AiQuestionRecommendationFeignClient;
-import com.codecoachai.question.QuestionApplication;
 import com.codecoachai.resume.feign.CampaignArchiveAiFeignClient;
-import com.codecoachai.resume.ResumeApplication;
-import com.codecoachai.system.SystemApplication;
-import com.codecoachai.task.TaskApplication;
-import com.codecoachai.user.UserApplication;
 import org.apache.ibatis.annotations.Mapper;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
@@ -71,21 +63,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
                 type = FilterType.ASSIGNABLE_TYPE,
                 classes = {
                         CoreApplication.class,
-                        AuthApplication.class,
-                        UserApplication.class,
-                        SystemApplication.class,
-                        FileApplication.class,
-                        ResumeApplication.class,
-                        QuestionApplication.class,
-                        InterviewApplication.class,
-                        TaskApplication.class,
-                        com.codecoachai.auth.controller.HealthController.class,
-                        com.codecoachai.user.controller.HealthController.class,
-                        com.codecoachai.system.controller.HealthController.class,
-                        com.codecoachai.file.controller.HealthController.class,
-                        com.codecoachai.resume.controller.HealthController.class,
-                        com.codecoachai.question.controller.HealthController.class,
-                        com.codecoachai.interview.controller.HealthController.class
                 }))
 public class CoreApplication {
 

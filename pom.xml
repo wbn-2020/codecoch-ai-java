@@ -22,15 +22,7 @@
         <module>codecoachai-common</module>
         <module>codecoachai-gateway</module>
         <module>codecoachai-core</module>
-        <module>codecoachai-auth</module>
-        <module>codecoachai-user</module>
-        <module>codecoachai-question</module>
-        <module>codecoachai-resume</module>
-        <module>codecoachai-file</module>
-        <module>codecoachai-interview</module>
         <module>codecoachai-ai</module>
-        <module>codecoachai-system</module>
-        <module>codecoachai-task</module>
         <module>codecoachai-search</module>
     </modules>
 

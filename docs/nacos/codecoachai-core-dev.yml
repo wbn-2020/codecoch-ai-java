@@ -25,6 +25,9 @@ spring:
           interviewAiFeignClient:
             connectTimeout: 3000
             readTimeout: 40000
+          interviewAgentBusinessActionFeignClient:
+            connectTimeout: 3000
+            readTimeout: 40000
 
 sa-token:
   token-name: Authorization

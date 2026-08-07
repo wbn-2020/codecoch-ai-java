@@ -47,7 +47,6 @@ The backend job runs:
 ```text
 mvn -B -ntp -Dstyle.color=never clean test
 mvn -B -ntp -Dstyle.color=never -Pphase2-dependency-gates -DskipTests verify
-mvn -B -ntp -Dstyle.color=never -DskipTests package
 ```
 
 The phase-two dependency gate is an explicit CI step. It must not be described as a
