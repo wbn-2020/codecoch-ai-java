@@ -447,7 +447,6 @@ class AgentGrowthServiceImplTest {
     void growthOverviewHidesStrongScoresAndSuggestsEvidenceActionsWhenDataIsInsufficient() {
         AgentGrowthServiceImpl service = service();
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
-        when(agentRunMapper.selectList(any())).thenReturn(List.of());
         when(agentReviewMapper.selectCount(any())).thenReturn(0L);
         when(agentMemoryMapper.selectCount(any())).thenReturn(0L);
 
@@ -475,9 +474,6 @@ class AgentGrowthServiceImplTest {
                 task(1L, today.minusDays(8), AgentTaskStatusEnum.DONE.name(), "JAVA", "Java Basics"),
                 task(2L, today.minusDays(4), AgentTaskStatusEnum.DONE.name(), "MYSQL", "MySQL"),
                 task(3L, today.minusDays(1), AgentTaskStatusEnum.DONE.name(), "JAVA", "Java Basics")));
-        when(agentRunMapper.selectList(any())).thenReturn(List.of(
-                run(11L, today.minusDays(8), AgentRunStatusEnum.SUCCESS.name()),
-                run(12L, today.minusDays(4), AgentRunStatusEnum.SUCCESS.name())));
         when(agentReviewMapper.selectCount(any())).thenReturn(1L);
         when(agentMemoryMapper.selectCount(any())).thenReturn(1L);
 
@@ -485,7 +481,7 @@ class AgentGrowthServiceImplTest {
 
         assertEquals(100, vo.getReadinessScore());
         assertEquals(100D, vo.getTaskCompletionRate());
-        assertEquals(100D, vo.getAgentSuccessRate());
+        assertNull(vo.getAgentSuccessRate());
         assertEquals("HIGH", vo.getConfidenceLevel());
         assertEquals(3, vo.getEvidenceCount());
         assertTrue(vo.getDisplayPolicy().getShowStrongScore());
@@ -495,13 +491,14 @@ class AgentGrowthServiceImplTest {
         assertTrue(vo.getNextEvidenceActions().isEmpty());
         assertEquals("Java Basics", vo.getTopSkills().get(0).getName());
         assertEquals(2, vo.getDataSourceLabels().size());
+        assertEquals("当前纳入：Agent 任务状态记录", vo.getDataSourceLabels().get(0));
+        verify(agentRunMapper, never()).selectList(any());
     }
 
     @Test
     void growthOverviewKeepsCumulativeReviewAndMemoryCountsOutOfRecentEvidence() {
         AgentGrowthServiceImpl service = service();
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
-        when(agentRunMapper.selectList(any())).thenReturn(List.of());
         when(agentReviewMapper.selectCount(any())).thenReturn(4L);
         when(agentMemoryMapper.selectCount(any())).thenReturn(3L);
 
@@ -576,9 +573,20 @@ class AgentGrowthServiceImplTest {
         ReadinessScoreRecordVO vo = trend.get(0);
         assertEquals(3, vo.getEvidenceCount());
         assertEquals("HIGH", vo.getConfidenceLevel());
+        assertNull(vo.getAgentSuccessRate());
         assertNull(vo.getColdStartReason());
         assertTrue(vo.getNextEvidenceActions().isEmpty());
         assertEquals(2, vo.getDataSourceLabels().size());
+    }
+
+    @Test
+    void businessTimeProviderAlwaysUsesShanghaiBusinessDate() {
+        AgentBusinessTimeProvider provider = new AgentBusinessTimeProvider(Clock.fixed(
+                Instant.parse("2026-08-09T16:30:00Z"),
+                ZoneId.of("UTC")));
+
+        assertEquals(LocalDate.of(2026, 8, 10), provider.today());
+        assertEquals(LocalDateTime.of(2026, 8, 10, 0, 30), provider.now());
     }
 
     @Test

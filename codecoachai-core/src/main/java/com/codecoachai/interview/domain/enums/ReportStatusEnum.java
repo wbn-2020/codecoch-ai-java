@@ -7,6 +7,7 @@ public enum ReportStatusEnum {
     NOT_GENERATED,
     GENERATING,
     GENERATED,
+    UNSCORABLE,
     FAILED;
 
     private static final Set<String> COMPARISON_READY_STATUSES =

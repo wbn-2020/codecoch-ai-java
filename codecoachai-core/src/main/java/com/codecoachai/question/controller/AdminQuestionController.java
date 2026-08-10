@@ -12,6 +12,7 @@ import com.codecoachai.question.domain.dto.QuestionQueryDTO;
 import com.codecoachai.question.domain.dto.UpdateStatusDTO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionListVO;
+import com.codecoachai.question.domain.vo.QuestionStatisticsVO;
 import com.codecoachai.question.service.QuestionService;
 import jakarta.validation.Valid;
 import java.util.Map;
@@ -48,6 +49,12 @@ public class AdminQuestionController {
     public Result<PageResult<QuestionListVO>> pageQuestionsAlias(QuestionQueryDTO query) {
         adminPermissionGuard.require(PERM_QUESTION_LIST);
         return Result.success(questionService.pageAdminQuestions(query));
+    }
+
+    @GetMapping({"/admin/questions/summary", "/admin/questions/statistics"})
+    public Result<QuestionStatisticsVO> statistics() {
+        adminPermissionGuard.require(PERM_QUESTION_LIST);
+        return Result.success(questionService.getStatistics());
     }
 
     @GetMapping("/admin/questions/{id}")

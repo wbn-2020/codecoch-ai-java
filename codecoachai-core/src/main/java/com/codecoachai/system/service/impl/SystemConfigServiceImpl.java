@@ -594,48 +594,81 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private AdminDashboardOverviewVO.OpsMetricsVO opsMetrics() {
         AdminDashboardOverviewVO.OpsMetricsVO vo = new AdminDashboardOverviewVO.OpsMetricsVO();
-        long requestsLastMinute = recentCount("operation_log", "created_at", "deleted = 0")
-                + recentCount("login_log", "created_at", "1 = 1");
-        long transactionsLastMinute = recentCount("resume", "created_at", "deleted = 0")
-                + recentCount("target_job", "created_at", "deleted = 0")
-                + recentCount("study_plan", "created_at", "deleted = 0")
-                + recentCount("study_task", "created_at", "deleted = 0")
-                + recentCount("interview_session", "created_at", "deleted = 0")
-                + recentCount("practice_record", "created_at", "deleted = 0")
-                + recentCount("agent_task", "created_at", "deleted = 0");
-        vo.setQps(round2(requestsLastMinute / 60.0));
-        vo.setTps(round2(transactionsLastMinute / 60.0));
-        vo.setRpm(requestsLastMinute);
-        vo.setTpm(recentTokenCount());
+        fillTrafficMetrics(vo);
         fillJvmMetrics(vo);
         fillRedisMetrics(vo);
         vo.setMetricsSource("runtime-db-jvm-redis");
         return vo;
     }
 
-    private long recentCount(String tableName, String dateColumn, String condition) {
+    private void fillTrafficMetrics(AdminDashboardOverviewVO.OpsMetricsVO vo) {
+        List<MetricRead> requestReads = List.of(
+                recentCount("operation_log", "created_at", "deleted = 0"),
+                recentCount("login_log", "created_at", "1 = 1")
+        );
+        List<MetricRead> transactionReads = List.of(
+                recentCount("resume", "created_at", "deleted = 0"),
+                recentCount("target_job", "created_at", "deleted = 0"),
+                recentCount("study_plan", "created_at", "deleted = 0"),
+                recentCount("study_task", "created_at", "deleted = 0"),
+                recentCount("interview_session", "created_at", "deleted = 0"),
+                recentCount("practice_record", "created_at", "deleted = 0"),
+                recentCount("agent_task", "created_at", "deleted = 0")
+        );
+        MetricRead tokenRead = recentTokenCount();
+        List<MetricRead> allReads = new ArrayList<>(requestReads);
+        allReads.addAll(transactionReads);
+        allReads.add(tokenRead);
+
+        if (hasAvailableMetric(requestReads)) {
+            long requestsLastMinute = sumAvailableMetrics(requestReads);
+            vo.setQps(round2(requestsLastMinute / 60.0));
+            vo.setRpm(requestsLastMinute);
+        }
+        if (hasAvailableMetric(transactionReads)) {
+            vo.setTps(round2(sumAvailableMetrics(transactionReads) / 60.0));
+        }
+        if (tokenRead.available()) {
+            vo.setTpm(tokenRead.value());
+        }
+
+        long availableCount = allReads.stream().filter(MetricRead::available).count();
+        vo.setTrafficMetricsStatus(metricStatus(availableCount, allReads.size()));
+        if (availableCount == allReads.size()) {
+            vo.setTrafficMetricsReason("最近 1 分钟请求、业务写入和 Token 指标采集正常。");
+        } else {
+            vo.setTrafficMetricsReason(metricFailureReason(
+                    allReads,
+                    availableCount == 0
+                            ? "审计、业务写入和 AI 调用指标源均不可用。"
+                            : "部分指标源不可用，当前数值只覆盖已接入的数据源。"
+            ));
+        }
+    }
+
+    private MetricRead recentCount(String tableName, String dateColumn, String condition) {
         if (!tableExists(tableName) || !columnExists(tableName, dateColumn)) {
-            return 0L;
+            return MetricRead.unavailable(tableName + "." + dateColumn + " 未就绪");
         }
         String sql = "SELECT COUNT(1) FROM " + quoteIdentifier(tableName) + " WHERE " + condition
                 + " AND " + quoteIdentifier(dateColumn) + " >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class);
-            return count == null ? 0L : count;
+            return MetricRead.available(count == null ? 0L : count);
         } catch (RuntimeException ex) {
             log.warn("Admin dashboard recent count skipped, table={}, dateColumn={}", tableName, dateColumn, ex);
-            return 0L;
+            return MetricRead.unavailable(tableName + " 最近 1 分钟统计失败");
         }
     }
 
-    private long recentTokenCount() {
+    private MetricRead recentTokenCount() {
         if (!tableExists("ai_call_log") || !columnExists("ai_call_log", "created_at")) {
-            return 0L;
+            return MetricRead.unavailable("ai_call_log.created_at 未就绪");
         }
         boolean hasPromptTokens = columnExists("ai_call_log", "prompt_tokens");
         boolean hasCompletionTokens = columnExists("ai_call_log", "completion_tokens");
         if (!hasPromptTokens && !hasCompletionTokens) {
-            return 0L;
+            return MetricRead.unavailable("ai_call_log 未记录 Token 字段");
         }
         String promptExpr = hasPromptTokens ? "COALESCE(prompt_tokens, 0)" : "0";
         String completionExpr = hasCompletionTokens ? "COALESCE(completion_tokens, 0)" : "0";
@@ -643,10 +676,10 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                 + "), 0) FROM ai_call_log WHERE deleted = 0 AND created_at >= DATE_SUB(NOW(), INTERVAL 1 MINUTE)";
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class);
-            return count == null ? 0L : count;
+            return MetricRead.available(count == null ? 0L : count);
         } catch (RuntimeException ex) {
             log.warn("Admin dashboard token count skipped", ex);
-            return 0L;
+            return MetricRead.unavailable("ai_call_log Token 统计失败");
         }
     }
 
@@ -659,28 +692,90 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         vo.setHeapUsage(max > 0 ? round2((double) used * 100 / max) : 0.0);
         java.lang.management.OperatingSystemMXBean bean = ManagementFactory.getOperatingSystemMXBean();
         if (bean instanceof com.sun.management.OperatingSystemMXBean osBean) {
-            vo.setProcessCpuUsage(percent(osBean.getProcessCpuLoad()));
-            vo.setSystemCpuUsage(percent(osBean.getCpuLoad()));
+            try {
+                vo.setProcessCpuUsage(percent(osBean.getProcessCpuLoad()));
+                vo.setSystemCpuUsage(percent(osBean.getCpuLoad()));
+            } catch (RuntimeException ex) {
+                log.warn("Admin dashboard JVM CPU metrics unavailable", ex);
+            }
+        }
+        if (vo.getProcessCpuUsage() != null && vo.getSystemCpuUsage() != null) {
+            vo.setJvmMetricsStatus("AVAILABLE");
+            vo.setJvmMetricsReason("JVM 堆内存、进程 CPU 和系统 CPU 指标采集正常。");
+        } else {
+            vo.setJvmMetricsStatus("PARTIAL");
+            vo.setJvmMetricsReason("JVM 堆内存可用，但当前运行时未返回完整 CPU 指标。");
         }
     }
 
     private void fillRedisMetrics(AdminDashboardOverviewVO.OpsMetricsVO vo) {
         RedisConnectionFactory factory = redisConnectionFactoryProvider.getIfAvailable();
         if (factory == null) {
+            vo.setRedisMetricsStatus("NOT_CONFIGURED");
+            vo.setRedisMetricsReason("当前服务未配置 Redis 指标连接。");
             return;
         }
         try (RedisConnection connection = factory.getConnection()) {
             Properties stats = connection.serverCommands().info("stats");
             Properties clients = connection.serverCommands().info("clients");
-            long hits = parseLong(stats.getProperty("keyspace_hits"));
-            long misses = parseLong(stats.getProperty("keyspace_misses"));
-            vo.setRedisKeyspaceHits(hits);
-            vo.setRedisKeyspaceMisses(misses);
-            vo.setRedisHitRate(hits + misses > 0 ? round2((double) hits * 100 / (hits + misses)) : 0.0);
-            vo.setRedisConnectedClients((int) parseLong(clients.getProperty("connected_clients")));
+            Long hits = parseNullableLong(stats == null ? null : stats.getProperty("keyspace_hits"));
+            Long misses = parseNullableLong(stats == null ? null : stats.getProperty("keyspace_misses"));
+            Long connectedClients = parseNullableLong(
+                    clients == null ? null : clients.getProperty("connected_clients")
+            );
+            boolean statsAvailable = hits != null && misses != null;
+            boolean clientsAvailable = connectedClients != null;
+            if (statsAvailable) {
+                vo.setRedisKeyspaceHits(hits);
+                vo.setRedisKeyspaceMisses(misses);
+                vo.setRedisHitRate(hits + misses > 0 ? round2((double) hits * 100 / (hits + misses)) : 0.0);
+            }
+            if (clientsAvailable) {
+                vo.setRedisConnectedClients(Math.toIntExact(Math.min(connectedClients, Integer.MAX_VALUE)));
+            }
+            if (statsAvailable && clientsAvailable) {
+                vo.setRedisMetricsStatus("AVAILABLE");
+                vo.setRedisMetricsReason("Redis 命中率和连接数指标采集正常。");
+            } else if (statsAvailable || clientsAvailable) {
+                vo.setRedisMetricsStatus("PARTIAL");
+                vo.setRedisMetricsReason("Redis 已连接，但 INFO 返回的统计字段不完整。");
+            } else {
+                vo.setRedisMetricsStatus("UNAVAILABLE");
+                vo.setRedisMetricsReason("Redis 已连接，但未返回可识别的 INFO 指标。");
+            }
         } catch (RuntimeException ex) {
-            vo.setRedisHitRate(0.0);
+            log.warn("Admin dashboard Redis metrics unavailable", ex);
+            vo.setRedisMetricsStatus("UNAVAILABLE");
+            vo.setRedisMetricsReason("Redis INFO 指标采集失败：" + ex.getClass().getSimpleName());
         }
+    }
+
+    private boolean hasAvailableMetric(List<MetricRead> reads) {
+        return reads.stream().anyMatch(MetricRead::available);
+    }
+
+    private long sumAvailableMetrics(List<MetricRead> reads) {
+        return reads.stream()
+                .filter(MetricRead::available)
+                .mapToLong(MetricRead::value)
+                .sum();
+    }
+
+    private String metricStatus(long availableCount, int totalCount) {
+        if (availableCount <= 0) {
+            return "UNAVAILABLE";
+        }
+        return availableCount >= totalCount ? "AVAILABLE" : "PARTIAL";
+    }
+
+    private String metricFailureReason(List<MetricRead> reads, String prefix) {
+        List<String> reasons = reads.stream()
+                .filter(read -> !read.available())
+                .map(MetricRead::reason)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        return reasons.isEmpty() ? prefix : prefix + " " + String.join("；", reasons) + "。";
     }
 
     private Double percent(double value) {
@@ -691,14 +786,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         return Math.round(value * 100.0) / 100.0;
     }
 
-    private long parseLong(String value) {
+    private Long parseNullableLong(String value) {
         if (value == null || value.isBlank()) {
-            return 0L;
+            return null;
         }
         try {
             return Long.parseLong(value.trim());
         } catch (NumberFormatException ex) {
-            return 0L;
+            return null;
         }
     }
 
@@ -778,5 +873,20 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     @FunctionalInterface
     private interface TrendSetter {
         void set(AdminDashboardOverviewVO.TrendStatVO vo, Long value);
+    }
+
+    private record MetricRead(Long value, String reason) {
+
+        private static MetricRead available(long value) {
+            return new MetricRead(value, null);
+        }
+
+        private static MetricRead unavailable(String reason) {
+            return new MetricRead(null, reason);
+        }
+
+        private boolean available() {
+            return value != null;
+        }
     }
 }

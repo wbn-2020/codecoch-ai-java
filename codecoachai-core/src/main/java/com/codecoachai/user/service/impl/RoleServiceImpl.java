@@ -67,11 +67,17 @@ public class RoleServiceImpl implements RoleService {
 
     @Override
     public List<AdminRoleVO> listAdminRoles() {
-        return sysRoleMapper.selectList(new LambdaQueryWrapper<SysRole>()
+        List<AdminRoleVO> roles = sysRoleMapper.selectList(new LambdaQueryWrapper<SysRole>()
                         .orderByAsc(SysRole::getId))
                 .stream()
                 .map(UserConvert::toAdminRoleVO)
                 .toList();
+        if (roles.isEmpty()) {
+            throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "sys_role 中没有可用角色，请检查角色种子和数据库迁移状态。");
+        }
+        return roles;
     }
 
     @Override

@@ -11,6 +11,7 @@ import com.codecoachai.question.domain.dto.UpdateStatusDTO;
 import com.codecoachai.question.domain.vo.InnerQuestionVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionListVO;
+import com.codecoachai.question.domain.vo.QuestionStatisticsVO;
 import com.codecoachai.question.domain.vo.SubmitQuestionAnswerVO;
 import com.codecoachai.question.domain.vo.WrongQuestionVO;
 import java.util.List;
@@ -34,6 +35,8 @@ public interface QuestionService {
     void updateMastery(Long id, UpdateMasteryDTO dto);
 
     PageResult<QuestionListVO> pageAdminQuestions(QuestionQueryDTO query);
+
+    QuestionStatisticsVO getStatistics();
 
     QuestionDetailVO createQuestion(AdminQuestionSaveDTO dto);
 

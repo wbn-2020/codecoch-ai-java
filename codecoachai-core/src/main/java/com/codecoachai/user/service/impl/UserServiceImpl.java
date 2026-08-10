@@ -31,7 +31,9 @@ import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.RoleService;
 import com.codecoachai.user.service.UserService;
 import java.security.SecureRandom;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -58,6 +60,8 @@ public class UserServiceImpl implements UserService {
             + TEMP_PASSWORD_DIGIT
             + TEMP_PASSWORD_SPECIAL;
     private static final int TEMP_PASSWORD_LENGTH = 16;
+    private static final String BUSINESS_TIMEZONE = "Asia/Shanghai";
+    private static final ZoneId BUSINESS_ZONE_ID = ZoneId.of(BUSINESS_TIMEZONE);
     private static final Set<String> USER_DASHBOARD_COUNT_TABLES = Set.of(
             "resume",
             "resume_analysis_record",
@@ -144,6 +148,7 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserDashboardOverviewVO getDashboardOverview() {
         Long userId = requireCurrentUserId();
+        LocalDate businessDate = LocalDate.now(BUSINESS_ZONE_ID);
         UserDashboardOverviewVO vo = new UserDashboardOverviewVO();
         vo.setResumeCount(count("resume", "deleted = 0 AND user_id = ?", userId));
         vo.setRecentResumeParse(recentResumeParse(userId));
@@ -152,23 +157,32 @@ public class UserServiceImpl implements UserService {
         vo.setRecentInterview(recentInterview(userId));
         vo.setRecentReport(recentReport(userId));
         vo.setStudyPlanCount(count("study_plan", "deleted = 0 AND user_id = ?", userId));
-        vo.setActiveStudyPlan(activeStudyPlan(userId));
-        vo.setTodayTaskCount(count("study_task",
-                "deleted = 0 AND user_id = ? AND planned_date = CURDATE()", userId));
-        vo.setTodayCompletedTaskCount(count("study_task",
-                "deleted = 0 AND user_id = ? AND planned_date = CURDATE() AND task_status IN ('DONE','COMPLETED')",
-                userId));
+        UserDashboardOverviewVO.ActiveStudyPlanVO activePlan = activeStudyPlan(userId, businessDate);
+        vo.setActiveStudyPlan(activePlan);
+        vo.setTodayTaskCount(activePlan == null ? 0L : activePlan.getTodayTaskCount().longValue());
+        vo.setTodayCompletedTaskCount(activePlan == null ? 0L : activePlan.getTodayDoneTaskCount().longValue());
+        vo.setBusinessDate(businessDate);
+        vo.setBusinessTimezone(BUSINESS_TIMEZONE);
         vo.setEntryStatuses(entryStatuses(vo));
-        vo.setGeneratedAt(LocalDateTime.now());
+        vo.setGeneratedAt(LocalDateTime.now(BUSINESS_ZONE_ID));
         return vo;
     }
 
     @Override
     public PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query) {
-        requireCurrentUserId();
+        Long currentUserId = requireCurrentUserId();
         AdminUserQueryDTO safeQuery = query == null ? new AdminUserQueryDTO() : query;
         Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
                 normalizeKeyword(safeQuery.getKeyword()), safeQuery.getStatus(), normalizeKeyword(safeQuery.getRoleCode()));
+        if (page.getTotal() == 0
+                && !StringUtils.hasText(safeQuery.getKeyword())
+                && safeQuery.getStatus() == null
+                && !StringUtils.hasText(safeQuery.getRoleCode())
+                && sysUserMapper.selectById(currentUserId) == null) {
+            throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "当前登录账号不在 sys_user 中，请检查认证库与业务库连接、用户迁移和初始化数据。");
+        }
         Map<Long, List<String>> roleMap = listRoleCodesByUserIds(page.getRecords().stream()
                 .map(SysUser::getId)
                 .toList());
@@ -426,9 +440,9 @@ public class UserServiceImpl implements UserService {
         }, userId);
     }
 
-    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId) {
+    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId, LocalDate businessDate) {
         String sql = """
-                SELECT id, plan_title, plan_status, updated_at
+                SELECT id, plan_title, plan_summary, plan_status, updated_at
                 FROM study_plan
                 WHERE deleted = 0 AND user_id = ? AND plan_status = 'ACTIVE'
                 ORDER BY updated_at DESC, id DESC
@@ -439,18 +453,47 @@ public class UserServiceImpl implements UserService {
                 return null;
             }
             Long planId = rs.getLong("id");
-            long total = count("study_task", "deleted = 0 AND plan_id = ?", planId);
-            long done = count("study_task", "deleted = 0 AND plan_id = ? AND task_status IN ('DONE','COMPLETED')", planId);
+            long total = count("study_task", "deleted = 0 AND user_id = ? AND plan_id = ?", userId, planId);
+            long done = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND task_status IN ('DONE','COMPLETED')",
+                    userId, planId);
+            long todayTotal = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ?",
+                    userId, planId, businessDate);
+            long todayDone = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ? "
+                            + "AND task_status IN ('DONE','COMPLETED')",
+                    userId, planId, businessDate);
+            int cumulativeProgress = total == 0 ? 0 : Math.toIntExact(done * 100 / total);
+            int todayProgress = todayTotal == 0 ? 0 : Math.toIntExact(todayDone * 100 / todayTotal);
             UserDashboardOverviewVO.ActiveStudyPlanVO vo = new UserDashboardOverviewVO.ActiveStudyPlanVO();
             vo.setPlanId(planId);
             vo.setPlanTitle(rs.getString("plan_title"));
+            vo.setPlanSummary(rs.getString("plan_summary"));
             vo.setPlanStatus(rs.getString("plan_status"));
             vo.setTotalTaskCount(toInt(total));
             vo.setDoneTaskCount(toInt(done));
-            vo.setProgressPercent(total == 0 ? 0 : Math.toIntExact(done * 100 / total));
+            vo.setProgressPercent(cumulativeProgress);
+            vo.setCumulativeTaskCount(toInt(total));
+            vo.setCumulativeDoneTaskCount(toInt(done));
+            vo.setCumulativeProgressPercent(cumulativeProgress);
+            vo.setTodayTaskCount(toInt(todayTotal));
+            vo.setTodayDoneTaskCount(toInt(todayDone));
+            vo.setTodayProgressPercent(todayProgress);
+            vo.setTodayStatus(todayPlanStatus(todayTotal, todayDone));
             vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
             return vo;
         }, userId);
+    }
+
+    private String todayPlanStatus(long total, long done) {
+        if (total <= 0) {
+            return "NO_SCHEDULE";
+        }
+        if (done <= 0) {
+            return "NOT_STARTED";
+        }
+        return done >= total ? "COMPLETED" : "IN_PROGRESS";
     }
 
     private List<UserDashboardOverviewVO.EntryStatusVO> entryStatuses(UserDashboardOverviewVO vo) {

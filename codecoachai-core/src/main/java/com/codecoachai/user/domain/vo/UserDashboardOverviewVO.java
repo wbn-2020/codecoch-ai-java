@@ -1,5 +1,6 @@
 package com.codecoachai.user.domain.vo;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.Data;
@@ -17,6 +18,8 @@ public class UserDashboardOverviewVO {
     private ActiveStudyPlanVO activeStudyPlan;
     private Long todayTaskCount;
     private Long todayCompletedTaskCount;
+    private LocalDate businessDate;
+    private String businessTimezone;
     private List<EntryStatusVO> entryStatuses;
     private LocalDateTime generatedAt;
 
@@ -60,10 +63,18 @@ public class UserDashboardOverviewVO {
     public static class ActiveStudyPlanVO {
         private Long planId;
         private String planTitle;
+        private String planSummary;
         private String planStatus;
         private Integer totalTaskCount;
         private Integer doneTaskCount;
         private Integer progressPercent;
+        private Integer cumulativeTaskCount;
+        private Integer cumulativeDoneTaskCount;
+        private Integer cumulativeProgressPercent;
+        private Integer todayTaskCount;
+        private Integer todayDoneTaskCount;
+        private Integer todayProgressPercent;
+        private String todayStatus;
         private LocalDateTime updatedAt;
     }
 

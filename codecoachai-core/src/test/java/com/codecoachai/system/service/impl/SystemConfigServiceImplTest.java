@@ -1,6 +1,8 @@
 package com.codecoachai.system.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -13,6 +15,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.system.domain.dto.SystemConfigQueryDTO;
 import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.entity.SystemConfig;
+import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -93,6 +96,23 @@ class SystemConfigServiceImplTest {
         String sqlSegment = captor.getValue().getSqlSegment();
         assertTrue(sqlSegment.contains("config_key"));
         assertEquals(configKey, captor.getValue().getParamNameValuePairs().values().iterator().next());
+    }
+
+    @Test
+    void dashboardMetricsExposeUnavailableSourcesInsteadOfFabricatedZeroes() {
+        AdminDashboardOverviewVO dashboard = systemConfigService.dashboardOverview();
+
+        AdminDashboardOverviewVO.OpsMetricsVO metrics = dashboard.getSystemStatus().getOpsMetrics();
+        assertNotNull(metrics);
+        assertEquals("UNAVAILABLE", metrics.getTrafficMetricsStatus());
+        assertNull(metrics.getQps());
+        assertNull(metrics.getTps());
+        assertNull(metrics.getRpm());
+        assertNull(metrics.getTpm());
+        assertEquals("NOT_CONFIGURED", metrics.getRedisMetricsStatus());
+        assertNull(metrics.getRedisHitRate());
+        assertTrue(List.of("AVAILABLE", "PARTIAL").contains(metrics.getJvmMetricsStatus()));
+        assertNotNull(metrics.getHeapUsedMb());
     }
 
     private static void initializeTableInfo(Class<?> entityType) {

@@ -72,9 +72,9 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private static final String LOW_SAMPLE_LIMIT = "任务样本仍较少，当前结论仅作为弱调整信号。";
     private static final BigDecimal MIN_STRONG_MEMORY_CONFIDENCE = BigDecimal.valueOf(0.6);
     private static final String DEFAULT_GROWTH_TIME_WINDOW = "最近30天";
-    private static final String INCLUDED_TASK_SOURCE_LABEL = "当前纳入：任务完成记录";
+    private static final String INCLUDED_TASK_SOURCE_LABEL = "当前纳入：Agent 任务状态记录";
     private static final String EXCLUDED_GROWTH_SOURCE_LABEL =
-            "当前未纳入：AI 教练运行记录、复盘记录、成长记忆、反馈信号、提醒信号";
+            "当前未纳入：计划生成运行、复盘、成长记忆、反馈、提醒及其他业务任务";
     private static final int MAX_MANUAL_MEMORY_CONTENT_LENGTH = 2_000;
     private static final String USER_CONFIRMED_MEMORY_SOURCE_PREFIX = "USER_CONFIRMED_";
     private static final Set<String> ALLOWED_MEMORY_TYPES = Set.of(
@@ -181,8 +181,6 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         List<AgentTask> tasks = tasks(userId, start, end);
         long done = countTasks(tasks, AgentTaskStatusEnum.DONE.name());
         BigDecimal completionRate = rate(done, tasks.size());
-        List<AgentRun> runs = agentRuns(userId, start, end);
-        BigDecimal successRate = successRate(runs);
         long totalReviewCount = agentReviewMapper.selectCount(
                 new LambdaQueryWrapper<AgentReview>().eq(AgentReview::getUserId, userId));
         long totalMemoryCount = agentMemoryMapper.selectCount(new LambdaQueryWrapper<AgentMemory>()
@@ -200,8 +198,8 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         vo.setDataSourceLabels(policy.getDataSourceLabels());
         if (policy.isTrusted()) {
             vo.setTaskCompletionRate(completionRate.doubleValue());
-            vo.setAgentSuccessRate(successRate.doubleValue());
-            vo.setReadinessScore(readinessScore(completionRate, successRate, tasks.size()));
+            vo.setAgentSuccessRate(null);
+            vo.setReadinessScore(taskOnlyReadinessScore(completionRate));
             vo.setDisplayPolicy(GrowthOverviewVO.DisplayPolicy.trusted(true, !vo.getTopSkills().isEmpty()));
             vo.setNextEvidenceActions(List.of());
         } else {
@@ -519,6 +517,10 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         return Math.max(0, Math.min(100, base));
     }
 
+    private int taskOnlyReadinessScore(BigDecimal completionRate) {
+        return Math.max(0, Math.min(100, completionRate.intValue()));
+    }
+
     private List<String> nextActions(List<AgentTask> tasks, long done, long skipped, long todo) {
         List<String> actions = new ArrayList<>();
         if (todo > 0) {
@@ -751,7 +753,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         vo.setScoreDate(record.getScoreDate());
         vo.setScore(record.getScore());
         vo.setTaskCompletionRate(record.getTaskCompletionRate());
-        vo.setAgentSuccessRate(record.getAgentSuccessRate());
+        vo.setAgentSuccessRate(null);
         GrowthEvidencePolicy policy = readinessEvidencePolicy(record.getEvidenceJson());
         vo.setEvidenceCount(policy.getEvidenceCount());
         vo.setConfidenceLevel(policy.getConfidenceLevel());

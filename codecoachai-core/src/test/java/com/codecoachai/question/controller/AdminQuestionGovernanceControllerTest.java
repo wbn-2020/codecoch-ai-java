@@ -28,6 +28,7 @@ import com.codecoachai.question.domain.vo.QuestionCategoryVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionDuplicateReviewDetailVO;
 import com.codecoachai.question.domain.vo.QuestionReviewDetailVO;
+import com.codecoachai.question.domain.vo.QuestionStatisticsVO;
 import com.codecoachai.question.service.QuestionDuplicateEvaluationService;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionMetadataService;
@@ -58,6 +59,27 @@ class AdminQuestionGovernanceControllerTest {
     private AdminPermissionGuard permissionGuard;
     @Mock
     private AdminOperationConfirmationGuard operationConfirmationGuard;
+
+    @Test
+    void questionStatisticsEndpointReturnsSeparatedGovernanceCounts() throws Exception {
+        QuestionStatisticsVO statistics = new QuestionStatisticsVO();
+        statistics.setFormalQuestionCount(42L);
+        statistics.setTrainableQuestionCount(30L);
+        statistics.setDisabledQuestionCount(12L);
+        statistics.setPendingReviewCount(7L);
+        when(questionService.getStatistics()).thenReturn(statistics);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(
+                new AdminQuestionController(questionService, permissionGuard, operationConfirmationGuard)).build();
+
+        mockMvc.perform(get("/admin/questions/summary"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.formalQuestionCount").value(42))
+                .andExpect(jsonPath("$.data.trainableQuestionCount").value(30))
+                .andExpect(jsonPath("$.data.disabledQuestionCount").value(12))
+                .andExpect(jsonPath("$.data.pendingReviewCount").value(7));
+
+        verify(permissionGuard).require("admin:question:list");
+    }
 
     @Test
     void createQuestionForwardsDryRunToConfirmationGuard() {

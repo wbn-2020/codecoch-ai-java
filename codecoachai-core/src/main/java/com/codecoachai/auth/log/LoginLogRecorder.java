@@ -1,12 +1,8 @@
 package com.codecoachai.auth.log;
 
 import jakarta.servlet.http.HttpServletRequest;
-import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -18,52 +14,35 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *
  * 使用方式：在 AuthService.login / logout 成功/失败后调用本类对应方法。
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class LoginLogRecorder {
 
-    private static final String INSERT_SQL =
-            "INSERT INTO login_log (user_id, username, login_type, status, login_status, ip, user_agent, " +
-                    "failure_reason, fail_reason, trace_id, login_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    private final LoginLogAsyncWriter asyncWriter;
 
-    private final JdbcTemplate jdbcTemplate;
-
-    @Async("commonAsyncExecutor")
     public void recordSuccess(Long userId, String username, String loginType) {
-        record(userId, username, loginType, "SUCCESS", null);
+        asyncWriter.write(capture(userId, username, loginType, "SUCCESS", null));
     }
 
-    @Async("commonAsyncExecutor")
     public void recordFailed(String username, String loginType, String reason) {
-        record(null, username, loginType, "FAILED", reason);
+        asyncWriter.write(capture(null, username, loginType, "FAILED", reason));
     }
 
-    @Async("commonAsyncExecutor")
     public void recordLogout(Long userId, String username) {
-        record(userId, username, "LOGOUT", "SUCCESS", null);
+        asyncWriter.write(capture(userId, username, "LOGOUT", "SUCCESS", null));
     }
 
-    private void record(Long userId, String username, String loginType, String status, String reason) {
-        try {
-            // 异步执行时可能已经没有请求上下文，IP/UA 缺失不能阻断登录主流程。
-            HttpServletRequest req = currentRequest();
-            String ip = req != null ? clientIp(req) : null;
-            String ua = req != null ? truncate(req.getHeader("User-Agent"), 255) : null;
-            String traceId = MDC.get("traceId");
-
-            LocalDateTime now = LocalDateTime.now();
-            String safeReason = truncate(reason, 255);
-
-            // 兼容 V3_008 的旧字段 status/failure_reason 与 V3_011 的新字段 login_status/fail_reason。
-            // 本地和存量环境可能同时存在两套字段，必须同时写入，否则旧字段 NOT NULL 会导致日志落库失败。
-            jdbcTemplate.update(INSERT_SQL,
-                    userId, truncate(username, 64), loginType, status, status,
-                    ip, ua, safeReason, safeReason, traceId,
-                    now, now);
-        } catch (Exception ex) {
-            log.warn("登录日志写入失败 username={} status={}", username, status, ex);
-        }
+    private Entry capture(Long userId, String username, String loginType, String status, String reason) {
+        HttpServletRequest req = currentRequest();
+        return new Entry(
+                userId,
+                truncate(username, 64),
+                loginType,
+                status,
+                req == null ? null : clientIp(req),
+                req == null ? null : truncate(req.getHeader("User-Agent"), 255),
+                truncate(reason, 255),
+                truncate(MDC.get("traceId"), 128));
     }
 
     private HttpServletRequest currentRequest() {
@@ -92,5 +71,16 @@ public class LoginLogRecorder {
     private String truncate(String text, int max) {
         if (text == null) return null;
         return text.length() > max ? text.substring(0, max) : text;
+    }
+
+    public record Entry(
+            Long userId,
+            String username,
+            String loginType,
+            String status,
+            String ip,
+            String userAgent,
+            String reason,
+            String traceId) {
     }
 }

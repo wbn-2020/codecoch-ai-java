@@ -3,7 +3,10 @@ package com.codecoachai.ai.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.vo.AiModelHealthSummaryVO;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import com.codecoachai.ai.security.AiProviderEndpointPolicy;
@@ -41,6 +44,7 @@ public class AdminAiModelController {
     private static final String PERM_MODEL_PUBLISH = "admin:ai:model:publish";
 
     private final AiModelConfigMapper mapper;
+    private final AiCallLogMapper aiCallLogMapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
     private final AiProviderEndpointPolicy endpointPolicy;
     private final AdminPermissionGuard permissionGuard;
@@ -85,6 +89,12 @@ public class AdminAiModelController {
     @GetMapping("/admin/ai/model-configs/{id}")
     public Result<AiModelConfig> detailCompat(@PathVariable Long id) {
         return detail(id);
+    }
+
+    @GetMapping({"/admin/ai/models/{id}/health", "/admin/ai/model-configs/{id}/health"})
+    public Result<AiModelHealthSummaryVO> health(@PathVariable Long id) {
+        permissionGuard.require(PERM_MODEL_LIST);
+        return Result.success(buildHealthSummary(get(id)));
     }
 
     @PostMapping("/admin/ai/models")
@@ -290,6 +300,68 @@ public class AdminAiModelController {
             entity.setApiKey(null);
         }
         return entity;
+    }
+
+    private AiModelHealthSummaryVO buildHealthSummary(AiModelConfig modelConfig) {
+        AiCallLog latestCall = latestModelCall(modelConfig.getModelCode(), null);
+        AiCallLog latestSuccess = latestModelCall(modelConfig.getModelCode(), 1);
+        AiCallLog latestFailure = latestModelCall(modelConfig.getModelCode(), 0);
+
+        AiModelHealthSummaryVO vo = new AiModelHealthSummaryVO();
+        vo.setModelId(modelConfig.getId());
+        vo.setProvider(modelConfig.getProvider());
+        vo.setModelCode(modelConfig.getModelCode());
+        vo.setHealthStatus(resolveHealthStatus(latestCall));
+        vo.setLastCallStatus(resolveCallStatus(latestCall));
+        vo.setLastCallAt(createdAt(latestCall));
+        vo.setLastSuccessAt(createdAt(latestSuccess));
+        vo.setLastFailureAt(createdAt(latestFailure));
+        vo.setLastFailureSummary(latestFailure == null
+                ? null
+                : SensitiveTextMasker.safePreview(latestFailure.getErrorMessage()));
+        return vo;
+    }
+
+    private AiCallLog latestModelCall(String modelCode, Integer success) {
+        if (!StringUtils.hasText(modelCode)) {
+            return null;
+        }
+        return aiCallLogMapper.selectOne(new LambdaQueryWrapper<AiCallLog>()
+                .and(wrapper -> wrapper.eq(AiCallLog::getModelName, modelCode)
+                        .or()
+                        .eq(AiCallLog::getModel, modelCode))
+                .eq(success != null, AiCallLog::getSuccess, success)
+                .orderByDesc(AiCallLog::getCreatedAt)
+                .last("LIMIT 1"));
+    }
+
+    private String resolveHealthStatus(AiCallLog latestCall) {
+        String callStatus = resolveCallStatus(latestCall);
+        if ("SUCCESS".equals(callStatus)) {
+            return "HEALTHY";
+        }
+        if ("FAILED".equals(callStatus)) {
+            return "DEGRADED";
+        }
+        return "UNKNOWN";
+    }
+
+    private String resolveCallStatus(AiCallLog logEntry) {
+        if (logEntry == null) {
+            return "UNKNOWN";
+        }
+        Integer success = logEntry.getSuccess() != null ? logEntry.getSuccess() : logEntry.getStatus();
+        if (Integer.valueOf(1).equals(success)) {
+            return "SUCCESS";
+        }
+        if (Integer.valueOf(0).equals(success)) {
+            return "FAILED";
+        }
+        return "UNKNOWN";
+    }
+
+    private java.time.LocalDateTime createdAt(AiCallLog logEntry) {
+        return logEntry == null ? null : logEntry.getCreatedAt();
     }
 
     private String encryptApiKey(String apiKey) {

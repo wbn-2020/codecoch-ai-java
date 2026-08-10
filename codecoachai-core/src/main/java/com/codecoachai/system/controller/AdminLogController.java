@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.system.domain.entity.LoginLog;
 import com.codecoachai.system.domain.entity.OperationLog;
@@ -88,6 +90,8 @@ public class AdminLogController {
             vo.setLatestLoginAt(latestLoginAt());
         } catch (RuntimeException ex) {
             log.warn("Admin log summary degraded because audit log query failed", ex);
+            vo.setQueryAvailable(false);
+            vo.setDegradedReason("审计日志查询失败，请检查 login_log、operation_log 表迁移状态和数据库权限。");
         }
         return Result.success(vo);
     }
@@ -130,8 +134,10 @@ public class AdminLogController {
             List<LoginLogVO> records = page.getRecords().stream().map(this::toLoginLogVO).toList();
             return Result.success(PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize()));
         } catch (RuntimeException ex) {
-            log.warn("Login log page degraded because audit log query failed", ex);
-            return Result.success(emptyPage(pageNo, pageSize));
+            log.warn("Login log page query failed", ex);
+            throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "登录日志查询失败，请检查 login_log 表迁移状态和数据库权限。");
         }
     }
 
@@ -232,6 +238,7 @@ public class AdminLogController {
 
     private AdminLogSummaryVO emptySummary() {
         AdminLogSummaryVO vo = new AdminLogSummaryVO();
+        vo.setQueryAvailable(true);
         vo.setTotalOperationLogs(0L);
         vo.setTodayOperationLogs(0L);
         vo.setFailedOperationLogs(0L);
@@ -294,9 +301,9 @@ public class AdminLogController {
         vo.setUserAgentSummary(summarizeUserAgent(log.getUserAgent()));
         vo.setUserAgent(vo.getUserAgentSummary());
         vo.setFailReason(log.getFailReason());
+        vo.setTraceId(log.getTraceId());
         vo.setTraceIdShort(shortId(log.getTraceId()));
         vo.setShortTraceId(vo.getTraceIdShort());
-        vo.setTraceId(vo.getTraceIdShort());
         vo.setLoginTime(log.getLoginTime());
         vo.setCreatedAt(log.getCreatedAt());
         return vo;
@@ -305,7 +312,9 @@ public class AdminLogController {
     private OperationLogAuditVO toOperationLogVO(OperationLog log) {
         OperationLogAuditVO vo = new OperationLogAuditVO();
         vo.setId(log.getId());
-        vo.setTraceId(shortId(log.getTraceId()));
+        vo.setTraceId(log.getTraceId());
+        vo.setTraceIdShort(shortId(log.getTraceId()));
+        vo.setShortTraceId(vo.getTraceIdShort());
         vo.setUserId(log.getUserId());
         vo.setUsername(log.getUsername());
         vo.setModule(log.getModule());
@@ -444,6 +453,8 @@ public class AdminLogController {
     public static class OperationLogAuditVO {
         private Long id;
         private String traceId;
+        private String traceIdShort;
+        private String shortTraceId;
         private Long userId;
         private String username;
         private String module;

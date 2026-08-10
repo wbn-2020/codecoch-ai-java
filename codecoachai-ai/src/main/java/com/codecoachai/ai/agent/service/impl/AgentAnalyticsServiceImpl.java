@@ -116,7 +116,8 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
     public AdminAgentOverviewVO adminAgentOverview(Integer days) {
         LocalDateTime startTime = LocalDate.now().minusDays(normalizeDays(days) - 1L).atStartOfDay();
         List<AgentRun> runs = safeList(() -> agentRunMapper.selectList(new LambdaQueryWrapper<AgentRun>()
-                .select(AgentRun::getId, AgentRun::getStatus, AgentRun::getDurationMs, AgentRun::getCreatedAt)
+                .select(AgentRun::getId, AgentRun::getStatus, AgentRun::getResultSource,
+                        AgentRun::getDurationMs, AgentRun::getCreatedAt)
                 .ge(AgentRun::getCreatedAt, startTime)));
         List<AgentTask> tasks = safeList(() -> agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                 .select(AgentTask::getId, AgentTask::getStatus, AgentTask::getCreatedAt)
@@ -125,7 +126,11 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
         vo.setTotalAgentRuns((long) runs.size());
         vo.setSuccessAgentRuns(countRuns(runs, AgentRunStatusEnum.SUCCESS.name()));
         vo.setFailedAgentRuns(countRuns(runs, AgentRunStatusEnum.FAILED.name()));
-        vo.setAgentSuccessRate(rate(vo.getSuccessAgentRuns(), vo.getTotalAgentRuns()));
+        vo.setDegradedAgentRuns(countDegradedRuns(runs));
+        vo.setEffectiveAgentRuns(vo.getSuccessAgentRuns());
+        long fullSuccessRuns = Math.max(0L, vo.getSuccessAgentRuns() - vo.getDegradedAgentRuns());
+        vo.setAgentSuccessRate(rate(fullSuccessRuns, vo.getTotalAgentRuns()));
+        vo.setEffectiveSuccessRate(rate(vo.getEffectiveAgentRuns(), vo.getTotalAgentRuns()));
         vo.setAvgDurationMs(avgDuration(runs));
         vo.setTotalAgentTasks((long) tasks.size());
         vo.setDoneTaskCount(countTasks(tasks, AgentTaskStatusEnum.DONE.name()));
@@ -256,6 +261,16 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
 
     private Long countRuns(List<AgentRun> runs, String status) {
         return runs.stream().filter(run -> status.equals(run.getStatus())).count();
+    }
+
+    private Long countDegradedRuns(List<AgentRun> runs) {
+        return runs.stream()
+                .filter(run -> AgentRunStatusEnum.SUCCESS.name().equals(run.getStatus()))
+                .filter(run -> {
+                    String source = firstText(run.getResultSource(), "");
+                    return "DEGRADED".equalsIgnoreCase(source) || "FALLBACK".equalsIgnoreCase(source);
+                })
+                .count();
     }
 
     private Long sumEstimated(List<AgentTask> tasks) {

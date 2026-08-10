@@ -13,6 +13,7 @@ import com.codecoachai.system.domain.dto.RoleMenuAssignDTO;
 import com.codecoachai.system.domain.dto.SysMenuSaveDTO;
 import com.codecoachai.system.domain.entity.SysMenu;
 import com.codecoachai.system.domain.entity.SysRoleMenu;
+import com.codecoachai.system.domain.vo.RoleMenuPreviewVO;
 import com.codecoachai.system.domain.vo.SysMenuTreeVO;
 import com.codecoachai.system.mapper.SysMenuMapper;
 import com.codecoachai.system.mapper.SysRoleMenuMapper;
@@ -117,6 +118,40 @@ public class AdminMenuController {
         return Result.success(roleMenuMapper.selectList(new LambdaQueryWrapper<SysRoleMenu>()
                         .eq(SysRoleMenu::getRoleId, roleId))
                 .stream().map(SysRoleMenu::getMenuId).toList());
+    }
+
+    @GetMapping("/admin/roles/{roleId}/menu-preview")
+    public Result<RoleMenuPreviewVO> roleMenuPreview(@PathVariable Long roleId) {
+        permissionGuard.requireAny(PERM_ROLE_LIST, PERM_MENU_LIST);
+        List<Long> assignedMenuIds = roleMenuMapper.selectList(new LambdaQueryWrapper<SysRoleMenu>()
+                        .eq(SysRoleMenu::getRoleId, roleId))
+                .stream()
+                .map(SysRoleMenu::getMenuId)
+                .filter(id -> id != null)
+                .distinct()
+                .toList();
+        List<SysMenu> activeMenus = assignedMenuIds.isEmpty()
+                ? List.of()
+                : menuMapper.selectList(new LambdaQueryWrapper<SysMenu>()
+                        .in(SysMenu::getId, assignedMenuIds)
+                        .and(wrapper -> wrapper.eq(SysMenu::getStatus, 1).or().isNull(SysMenu::getStatus))
+                        .orderByAsc(SysMenu::getSortOrder)
+                        .orderByAsc(SysMenu::getId));
+
+        RoleMenuPreviewVO preview = new RoleMenuPreviewVO();
+        preview.setRoleId(roleId);
+        preview.setAssignedMenuCount(activeMenus.size());
+        preview.setUnavailableAssignmentCount(Math.max(assignedMenuIds.size() - activeMenus.size(), 0));
+        preview.setPermissionCodes(activeMenus.stream()
+                .map(SysMenu::getPermissionCode)
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .distinct()
+                .sorted()
+                .toList());
+        preview.setPermissionCount(preview.getPermissionCodes().size());
+        preview.setMenuTree(toTree(activeMenus));
+        return Result.success(preview);
     }
 
     @PutMapping("/admin/roles/{roleId}/menus")

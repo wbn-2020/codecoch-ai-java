@@ -195,6 +195,35 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void createApplicationCreatesSystemManagedFollowUpCalendarEvent() {
+        when(jobApplicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
+            JobApplication application = invocation.getArgument(0);
+            application.setId(41L);
+            return 1;
+        });
+        when(careerCalendarEventMapper.selectOne(any())).thenReturn(null);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setCompanyName("测试科技");
+        dto.setJobTitle("Java 后端工程师");
+        dto.setNextFollowUpAt(LocalDateTime.of(2026, 8, 12, 10, 0));
+
+        service.createApplication(dto);
+
+        ArgumentCaptor<CareerCalendarEvent> eventCaptor = ArgumentCaptor.forClass(CareerCalendarEvent.class);
+        verify(careerCalendarEventMapper).insert(eventCaptor.capture());
+        CareerCalendarEvent event = eventCaptor.getValue();
+        assertEquals(USER_ID, event.getUserId());
+        assertEquals(41L, event.getApplicationId());
+        assertEquals("JOB_APPLICATION_FOLLOW_UP", event.getSourceType());
+        assertEquals("41", event.getSourceRef());
+        assertEquals("FOLLOW_UP", event.getEventType());
+        assertEquals("CONFIRMED", event.getStatus());
+        assertEquals("Asia/Shanghai", event.getTimezone());
+        assertEquals(LocalDateTime.of(2026, 8, 12, 2, 0), event.getStartsAtUtc());
+        assertEquals(LocalDateTime.of(2026, 8, 12, 2, 30), event.getEndsAtUtc());
+    }
+
+    @Test
     void createApplicationAutoAssignsOnlyAfterCommit() {
         when(jobApplicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
             JobApplication application = invocation.getArgument(0);
@@ -977,6 +1006,41 @@ class V4ResumeCareerServiceImplTest {
         assertThrows(BusinessException.class, () -> service.updateApplication(57L, dto));
         verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
         verify(jobApplicationMapper, never()).updateById(any(JobApplication.class));
+    }
+
+    @Test
+    void updateApplicationUpdatesExistingSystemManagedFollowUpCalendarEvent() {
+        JobApplication current = application(55L, USER_ID);
+        current.setLockVersion(1);
+        JobApplication saved = application(55L, USER_ID);
+        saved.setLockVersion(2);
+        saved.setNextFollowUpAt(LocalDateTime.of(2026, 8, 13, 14, 0));
+        when(jobApplicationMapper.selectById(55L)).thenReturn(current, saved);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        CareerCalendarEvent existing = calendarEvent(
+                701L,
+                "旧跟进",
+                "FOLLOW_UP",
+                "TENTATIVE",
+                LocalDateTime.of(2026, 8, 12, 2, 0),
+                LocalDateTime.of(2026, 8, 12, 2, 30),
+                "Asia/Shanghai");
+        existing.setApplicationId(55L);
+        existing.setSourceType("JOB_APPLICATION_FOLLOW_UP");
+        existing.setSourceRef("55");
+        when(careerCalendarEventMapper.selectOne(any())).thenReturn(existing);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setNextFollowUpAt(LocalDateTime.of(2026, 8, 13, 14, 0));
+
+        service.updateApplication(55L, dto);
+
+        ArgumentCaptor<CareerCalendarEvent> eventCaptor = ArgumentCaptor.forClass(CareerCalendarEvent.class);
+        verify(careerCalendarEventMapper).updateById(eventCaptor.capture());
+        CareerCalendarEvent event = eventCaptor.getValue();
+        assertEquals(701L, event.getId());
+        assertEquals(LocalDateTime.of(2026, 8, 13, 6, 0), event.getStartsAtUtc());
+        assertEquals(LocalDateTime.of(2026, 8, 13, 6, 30), event.getEndsAtUtc());
+        assertEquals("CONFIRMED", event.getStatus());
     }
 
     @Test

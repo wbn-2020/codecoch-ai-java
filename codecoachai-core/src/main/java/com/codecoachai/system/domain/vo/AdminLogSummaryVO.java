@@ -6,6 +6,9 @@ import lombok.Data;
 @Data
 public class AdminLogSummaryVO {
 
+    private Boolean queryAvailable;
+    private String degradedReason;
+
     private Long totalOperationLogs;
     private Long todayOperationLogs;
     private Long failedOperationLogs;

@@ -34,6 +34,7 @@ import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRelationMapper;
+import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
@@ -62,6 +63,8 @@ class QuestionServiceImplTest {
     private QuestionGroupMapper groupMapper;
     @Mock
     private QuestionRelationMapper relationMapper;
+    @Mock
+    private QuestionReviewMapper questionReviewMapper;
     @Mock
     private QuestionTagMapper tagMapper;
     @Mock
@@ -92,6 +95,7 @@ class QuestionServiceImplTest {
                 categoryMapper,
                 groupMapper,
                 relationMapper,
+                questionReviewMapper,
                 tagMapper,
                 tagRelationMapper,
                 recordMapper,
@@ -129,6 +133,20 @@ class QuestionServiceImplTest {
         assertEquals(11L, result.getRecords().get(0).getId());
         verify(questionMapper).selectBatchIds(List.of(11L, 12L, 13L));
         verify(questionMapper, never()).selectById(any());
+    }
+
+    @Test
+    void statisticsSeparatesFormalTrainableDisabledAndPendingReviewQuestions() {
+        when(questionMapper.selectCount(any())).thenReturn(42L, 30L, 12L);
+        when(questionReviewMapper.selectCount(any())).thenReturn(7L);
+
+        var result = questionService.getStatistics();
+
+        assertEquals(42L, result.getFormalQuestionCount());
+        assertEquals(30L, result.getTrainableQuestionCount());
+        assertEquals(12L, result.getDisabledQuestionCount());
+        assertEquals(7L, result.getPendingReviewCount());
+        verify(questionReviewMapper).selectCount(any());
     }
 
     @Test

@@ -55,6 +55,7 @@ import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -90,6 +91,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private static final String TASK_SKIPPED = "SKIPPED";
     private static final int DEFAULT_DURATION_DAYS = 14;
     private static final int MAX_SUMMARY_LENGTH = 4000;
+    private static final ZoneId BUSINESS_ZONE_ID = ZoneId.of("Asia/Shanghai");
 
     private final StudyPlanMapper studyPlanMapper;
     private final StudyTaskMapper studyTaskMapper;
@@ -168,7 +170,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         LambdaQueryWrapper<StudyPlan> query = new LambdaQueryWrapper<StudyPlan>()
                 .eq(StudyPlan::getUserId, userId)
                 .eq(StudyPlan::getDeleted, CommonConstants.NO)
-                .orderByDesc(StudyPlan::getUpdatedAt);
+                .orderByDesc(StudyPlan::getUpdatedAt)
+                .orderByDesc(StudyPlan::getId);
         if (dto != null && StringUtils.hasText(dto.getPlanStatus())) {
             query.eq(StudyPlan::getPlanStatus, normalizePlanStatus(dto.getPlanStatus()));
         }
@@ -1024,7 +1027,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
 
     private LocalDate parseDailyViewDate(String date) {
         if (!StringUtils.hasText(date)) {
-            return LocalDate.now();
+            return LocalDate.now(BUSINESS_ZONE_ID);
         }
         try {
             return LocalDate.parse(date.trim());

@@ -76,5 +76,11 @@ public class AdminDashboardOverviewVO {
         private Long redisKeyspaceMisses;
         private Integer redisConnectedClients;
         private String metricsSource;
+        private String trafficMetricsStatus;
+        private String trafficMetricsReason;
+        private String jvmMetricsStatus;
+        private String jvmMetricsReason;
+        private String redisMetricsStatus;
+        private String redisMetricsReason;
     }
 }

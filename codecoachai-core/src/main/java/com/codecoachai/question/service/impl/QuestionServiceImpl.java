@@ -19,6 +19,7 @@ import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionCategory;
 import com.codecoachai.question.domain.entity.QuestionGroup;
 import com.codecoachai.question.domain.entity.QuestionRelation;
+import com.codecoachai.question.domain.entity.QuestionReview;
 import com.codecoachai.question.domain.entity.QuestionTag;
 import com.codecoachai.question.domain.entity.QuestionTagRelation;
 import com.codecoachai.question.domain.entity.PracticeRecord;
@@ -27,9 +28,11 @@ import com.codecoachai.question.domain.enums.MasteryStatusEnum;
 import com.codecoachai.question.domain.enums.PracticeReviewStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationStatus;
 import com.codecoachai.question.domain.enums.QuestionRelationType;
+import com.codecoachai.question.domain.enums.QuestionReviewStatus;
 import com.codecoachai.question.domain.vo.InnerQuestionVO;
 import com.codecoachai.question.domain.vo.QuestionDetailVO;
 import com.codecoachai.question.domain.vo.QuestionListVO;
+import com.codecoachai.question.domain.vo.QuestionStatisticsVO;
 import com.codecoachai.question.domain.vo.QuestionTagVO;
 import com.codecoachai.question.domain.vo.SubmitQuestionAnswerVO;
 import com.codecoachai.question.domain.vo.WrongQuestionVO;
@@ -39,6 +42,7 @@ import com.codecoachai.question.mapper.QuestionCategoryMapper;
 import com.codecoachai.question.mapper.QuestionGroupMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRelationMapper;
+import com.codecoachai.question.mapper.QuestionReviewMapper;
 import com.codecoachai.question.mapper.QuestionTagMapper;
 import com.codecoachai.question.mapper.QuestionTagRelationMapper;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
@@ -78,6 +82,7 @@ public class QuestionServiceImpl implements QuestionService {
     private final QuestionCategoryMapper categoryMapper;
     private final QuestionGroupMapper groupMapper;
     private final QuestionRelationMapper relationMapper;
+    private final QuestionReviewMapper questionReviewMapper;
     private final QuestionTagMapper tagMapper;
     private final QuestionTagRelationMapper tagRelationMapper;
     private final UserQuestionRecordMapper recordMapper;
@@ -211,6 +216,20 @@ public class QuestionServiceImpl implements QuestionService {
                 buildQuestionWrapper(safeQuery, true));
         return PageResult.of(page.getRecords().stream().map(this::toListVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public QuestionStatisticsVO getStatistics() {
+        QuestionStatisticsVO vo = new QuestionStatisticsVO();
+        vo.setFormalQuestionCount(countQuestions(new LambdaQueryWrapper<>()));
+        vo.setTrainableQuestionCount(countQuestions(new LambdaQueryWrapper<Question>()
+                .eq(Question::getStatus, CommonConstants.YES)));
+        vo.setDisabledQuestionCount(countQuestions(new LambdaQueryWrapper<Question>()
+                .eq(Question::getStatus, CommonConstants.NO)));
+        Long pendingReviewCount = questionReviewMapper.selectCount(new LambdaQueryWrapper<QuestionReview>()
+                .eq(QuestionReview::getReviewStatus, QuestionReviewStatus.PENDING.name()));
+        vo.setPendingReviewCount(pendingReviewCount == null ? 0L : pendingReviewCount);
+        return vo;
     }
 
     @Override
@@ -378,6 +397,11 @@ public class QuestionServiceImpl implements QuestionService {
                         .or()
                         .like(Question::getContent, query.getKeyword()))
                 .orderByDesc(Question::getUpdatedAt);
+    }
+
+    private long countQuestions(LambdaQueryWrapper<Question> wrapper) {
+        Long count = questionMapper.selectCount(wrapper);
+        return count == null ? 0L : count;
     }
 
     private List<Long> findQuestionIdsByTag(Long tagId) {

@@ -123,7 +123,7 @@ class InnerInterviewReportControllerTest {
     }
 
     @Test
-    void completeReportFailsIncompleteScoringContractAndSkipsAgentTaskCompletion() {
+    void completeReportFailsWhenNeitherScoringContractNorAnswerEvidenceExists() {
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
@@ -145,7 +145,38 @@ class InnerInterviewReportControllerTest {
         InterviewReport persisted = reportCaptor.getValue();
         assertEquals(ReportStatusEnum.FAILED.name(), persisted.getStatus());
         assertEquals(null, persisted.getTotalScore());
-        assertTrue(persisted.getFailureReason().contains("RUBRIC_DATA_MISSING"));
+        assertTrue(persisted.getFailureReason().contains("缺少有效回答证据"));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportPreservesAnswersAsUnscorableWhenEvaluationEvidenceIsMissing() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(answerOnlyMessages());
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("SUCCESS");
+        dto.setReportJson("{\"summary\":\"ok\",\"reportContent\":\"full report body\"}");
+        dto.setTotalScore(82);
+
+        controller.completeReport(1L, dto);
+
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals(ReportStatusEnum.UNSCORABLE.name(), persisted.getStatus());
+        assertEquals(null, persisted.getTotalScore());
+        assertTrue(persisted.getQaReview().contains("回答一"));
+        assertTrue(persisted.getQaReview().contains("STORED_INTERVIEW_MESSAGE"));
+        assertTrue(persisted.getFailureReason().contains("缺少可信的逐题评分证据"));
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
@@ -442,5 +473,21 @@ class InnerInterviewReportControllerTest {
                 questionTwo,
                 answerTwo,
                 evaluationTwo);
+    }
+
+    private List<InterviewMessage> answerOnlyMessages() {
+        InterviewMessage question = new InterviewMessage();
+        question.setId(11L);
+        question.setRole("AI");
+        question.setMessageType("QUESTION");
+        question.setQuestionContent("问题一");
+
+        InterviewMessage answer = new InterviewMessage();
+        answer.setId(12L);
+        answer.setParentMessageId(11L);
+        answer.setRole("USER");
+        answer.setMessageType("ANSWER");
+        answer.setUserAnswer("回答一");
+        return List.of(question, answer);
     }
 }

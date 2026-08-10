@@ -105,6 +105,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private static final int CALENDAR_REMINDER_OVERDUE_RESERVED_LIMIT = 2;
     private static final String CALENDAR_REMINDER_TYPE = "CALENDAR_REMINDER";
     private static final String CALENDAR_REMINDER_BIZ_TYPE = "CAREER_CALENDAR_EVENT";
+    private static final String APPLICATION_FOLLOW_UP_SOURCE_TYPE = "JOB_APPLICATION_FOLLOW_UP";
+    private static final String APPLICATION_FOLLOW_UP_EVENT_TYPE = "FOLLOW_UP";
+    private static final String APPLICATION_FOLLOW_UP_STATUS = "CONFIRMED";
+    private static final int APPLICATION_FOLLOW_UP_DURATION_MINUTES = 30;
     private static final Set<String> CALENDAR_REMINDER_ACTIVE_STATUSES = Set.of("CONFIRMED", "TENTATIVE");
     private static final ZoneId CALENDAR_REMINDER_BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter CALENDAR_TIME_FORMAT =
@@ -605,6 +609,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         app.setUserId(userId);
         fillApplication(app, request);
         jobApplicationMapper.insert(app);
+        syncApplicationFollowUpCalendar(app, request.getNextFollowUpAt(),
+                request.getCompanyName(), request.getJobTitle());
         autoAssignExperimentAfterCommit(app);
         return toApplicationVOWithDetails(app);
     }
@@ -668,7 +674,15 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                         "Application was changed by another request");
             }
         }
-        return toApplicationVOWithDetails(jobApplicationMapper.selectById(id));
+        JobApplication updated = jobApplicationMapper.selectById(id);
+        if (request.getNextFollowUpAt() != null) {
+            syncApplicationFollowUpCalendar(
+                    updated == null ? app : updated,
+                    request.getNextFollowUpAt(),
+                    firstText(request.getCompanyName(), app.getCompanyName()),
+                    firstText(request.getJobTitle(), app.getJobTitle()));
+        }
+        return toApplicationVOWithDetails(updated);
     }
 
     private boolean hasApplicationDetailUpdates(JobApplicationSaveDTO request) {
@@ -681,6 +695,69 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 || request.getAppliedAt() != null
                 || request.getNextFollowUpAt() != null
                 || request.getNote() != null;
+    }
+
+    private void syncApplicationFollowUpCalendar(
+            JobApplication application,
+            LocalDateTime followUpAt,
+            String companyName,
+            String jobTitle) {
+        if (application == null || application.getId() == null || application.getUserId() == null
+                || followUpAt == null) {
+            return;
+        }
+        String sourceRef = String.valueOf(application.getId());
+        CareerCalendarEvent event = careerCalendarEventMapper.selectOne(
+                new LambdaQueryWrapper<CareerCalendarEvent>()
+                        .eq(CareerCalendarEvent::getUserId, application.getUserId())
+                        .eq(CareerCalendarEvent::getApplicationId, application.getId())
+                        .eq(CareerCalendarEvent::getSourceType, APPLICATION_FOLLOW_UP_SOURCE_TYPE)
+                        .eq(CareerCalendarEvent::getSourceRef, sourceRef)
+                        .eq(CareerCalendarEvent::getDeleted, CommonConstants.NO)
+                        .orderByDesc(CareerCalendarEvent::getId)
+                        .last("limit 1"));
+        if (event == null) {
+            event = new CareerCalendarEvent();
+            event.setUserId(application.getUserId());
+            event.setApplicationId(application.getId());
+            event.setSourceType(APPLICATION_FOLLOW_UP_SOURCE_TYPE);
+            event.setSourceRef(sourceRef);
+        }
+        LocalDateTime startsAtUtc = LocalDateTime.ofInstant(
+                followUpAt.atZone(CALENDAR_REMINDER_BUSINESS_ZONE).toInstant(), ZoneOffset.UTC);
+        event.setTitle(applicationFollowUpTitle(companyName, jobTitle));
+        event.setEventType(APPLICATION_FOLLOW_UP_EVENT_TYPE);
+        event.setStartsAtUtc(startsAtUtc);
+        event.setEndsAtUtc(startsAtUtc.plusMinutes(APPLICATION_FOLLOW_UP_DURATION_MINUTES));
+        event.setTimezone(CALENDAR_REMINDER_BUSINESS_ZONE.getId());
+        event.setAllDayFlag(CommonConstants.NO);
+        event.setDescription("由投递记录的下次跟进时间自动同步。");
+        event.setStatus(APPLICATION_FOLLOW_UP_STATUS);
+        if (event.getId() == null) {
+            careerCalendarEventMapper.insert(event);
+        } else {
+            careerCalendarEventMapper.updateById(event);
+        }
+    }
+
+    private String applicationFollowUpTitle(String companyName, String jobTitle) {
+        String target = firstText(jobTitle, "目标岗位");
+        if (StringUtils.hasText(companyName)) {
+            target = companyName.trim() + " · " + target;
+        }
+        return "跟进 " + target;
+    }
+
+    private String firstText(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (StringUtils.hasText(value)) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     @Override

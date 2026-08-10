@@ -1,7 +1,10 @@
 package com.codecoachai.ai.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -12,7 +15,9 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import com.codecoachai.ai.security.AiProviderEndpointPolicy;
@@ -27,12 +32,15 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import java.time.LocalDateTime;
 
 @ExtendWith(MockitoExtension.class)
 class AdminAiModelControllerTest {
 
     @Mock
     private AiModelConfigMapper mapper;
+    @Mock
+    private AiCallLogMapper aiCallLogMapper;
     @Mock
     private AesGcmTextEncryptor apiKeyEncryptor;
     @Mock
@@ -47,8 +55,10 @@ class AdminAiModelControllerTest {
     @BeforeEach
     void setUp() {
         initTableInfo(AiModelConfig.class);
+        initTableInfo(AiCallLog.class);
         controller = new AdminAiModelController(
                 mapper,
+                aiCallLogMapper,
                 apiKeyEncryptor,
                 endpointPolicy,
                 permissionGuard,
@@ -72,6 +82,42 @@ class AdminAiModelControllerTest {
                 "ai-model-create-1234");
         verify(mapper).insert(any(AiModelConfig.class));
         verify(operationConfirmationGuard, never()).release(any());
+    }
+
+    @Test
+    void healthUsesPersistedCallHistoryAndMasksFailureSummary() {
+        when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
+        LocalDateTime failureAt = LocalDateTime.of(2026, 8, 10, 9, 0);
+        LocalDateTime successAt = LocalDateTime.of(2026, 8, 10, 8, 0);
+        AiCallLog latestFailure = callLog(0, failureAt,
+                "Authorization: Bearer sk-live-secret token=private-value alice@example.com");
+        AiCallLog latestSuccess = callLog(1, successAt, null);
+        when(aiCallLogMapper.selectOne(any()))
+                .thenReturn(latestFailure, latestSuccess, latestFailure);
+
+        var result = controller.health(7L).getData();
+
+        assertEquals("DEGRADED", result.getHealthStatus());
+        assertEquals("FAILED", result.getLastCallStatus());
+        assertEquals(failureAt, result.getLastCallAt());
+        assertEquals(successAt, result.getLastSuccessAt());
+        assertEquals(failureAt, result.getLastFailureAt());
+        assertTrue(result.getLastFailureSummary().contains("******"));
+        assertFalse(result.getLastFailureSummary().contains("sk-live-secret"));
+        assertFalse(result.getLastFailureSummary().contains("private-value"));
+        assertFalse(result.getLastFailureSummary().contains("alice@example.com"));
+        verify(permissionGuard).require("admin:ai:model:list");
+    }
+
+    @Test
+    void healthReturnsUnknownWithoutMatchingCallHistory() {
+        when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
+
+        var result = controller.health(7L).getData();
+
+        assertEquals("UNKNOWN", result.getHealthStatus());
+        assertEquals("UNKNOWN", result.getLastCallStatus());
+        assertNull(result.getLastFailureSummary());
     }
 
     @Test
@@ -229,6 +275,14 @@ class AdminAiModelControllerTest {
         model.setDefaultModel(defaultModel);
         model.setEnabled(enabled);
         return model;
+    }
+
+    private static AiCallLog callLog(Integer success, LocalDateTime createdAt, String errorMessage) {
+        AiCallLog log = new AiCallLog();
+        log.setSuccess(success);
+        log.setCreatedAt(createdAt);
+        log.setErrorMessage(errorMessage);
+        return log;
     }
 
     private static void initTableInfo(Class<?> entityClass) {

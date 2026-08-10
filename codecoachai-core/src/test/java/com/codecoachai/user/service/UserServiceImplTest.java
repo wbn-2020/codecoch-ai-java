@@ -6,7 +6,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,9 +24,16 @@ import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
 import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
 import com.codecoachai.user.domain.entity.SysUser;
+import com.codecoachai.user.domain.vo.UserDashboardOverviewVO;
 import com.codecoachai.user.mapper.SysUserMapper;
 import com.codecoachai.user.mapper.SysUserRoleMapper;
 import com.codecoachai.user.service.impl.UserServiceImpl;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +43,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ResultSetExtractor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 @ExtendWith(MockitoExtension.class)
@@ -119,10 +130,73 @@ class UserServiceImplTest {
         page.setRecords(List.of());
         page.setTotal(0);
         when(sysUserMapper.selectAdminUserPage(any(), any(), any(), any())).thenReturn(page);
+        SysUser currentUser = new SysUser();
+        currentUser.setId(1002L);
+        when(sysUserMapper.selectById(1002L)).thenReturn(currentUser);
 
         userService.pageAdminUsers(new AdminUserQueryDTO());
 
         verify(sysUserMapper).selectAdminUserPage(any(), any(), any(), any());
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void dashboardUsesLatestActivePlanCumulativeProgressAndShanghaiBusinessDate() {
+        List<String> queriedSql = new ArrayList<>();
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenAnswer(invocation -> {
+                    String sql = invocation.getArgument(0);
+                    queriedSql.add(sql);
+                    if (sql.contains("information_schema.tables")) {
+                        return 1L;
+                    }
+                    if (sql.contains("FROM `study_plan`")) {
+                        return 2L;
+                    }
+                    if (sql.contains("FROM `study_task`")) {
+                        if (sql.contains("planned_date")) {
+                            return 0L;
+                        }
+                        return 3L;
+                    }
+                    return 0L;
+                });
+        doAnswer(invocation -> {
+            String sql = invocation.getArgument(0);
+            queriedSql.add(sql);
+            ResultSetExtractor extractor = invocation.getArgument(1);
+            ResultSet rs = mock(ResultSet.class);
+            if (sql.contains("FROM study_plan")) {
+                when(rs.next()).thenReturn(true);
+                when(rs.getLong("id")).thenReturn(88L);
+                when(rs.getString("plan_title")).thenReturn("Latest active plan");
+                when(rs.getString("plan_summary")).thenReturn("Read-only plan summary");
+                when(rs.getString("plan_status")).thenReturn("ACTIVE");
+                when(rs.getTimestamp("updated_at"))
+                        .thenReturn(Timestamp.valueOf(LocalDateTime.of(2026, 8, 10, 9, 30)));
+            } else {
+                when(rs.next()).thenReturn(false);
+            }
+            return extractor.extractData(rs);
+        }).when(jdbcTemplate).query(anyString(), any(ResultSetExtractor.class), any(Object[].class));
+
+        UserDashboardOverviewVO overview = userService.getDashboardOverview();
+
+        assertEquals(LocalDate.now(ZoneId.of("Asia/Shanghai")), overview.getBusinessDate());
+        assertEquals("Asia/Shanghai", overview.getBusinessTimezone());
+        assertEquals(88L, overview.getActiveStudyPlan().getPlanId());
+        assertEquals("Read-only plan summary", overview.getActiveStudyPlan().getPlanSummary());
+        assertEquals(3, overview.getActiveStudyPlan().getCumulativeTaskCount());
+        assertEquals(3, overview.getActiveStudyPlan().getCumulativeDoneTaskCount());
+        assertEquals(100, overview.getActiveStudyPlan().getCumulativeProgressPercent());
+        assertEquals(0, overview.getActiveStudyPlan().getTodayTaskCount());
+        assertEquals(0, overview.getActiveStudyPlan().getTodayDoneTaskCount());
+        assertEquals("NO_SCHEDULE", overview.getActiveStudyPlan().getTodayStatus());
+        assertEquals(0L, overview.getTodayTaskCount());
+        assertEquals(0L, overview.getTodayCompletedTaskCount());
+        assertTrue(queriedSql.stream().anyMatch(sql ->
+                sql.contains("plan_status = 'ACTIVE'") && sql.contains("ORDER BY updated_at DESC, id DESC")));
+        assertTrue(queriedSql.stream().noneMatch(sql -> sql.contains("CURDATE()")));
     }
 
     @Test

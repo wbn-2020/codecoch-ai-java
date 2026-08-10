@@ -23,6 +23,7 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.format.DateTimeParseException;
 import java.util.Collections;
 import java.util.List;
@@ -41,6 +42,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping
 @Tag(name = "Study Plan", description = "User study plan APIs")
 public class StudyPlanController {
+
+    private static final ZoneId BUSINESS_ZONE_ID = ZoneId.of("Asia/Shanghai");
 
     private final StudyPlanService studyPlanService;
 
@@ -107,6 +110,7 @@ public class StudyPlanController {
         StudyPlanQueryDTO query = new StudyPlanQueryDTO();
         query.setPageNo(1L);
         query.setPageSize(1L);
+        query.setPlanStatus("ACTIVE");
         PageResult<StudyPlanListVO> page = studyPlanService.list(query);
         if (page.getRecords() == null || page.getRecords().isEmpty()) {
             return Result.success(emptyDailyView(date));
@@ -150,7 +154,7 @@ public class StudyPlanController {
 
     private LocalDate parseDailyViewDate(String date) {
         if (date == null || date.isBlank()) {
-            return LocalDate.now();
+            return LocalDate.now(BUSINESS_ZONE_ID);
         }
         try {
             return LocalDate.parse(date.trim());

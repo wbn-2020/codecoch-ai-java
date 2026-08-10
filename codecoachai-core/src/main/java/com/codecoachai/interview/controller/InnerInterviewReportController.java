@@ -144,9 +144,10 @@ public class InnerInterviewReportController {
         if (StringUtils.hasText(dto.getGenerationToken())) {
             report.setGenerationToken(dto.getGenerationToken());
         }
+        boolean completed = false;
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
-            recoverReportFromStoredEvidence(sessionId, report);
+            StoredEvidenceRecovery recovery = recoverReportFromStoredEvidence(sessionId, report);
             InterviewReportScoringContract.Validation scoringContract =
                     InterviewReportScoringContract.validate(
                             objectMapper,
@@ -154,12 +155,18 @@ public class InnerInterviewReportController {
                             report.getRubricVersion(),
                             report.getRubricScores());
             if (!scoringContract.valid()) {
-                success = false;
-                completionFailureReason = "Interview report scoring contract is incomplete: "
-                        + scoringContract.reasonCode();
-                report.setStatus(ReportStatusEnum.FAILED.name());
+                completionFailureReason = recovery.hasAnswers()
+                        ? "本轮问答已保留，但缺少可信的逐题评分证据，暂时无法生成综合评分。"
+                        : "面试报告缺少有效回答证据，无法生成复盘报告。";
+                report.setStatus(recovery.hasAnswers()
+                        ? ReportStatusEnum.UNSCORABLE.name()
+                        : ReportStatusEnum.FAILED.name());
                 report.setTotalScore(null);
                 report.setFailureReason(completionFailureReason);
+                success = false;
+                completed = recovery.hasAnswers();
+            } else {
+                completed = true;
             }
         }
         if (!success) {
@@ -194,9 +201,9 @@ public class InnerInterviewReportController {
                 new LambdaUpdateWrapper<InterviewSession>()
                         .eq(InterviewSession::getId, sessionId)
                         .set(InterviewSession::getStatus,
-                                success ? InterviewStatusEnum.COMPLETED.name() : InterviewStatusEnum.FAILED.name())
+                                completed ? InterviewStatusEnum.COMPLETED.name() : InterviewStatusEnum.FAILED.name())
                         .set(InterviewSession::getReportStatus,
-                                success ? ReportStatusEnum.GENERATED.name() : ReportStatusEnum.FAILED.name())
+                                report.getStatus())
                         .set(success, InterviewSession::getTotalScore, completedScore)
                         .set(!success, InterviewSession::getTotalScore, null)
                         .set(success, InterviewSession::getFailureReason, null)
@@ -531,7 +538,7 @@ public class InnerInterviewReportController {
         }
     }
 
-    private void recoverReportFromStoredEvidence(Long sessionId, InterviewReport report) {
+    private StoredEvidenceRecovery recoverReportFromStoredEvidence(Long sessionId, InterviewReport report) {
         List<InterviewMessage> messages = messageMapper.selectList(
                 new LambdaQueryWrapper<InterviewMessage>()
                         .eq(InterviewMessage::getSessionId, sessionId)
@@ -544,7 +551,7 @@ public class InnerInterviewReportController {
                 .filter(this::isUserAnswer)
                 .toList();
         if (answers.isEmpty()) {
-            return;
+            return StoredEvidenceRecovery.empty();
         }
 
         Map<Long, InterviewMessage> messagesById = new LinkedHashMap<>();
@@ -553,21 +560,17 @@ public class InnerInterviewReportController {
                 messagesById.put(message.getId(), message);
             }
         }
+        if (!StringUtils.hasText(report.getQaReview())) {
+            report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
+        }
 
         Integer evidenceScore = averageEvaluationScore(messages);
         if (report.getTotalScore() == null) {
             report.setTotalScore(evidenceScore);
         }
         Integer totalScore = report.getTotalScore();
-        if (totalScore == null) {
-            return;
-        }
-
-        if (!StringUtils.hasText(report.getRubricVersion())) {
-            report.setRubricVersion(InterviewRubricVersion.CURRENT);
-        }
-        if (!StringUtils.hasText(report.getRubricScores())) {
-            int fivePointScore = Math.max(1, Math.min(5, Math.round(totalScore / 20.0f)));
+        if (evidenceScore != null && !StringUtils.hasText(report.getRubricScores())) {
+            int fivePointScore = Math.max(1, Math.min(5, Math.round(evidenceScore / 20.0f)));
             Map<String, Object> rubric = new LinkedHashMap<>();
             rubric.put("dimension", "ANSWER_QUALITY");
             rubric.put("score", fivePointScore);
@@ -575,22 +578,28 @@ public class InnerInterviewReportController {
             rubric.put("evidenceSource", "STORED_INTERVIEW_EVALUATION");
             report.setRubricScores(writeJson(List.of(rubric), "[]"));
         }
-        if (!StringUtils.hasText(report.getQaReview())) {
-            report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
+        if (StringUtils.hasText(report.getRubricScores())
+                && !StringUtils.hasText(report.getRubricVersion())) {
+            report.setRubricVersion(InterviewRubricVersion.CURRENT);
         }
-        String evidenceSummary = "本场面试包含 " + answers.size()
-                + " 条有效回答，已依据逐题评分生成结构化报告，综合得分 "
-                + totalScore + " 分。";
+        String evidenceSummary = totalScore == null
+                ? "本场面试包含 " + answers.size() + " 条有效回答，问答明细已保留，但缺少可信的逐题评分证据。"
+                : "本场面试包含 " + answers.size()
+                        + " 条有效回答，已依据逐题评分生成结构化报告，综合得分 "
+                        + totalScore + " 分。";
         if (!StringUtils.hasText(report.getSummary())) {
             report.setSummary(evidenceSummary);
         }
         if (!StringUtils.hasText(report.getReportContent())) {
-            report.setReportContent(evidenceSummary + " 请结合逐题点评复盘技术细节、边界条件和表达完整性。");
+            report.setReportContent(evidenceSummary + (totalScore == null
+                    ? " 你仍可根据已保存的问题与回答进行基础复盘，并在评分服务恢复后重新生成完整报告。"
+                    : " 请结合逐题点评复盘技术细节、边界条件和表达完整性。"));
         }
-        if (!StringUtils.hasText(report.getStageScores())) {
+        if (totalScore != null && !StringUtils.hasText(report.getStageScores())) {
             report.setStageScores(writeJson(Map.of("answerQuality", totalScore), "{}"));
         }
         report.setFailureReason(null);
+        return new StoredEvidenceRecovery(answers.size(), evidenceScore);
     }
 
     private String buildStoredQaReview(
@@ -809,6 +818,17 @@ public class InnerInterviewReportController {
             vo.setRecommendedActionType("WEAKNESS_ANALYSIS");
             vo.setActionPath("/weakness-analysis");
             return vo;
+        }
+    }
+
+    private record StoredEvidenceRecovery(int answerCount, Integer evaluationScore) {
+
+        private static StoredEvidenceRecovery empty() {
+            return new StoredEvidenceRecovery(0, null);
+        }
+
+        private boolean hasAnswers() {
+            return answerCount > 0;
         }
     }
 }

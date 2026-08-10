@@ -9,9 +9,11 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
@@ -23,6 +25,7 @@ import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.vo.StudyPlanAgentEvidenceVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
+import com.codecoachai.interview.domain.vo.StudyPlanListVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
@@ -226,6 +229,28 @@ class StudyPlanServiceImplTest {
         dto.setReportId(report.getId());
 
         assertThrows(BusinessException.class, () -> service.generate(dto));
+    }
+
+    @Test
+    void listActivePlansUsesStableUpdatedAtAndIdOrdering() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        Page<StudyPlan> page = Page.of(1, 10);
+        page.setRecords(List.of());
+        page.setTotal(0);
+        when(studyPlanMapper.selectPage(any(), any())).thenReturn(page);
+        StudyPlanQueryDTO query = new StudyPlanQueryDTO();
+        query.setPlanStatus("ACTIVE");
+
+        com.codecoachai.common.core.domain.PageResult<StudyPlanListVO> result = service.list(query);
+
+        assertTrue(result.getRecords().isEmpty());
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<StudyPlan>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        org.mockito.Mockito.verify(studyPlanMapper).selectPage(any(), wrapperCaptor.capture());
+        String sqlSegment = wrapperCaptor.getValue().getSqlSegment();
+        assertTrue(sqlSegment.contains("plan_status"));
+        assertTrue(sqlSegment.contains("updated_at DESC"));
+        assertTrue(sqlSegment.contains("id DESC"));
     }
 
     private StudyPlan activePlan() {
