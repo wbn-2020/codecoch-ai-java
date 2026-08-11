@@ -24,6 +24,7 @@ import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.TargetJob;
 import com.codecoachai.resume.domain.enums.ResumeOptimizeStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
+import com.codecoachai.resume.domain.enums.ResumeContextEligibility;
 import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
@@ -129,7 +130,9 @@ public class ResumeServiceImpl implements ResumeService {
             limit = size == null || size < 1 ? 20 : Math.min(size, 100);
             offset = (long) (effectivePage - 1) * limit;
         }
-        return resumeMapper.selectResumeList(userId, likePattern(keyword), offset, limit);
+        List<ResumeListVO> resumes = resumeMapper.selectResumeList(userId, likePattern(keyword), offset, limit);
+        resumes.forEach(this::applyListContextEligibility);
+        return resumes;
     }
 
     @Override
@@ -140,7 +143,9 @@ public class ResumeServiceImpl implements ResumeService {
         Resume resume = new Resume();
         resume.setUserId(userId);
         applyResume(resume, dto);
-        resume.setIsDefault(count == null || count == 0 ? CommonConstants.YES : CommonConstants.NO);
+        ResumeContextEligibility.Assessment eligibility = ResumeContextEligibility.assess(resume);
+        resume.setIsDefault((count == null || count == 0) && eligibility.isEligible()
+                ? CommonConstants.YES : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
         if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
@@ -568,6 +573,7 @@ public class ResumeServiceImpl implements ResumeService {
     @Transactional(rollbackFor = Exception.class)
     public ResumeDetailVO setDefault(Long id) {
         Resume resume = getOwnedResume(id);
+        assertEligibleForContext(resume, "设为默认简历");
         Long userId = requireCurrentUserId();
         return toDetailVO(selectDefaultResumeForUser(userId, resume.getId()));
     }
@@ -730,6 +736,7 @@ public class ResumeServiceImpl implements ResumeService {
         if (resume == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "默认简历不存在，请先选择或创建默认简历");
         }
+        assertEligibleForContext(resume, "作为默认简历");
         return ResumeConvert.toInnerVO(resume, projects(resume.getId()));
     }
 
@@ -780,6 +787,21 @@ public class ResumeServiceImpl implements ResumeService {
 
     private ResumeDetailVO toDetailVO(Resume resume) {
         return ResumeConvert.toDetailVO(resume, projects(resume.getId()));
+    }
+
+    private void applyListContextEligibility(ResumeListVO resume) {
+        ResumeContextEligibility.Assessment assessment = ResumeContextEligibility.assess(
+                resume.getTitle(), resume.getRealName(), resume.getTargetPosition(), resume.getSummary(), null);
+        resume.setContextEligibility(assessment.status().name());
+        resume.setContextEligibilityReason(assessment.reasonCode());
+    }
+
+    private void assertEligibleForContext(Resume resume, String action) {
+        ResumeContextEligibility.Assessment assessment = ResumeContextEligibility.assess(resume);
+        if (!assessment.isEligible()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    action + "前请先完善简历信息：" + assessment.message());
+        }
     }
 
     private Resume copyResumeDraft(Resume source, Long optimizeRecordId, LocalDateTime appliedAt) {

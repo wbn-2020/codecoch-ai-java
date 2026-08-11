@@ -12,4 +12,6 @@ public class InnerResumeDetailVO {
     private String realName;
     private String summary;
     private List<InnerResumeProjectVO> projects;
+    private String contextEligibility;
+    private String contextEligibilityReason;
 }

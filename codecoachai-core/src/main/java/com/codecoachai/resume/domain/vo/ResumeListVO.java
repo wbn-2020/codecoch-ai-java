@@ -16,4 +16,6 @@ public class ResumeListVO {
     private Integer isDefault;
     private Integer status;
     private LocalDateTime updatedAt;
+    private String contextEligibility;
+    private String contextEligibilityReason;
 }

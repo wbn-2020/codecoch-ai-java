@@ -817,7 +817,7 @@ class InterviewServiceImplTest {
                 service.generateReportForSse(1L, null, false, stage -> {
                 });
 
-        assertEquals(ReportStatusEnum.FAILED.name(), result.getResult().getStatus());
+        assertEquals(ReportStatusEnum.UNSCORABLE.name(), result.getResult().getStatus());
         assertNull(result.getResult().getTotalScore());
         assertTrue(result.getResult().getRubricScores().isEmpty());
         assertNull(result.getResult().getRubricVersion());

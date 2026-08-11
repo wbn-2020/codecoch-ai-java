@@ -2,6 +2,7 @@ package com.codecoachai.resume.convert;
 
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeProject;
+import com.codecoachai.resume.domain.enums.ResumeContextEligibility;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
@@ -29,6 +30,7 @@ public final class ResumeConvert {
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setUpdatedAt(resume.getUpdatedAt());
+        applyContextEligibility(vo, ResumeContextEligibility.assess(resume));
         return vo;
     }
 
@@ -48,6 +50,7 @@ public final class ResumeConvert {
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setProjects(projects);
+        applyContextEligibility(vo, ResumeContextEligibility.assess(resume));
         return vo;
     }
 
@@ -63,7 +66,23 @@ public final class ResumeConvert {
         vo.setEducationExperience(resume.getEducationExperience());
         vo.setSummary(resume.getSummary());
         vo.setProjects(projects);
+        applyContextEligibility(vo, ResumeContextEligibility.assess(resume));
         return vo;
+    }
+
+    private static void applyContextEligibility(ResumeListVO vo, ResumeContextEligibility.Assessment assessment) {
+        vo.setContextEligibility(assessment.status().name());
+        vo.setContextEligibilityReason(assessment.reasonCode());
+    }
+
+    private static void applyContextEligibility(ResumeDetailVO vo, ResumeContextEligibility.Assessment assessment) {
+        vo.setContextEligibility(assessment.status().name());
+        vo.setContextEligibilityReason(assessment.reasonCode());
+    }
+
+    private static void applyContextEligibility(InnerResumeDetailVO vo, ResumeContextEligibility.Assessment assessment) {
+        vo.setContextEligibility(assessment.status().name());
+        vo.setContextEligibilityReason(assessment.reasonCode());
     }
 
     public static ResumeProjectVO toProjectVO(ResumeProject project) {

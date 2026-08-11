@@ -24,6 +24,8 @@ public class JobApplicationVO {
     private Integer lockVersion;
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
+    private Long followUpCalendarEventId;
+    private String followUpCalendarSyncStatus;
     private String note;
     private Long latestEventId;
     private String latestEventType;

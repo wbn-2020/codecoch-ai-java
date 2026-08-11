@@ -20,4 +20,6 @@ public class ResumeDetailVO {
     private Integer isDefault;
     private Integer status;
     private List<ResumeProjectVO> projects;
+    private String contextEligibility;
+    private String contextEligibilityReason;
 }

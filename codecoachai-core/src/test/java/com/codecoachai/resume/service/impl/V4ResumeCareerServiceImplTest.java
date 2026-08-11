@@ -224,6 +224,37 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void updateApplicationClearsFollowUpAndCancelsOnlyItsSystemCalendarProjection() {
+        JobApplication existing = application(88L, USER_ID);
+        existing.setCompanyName("测试科技");
+        existing.setJobTitle("Java 后端工程师");
+        existing.setNextFollowUpAt(LocalDateTime.of(2026, 8, 12, 10, 0));
+        existing.setLockVersion(1);
+        CareerCalendarEvent projection = new CareerCalendarEvent();
+        projection.setId(701L);
+        projection.setUserId(USER_ID);
+        projection.setApplicationId(88L);
+        projection.setSourceType("JOB_APPLICATION_FOLLOW_UP");
+        projection.setSourceRef("88");
+        projection.setStatus("CONFIRMED");
+        JobApplication updated = application(88L, USER_ID);
+        updated.setLockVersion(2);
+        when(jobApplicationMapper.selectById(88L)).thenReturn(existing, updated);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        when(careerCalendarEventMapper.selectOne(any())).thenReturn(projection);
+        JobApplicationSaveDTO dto = new JobApplicationSaveDTO();
+        dto.setClearNextFollowUp(true);
+
+        service.updateApplication(88L, dto);
+
+        verify(jobApplicationMapper).update(isNull(), any(LambdaUpdateWrapper.class));
+        ArgumentCaptor<CareerCalendarEvent> eventCaptor = ArgumentCaptor.forClass(CareerCalendarEvent.class);
+        verify(careerCalendarEventMapper).updateById(eventCaptor.capture());
+        assertEquals("CANCELED", eventCaptor.getValue().getStatus());
+        assertTrue(eventCaptor.getValue().getDescription().contains("清除下次跟进时间"));
+    }
+
+    @Test
     void createApplicationAutoAssignsOnlyAfterCommit() {
         when(jobApplicationMapper.insert(any(JobApplication.class))).thenAnswer(invocation -> {
             JobApplication application = invocation.getArgument(0);

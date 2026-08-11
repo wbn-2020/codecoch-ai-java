@@ -15,6 +15,7 @@ import com.codecoachai.resume.domain.dto.ResumeJobMatchCreateDTO;
 import com.codecoachai.resume.domain.dto.ResumeJobMatchQueryDTO;
 import com.codecoachai.resume.domain.entity.JobDescriptionAnalysis;
 import com.codecoachai.resume.domain.entity.Resume;
+import com.codecoachai.resume.domain.enums.ResumeContextEligibility;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchDetail;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
@@ -310,6 +311,11 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private MatchContext prepareContext(Long resumeId, Long targetJobId, Long userId,
                                         Long resumeVersionId, Long jdAnalysisId) {
         Resume resume = getOwnedResume(resumeId, userId);
+        ResumeContextEligibility.Assessment eligibility = ResumeContextEligibility.assess(resume);
+        if (!eligibility.isEligible()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "请先完善并检查简历内容，再生成岗位匹配报告：" + eligibility.message());
+        }
         ResumeVersion resumeVersion = resumeVersionId == null
                 ? null
                 : getOwnedResumeVersion(resumeVersionId, resumeId, userId);

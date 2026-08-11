@@ -131,10 +131,12 @@ public class InterviewReportAsyncService {
         }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
-        if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
-            session.setReportStatus(ReportStatusEnum.GENERATED.name());
-            session.setTotalScore(report.getTotalScore());
-            session.setFailureReason(null);
+        if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                || ReportStatusEnum.UNSCORABLE.name().equals(report.getStatus())) {
+            session.setReportStatus(report.getStatus());
+            session.setTotalScore(ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                    ? report.getTotalScore() : null);
+            session.setFailureReason(report.getFailureReason());
         } else {
             session.setReportStatus(ReportStatusEnum.FAILED.name());
             session.setTotalScore(null);
@@ -955,7 +957,7 @@ public class InterviewReportAsyncService {
     }
 
     private void markReportAiIncomplete(InterviewReport report) {
-        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
         report.setStageScores("{}");
@@ -966,7 +968,7 @@ public class InterviewReportAsyncService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview("[]");
+        report.setQaReview(firstText(report.getQaReview(), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -981,7 +983,7 @@ public class InterviewReportAsyncService {
     private void markReportSampleInsufficient(
             InterviewSession session, InterviewReport report, String generationToken) {
         report.setUserId(session.getUserId());
-        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
         report.setStageScores("{}");
@@ -992,7 +994,7 @@ public class InterviewReportAsyncService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview("[]");
+        report.setQaReview(firstText(report.getQaReview(), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -1007,7 +1009,7 @@ public class InterviewReportAsyncService {
         }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
-        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setReportStatus(ReportStatusEnum.UNSCORABLE.name());
         session.setTotalScore(null);
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
         session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);

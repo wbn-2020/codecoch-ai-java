@@ -15,6 +15,7 @@ public class JobApplicationSaveDTO {
     private String status;
     private LocalDateTime appliedAt;
     private LocalDateTime nextFollowUpAt;
+    private Boolean clearNextFollowUp;
     private String note;
     private Integer expectedLockVersion;
     private String idempotencyKey;

@@ -666,7 +666,9 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                     .set(StringUtils.hasText(request.getJobTitle()), JobApplication::getJobTitle, request.getJobTitle())
                     .set(request.getSource() != null, JobApplication::getSource, request.getSource())
                     .set(request.getAppliedAt() != null, JobApplication::getAppliedAt, request.getAppliedAt())
-                    .set(request.getNextFollowUpAt() != null, JobApplication::getNextFollowUpAt, request.getNextFollowUpAt())
+                    .set(request.getNextFollowUpAt() != null || Boolean.TRUE.equals(request.getClearNextFollowUp()),
+                            JobApplication::getNextFollowUpAt,
+                            Boolean.TRUE.equals(request.getClearNextFollowUp()) ? null : request.getNextFollowUpAt())
                     .set(request.getNote() != null, JobApplication::getNote, request.getNote())
                     .setSql("lock_version = lock_version + 1");
             if (jobApplicationMapper.update(null, update) != 1) {
@@ -681,6 +683,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                     request.getNextFollowUpAt(),
                     firstText(request.getCompanyName(), app.getCompanyName()),
                     firstText(request.getJobTitle(), app.getJobTitle()));
+        } else if (Boolean.TRUE.equals(request.getClearNextFollowUp())) {
+            cancelApplicationFollowUpCalendar(updated == null ? app : updated);
         }
         return toApplicationVOWithDetails(updated);
     }
@@ -694,6 +698,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 || request.getSource() != null
                 || request.getAppliedAt() != null
                 || request.getNextFollowUpAt() != null
+                || Boolean.TRUE.equals(request.getClearNextFollowUp())
                 || request.getNote() != null;
     }
 
@@ -746,6 +751,28 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             target = companyName.trim() + " · " + target;
         }
         return "跟进 " + target;
+    }
+
+    private void cancelApplicationFollowUpCalendar(JobApplication application) {
+        if (application == null || application.getId() == null || application.getUserId() == null) {
+            return;
+        }
+        String sourceRef = String.valueOf(application.getId());
+        CareerCalendarEvent event = careerCalendarEventMapper.selectOne(
+                new LambdaQueryWrapper<CareerCalendarEvent>()
+                        .eq(CareerCalendarEvent::getUserId, application.getUserId())
+                        .eq(CareerCalendarEvent::getApplicationId, application.getId())
+                        .eq(CareerCalendarEvent::getSourceType, APPLICATION_FOLLOW_UP_SOURCE_TYPE)
+                        .eq(CareerCalendarEvent::getSourceRef, sourceRef)
+                        .eq(CareerCalendarEvent::getDeleted, CommonConstants.NO)
+                        .orderByDesc(CareerCalendarEvent::getId)
+                        .last("limit 1"));
+        if (event == null) {
+            return;
+        }
+        event.setStatus("CANCELED");
+        event.setDescription("投递记录已清除下次跟进时间，系统同步取消该日历事项。");
+        careerCalendarEventMapper.updateById(event);
     }
 
     private String firstText(String... values) {
@@ -1887,7 +1914,29 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             vo.setLatestEventTime(event.getEventTime());
             vo.setLatestEventSummary(event.getSummary());
         }
+        attachFollowUpCalendarProjection(vo);
         return vo;
+    }
+
+    private void attachFollowUpCalendarProjection(JobApplicationVO vo) {
+        if (vo == null || vo.getId() == null) {
+            return;
+        }
+        CareerCalendarEvent event = careerCalendarEventMapper.selectOne(
+                new LambdaQueryWrapper<CareerCalendarEvent>()
+                        .eq(CareerCalendarEvent::getApplicationId, vo.getId())
+                        .eq(CareerCalendarEvent::getSourceType, APPLICATION_FOLLOW_UP_SOURCE_TYPE)
+                        .eq(CareerCalendarEvent::getSourceRef, String.valueOf(vo.getId()))
+                        .eq(CareerCalendarEvent::getDeleted, CommonConstants.NO)
+                        .orderByDesc(CareerCalendarEvent::getId)
+                        .last("limit 1"));
+        if (event == null) {
+            vo.setFollowUpCalendarSyncStatus(vo.getNextFollowUpAt() == null ? "NOT_SCHEDULED" : "PENDING");
+            return;
+        }
+        vo.setFollowUpCalendarEventId(event.getId());
+        vo.setFollowUpCalendarSyncStatus("CANCELED".equalsIgnoreCase(event.getStatus())
+                ? "CANCELED" : "SYNCED");
     }
 
     private JobApplicationAgentContextVO toAgentApplicationContextVO(JobApplication app, LocalDateTime now) {

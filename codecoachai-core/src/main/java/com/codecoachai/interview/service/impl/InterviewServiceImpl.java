@@ -2586,14 +2586,14 @@ public class InterviewServiceImpl implements InterviewService {
     private void markReportAiIncomplete(InterviewSession session, InterviewReport report) {
         markReportAiIncomplete(report);
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
-        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setReportStatus(ReportStatusEnum.UNSCORABLE.name());
         session.setTotalScore(null);
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
         session.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
     }
 
     private void markReportAiIncomplete(InterviewReport report) {
-        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
         report.setStageScores("{}");
@@ -2604,7 +2604,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview("[]");
+        report.setQaReview(firstText(report.getQaReview(), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -2623,7 +2623,7 @@ public class InterviewServiceImpl implements InterviewService {
     private InterviewReport markReportSampleInsufficient(
             InterviewSession session, InterviewReport report, String generationToken) {
         report.setUserId(session.getUserId());
-        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
         report.setStageScores("{}");
@@ -2634,7 +2634,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview("[]");
+        report.setQaReview(firstText(report.getQaReview(), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -2652,7 +2652,7 @@ public class InterviewServiceImpl implements InterviewService {
         }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
-        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setReportStatus(ReportStatusEnum.UNSCORABLE.name());
         session.setTotalScore(null);
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
         session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
@@ -2983,6 +2983,11 @@ public class InterviewServiceImpl implements InterviewService {
             if (resume == null || !userId.equals(resume.getUserId())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume not found");
             }
+            if ("BLOCKED".equalsIgnoreCase(String.valueOf(resume.getContextEligibility()))
+                    || "NEEDS_REVIEW".equalsIgnoreCase(String.valueOf(resume.getContextEligibility()))) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "所选简历尚未通过上下文校验，请先补充并检查简历内容");
+            }
         }
     }
 
@@ -3233,7 +3238,8 @@ public class InterviewServiceImpl implements InterviewService {
         }
         try {
             InnerResumeDetailVO resume = FeignResultUtils.unwrap(resumeFeignClient.getDefaultResume());
-            if (resume != null) {
+            if (resume != null && !"BLOCKED".equalsIgnoreCase(String.valueOf(resume.getContextEligibility()))
+                    && !"NEEDS_REVIEW".equalsIgnoreCase(String.valueOf(resume.getContextEligibility()))) {
                 request.setResumeId(resume.getId());
             }
         } catch (BusinessException ignored) {

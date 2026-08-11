@@ -185,6 +185,22 @@ class ResumeServiceImplTest {
     }
 
     @Test
+    void malformedResumeCannotBecomeDefault() {
+        Resume resume = ownedResume();
+        resume.setTitle("223");
+        resume.setRealName("李明");
+        resume.setTargetPosition("Java 后端工程师");
+        resume.setSummary("负责订单与库存服务的设计和交付。");
+        when(resumeMapper.selectOne(any())).thenReturn(resume);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.setDefault(RESUME_ID));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("异常内容"));
+    }
+
+    @Test
     void getOptimizeRecordEvidenceReturnsOwnedSuccessfulTargetJobScopedRecord() {
         when(optimizeRecordMapper.selectOne(any())).thenReturn(successRecord());
 

@@ -16,4 +16,6 @@ public class InnerResumeDetailVO {
     private String educationExperience;
     private String summary;
     private List<ResumeProjectVO> projects;
+    private String contextEligibility;
+    private String contextEligibilityReason;
 }
