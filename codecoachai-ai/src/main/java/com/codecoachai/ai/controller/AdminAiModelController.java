@@ -3,8 +3,8 @@ package com.codecoachai.ai.controller;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
-import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.vo.AiModelHealthLogRow;
 import com.codecoachai.ai.domain.vo.AiModelHealthSummaryVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
@@ -17,9 +17,12 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -68,7 +71,8 @@ public class AdminAiModelController {
                 .orderByDesc(AiModelConfig::getDefaultModel)
                 .orderByAsc(AiModelConfig::getSortOrder)
                 .orderByDesc(AiModelConfig::getUpdatedAt));
-        rows.forEach(this::maskApiKey);
+        Map<Long, Map<String, AiModelHealthLogRow>> healthRows = loadHealthRows(rows);
+        rows.forEach(row -> applyListSummary(row, healthRows.getOrDefault(row.getId(), Collections.emptyMap())));
         return Result.success(rows);
     }
 
@@ -94,7 +98,11 @@ public class AdminAiModelController {
     @GetMapping({"/admin/ai/models/{id}/health", "/admin/ai/model-configs/{id}/health"})
     public Result<AiModelHealthSummaryVO> health(@PathVariable Long id) {
         permissionGuard.require(PERM_MODEL_LIST);
-        return Result.success(buildHealthSummary(get(id)));
+        AiModelConfig modelConfig = get(id);
+        Map<Long, Map<String, AiModelHealthLogRow>> healthRows = loadHealthRows(List.of(modelConfig));
+        return Result.success(buildHealthSummary(
+                modelConfig,
+                healthRows.getOrDefault(modelConfig.getId(), Collections.emptyMap())));
     }
 
     @PostMapping("/admin/ai/models")
@@ -110,6 +118,7 @@ public class AdminAiModelController {
                 () -> {
                     AiModelConfig entity = new AiModelConfig();
                     apply(entity, dto);
+                    ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), null);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
                         clearDefault(entity.getProvider(), null);
                     }
@@ -132,6 +141,7 @@ public class AdminAiModelController {
                 () -> {
                     AiModelConfig entity = get(id);
                     apply(entity, dto);
+                    ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), id);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
                         clearDefault(entity.getProvider(), id);
                     }
@@ -275,9 +285,29 @@ public class AdminAiModelController {
         try {
             action.run();
         } catch (DuplicateKeyException ex) {
+            if (isModelCodeDuplicate(ex)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "同一供应商下已存在相同的模型标识，请修改后重试");
+            }
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "同一供应商只能有一个默认模型，请刷新后重试");
         }
+    }
+
+    private void ensureModelCodeUnique(String provider, String modelCode, Long excludeId) {
+        Long count = mapper.selectCount(new LambdaQueryWrapper<AiModelConfig>()
+                .eq(AiModelConfig::getProvider, provider)
+                .eq(AiModelConfig::getModelCode, modelCode)
+                .ne(excludeId != null, AiModelConfig::getId, excludeId));
+        if (count != null && count > 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "同一供应商下已存在相同的模型标识，请修改后重试");
+        }
+    }
+
+    private boolean isModelCodeDuplicate(DuplicateKeyException ex) {
+        String message = ex == null ? null : ex.getMessage();
+        return StringUtils.hasText(message) && message.contains("uk_ai_model_provider_code");
     }
 
     private void ensureDefaultModelNotDisabled(AiModelConfig entity, Integer enabled) {
@@ -302,10 +332,24 @@ public class AdminAiModelController {
         return entity;
     }
 
-    private AiModelHealthSummaryVO buildHealthSummary(AiModelConfig modelConfig) {
-        AiCallLog latestCall = latestModelCall(modelConfig.getModelCode(), null);
-        AiCallLog latestSuccess = latestModelCall(modelConfig.getModelCode(), 1);
-        AiCallLog latestFailure = latestModelCall(modelConfig.getModelCode(), 0);
+    private void applyListSummary(AiModelConfig entity, Map<String, AiModelHealthLogRow> healthRows) {
+        if (entity == null) {
+            return;
+        }
+        AiModelHealthSummaryVO summary = buildHealthSummary(entity, healthRows);
+        entity.setCallHealthStatus(summary.getHealthStatus());
+        entity.setLastCallSuccessAt(summary.getLastSuccessAt());
+        entity.setLastCallFailureAt(summary.getLastFailureAt());
+        entity.setLastCallFailureSummary(summary.getLastFailureSummary());
+        maskApiKey(entity);
+    }
+
+    private AiModelHealthSummaryVO buildHealthSummary(
+            AiModelConfig modelConfig,
+            Map<String, AiModelHealthLogRow> healthRows) {
+        AiModelHealthLogRow latestCall = healthRows.get("LATEST");
+        AiModelHealthLogRow latestSuccess = healthRows.get("SUCCESS");
+        AiModelHealthLogRow latestFailure = healthRows.get("FAILURE");
 
         AiModelHealthSummaryVO vo = new AiModelHealthSummaryVO();
         vo.setModelId(modelConfig.getId());
@@ -322,20 +366,25 @@ public class AdminAiModelController {
         return vo;
     }
 
-    private AiCallLog latestModelCall(String modelCode, Integer success) {
-        if (!StringUtils.hasText(modelCode)) {
-            return null;
+    private Map<Long, Map<String, AiModelHealthLogRow>> loadHealthRows(List<AiModelConfig> modelConfigs) {
+        if (modelConfigs == null || modelConfigs.isEmpty()) {
+            return Collections.emptyMap();
         }
-        return aiCallLogMapper.selectOne(new LambdaQueryWrapper<AiCallLog>()
-                .and(wrapper -> wrapper.eq(AiCallLog::getModelName, modelCode)
-                        .or()
-                        .eq(AiCallLog::getModel, modelCode))
-                .eq(success != null, AiCallLog::getSuccess, success)
-                .orderByDesc(AiCallLog::getCreatedAt)
-                .last("LIMIT 1"));
+        List<AiModelHealthLogRow> rows = aiCallLogMapper.selectModelHealthRows(modelConfigs);
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return rows.stream()
+                .filter(row -> row.getModelConfigId() != null && StringUtils.hasText(row.getHealthBucket()))
+                .collect(Collectors.groupingBy(
+                        AiModelHealthLogRow::getModelConfigId,
+                        Collectors.toMap(
+                                AiModelHealthLogRow::getHealthBucket,
+                                Function.identity(),
+                                (left, right) -> left)));
     }
 
-    private String resolveHealthStatus(AiCallLog latestCall) {
+    private String resolveHealthStatus(AiModelHealthLogRow latestCall) {
         String callStatus = resolveCallStatus(latestCall);
         if ("SUCCESS".equals(callStatus)) {
             return "HEALTHY";
@@ -346,7 +395,7 @@ public class AdminAiModelController {
         return "UNKNOWN";
     }
 
-    private String resolveCallStatus(AiCallLog logEntry) {
+    private String resolveCallStatus(AiModelHealthLogRow logEntry) {
         if (logEntry == null) {
             return "UNKNOWN";
         }
@@ -360,7 +409,7 @@ public class AdminAiModelController {
         return "UNKNOWN";
     }
 
-    private java.time.LocalDateTime createdAt(AiCallLog logEntry) {
+    private java.time.LocalDateTime createdAt(AiModelHealthLogRow logEntry) {
         return logEntry == null ? null : logEntry.getCreatedAt();
     }
 

@@ -79,7 +79,7 @@ public class AiRouterProperties {
     @Data
     public static class ProviderSecurity {
         private Set<String> allowedHosts = new LinkedHashSet<>(
-                Set.of("api.deepseek.com", "dashscope.aliyuncs.com"));
+                Set.of("api.deepseek.com", "dashscope.aliyuncs.com", "chatapi.weixin.qq.com"));
         private Set<Integer> allowedPorts = new LinkedHashSet<>(Set.of(443));
     }
 }

@@ -254,12 +254,11 @@ public class ProviderAiCaller {
     }
 
     private AiRouterProperties.ProviderConfig resolveProvider(String providerName) {
-        AiRouterProperties.ProviderConfig configured = routerProperties.getProviders().get(providerName);
-        if (isUsable(configured)) {
-            return configured;
-        }
         AiRouterProperties.ProviderConfig fromDatabase = loadProviderFromDatabase(providerName);
-        return fromDatabase != null ? fromDatabase : configured;
+        if (isUsable(fromDatabase)) {
+            return fromDatabase;
+        }
+        return routerProperties.getProviders().get(providerName);
     }
 
     private boolean isUsable(AiRouterProperties.ProviderConfig cfg) {

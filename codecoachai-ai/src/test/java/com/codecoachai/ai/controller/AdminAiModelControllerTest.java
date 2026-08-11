@@ -17,6 +17,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.vo.AiModelHealthLogRow;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
@@ -33,6 +34,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @ExtendWith(MockitoExtension.class)
 class AdminAiModelControllerTest {
@@ -89,11 +91,13 @@ class AdminAiModelControllerTest {
         when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
         LocalDateTime failureAt = LocalDateTime.of(2026, 8, 10, 9, 0);
         LocalDateTime successAt = LocalDateTime.of(2026, 8, 10, 8, 0);
-        AiCallLog latestFailure = callLog(0, failureAt,
+        AiModelHealthLogRow latestFailure = healthRow(7L, "LATEST", 0, failureAt,
                 "Authorization: Bearer sk-live-secret token=private-value alice@example.com");
-        AiCallLog latestSuccess = callLog(1, successAt, null);
-        when(aiCallLogMapper.selectOne(any()))
-                .thenReturn(latestFailure, latestSuccess, latestFailure);
+        AiModelHealthLogRow latestSuccess = healthRow(7L, "SUCCESS", 1, successAt, null);
+        AiModelHealthLogRow failureBucket = healthRow(7L, "FAILURE", 0, failureAt,
+                "Authorization: Bearer sk-live-secret token=private-value alice@example.com");
+        when(aiCallLogMapper.selectModelHealthRows(any()))
+                .thenReturn(List.of(latestFailure, latestSuccess, failureBucket));
 
         var result = controller.health(7L).getData();
 
@@ -121,6 +125,25 @@ class AdminAiModelControllerTest {
     }
 
     @Test
+    void listIncludesHealthSummaryFromPersistedCallHistory() {
+        AiModelConfig configuredModel = model(7L, 0, 1);
+        LocalDateTime successAt = LocalDateTime.of(2026, 8, 11, 10, 0);
+        when(mapper.selectList(any())).thenReturn(List.of(configuredModel));
+        when(aiCallLogMapper.selectModelHealthRows(any()))
+                .thenReturn(List.of(
+                        healthRow(7L, "LATEST", 1, successAt, null),
+                        healthRow(7L, "SUCCESS", 1, successAt, null)));
+
+        AiModelConfig result = controller.list(null, null, null, null).getData().get(0);
+
+        assertEquals("HEALTHY", result.getCallHealthStatus());
+        assertEquals(successAt, result.getLastCallSuccessAt());
+        assertNull(result.getLastCallFailureAt());
+        assertNull(result.getLastCallFailureSummary());
+        verify(permissionGuard).require("admin:ai:model:list");
+    }
+
+    @Test
     void createNormalizesAndValidatesProviderBaseUrlBeforeInsert() {
         AiModelConfigSaveDTO dto = saveDto(false);
         dto.setApiBaseUrl("https://API.EXAMPLE.COM/v1/");
@@ -144,6 +167,17 @@ class AdminAiModelControllerTest {
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
 
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        verify(mapper, never()).insert(any(AiModelConfig.class));
+    }
+
+    @Test
+    void createRejectsDuplicateProviderModelCodeBeforeInsert() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        when(mapper.selectCount(any())).thenReturn(1L);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
+
+        assertTrue(exception.getMessage().contains("已存在相同的模型标识"));
         verify(mapper, never()).insert(any(AiModelConfig.class));
     }
 
@@ -277,12 +311,19 @@ class AdminAiModelControllerTest {
         return model;
     }
 
-    private static AiCallLog callLog(Integer success, LocalDateTime createdAt, String errorMessage) {
-        AiCallLog log = new AiCallLog();
-        log.setSuccess(success);
-        log.setCreatedAt(createdAt);
-        log.setErrorMessage(errorMessage);
-        return log;
+    private static AiModelHealthLogRow healthRow(
+            Long modelConfigId,
+            String bucket,
+            Integer success,
+            LocalDateTime createdAt,
+            String errorMessage) {
+        AiModelHealthLogRow row = new AiModelHealthLogRow();
+        row.setModelConfigId(modelConfigId);
+        row.setHealthBucket(bucket);
+        row.setSuccess(success);
+        row.setCreatedAt(createdAt);
+        row.setErrorMessage(errorMessage);
+        return row;
     }
 
     private static void initTableInfo(Class<?> entityClass) {
