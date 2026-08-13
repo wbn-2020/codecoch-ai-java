@@ -1,7 +1,9 @@
 package com.codecoachai.ai.agent.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -97,6 +99,20 @@ class AgentAnalyticsServiceImplTest {
         assertEquals(1L, distribution.get(0).getValue());
         assertEquals("REDIS", distribution.get(1).getName());
         assertEquals(1L, distribution.get(1).getValue());
+    }
+
+    @Test
+    void personalAnalyticsPropagatesStorageFailuresInsteadOfReportingEmptyMetrics() {
+        when(agentTaskMapper.selectList(any())).thenThrow(new RuntimeException("agent task table unavailable"));
+
+        assertThrows(RuntimeException.class, () -> service.personalOverview(7L));
+        assertThrows(RuntimeException.class, () -> service.personalTaskTrend(7L, 1));
+        assertThrows(RuntimeException.class, () -> service.personalSkillDistribution(7L, 7));
+
+        reset(agentTaskMapper, agentRunMapper);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(agentRunMapper.selectList(any())).thenThrow(new RuntimeException("agent run table unavailable"));
+        assertThrows(RuntimeException.class, () -> service.personalOverview(7L));
     }
 
     private static AgentRun run(String status, String resultSource) {

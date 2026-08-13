@@ -3,6 +3,7 @@ package com.codecoachai.user.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -197,6 +198,14 @@ class UserServiceImplTest {
         assertTrue(queriedSql.stream().anyMatch(sql ->
                 sql.contains("plan_status = 'ACTIVE'") && sql.contains("ORDER BY updated_at DESC, id DESC")));
         assertTrue(queriedSql.stream().noneMatch(sql -> sql.contains("CURDATE()")));
+    }
+
+    @Test
+    void dashboardPropagatesMetadataFailuresInsteadOfReportingAnEmptyOverview() {
+        when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
+                .thenThrow(new RuntimeException("metadata unavailable"));
+
+        assertThrows(RuntimeException.class, () -> userService.getDashboardOverview());
     }
 
     @Test

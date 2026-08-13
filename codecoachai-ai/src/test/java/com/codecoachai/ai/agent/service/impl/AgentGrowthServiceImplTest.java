@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -464,6 +465,28 @@ class AgentGrowthServiceImplTest {
         assertFalse(vo.getColdStartReason().isBlank());
         assertFalse(vo.getNextEvidenceActions().isEmpty());
         assertEquals(2, vo.getDataSourceLabels().size());
+    }
+
+    @Test
+    void growthReadModelsPropagateStorageFailuresInsteadOfReportingColdStart() {
+        when(agentTaskMapper.selectList(any())).thenThrow(new RuntimeException("agent task table unavailable"));
+        AgentGrowthServiceImpl target = service();
+        assertThrows(RuntimeException.class, () -> target.growthOverview(10L));
+
+        reset(agentTaskMapper, agentReviewMapper, agentMemoryMapper);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.selectCount(any())).thenThrow(new RuntimeException("review table unavailable"));
+        assertThrows(RuntimeException.class, () -> target.growthOverview(10L));
+
+        reset(agentReviewMapper, agentMemoryMapper, skillGrowthSnapshotMapper);
+        when(skillGrowthSnapshotMapper.selectList(any()))
+                .thenThrow(new RuntimeException("skill snapshot table unavailable"));
+        assertThrows(RuntimeException.class, () -> target.skillTrend(10L, 7));
+
+        reset(skillGrowthSnapshotMapper, readinessScoreRecordMapper);
+        when(readinessScoreRecordMapper.selectList(any()))
+                .thenThrow(new RuntimeException("readiness table unavailable"));
+        assertThrows(RuntimeException.class, () -> target.readinessTrend(10L, 14));
     }
 
     @Test

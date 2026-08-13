@@ -975,6 +975,13 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void todayTasksPropagatesTaskStorageFailuresInsteadOfReturningAnEmptySnapshot() {
+        when(agentTaskMapper.selectList(any())).thenThrow(new RuntimeException("agent task table unavailable"));
+
+        assertThrows(RuntimeException.class, () -> service.todayTasks(USER_ID, null, LocalDate.now(), null));
+    }
+
+    @Test
     void todayTasksBuildsOneBusinessDateSnapshotAcrossRunsAndTargetJobs() {
         LocalDate dueDate = LocalDate.now();
         AgentTask first = task(99L, USER_ID, AgentTaskStatusEnum.TODO.name());

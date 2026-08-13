@@ -67,6 +67,7 @@ public class UserServiceImpl implements UserService {
             "resume_analysis_record",
             "resume_optimize_record",
             "interview_session",
+            "interview_report",
             "practice_record",
             "wrong_record",
             "user_favorite",
@@ -396,6 +397,9 @@ public class UserServiceImpl implements UserService {
     }
 
     private UserDashboardOverviewVO.RecentInterviewVO recentInterview(Long userId) {
+        if (!tableExists("interview_session")) {
+            return null;
+        }
         String sql = """
                 SELECT id, title, status, report_status, updated_at
                 FROM interview_session
@@ -418,6 +422,9 @@ public class UserServiceImpl implements UserService {
     }
 
     private UserDashboardOverviewVO.RecentReportVO recentReport(Long userId) {
+        if (!tableExists("interview_report") || !tableExists("interview_session")) {
+            return null;
+        }
         String sql = """
                 SELECT r.id, r.session_id, r.status, r.total_score, r.generated_at
                 FROM interview_report r
@@ -441,6 +448,9 @@ public class UserServiceImpl implements UserService {
     }
 
     private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId, LocalDate businessDate) {
+        if (!tableExists("study_plan")) {
+            return null;
+        }
         String sql = """
                 SELECT id, plan_title, plan_summary, plan_status, updated_at
                 FROM study_plan

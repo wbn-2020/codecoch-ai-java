@@ -427,14 +427,16 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         LocalDate dueDate = date == null ? LocalDate.now() : date;
         // "Today" is a business-date snapshot across every target and plan for this user.
         // This keeps dashboard, today, and task-center task facts aligned.
-        return agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
-                        .eq(AgentTask::getUserId, userId)
-                        .eq(AgentTask::getDeleted, 0)
-                        .eq(AgentTask::getDueDate, dueDate)
-                        .eq(StringUtils.hasText(status), AgentTask::getStatus, status)
-                        .orderByAsc(AgentTask::getSortOrder)
-                        .orderByAsc(AgentTask::getId))
-                .stream().map(this::toReviewedTaskVOWithRunTrace).toList();
+        List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+                .eq(AgentTask::getUserId, userId)
+                .eq(AgentTask::getDeleted, 0)
+                .eq(AgentTask::getDueDate, dueDate)
+                .eq(StringUtils.hasText(status), AgentTask::getStatus, status)
+                .orderByAsc(AgentTask::getSortOrder)
+                .orderByAsc(AgentTask::getId));
+        return (tasks == null ? List.<AgentTask>of() : tasks).stream()
+                .map(this::toReviewedTaskVOWithRunTrace)
+                .toList();
     }
 
     @Override
