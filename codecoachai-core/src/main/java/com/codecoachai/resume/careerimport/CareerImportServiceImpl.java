@@ -489,6 +489,7 @@ public class CareerImportServiceImpl implements CareerImportService {
         List<JobApplication> applications = applicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .orderByDesc(JobApplication::getUpdatedAt)
                 .last("LIMIT 5001"));
         if (applications.size() > 5000) {

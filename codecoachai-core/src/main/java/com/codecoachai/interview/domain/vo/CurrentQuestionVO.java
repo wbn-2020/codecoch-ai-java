@@ -1,5 +1,6 @@
 package com.codecoachai.interview.domain.vo;
 
+import java.time.LocalDateTime;
 import lombok.Data;
 
 @Data
@@ -23,4 +24,5 @@ public class CurrentQuestionVO {
     private String stageProgress;
     private String overallProgress;
     private String interviewStatus;
+    private LocalDateTime questionPresentedAt;
 }

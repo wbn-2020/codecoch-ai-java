@@ -14,6 +14,7 @@ import com.codecoachai.resume.careeroffer.service.CareerOfferReminderProvider;
 import com.codecoachai.resume.careeroffer.vo.CareerOfferReminderCandidateVO;
 import com.codecoachai.resume.domain.dto.ApplicationStatsAggregate;
 import com.codecoachai.resume.domain.dto.ApplicationStatusCount;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
@@ -108,6 +109,9 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     private static final String APPLICATION_FOLLOW_UP_SOURCE_TYPE = "JOB_APPLICATION_FOLLOW_UP";
     private static final String APPLICATION_FOLLOW_UP_EVENT_TYPE = "FOLLOW_UP";
     private static final String APPLICATION_FOLLOW_UP_STATUS = "CONFIRMED";
+    private static final String APPLICATION_ARCHIVED_EVENT_TYPE = "ARCHIVED";
+    private static final String APPLICATION_RESTORED_EVENT_TYPE = "RESTORED";
+    private static final String APPLICATION_DELETED_EVENT_TYPE = "DELETED";
     private static final int APPLICATION_FOLLOW_UP_DURATION_MINUTES = 30;
     private static final Set<String> CALENDAR_REMINDER_ACTIVE_STATUSES = Set.of("CONFIRMED", "TENTATIVE");
     private static final ZoneId CALENDAR_REMINDER_BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
@@ -266,10 +270,17 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     @Override
     public List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword) {
+        return listApplications(status, page, size, keyword, false);
+    }
+
+    @Override
+    public List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword,
+                                                   boolean includeArchived) {
         Long userId = currentUserId();
         LambdaQueryWrapper<JobApplication> query = new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(!includeArchived, JobApplication::getArchivedAt)
                 .eq(StringUtils.hasText(status), JobApplication::getStatus, normalizeApplicationStatus(status))
                 .and(StringUtils.hasText(keyword), wrapper -> wrapper
                         .like(JobApplication::getCompanyName, keyword)
@@ -297,7 +308,6 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         LocalDateTime generatedAt = now == null ? LocalDateTime.now() : now;
         ApplicationStatsAggregate aggregate = jobApplicationMapper.selectStats(
                 userId,
-                generatedAt,
                 generatedAt.toLocalDate().atStartOfDay(),
                 generatedAt.toLocalDate().plusDays(1).atStartOfDay(),
                 generatedAt.minusDays(14));
@@ -305,7 +315,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         if (aggregate == null) {
             List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                     .eq(JobApplication::getUserId, userId)
-                    .eq(JobApplication::getDeleted, CommonConstants.NO));
+                    .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .isNull(JobApplication::getArchivedAt));
             return buildApplicationStats(applications, generatedAt);
         }
         return toApplicationStats(aggregate, statusCounts, generatedAt);
@@ -320,6 +331,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         List<JobApplication> applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .eq(targetJobId != null, JobApplication::getTargetJobId, targetJobId)
                 .in(JobApplication::getStatus, AGENT_APPLICATION_ACTIVE_STATUSES)
                 .last(AGENT_APPLICATION_ORDER_LIMIT_SQL));
@@ -409,6 +421,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             applications = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                     .eq(JobApplication::getUserId, userId)
                     .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .isNull(JobApplication::getArchivedAt)
                     .isNotNull(JobApplication::getNextFollowUpAt));
         }
         if (applications == null || applications.isEmpty()) {
@@ -619,6 +632,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto) {
         JobApplication app = ownedApplication(id);
+        requireActiveApplication(app);
         JobApplicationSaveDTO request = prepareApplicationRequest(dto, app.getUserId());
         ensureMatchReportNotLinkedToAnotherApplication(request.getMatchReportId(), app.getUserId(), app.getId());
         String requestedStatus = normalizeApplicationStatus(request.getStatus());
@@ -689,6 +703,105 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         return toApplicationVOWithDetails(updated);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobApplicationVO archiveApplication(Long id, JobApplicationArchiveDTO dto) {
+        JobApplication application = ownedApplication(id);
+        if (application.getArchivedAt() != null) {
+            return toApplicationVOWithDetails(application);
+        }
+        int expectedVersion = requireExpectedApplicationVersion(application, dto);
+        String reason = trimArchiveReason(dto == null ? null : dto.getReason());
+        LocalDateTime archivedAt = LocalDateTime.now();
+        int updated = jobApplicationMapper.update(null, new LambdaUpdateWrapper<JobApplication>()
+                .eq(JobApplication::getId, application.getId())
+                .eq(JobApplication::getUserId, application.getUserId())
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
+                .eq(JobApplication::getLockVersion, expectedVersion)
+                .set(JobApplication::getArchivedAt, archivedAt)
+                .set(JobApplication::getArchiveReason, reason)
+                .setSql("lock_version = lock_version + 1"));
+        if (updated != 1) {
+            JobApplication current = ownedApplication(id);
+            if (current.getArchivedAt() != null) {
+                return toApplicationVOWithDetails(current);
+            }
+            throw applicationConcurrentUpdate();
+        }
+        application.setArchivedAt(archivedAt);
+        application.setArchiveReason(reason);
+        application.setLockVersion(expectedVersion + 1);
+        cancelApplicationFollowUpCalendar(application, "投递记录已归档，系统同步取消该日历事项。");
+        appendApplicationArchiveAuditEvent(application, APPLICATION_ARCHIVED_EVENT_TYPE, reason);
+        JobApplication updatedApplication = jobApplicationMapper.selectById(id);
+        return toApplicationVOWithDetails(updatedApplication == null ? application : updatedApplication);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobApplicationVO restoreApplication(Long id, JobApplicationArchiveDTO dto) {
+        JobApplication application = ownedApplication(id);
+        if (application.getArchivedAt() == null) {
+            return toApplicationVOWithDetails(application);
+        }
+        int expectedVersion = requireExpectedApplicationVersion(application, dto);
+        int updated = jobApplicationMapper.update(null, new LambdaUpdateWrapper<JobApplication>()
+                .eq(JobApplication::getId, application.getId())
+                .eq(JobApplication::getUserId, application.getUserId())
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNotNull(JobApplication::getArchivedAt)
+                .eq(JobApplication::getLockVersion, expectedVersion)
+                .set(JobApplication::getArchivedAt, null)
+                .set(JobApplication::getArchiveReason, null)
+                .setSql("lock_version = lock_version + 1"));
+        if (updated != 1) {
+            JobApplication current = ownedApplication(id);
+            if (current.getArchivedAt() == null) {
+                return toApplicationVOWithDetails(current);
+            }
+            throw applicationConcurrentUpdate();
+        }
+        application.setArchivedAt(null);
+        application.setArchiveReason(null);
+        application.setLockVersion(expectedVersion + 1);
+        if (application.getNextFollowUpAt() != null
+                && AGENT_APPLICATION_ACTIVE_STATUSES.contains(normalizeApplicationStatus(application.getStatus()))) {
+            syncApplicationFollowUpCalendar(
+                    application, application.getNextFollowUpAt(), application.getCompanyName(), application.getJobTitle());
+        }
+        appendApplicationArchiveAuditEvent(application, APPLICATION_RESTORED_EVENT_TYPE,
+                trimArchiveReason(dto == null ? null : dto.getReason()));
+        JobApplication updatedApplication = jobApplicationMapper.selectById(id);
+        return toApplicationVOWithDetails(updatedApplication == null ? application : updatedApplication);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteApplication(Long id, JobApplicationArchiveDTO dto) {
+        JobApplication application = applicationForCurrentUserIncludingDeleted(id);
+        if (Objects.equals(application.getDeleted(), CommonConstants.YES)) {
+            return;
+        }
+        if (application.getArchivedAt() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请先归档投递记录，再执行删除");
+        }
+        int expectedVersion = requireExpectedApplicationVersion(application, dto);
+        String reason = requireDeleteReason(dto == null ? null : dto.getReason());
+        appendApplicationArchiveAuditEvent(application, APPLICATION_DELETED_EVENT_TYPE, reason);
+        int updated = jobApplicationMapper.update(null, new LambdaUpdateWrapper<JobApplication>()
+                .eq(JobApplication::getId, application.getId())
+                .eq(JobApplication::getUserId, application.getUserId())
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNotNull(JobApplication::getArchivedAt)
+                .eq(JobApplication::getLockVersion, expectedVersion)
+                .set(JobApplication::getDeleted, CommonConstants.YES)
+                .setSql("lock_version = lock_version + 1"));
+        if (updated != 1) {
+            throw applicationConcurrentUpdate();
+        }
+    }
+
     private boolean hasApplicationDetailUpdates(JobApplicationSaveDTO request) {
         return request.getTargetJobId() != null
                 || request.getResumeVersionId() != null
@@ -754,6 +867,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     }
 
     private void cancelApplicationFollowUpCalendar(JobApplication application) {
+        cancelApplicationFollowUpCalendar(application, "投递记录已清除下次跟进时间，系统同步取消该日历事项。");
+    }
+
+    private void cancelApplicationFollowUpCalendar(JobApplication application, String description) {
         if (application == null || application.getId() == null || application.getUserId() == null) {
             return;
         }
@@ -771,7 +888,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             return;
         }
         event.setStatus("CANCELED");
-        event.setDescription("投递记录已清除下次跟进时间，系统同步取消该日历事项。");
+        event.setDescription(description);
         careerCalendarEventMapper.updateById(event);
     }
 
@@ -789,7 +906,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     @Override
     public List<JobApplicationEventVO> listApplicationEvents(Long applicationId) {
-        JobApplication app = ownedApplication(applicationId);
+        JobApplication app = applicationForCurrentUserIncludingDeleted(applicationId);
         return jobApplicationEventMapper.selectList(new LambdaQueryWrapper<JobApplicationEvent>()
                         .eq(JobApplicationEvent::getUserId, app.getUserId())
                         .eq(JobApplicationEvent::getApplicationId, applicationId)
@@ -803,6 +920,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     @Transactional(rollbackFor = Exception.class)
     public JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto) {
         JobApplication app = ownedApplication(applicationId);
+        requireActiveApplication(app);
         return createApplicationEvent(app, dto);
     }
 
@@ -811,6 +929,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
     public JobApplicationEventVO createApplicationEventForUser(Long userId, Long applicationId,
                                                                JobApplicationEventSaveDTO dto) {
         JobApplication app = applicationForUser(userId, applicationId);
+        requireActiveApplication(app);
         return createApplicationEvent(app, dto);
     }
 
@@ -843,6 +962,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("limit 1"));
         return toApplicationSummaryVO(app);
     }
@@ -866,6 +986,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             List<JobApplication> fallback = jobApplicationMapper.selectList(new LambdaQueryWrapper<JobApplication>()
                     .eq(JobApplication::getUserId, userId)
                     .eq(JobApplication::getDeleted, CommonConstants.NO)
+                    .isNull(JobApplication::getArchivedAt)
                     .orderByDesc(JobApplication::getAppliedAt)
                     .orderByDesc(JobApplication::getCreatedAt)
                     .orderByDesc(JobApplication::getUpdatedAt));
@@ -981,9 +1102,9 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             LocalDateTime nextFollowUpAt = app.getNextFollowUpAt();
             if (nextFollowUpAt == null) {
                 vo.setNoFollowUpCount(vo.getNoFollowUpCount() + 1);
-            } else if (nextFollowUpAt.isBefore(now)) {
+            } else if (isFollowUpOverdue(nextFollowUpAt, now)) {
                 vo.setOverdueFollowUpCount(vo.getOverdueFollowUpCount() + 1);
-            } else if (nextFollowUpAt.toLocalDate().equals(now.toLocalDate())) {
+            } else if (isFollowUpDueToday(nextFollowUpAt, now)) {
                 vo.setDueTodayFollowUpCount(vo.getDueTodayFollowUpCount() + 1);
             }
 
@@ -1404,6 +1525,14 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         return applicationForUser(currentUserId(), applicationId);
     }
 
+    private JobApplication applicationForCurrentUserIncludingDeleted(Long applicationId) {
+        JobApplication app = jobApplicationMapper.selectIncludingDeleted(applicationId);
+        if (app == null || !Objects.equals(currentUserId(), app.getUserId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问");
+        }
+        return app;
+    }
+
     private JobApplication applicationForUser(Long userId, Long applicationId) {
         JobApplication app = jobApplicationMapper.selectById(applicationId);
         if (app == null || !Objects.equals(userId, app.getUserId())
@@ -1411,6 +1540,57 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问");
         }
         return app;
+    }
+
+    private void requireActiveApplication(JobApplication application) {
+        if (application != null && application.getArchivedAt() != null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "已归档的投递记录请先恢复后再编辑或新增事件");
+        }
+    }
+
+    private int requireExpectedApplicationVersion(JobApplication application, JobApplicationArchiveDTO dto) {
+        int currentVersion = application.getLockVersion() == null ? 1 : application.getLockVersion();
+        Integer expectedVersion = dto == null ? null : dto.getExpectedLockVersion();
+        if (expectedVersion == null || expectedVersion < 1 || !Objects.equals(expectedVersion, currentVersion)) {
+            throw applicationConcurrentUpdate();
+        }
+        return currentVersion;
+    }
+
+    private BusinessException applicationConcurrentUpdate() {
+        return new BusinessException(ErrorCode.PARAM_ERROR, "Application was changed by another request");
+    }
+
+    private String trimArchiveReason(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return null;
+        }
+        String normalized = reason.trim();
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500);
+    }
+
+    private String requireDeleteReason(String reason) {
+        String normalized = trimArchiveReason(reason);
+        if (!StringUtils.hasText(normalized)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "删除投递记录时必须填写原因");
+        }
+        return normalized;
+    }
+
+    private void appendApplicationArchiveAuditEvent(JobApplication application, String eventType, String reason) {
+        JobApplicationEvent event = new JobApplicationEvent();
+        event.setUserId(application.getUserId());
+        event.setApplicationId(application.getId());
+        event.setEventType(eventType);
+        event.setEventTime(LocalDateTime.now());
+        String actionLabel = switch (eventType) {
+            case APPLICATION_ARCHIVED_EVENT_TYPE -> "投递已归档";
+            case APPLICATION_RESTORED_EVENT_TYPE -> "投递已恢复";
+            case APPLICATION_DELETED_EVENT_TYPE -> "投递已删除";
+            default -> "投递状态已变更";
+        };
+        event.setSummary(StringUtils.hasText(reason) ? actionLabel + "：" + reason : actionLabel);
+        jobApplicationEventMapper.insert(event);
     }
 
     private ResumeJobMatchReport ownedMatchReport(Long matchReportId, Long userId) {
@@ -1874,6 +2054,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         vo.setLockVersion(app.getLockVersion());
         vo.setAppliedAt(app.getAppliedAt());
         vo.setNextFollowUpAt(app.getNextFollowUpAt());
+        vo.setArchivedAt(app.getArchivedAt());
+        vo.setArchiveReason(app.getArchiveReason());
         vo.setNote(app.getNote());
         vo.setCreatedAt(app.getCreatedAt());
         vo.setUpdatedAt(app.getUpdatedAt());
@@ -2084,8 +2266,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             vo.setDaysUntilFollowUp(null);
             return;
         }
-        vo.setFollowUpOverdue(nextFollowUpAt.isBefore(now));
-        vo.setFollowUpDueToday(nextFollowUpAt.toLocalDate().equals(now.toLocalDate()));
+        vo.setFollowUpOverdue(isFollowUpOverdue(nextFollowUpAt, now));
+        vo.setFollowUpDueToday(isFollowUpDueToday(nextFollowUpAt, now));
         vo.setDaysUntilFollowUp(ChronoUnit.DAYS.between(now.toLocalDate(), nextFollowUpAt.toLocalDate()));
     }
 
@@ -2098,11 +2280,24 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             return false;
         }
         LocalDateTime nextFollowUpAt = app.getNextFollowUpAt();
-        return nextFollowUpAt.isBefore(now) || nextFollowUpAt.toLocalDate().equals(reminderDate);
+        return isFollowUpOverdue(nextFollowUpAt, now)
+                || nextFollowUpAt.toLocalDate().equals(reminderDate);
     }
 
     private boolean isApplicationFollowUpOverdue(JobApplication app, LocalDateTime now) {
-        return app != null && app.getNextFollowUpAt() != null && app.getNextFollowUpAt().isBefore(now);
+        return app != null && isFollowUpOverdue(app.getNextFollowUpAt(), now);
+    }
+
+    private boolean isFollowUpOverdue(LocalDateTime nextFollowUpAt, LocalDateTime now) {
+        return nextFollowUpAt != null
+                && now != null
+                && nextFollowUpAt.toLocalDate().isBefore(now.toLocalDate());
+    }
+
+    private boolean isFollowUpDueToday(LocalDateTime nextFollowUpAt, LocalDateTime now) {
+        return nextFollowUpAt != null
+                && now != null
+                && nextFollowUpAt.toLocalDate().equals(now.toLocalDate());
     }
 
     private ApplicationReminderCandidateVO toApplicationReminderCandidateVO(JobApplication app, LocalDate reminderDate,

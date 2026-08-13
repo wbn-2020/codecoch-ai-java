@@ -25,4 +25,6 @@ public class InterviewMessageVO {
     private Integer score;
     private String comment;
     private LocalDateTime createdAt;
+    private LocalDateTime questionPresentedAt;
+    private Integer answerDurationSeconds;
 }

@@ -9,10 +9,14 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.agent.domain.entity.AgentRun;
 import com.codecoachai.ai.agent.domain.entity.AgentTask;
 import com.codecoachai.ai.agent.domain.enums.AgentRunStatusEnum;
+import com.codecoachai.ai.agent.domain.enums.AgentTaskStatusEnum;
 import com.codecoachai.ai.agent.domain.vo.analytics.AdminAgentOverviewVO;
+import com.codecoachai.ai.agent.domain.vo.analytics.MetricPointVO;
+import com.codecoachai.ai.agent.domain.vo.analytics.TrendPointVO;
 import com.codecoachai.ai.agent.mapper.AgentRunMapper;
 import com.codecoachai.ai.agent.mapper.AgentTaskMapper;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
+import java.time.LocalDate;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
@@ -59,12 +63,59 @@ class AgentAnalyticsServiceImplTest {
         assertEquals(66.67D, overview.getEffectiveSuccessRate());
     }
 
+    @Test
+    void taskTrendReportsEstimatedMinutesForCompletedTasksOnly() {
+        LocalDate today = LocalDate.now();
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(today, AgentTaskStatusEnum.DONE.name(), 30, "Java", null),
+                task(today, AgentTaskStatusEnum.SKIPPED.name(), 20, "Redis", null),
+                task(today, AgentTaskStatusEnum.TODO.name(), 10, "MySQL", null)
+        ));
+
+        List<TrendPointVO> trend = service.personalTaskTrend(7L, 1);
+
+        assertEquals(1, trend.size());
+        assertEquals(60L, trend.get(0).getEstimatedMinutes());
+        assertEquals(30L, trend.get(0).getCompletedMinutes());
+    }
+
+    @Test
+    void skillDistributionIncludesOnlyCompletedTasksWithExplicitSkills() {
+        LocalDate today = LocalDate.now();
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of(
+                task(today, AgentTaskStatusEnum.DONE.name(), 30, "Java", null),
+                task(today, AgentTaskStatusEnum.DONE.name(), 20, null, "REDIS"),
+                task(today, AgentTaskStatusEnum.DONE.name(), 15, " ", " "),
+                task(today, AgentTaskStatusEnum.TODO.name(), 10, "MySQL", null),
+                task(today, AgentTaskStatusEnum.SKIPPED.name(), 10, "Spring", null)
+        ));
+
+        List<MetricPointVO> distribution = service.personalSkillDistribution(7L, 7);
+
+        assertEquals(2, distribution.size());
+        assertEquals("Java", distribution.get(0).getName());
+        assertEquals(1L, distribution.get(0).getValue());
+        assertEquals("REDIS", distribution.get(1).getName());
+        assertEquals(1L, distribution.get(1).getValue());
+    }
+
     private static AgentRun run(String status, String resultSource) {
         AgentRun run = new AgentRun();
         run.setStatus(status);
         run.setResultSource(resultSource);
         run.setDurationMs(100L);
         return run;
+    }
+
+    private static AgentTask task(LocalDate dueDate, String status, Integer estimatedMinutes,
+                                  String relatedSkillName, String relatedSkillCode) {
+        AgentTask task = new AgentTask();
+        task.setDueDate(dueDate);
+        task.setStatus(status);
+        task.setEstimatedMinutes(estimatedMinutes);
+        task.setRelatedSkillName(relatedSkillName);
+        task.setRelatedSkillCode(relatedSkillCode);
+        return task;
     }
 
     private static void initializeTableInfo(Class<?> entityType) {

@@ -82,6 +82,7 @@ public class CareerEvidenceSourceResolver {
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("LIMIT 1"));
         if (application == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "投递记录不存在或无权访问。");

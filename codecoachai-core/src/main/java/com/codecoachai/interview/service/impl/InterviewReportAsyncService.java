@@ -25,9 +25,13 @@ import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.scenario.InterviewScenarioBinding;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
+import com.codecoachai.interview.scenario.InterviewRubricVersionMapper;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.codecoachai.interview.support.InterviewReportScoringContract;
 import com.codecoachai.interview.support.InterviewRubricVersion;
+import com.codecoachai.common.mq.domain.MqMessage;
+import com.codecoachai.common.mq.payload.InterviewReportPayload;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -70,6 +74,7 @@ public class InterviewReportAsyncService {
     private final InterviewReportMapper reportMapper;
     private final InterviewMessageMapper messageMapper;
     private final InterviewScenarioBindingMapper scenarioBindingMapper;
+    private final InterviewRubricVersionMapper rubricVersionMapper;
     private final ResumeFeignClient resumeFeignClient;
     private final AiFeignClient aiFeignClient;
     private final QuestionFeignClient questionFeignClient;
@@ -77,16 +82,34 @@ public class InterviewReportAsyncService {
     private final ObjectMapper objectMapper;
     private final InterviewMqDispatcher interviewMqDispatcher;
     private final InterviewReportTransactionService interviewReportTransactionService;
+    private final AsyncTaskService asyncTaskService;
 
     @Async("interviewReportExecutor")
-    public void generateReportAsync(Long sessionId, Long reportId, String generationToken) {
+    public void generateReportAsync(Long sessionId, Long reportId, String generationToken,
+                                    String registeredMessageId) {
+        MqMessage<InterviewReportPayload> task = MqMessage.<InterviewReportPayload>builder()
+                .messageId(registeredMessageId)
+                .traceId(generationToken)
+                .bizType("interview.report")
+                .bizId(String.valueOf(reportId))
+                .payload(InterviewReportPayload.builder()
+                        .sessionId(sessionId)
+                        .reportId(reportId)
+                        .generationToken(generationToken)
+                        .build())
+                .build();
+        if (!asyncTaskService.acquireRegistered(task, 3)) {
+            return;
+        }
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null) {
+            asyncTaskService.markTerminalFailed(registeredMessageId, "Interview session not found");
             return;
         }
         InterviewReport report = currentReport(sessionId, reportId, generationToken);
         if (report == null || !ReportStatusEnum.GENERATING.name().equals(report.getStatus())) {
             log.info("Skip stale async interview report task, sessionId={}, reportId={}", sessionId, reportId);
+            asyncTaskService.markTerminalFailed(registeredMessageId, "Interview report attempt is stale");
             return;
         }
         try {
@@ -99,15 +122,18 @@ public class InterviewReportAsyncService {
                     return;
                 }
                 markReportSampleInsufficient(session, current, generationToken);
+                asyncTaskService.markTerminalFailed(registeredMessageId, REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
                 return;
             }
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(buildReportDTO(session, messages)));
             interviewReportTransactionService.completeReportSuccess(
                     () -> doCompleteReportSuccess(session, reportId, generationToken, aiReport, messages));
+            asyncTaskService.markSuccess(registeredMessageId, aiReport);
         } catch (RuntimeException ex) {
             log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
             interviewReportTransactionService.completeReportFailed(
                     () -> doCompleteReportFailed(session, reportId, generationToken));
+            asyncTaskService.markTerminalFailed(registeredMessageId, ex.getMessage());
         }
     }
 
@@ -327,8 +353,38 @@ public class InterviewReportAsyncService {
         return "scenario:" + binding.getScenarioVersionId() + ":rubric:" + binding.getRubricVersionId();
     }
 
+    private String reportRubricDimensions(Long sessionId) {
+        if (sessionId == null) {
+            return null;
+        }
+        InterviewScenarioBinding binding = scenarioBindingMapper.selectOne(
+                new LambdaQueryWrapper<InterviewScenarioBinding>()
+                        .eq(InterviewScenarioBinding::getSessionId, sessionId)
+                        .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (binding == null || binding.getRubricVersionId() == null) {
+            return null;
+        }
+        com.codecoachai.interview.scenario.InterviewRubricVersion rubric =
+                rubricVersionMapper.selectById(binding.getRubricVersionId());
+        return rubric == null ? null : rubric.getDimensionsJson();
+    }
+
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
         int answerCount = countScorableAnswers(messages);
+        InterviewReportScoringContract.Validation scoringContract =
+                InterviewReportScoringContract.validate(
+                        objectMapper,
+                        aiReport == null ? null : aiReport.getTotalScore(),
+                        reportRubricVersion(report.getSessionId()),
+                        aiReport == null ? null : aiReport.getRubricScores(),
+                        reportRubricDimensions(report.getSessionId()));
+        if (!scoringContract.valid()) {
+            markReportAiIncomplete(report);
+            report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
+                    + " [" + scoringContract.reasonCode() + "]");
+            return;
+        }
         if (aiReportMissingDisplayContent(aiReport) || !hasExpectedQaReviews(aiReport, answerCount)) {
             applyFallbackReportContent(report, aiReport, messages, answerCount);
             return;

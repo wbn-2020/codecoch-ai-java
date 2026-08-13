@@ -21,6 +21,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
 import com.codecoachai.resume.domain.entity.JobApplication;
@@ -252,6 +253,178 @@ class V4ResumeCareerServiceImplTest {
         verify(careerCalendarEventMapper).updateById(eventCaptor.capture());
         assertEquals("CANCELED", eventCaptor.getValue().getStatus());
         assertTrue(eventCaptor.getValue().getDescription().contains("清除下次跟进时间"));
+    }
+
+    @Test
+    void archiveApplicationRejectsAnotherUsersRecordWithoutMutation() {
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application(88L, 20L));
+
+        assertThrows(BusinessException.class,
+                () -> service.archiveApplication(88L, archiveRequest(1, "不再投递")));
+
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void archiveApplicationIsIdempotentAndCancelsOnlySystemFollowUpProjection() {
+        JobApplication application = application(88L, USER_ID);
+        application.setLockVersion(2);
+        application.setNextFollowUpAt(LocalDateTime.of(2026, 8, 12, 10, 0));
+        CareerCalendarEvent projection = new CareerCalendarEvent();
+        projection.setId(701L);
+        projection.setUserId(USER_ID);
+        projection.setApplicationId(88L);
+        projection.setSourceType("JOB_APPLICATION_FOLLOW_UP");
+        projection.setSourceRef("88");
+        projection.setStatus("CONFIRMED");
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        when(careerCalendarEventMapper.selectOne(any())).thenReturn(projection);
+
+        JobApplicationVO archived = service.archiveApplication(88L, archiveRequest(2, "岗位已暂停招聘"));
+        JobApplicationVO replay = service.archiveApplication(88L, archiveRequest(2, "岗位已暂停招聘"));
+
+        assertNotNull(archived.getArchivedAt());
+        assertEquals("岗位已暂停招聘", archived.getArchiveReason());
+        assertNotNull(replay.getArchivedAt());
+        verify(jobApplicationMapper, times(1)).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(careerCalendarEventMapper, times(1)).updateById(any(CareerCalendarEvent.class));
+        verify(jobApplicationEventMapper, times(1)).insert(any(JobApplicationEvent.class));
+        ArgumentCaptor<CareerCalendarEvent> calendarCaptor = ArgumentCaptor.forClass(CareerCalendarEvent.class);
+        verify(careerCalendarEventMapper).updateById(calendarCaptor.capture());
+        assertEquals("CANCELED", calendarCaptor.getValue().getStatus());
+        assertTrue(calendarCaptor.getValue().getDescription().contains("已归档"));
+    }
+
+    @Test
+    void archiveApplicationRejectsStaleLockVersionWithoutSuppressingReminders() {
+        JobApplication application = application(88L, USER_ID);
+        application.setLockVersion(3);
+        application.setNextFollowUpAt(LocalDateTime.of(2026, 8, 12, 10, 0));
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application);
+
+        assertThrows(BusinessException.class,
+                () -> service.archiveApplication(88L, archiveRequest(2, "过期请求")));
+
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(careerCalendarEventMapper, never()).updateById(any(CareerCalendarEvent.class));
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void restoreApplicationIsIdempotentAndRebuildsOnlyItsSystemFollowUpProjection() {
+        JobApplication application = application(88L, USER_ID);
+        application.setLockVersion(4);
+        application.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        application.setArchiveReason("暂停");
+        application.setNextFollowUpAt(LocalDateTime.of(2026, 8, 13, 10, 0));
+        when(jobApplicationMapper.selectById(88L)).thenReturn(application);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+        when(careerCalendarEventMapper.selectOne(any())).thenReturn(null);
+
+        JobApplicationVO restored = service.restoreApplication(88L, archiveRequest(4, "恢复推进"));
+        JobApplicationVO replay = service.restoreApplication(88L, archiveRequest(4, "恢复推进"));
+
+        assertEquals(null, restored.getArchivedAt());
+        assertEquals(null, replay.getArchivedAt());
+        verify(jobApplicationMapper, times(1)).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(careerCalendarEventMapper, times(1)).insert(any(CareerCalendarEvent.class));
+        verify(jobApplicationEventMapper, times(1)).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void deleteApplicationRequiresArchivedOwnedRecordAndReason() {
+        JobApplication active = application(88L, USER_ID);
+        active.setLockVersion(4);
+        when(jobApplicationMapper.selectIncludingDeleted(88L)).thenReturn(active);
+
+        assertThrows(BusinessException.class,
+                () -> service.deleteApplication(88L, archiveRequest(4, "清理测试数据")));
+
+        active.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        assertThrows(BusinessException.class,
+                () -> service.deleteApplication(88L, archiveRequest(4, " ")));
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void deleteApplicationLogicallyDeletesArchivedRecordWithOptimisticLockAndAudit() {
+        JobApplication application = application(88L, USER_ID);
+        application.setLockVersion(4);
+        application.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        when(jobApplicationMapper.selectIncludingDeleted(88L)).thenReturn(application);
+        when(jobApplicationMapper.update(isNull(), any(LambdaUpdateWrapper.class))).thenReturn(1);
+
+        service.deleteApplication(88L, archiveRequest(4, "误创建的验收记录"));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaUpdateWrapper<JobApplication>> updateCaptor =
+                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(jobApplicationMapper).update(isNull(), updateCaptor.capture());
+        String sql = updateCaptor.getValue().getSqlSet().toLowerCase();
+        assertTrue(sql.contains("deleted"), sql);
+        assertTrue(sql.contains("lock_version = lock_version + 1"), sql);
+        ArgumentCaptor<JobApplicationEvent> eventCaptor =
+                ArgumentCaptor.forClass(JobApplicationEvent.class);
+        verify(jobApplicationEventMapper).insert(eventCaptor.capture());
+        assertEquals("DELETED", eventCaptor.getValue().getEventType());
+        assertTrue(eventCaptor.getValue().getSummary().contains("误创建的验收记录"));
+    }
+
+    @Test
+    void deleteApplicationRejectsAnotherUsersRecordAndStaleVersion() {
+        when(jobApplicationMapper.selectIncludingDeleted(88L)).thenReturn(application(88L, 20L));
+        assertThrows(BusinessException.class,
+                () -> service.deleteApplication(88L, archiveRequest(1, "无权删除")));
+
+        JobApplication owned = application(89L, USER_ID);
+        owned.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        owned.setLockVersion(3);
+        when(jobApplicationMapper.selectIncludingDeleted(89L)).thenReturn(owned);
+        assertThrows(BusinessException.class,
+                () -> service.deleteApplication(89L, archiveRequest(2, "过期请求")));
+
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void deleteApplicationReplayIsIdempotentAndDeletedAuditRemainsReadable() {
+        JobApplication deleted = application(88L, USER_ID);
+        deleted.setDeleted(1);
+        deleted.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        when(jobApplicationMapper.selectIncludingDeleted(88L)).thenReturn(deleted);
+        JobApplicationEvent event = new JobApplicationEvent();
+        event.setApplicationId(88L);
+        event.setEventType("DELETED");
+        when(jobApplicationEventMapper.selectList(any())).thenReturn(List.of(event));
+
+        service.deleteApplication(88L, archiveRequest(4, "重复请求"));
+        List<JobApplicationEventVO> events = service.listApplicationEvents(88L);
+
+        assertEquals(1, events.size());
+        assertEquals("DELETED", events.get(0).getEventType());
+        verify(jobApplicationMapper, never()).update(isNull(), any(LambdaUpdateWrapper.class));
+        verify(jobApplicationEventMapper, never()).insert(any(JobApplicationEvent.class));
+    }
+
+    @Test
+    void listApplicationsExcludesArchivedByDefaultAndIncludesThemOnlyWhenRequested() {
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of());
+
+        service.listApplications(null, null, null, null);
+        service.listApplications(null, null, null, null, true);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(jobApplicationMapper, times(2)).selectList(captor.capture());
+        String defaultSql = captor.getAllValues().get(0).getSqlSegment().toLowerCase();
+        String includingArchivedSql = captor.getAllValues().get(1).getSqlSegment().toLowerCase();
+        assertTrue(defaultSql.contains("archived_at is null"), defaultSql);
+        assertFalse(includingArchivedSql.contains("archived_at is null"), includingArchivedSql);
     }
 
     @Test
@@ -605,6 +778,21 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void listAgentApplicationContextForUserKeepsPastTimeTodayOutOfOverdue() {
+        LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
+        JobApplication app = application(190L, USER_ID);
+        app.setNextFollowUpAt(LocalDateTime.of(2026, 6, 16, 8, 0));
+        when(jobApplicationMapper.selectList(any())).thenReturn(List.of(app));
+
+        JobApplicationAgentContextVO vo =
+                service.listAgentApplicationContextForUser(USER_ID, null, now).get(0);
+
+        assertFalse(vo.getFollowUpOverdue());
+        assertTrue(vo.getFollowUpDueToday());
+        assertEquals(0L, vo.getDaysUntilFollowUp());
+    }
+
+    @Test
     void getApplicationStatsAggregatesOperationalCounts() {
         LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
         JobApplication savedNoFollowUp = application(201L, USER_ID);
@@ -613,11 +801,11 @@ class V4ResumeCareerServiceImplTest {
         savedNoFollowUp.setUpdatedAt(now.minusDays(15));
         JobApplication appliedOverdue = application(202L, USER_ID);
         appliedOverdue.setStatus("APPLIED");
-        appliedOverdue.setNextFollowUpAt(now.minusHours(1));
+        appliedOverdue.setNextFollowUpAt(now.minusDays(1));
         appliedOverdue.setUpdatedAt(now.minusDays(2));
         JobApplication interviewingDueToday = application(203L, USER_ID);
         interviewingDueToday.setStatus("INTERVIEWING");
-        interviewingDueToday.setNextFollowUpAt(now.plusHours(2));
+        interviewingDueToday.setNextFollowUpAt(now.minusHours(1));
         interviewingDueToday.setUpdatedAt(now.minusDays(14));
         JobApplication offerTomorrow = application(204L, USER_ID);
         offerTomorrow.setStatus("OFFER");
@@ -656,6 +844,26 @@ class V4ResumeCareerServiceImplTest {
         assertEquals(1L, stats.getStatusCounts().get("REJECTED"));
         assertEquals(1L, stats.getStatusCounts().get("CLOSED"));
         assertEquals(now, stats.getGeneratedAt());
+    }
+
+    @Test
+    void applicationStatsSqlUsesDayStartAsExclusiveOverdueBoundary() throws Exception {
+        String sql = String.join(" ", JobApplicationMapper.class
+                        .getMethod(
+                                "selectStats",
+                                Long.class,
+                                LocalDateTime.class,
+                                LocalDateTime.class,
+                                LocalDateTime.class)
+                        .getAnnotation(org.apache.ibatis.annotations.Select.class)
+                        .value())
+                .replaceAll("\\s+", " ")
+                .toLowerCase();
+
+        assertTrue(sql.contains("next_follow_up_at < #{daystart}"), sql);
+        assertFalse(sql.contains("next_follow_up_at < #{now}"), sql);
+        assertTrue(sql.contains(
+                "next_follow_up_at >= #{daystart} and next_follow_up_at < #{dayend}"), sql);
     }
 
     @Test
@@ -875,16 +1083,16 @@ class V4ResumeCareerServiceImplTest {
     void listApplicationReminderCandidatesReturnsActiveOverdueAndDueTodayOnly() {
         LocalDateTime now = LocalDateTime.of(2026, 6, 16, 9, 0);
         LocalDate reminderDate = LocalDate.of(2026, 6, 16);
-        JobApplication overdueEarly = application(301L, USER_ID);
-        overdueEarly.setStatus("APPLIED");
-        overdueEarly.setCompanyName("Alpha");
-        overdueEarly.setJobTitle("Backend");
-        overdueEarly.setNextFollowUpAt(now.minusHours(5));
-        JobApplication overdueLate = application(302L, USER_ID);
-        overdueLate.setStatus("OFFER");
-        overdueLate.setCompanyName("Beta");
-        overdueLate.setJobTitle("Platform");
-        overdueLate.setNextFollowUpAt(now.minusHours(1));
+        JobApplication overdue = application(301L, USER_ID);
+        overdue.setStatus("APPLIED");
+        overdue.setCompanyName("Alpha");
+        overdue.setJobTitle("Backend");
+        overdue.setNextFollowUpAt(now.minusDays(1));
+        JobApplication sameDayPast = application(302L, USER_ID);
+        sameDayPast.setStatus("OFFER");
+        sameDayPast.setCompanyName("Beta");
+        sameDayPast.setJobTitle("Platform");
+        sameDayPast.setNextFollowUpAt(now.minusHours(1));
         JobApplication dueToday = application(303L, USER_ID);
         dueToday.setStatus("interviewing");
         dueToday.setCompanyName("Gamma");
@@ -913,7 +1121,7 @@ class V4ResumeCareerServiceImplTest {
                 now,
                 reminderDate.atStartOfDay(),
                 reminderDate.plusDays(1).atStartOfDay(),
-                5)).thenReturn(List.of(overdueEarly, overdueLate, dueToday, extraDueToday, extraDueToday2));
+                5)).thenReturn(List.of(overdue, sameDayPast, dueToday, extraDueToday, extraDueToday2));
 
         List<ApplicationReminderCandidateVO> result =
                 service.listApplicationReminderCandidates(USER_ID, reminderDate, now);
@@ -929,6 +1137,9 @@ class V4ResumeCareerServiceImplTest {
         assertEquals("/applications", result.get(0).getFallbackPath());
         assertEquals("查看投递工作台", result.get(0).getFallbackLabel());
         assertEquals(reminderDate, result.get(0).getPlanDate());
+        assertEquals("投递跟进已逾期", result.get(0).getTitle());
+        assertEquals("今日待跟进投递", result.get(1).getTitle());
+        assertTrue(result.get(1).getContent().contains("今天需要跟进"));
         assertTrue(result.get(0).getContent().contains("Alpha"));
 
         verify(jobApplicationMapper).selectReminderCandidates(
@@ -1220,6 +1431,7 @@ class V4ResumeCareerServiceImplTest {
         String sql = (query.getSqlSegment() + " " + query.getTargetSql()).replaceAll("\\s+", " ").toLowerCase();
         assertTrue(sql.contains("user_id"), sql);
         assertTrue(sql.contains("deleted"), sql);
+        assertTrue(sql.contains("archived_at is null"), sql);
         assertEquals(expectTargetJobFilter, sql.contains("target_job_id"), sql);
         assertTrue(sql.contains("status in"), sql);
         assertTrue(query.getParamNameValuePairs().containsValue("SAVED"));
@@ -1365,6 +1577,14 @@ class V4ResumeCareerServiceImplTest {
         app.setJobTitle("Java 后端工程师");
         app.setStatus("APPLIED");
         return app;
+    }
+
+    private JobApplicationArchiveDTO archiveRequest(Integer expectedLockVersion, String reason) {
+        JobApplicationArchiveDTO dto = new JobApplicationArchiveDTO();
+        dto.setExpectedLockVersion(expectedLockVersion);
+        dto.setIdempotencyKey("application-archive-" + expectedLockVersion);
+        dto.setReason(reason);
+        return dto;
     }
 
     private JobApplicationEvent event(Long id, Long applicationId, String eventType, LocalDateTime eventTime) {

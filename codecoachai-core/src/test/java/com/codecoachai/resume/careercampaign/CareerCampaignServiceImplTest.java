@@ -20,6 +20,7 @@ import com.codecoachai.resume.careercampaign.CareerCampaignModels.CampaignView;
 import com.codecoachai.resume.careercampaign.CareerCampaignModels.SaveRequest;
 import com.codecoachai.resume.domain.entity.JobApplication;
 import com.codecoachai.resume.mapper.JobApplicationMapper;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -199,6 +200,38 @@ class CareerCampaignServiceImplTest {
 
         assertEquals("COMPLETED", result.getStatus());
         verify(campaignMapper).transition(1L, USER_ID, "ACTIVE", "COMPLETED", 1);
+    }
+
+    @Test
+    void archivedApplicationsAreExcludedFromCampaignCommandsAndCounts() {
+        CareerCampaign campaign = campaign("ACTIVE", 1, USER_ID);
+        when(campaignMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(campaign);
+        when(applicationMapper.selectCount(any(LambdaQueryWrapper.class))).thenReturn(0L);
+        when(eventMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(campaignMapper.transition(any(), any(), any(), any(), any())).thenReturn(1);
+
+        service.complete(1L, false, 1, "complete-archived", null);
+
+        verify(campaignMapper).transition(1L, USER_ID, "ACTIVE", "COMPLETED", 1);
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> countCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(applicationMapper, org.mockito.Mockito.times(2)).selectCount(countCaptor.capture());
+        assertTrue(countCaptor.getAllValues().stream()
+                .allMatch(query -> query.getSqlSegment().contains("archived_at IS NULL")));
+
+        JobApplication archived = new JobApplication();
+        archived.setId(22L);
+        archived.setUserId(USER_ID);
+        archived.setArchivedAt(LocalDateTime.of(2026, 8, 12, 9, 0));
+        when(applicationMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(archived);
+
+        assertThrows(BusinessException.class,
+                () -> service.addApplication(1L, 22L, "add-archived"));
+
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> applicationCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(applicationMapper).selectOne(applicationCaptor.capture());
+        assertTrue(applicationCaptor.getValue().getSqlSegment().contains("archived_at IS NULL"));
     }
 
     @Test

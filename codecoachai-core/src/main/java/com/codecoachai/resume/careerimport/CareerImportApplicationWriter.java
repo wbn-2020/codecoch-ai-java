@@ -110,6 +110,7 @@ public class CareerImportApplicationWriter {
                         .eq(JobApplication::getUserId, application.getUserId())
                         .eq(JobApplication::getImportFingerprint, application.getImportFingerprint())
                         .eq(JobApplication::getDeleted, CommonConstants.NO)
+                        .isNull(JobApplication::getArchivedAt)
                         .last("limit 1 for update"));
         return winner != null
                 && application.getUserId().equals(winner.getUserId())

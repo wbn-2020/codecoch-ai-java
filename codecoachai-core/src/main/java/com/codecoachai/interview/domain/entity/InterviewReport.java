@@ -35,4 +35,10 @@ public class InterviewReport extends BaseEntity {
     private String suggestions;
     private String failureReason;
     private String generationToken;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
+    private String asyncDispatchMode;
 }

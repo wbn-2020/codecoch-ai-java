@@ -14,4 +14,5 @@ public class FinishInterviewVO {
     private String asyncBizType;
     private String asyncBizId;
     private String asyncSendStatus;
+    private String asyncDispatchMode;
 }

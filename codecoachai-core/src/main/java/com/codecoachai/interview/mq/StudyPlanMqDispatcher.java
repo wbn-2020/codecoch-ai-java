@@ -20,6 +20,10 @@ public class StudyPlanMqDispatcher {
         this.mqProducer = mqProducerProvider.getIfAvailable();
     }
 
+    public boolean isAvailable() {
+        return mqProducer != null;
+    }
+
     public MqDispatchReceipt dispatchGenerateWithReceipt(Long planId, Long userId) {
         if (planId == null) {
             return null;

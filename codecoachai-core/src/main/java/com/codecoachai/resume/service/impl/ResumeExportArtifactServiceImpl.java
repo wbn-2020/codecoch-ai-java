@@ -21,6 +21,7 @@ import com.codecoachai.resume.export.AtsResumeDocument;
 import com.codecoachai.resume.export.AtsResumeDocumentFactory;
 import com.codecoachai.resume.export.LimitedOutputStream;
 import com.codecoachai.resume.export.ResumeArtifactHashes;
+import com.codecoachai.resume.export.ResumeExportArtifactSemanticValidator;
 import com.codecoachai.resume.export.ResumeDocumentRenderer;
 import com.codecoachai.resume.export.ResumeUploadAdmissionGuard;
 import com.codecoachai.resume.export.ResumeZipBuilder;
@@ -73,6 +74,8 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
     private static final String STATUS_GENERATING = "GENERATING";
     private static final String STATUS_READY = "READY";
     private static final String STATUS_FAILED = "FAILED";
+    private static final ResumeExportArtifactSemanticValidator ARTIFACT_SEMANTIC_VALIDATOR =
+            new ResumeExportArtifactSemanticValidator();
 
     private final ResumeAtsTemplateMapper templateMapper;
     private final ResumeExportMapper exportMapper;
@@ -141,12 +144,13 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
             export.setArtifactId(artifact.getId());
             requireWrite(exportMapper.insert(export), export.getId(), "Resume export record was not created");
             temp = Files.createTempFile("resume-export-", "." + extension);
+            AtsResumeDocument document = documentFactory.fromSnapshot(
+                    version.getSnapshotJson(), template.getDefinitionJson());
             try (OutputStream fileOutput = Files.newOutputStream(temp);
                  LimitedOutputStream limited = new LimitedOutputStream(fileOutput, properties.effectiveMaxArtifactBytes())) {
-                renderer(format).render(
-                        documentFactory.fromSnapshot(version.getSnapshotJson(), template.getDefinitionJson()),
-                        limited);
+                renderer(format).render(document, limited);
             }
+            ARTIFACT_SEMANTIC_VALIDATOR.validate(format, temp, document);
             long size = Files.size(temp);
             String hash = ResumeArtifactHashes.sha256(temp);
             InnerFileUploadVO uploaded;

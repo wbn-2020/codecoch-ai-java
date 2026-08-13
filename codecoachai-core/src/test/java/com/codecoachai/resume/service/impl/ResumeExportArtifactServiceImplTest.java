@@ -38,7 +38,10 @@ import com.codecoachai.resume.domain.entity.ResumeExport;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
 import com.codecoachai.resume.domain.vo.ResumeArtifactVO;
 import com.codecoachai.resume.domain.vo.ResumeExportVO;
+import com.codecoachai.resume.export.AtsResumeDocument;
 import com.codecoachai.resume.export.AtsResumeDocumentFactory;
+import com.codecoachai.resume.export.DocxResumeDocumentRenderer;
+import com.codecoachai.resume.export.PdfResumeDocumentRenderer;
 import com.codecoachai.resume.export.ResumeArtifactHashes;
 import com.codecoachai.resume.export.ResumeDocumentRenderer;
 import com.codecoachai.resume.export.ResumeUploadAdmissionGuard;
@@ -125,6 +128,7 @@ class ResumeExportArtifactServiceImplTest {
         properties = new ResumeExportProperties();
         properties.setMaxConcurrentUploads(1);
         properties.setUploadAcquireTimeoutMillis(0);
+        documentFactory = new AtsResumeDocumentFactory(objectMapper);
         service = new ResumeExportArtifactServiceImpl(
                 templateMapper, exportMapper, artifactMapper, packageMapper, snapshotManager,
                 documentFactory, List.of(renderer), new ResumeZipBuilder(objectMapper),
@@ -259,6 +263,44 @@ class ResumeExportArtifactServiceImplTest {
 
         assertEquals("READY", retry.getStatus());
         verify(fileFeignClient, times(2)).upload(any(), any(), any());
+    }
+
+    @Test
+    void createExportRejectsReadablePdfThatDoesNotContainSnapshotFacts() throws Exception {
+        stubExportSource(validTemplate());
+        when(renderer.format()).thenReturn("PDF");
+        doAnswer(invocation -> {
+            AtsResumeDocument unrelated = new AtsResumeDocument();
+            unrelated.setName("Placeholder");
+            unrelated.getSections().add(new AtsResumeDocument.Section(
+                    "Professional Summary", List.of("This is unrelated placeholder content.")));
+            new PdfResumeDocumentRenderer(properties).render(
+                    unrelated, invocation.getArgument(1, java.io.OutputStream.class));
+            return null;
+        }).when(renderer).render(any(), any());
+        doAnswer(invocation -> {
+            ((ResumeArtifact) invocation.getArgument(0)).setId(30L);
+            return 1;
+        }).when(artifactMapper).insert(any(ResumeArtifact.class));
+        doAnswer(invocation -> {
+            ((ResumeExport) invocation.getArgument(0)).setId(31L);
+            return 1;
+        }).when(exportMapper).insert(any(ResumeExport.class));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.createExport(exportRequest()));
+
+        assertEquals(ErrorCode.SEMANTIC_VALIDATION_ERROR.getCode(), error.getCode());
+        assertTrue(error.getMessage().contains("RESUME_EXPORT_SEMANTIC_MISMATCH"));
+        verify(fileFeignClient, never()).upload(any(), any(), any());
+        verify(artifactMapper).updateById(argThat((ResumeArtifact item) ->
+                item.getId() != null
+                        && "FAILED".equals(item.getStatus())
+                        && item.getErrorMessage().contains("RESUME_EXPORT_SEMANTIC_MISMATCH")));
+        verify(exportMapper).updateById(argThat((ResumeExport item) ->
+                item.getId() != null
+                        && "FAILED".equals(item.getStatus())
+                        && item.getErrorMessage().contains("RESUME_EXPORT_SEMANTIC_MISMATCH")));
     }
 
     @Test
@@ -411,7 +453,7 @@ class ResumeExportArtifactServiceImplTest {
 
         assertTrue(error.getMessage().contains("Application package"));
         verifyNoInteractions(snapshotManager, templateMapper, packageMapper, artifactMapper, exportMapper,
-                documentFactory, renderer, fileFeignClient);
+                renderer, fileFeignClient);
     }
 
     @Test
@@ -430,7 +472,7 @@ class ResumeExportArtifactServiceImplTest {
 
         assertTrue(error.getMessage().contains("resume version"));
         verify(artifactMapper, never()).insert(any(ResumeArtifact.class));
-        verifyNoInteractions(documentFactory, renderer, fileFeignClient);
+        verifyNoInteractions(exportMapper, renderer, fileFeignClient);
     }
 
     @Test
@@ -630,8 +672,9 @@ class ResumeExportArtifactServiceImplTest {
         stubExportSource(validTemplate());
         when(renderer.format()).thenReturn("PDF");
         doAnswer(invocation -> {
-            ((java.io.OutputStream) invocation.getArgument(1))
-                    .write("%PDF-generated".getBytes(StandardCharsets.UTF_8));
+            new PdfResumeDocumentRenderer(properties).render(
+                    invocation.getArgument(0, AtsResumeDocument.class),
+                    invocation.getArgument(1, java.io.OutputStream.class));
             return null;
         }).when(renderer).render(any(), any());
         doAnswer(invocation -> {
@@ -878,16 +921,18 @@ class ResumeExportArtifactServiceImplTest {
         when(pdfRenderer.format()).thenReturn("PDF");
         when(docxRenderer.format()).thenReturn("DOCX");
         doAnswer(invocation -> {
-            ((java.io.OutputStream) invocation.getArgument(1))
-                    .write("%PDF-package-child".getBytes(StandardCharsets.UTF_8));
+            new PdfResumeDocumentRenderer(properties).render(
+                    invocation.getArgument(0, AtsResumeDocument.class),
+                    invocation.getArgument(1, java.io.OutputStream.class));
             return null;
         }).when(pdfRenderer).render(any(), any());
         doAnswer(invocation -> {
             if (rejectDocx.compareAndSet(true, false)) {
                 throw new IllegalStateException("DOCX renderer unavailable");
             }
-            ((java.io.OutputStream) invocation.getArgument(1))
-                    .write("PK-package-child".getBytes(StandardCharsets.UTF_8));
+            new DocxResumeDocumentRenderer().render(
+                    invocation.getArgument(0, AtsResumeDocument.class),
+                    invocation.getArgument(1, java.io.OutputStream.class));
             return null;
         }).when(docxRenderer).render(any(), any());
 

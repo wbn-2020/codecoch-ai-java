@@ -360,6 +360,7 @@ public class CareerContactServiceImpl
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("LIMIT 1"));
         if (application == null) {
             throw notFound("机会不存在");

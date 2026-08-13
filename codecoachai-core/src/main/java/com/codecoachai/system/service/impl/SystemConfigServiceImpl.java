@@ -16,6 +16,8 @@ import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
 import com.codecoachai.system.service.SystemConfigService;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Date;
 import java.util.Properties;
 import java.net.URI;
@@ -27,12 +29,18 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import lombok.RequiredArgsConstructor;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.beans.factory.ObjectProvider;
@@ -42,10 +50,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class SystemConfigServiceImpl implements SystemConfigService {
 
+    private static final Duration HEALTH_CONNECT_TIMEOUT = Duration.ofMillis(400);
+    private static final Duration HEALTH_REQUEST_TIMEOUT = Duration.ofMillis(550);
+    private static final long HEALTH_PROBE_BUDGET_MILLIS = 900L;
     private static final Set<String> DASHBOARD_QUERY_TABLES = Set.of(
             "sys_user",
             "question",
@@ -69,16 +79,38 @@ public class SystemConfigServiceImpl implements SystemConfigService {
             "agent_task"
     );
     private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
+    private static final ObjectMapper HEALTH_RESPONSE_OBJECT_MAPPER = new ObjectMapper();
 
     private final SystemConfigMapper systemConfigMapper;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider;
-    private final HttpClient healthHttpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofMillis(600))
-            .build();
+    private final HttpClient healthHttpClient;
+    private final ThreadLocal<MetadataLookupCache> metadataLookupCache = new ThreadLocal<>();
 
     @Value("${codecoachai.ops.health-services:}")
     private String healthServices;
+
+    @Autowired
+    public SystemConfigServiceImpl(SystemConfigMapper systemConfigMapper,
+                                   JdbcTemplate jdbcTemplate,
+                                   ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider) {
+        this(
+                systemConfigMapper,
+                jdbcTemplate,
+                redisConnectionFactoryProvider,
+                HttpClient.newBuilder().connectTimeout(HEALTH_CONNECT_TIMEOUT).build()
+        );
+    }
+
+    SystemConfigServiceImpl(SystemConfigMapper systemConfigMapper,
+                            JdbcTemplate jdbcTemplate,
+                            ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider,
+                            HttpClient healthHttpClient) {
+        this.systemConfigMapper = systemConfigMapper;
+        this.jdbcTemplate = jdbcTemplate;
+        this.redisConnectionFactoryProvider = redisConnectionFactoryProvider;
+        this.healthHttpClient = healthHttpClient;
+    }
 
     @Override
     public PageResult<SystemConfigVO> pageConfigs(SystemConfigQueryDTO query) {
@@ -170,27 +202,31 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     @Override
     public AdminSystemOverviewVO overview() {
-        AdminSystemOverviewVO vo = new AdminSystemOverviewVO();
-        vo.setUserCount(count("sys_user", "deleted = 0"));
-        vo.setQuestionCount(count("question", "deleted = 0"));
-        vo.setResumeCount(count("resume", "deleted = 0"));
-        vo.setInterviewCount(count("interview_session", "deleted = 0"));
-        vo.setAiCallCount(count("ai_call_log", "deleted = 0"));
-        return vo;
+        return withMetadataLookupCache(() -> {
+            AdminSystemOverviewVO vo = new AdminSystemOverviewVO();
+            vo.setUserCount(count("sys_user", "deleted = 0"));
+            vo.setQuestionCount(count("question", "deleted = 0"));
+            vo.setResumeCount(count("resume", "deleted = 0"));
+            vo.setInterviewCount(count("interview_session", "deleted = 0"));
+            vo.setAiCallCount(count("ai_call_log", "deleted = 0"));
+            return vo;
+        });
     }
 
     @Override
     public AdminDashboardOverviewVO dashboardOverview() {
-        AdminDashboardOverviewVO vo = new AdminDashboardOverviewVO();
-        LocalDateTime now = LocalDateTime.now();
-        // 管理首页只展示运行库实时聚合结果，不使用 mock 或兜底假数据，避免上线验收误判。
-        vo.setSummaryCards(summaryCards());
-        vo.setTrendStats(trendStats());
-        vo.setPendingItems(pendingItems());
-        vo.setSystemStatus(systemStatus(now));
-        vo.setDataSourceDesc("管理首页数据来自运行库实时聚合。");
-        vo.setGeneratedAt(now);
-        return vo;
+        return withMetadataLookupCache(() -> {
+            AdminDashboardOverviewVO vo = new AdminDashboardOverviewVO();
+            LocalDateTime now = LocalDateTime.now();
+            // 管理首页只展示运行库实时聚合结果，不使用 mock 或兜底假数据，避免上线验收误判。
+            vo.setSummaryCards(summaryCards());
+            vo.setTrendStats(trendStats());
+            vo.setPendingItems(pendingItems());
+            vo.setSystemStatus(systemStatus(now));
+            vo.setDataSourceDesc("管理首页数据来自运行库实时聚合。");
+            vo.setGeneratedAt(now);
+            return vo;
+        });
     }
 
     private void apply(SystemConfig config, SystemConfigSaveDTO dto, String configKey) {
@@ -516,80 +552,248 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         services.add(serviceStatus("overview", "HEALTHY", "管理概览接口聚合完成。", "local"));
         services.add(serviceStatus("database", dbHealthy ? "HEALTHY" : "DOWN",
                 dbHealthy ? "SELECT 1 执行成功。" : "SELECT 1 执行失败。", "jdbc"));
-        configuredHealthTargets().forEach(target -> services.add(
-                "gateway".equalsIgnoreCase(target.type())
-                        ? probeGateway(target.name(), target.host(), target.port())
-                        : probeService(target.name(), target.host(), target.port())
-        ));
+        HealthConfiguration healthConfiguration = configuredHealthTargets();
+        if (!healthConfiguration.errors().isEmpty()) {
+            services.add(serviceStatus(
+                    "health-config",
+                    "UNKNOWN",
+                    String.join("；", healthConfiguration.errors()),
+                    "config:codecoachai.ops.health-services"
+            ));
+        }
+        services.addAll(probeHealthTargets(healthConfiguration.targets()));
         vo.setServices(services);
-        vo.setStatus(services.stream().anyMatch(service -> "DOWN".equals(service.getStatus())) ? "DEGRADED" : "HEALTHY");
+        vo.setStatus(aggregateSystemStatus(services));
         vo.setOpsMetrics(opsMetrics());
         vo.setGeneratedAt(generatedAt);
         return vo;
     }
 
-    private List<HealthTarget> configuredHealthTargets() {
+    private String aggregateSystemStatus(List<AdminDashboardOverviewVO.ServiceStatusVO> services) {
+        if (services.stream().anyMatch(service ->
+                "DOWN".equals(service.getStatus()) || "DEGRADED".equals(service.getStatus()))) {
+            return "DEGRADED";
+        }
+        if (services.stream().anyMatch(service -> "UNKNOWN".equals(service.getStatus()))) {
+            return "UNKNOWN";
+        }
+        return "HEALTHY";
+    }
+
+    private HealthConfiguration configuredHealthTargets() {
         if (!org.springframework.util.StringUtils.hasText(healthServices)) {
-            return List.of();
+            return new HealthConfiguration(
+                    List.of(),
+                    List.of("未配置关键服务健康探测目标，无法确认网关及业务服务状态。")
+            );
         }
         List<HealthTarget> targets = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        Set<String> serviceNames = new HashSet<>();
+        int itemIndex = 0;
         for (String item : healthServices.split(",")) {
-            String[] parts = item.trim().split("\\|");
-            if (parts.length < 3) {
+            itemIndex++;
+            String[] parts = item.trim().split("\\|", -1);
+            if (parts.length < 3 || parts.length > 4) {
+                errors.add("第 " + itemIndex + " 个健康探测项格式错误，应为 name|host|port|type");
+                continue;
+            }
+            String name = parts[0].trim();
+            String host = parts[1].trim();
+            if (!StringUtils.hasText(name) || !StringUtils.hasText(host)) {
+                errors.add("第 " + itemIndex + " 个健康探测项缺少服务名或主机名");
                 continue;
             }
             try {
-                String type = parts.length >= 4 && org.springframework.util.StringUtils.hasText(parts[3]) ? parts[3].trim() : "service";
-                targets.add(new HealthTarget(parts[0].trim(), parts[1].trim(), Integer.parseInt(parts[2].trim()), type));
+                int port = Integer.parseInt(parts[2].trim());
+                if (port < 1 || port > 65535) {
+                    errors.add("健康探测服务 " + name + " 的端口超出有效范围");
+                    continue;
+                }
+                String type = parts.length == 4 && StringUtils.hasText(parts[3])
+                        ? parts[3].trim().toLowerCase()
+                        : "service";
+                if (!Set.of("service", "gateway").contains(type)) {
+                    errors.add("健康探测服务 " + name + " 的类型无效：" + type);
+                    continue;
+                }
+                if (!serviceNames.add(name)) {
+                    errors.add("健康探测服务名重复：" + name);
+                    continue;
+                }
+                targets.add(new HealthTarget(name, host, port, type));
             } catch (NumberFormatException ex) {
-                log.warn("Skip invalid health service config item: {}", item);
+                errors.add("健康探测服务 " + name + " 的端口不是有效数字");
             }
         }
-        return targets;
+        if (targets.isEmpty() && errors.isEmpty()) {
+            errors.add("未解析到任何关键服务健康探测目标。");
+        }
+        if (!errors.isEmpty()) {
+            log.warn("Health service configuration contains {} invalid item(s): {}", errors.size(), errors);
+        }
+        return new HealthConfiguration(List.copyOf(targets), List.copyOf(errors));
     }
 
     private record HealthTarget(String name, String host, int port, String type) {
     }
 
-    private AdminDashboardOverviewVO.ServiceStatusVO probeService(String name, String host, int port) {
-        String url = "http://" + host + ":" + port + "/actuator/health";
+    private record HealthConfiguration(List<HealthTarget> targets, List<String> errors) {
+    }
+
+    private List<AdminDashboardOverviewVO.ServiceStatusVO> probeHealthTargets(List<HealthTarget> targets) {
+        List<CompletableFuture<AdminDashboardOverviewVO.ServiceStatusVO>> probes = targets.stream()
+                .map(target -> {
+                    CompletableFuture<AdminDashboardOverviewVO.ServiceStatusVO> probe =
+                            "gateway".equals(target.type()) ? probeGateway(target) : probeService(target);
+                    return probe.completeOnTimeout(
+                            serviceStatus(
+                                    target.name(),
+                                    "UNKNOWN",
+                                    "健康探测超过 " + HEALTH_PROBE_BUDGET_MILLIS + "ms 请求预算。",
+                                    actuatorUrl(target)
+                            ),
+                            HEALTH_PROBE_BUDGET_MILLIS,
+                            TimeUnit.MILLISECONDS
+                    ).exceptionally(ex -> serviceStatus(
+                            target.name(),
+                            "UNKNOWN",
+                            "健康探测执行异常：" + rootCauseName(ex),
+                            actuatorUrl(target)
+                    ));
+                })
+                .toList();
+        return probes.stream().map(CompletableFuture::join).toList();
+    }
+
+    private CompletableFuture<AdminDashboardOverviewVO.ServiceStatusVO> probeService(HealthTarget target) {
+        String url = actuatorUrl(target);
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofMillis(900))
+                    .timeout(HEALTH_REQUEST_TIMEOUT)
                     .GET()
                     .build();
-            HttpResponse<String> response = healthHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            boolean healthy = response.statusCode() >= 200
-                    && response.statusCode() < 300
-                    && response.body() != null
-                    && response.body().contains("\"status\":\"UP\"");
-            return serviceStatus(name, healthy ? "HEALTHY" : "DOWN",
-                    healthy ? "Actuator 健康检查通过。" : "Actuator 返回异常状态。", url);
-        } catch (Exception ex) {
-            return serviceStatus(name, "UNKNOWN", "本机 Actuator 探测失败：" + ex.getClass().getSimpleName(), url);
+            return healthHttpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .handle((response, ex) -> {
+                        if (ex != null) {
+                            return serviceStatus(
+                                    target.name(),
+                                    "UNKNOWN",
+                                    "Actuator 探测失败：" + rootCauseName(ex),
+                                    url
+                            );
+                        }
+                        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                            return serviceStatus(
+                                    target.name(),
+                                    "DOWN",
+                                    "Actuator 返回 HTTP " + response.statusCode() + "。",
+                                    url
+                            );
+                        }
+                        String topLevelStatus = actuatorTopLevelStatus(response.body());
+                        if ("UP".equals(topLevelStatus)) {
+                            return serviceStatus(target.name(), "HEALTHY", "Actuator 健康检查通过。", url);
+                        }
+                        return serviceStatus(
+                                target.name(),
+                                "DEGRADED",
+                                "Actuator 已响应，但未返回 UP 状态。",
+                                url
+                        );
+                    });
+        } catch (RuntimeException ex) {
+            return CompletableFuture.completedFuture(serviceStatus(
+                    target.name(),
+                    "UNKNOWN",
+                    "健康探测地址配置无效：" + ex.getClass().getSimpleName(),
+                    url
+            ));
         }
     }
 
-    private AdminDashboardOverviewVO.ServiceStatusVO probeGateway(String name, String host, int port) {
-        AdminDashboardOverviewVO.ServiceStatusVO actuatorStatus = probeService(name, host, port);
-        if ("HEALTHY".equals(actuatorStatus.getStatus())) {
-            return actuatorStatus;
+    private String actuatorTopLevelStatus(String body) {
+        if (!StringUtils.hasText(body)) {
+            return null;
         }
+        try {
+            JsonNode root = HEALTH_RESPONSE_OBJECT_MAPPER.readTree(body);
+            if (root == null || !root.isObject()) {
+                return null;
+            }
+            String status = root.path("status").asText(null);
+            return StringUtils.hasText(status) ? status.trim().toUpperCase() : null;
+        } catch (Exception ex) {
+            return null;
+        }
+    }
 
-        String url = "http://" + host + ":" + port + "/";
+    private CompletableFuture<AdminDashboardOverviewVO.ServiceStatusVO> probeGateway(HealthTarget target) {
+        return probeService(target).thenCompose(actuatorStatus -> {
+            if ("HEALTHY".equals(actuatorStatus.getStatus())) {
+                return CompletableFuture.completedFuture(actuatorStatus);
+            }
+            return probeGatewayPort(target, actuatorStatus);
+        });
+    }
+
+    private CompletableFuture<AdminDashboardOverviewVO.ServiceStatusVO> probeGatewayPort(
+            HealthTarget target,
+            AdminDashboardOverviewVO.ServiceStatusVO actuatorStatus) {
+        String url = "http://" + target.host() + ":" + target.port() + "/";
         try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofMillis(900))
+                    .timeout(HEALTH_REQUEST_TIMEOUT)
                     .GET()
                     .build();
-            HttpResponse<String> response = healthHttpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            boolean reachable = response.statusCode() >= 200 && response.statusCode() < 500;
-            return serviceStatus(name, reachable ? "HEALTHY" : "DOWN",
-                    reachable ? "Gateway HTTP port reachable." : "Gateway HTTP port returned " + response.statusCode() + ".",
-                    url);
-        } catch (Exception ex) {
-            return serviceStatus(name, actuatorStatus.getStatus(), actuatorStatus.getReason(), actuatorStatus.getSource());
+            return healthHttpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                    .handle((response, ex) -> {
+                        if (ex != null) {
+                            return serviceStatus(
+                                    target.name(),
+                                    actuatorStatus.getStatus(),
+                                    actuatorStatus.getReason() + "；Gateway 端口探测失败：" + rootCauseName(ex),
+                                    actuatorStatus.getSource()
+                            );
+                        }
+                        boolean reachable = response.statusCode() >= 200 && response.statusCode() < 500;
+                        if (reachable) {
+                            return serviceStatus(
+                                    target.name(),
+                                    "DEGRADED",
+                                    "Gateway 端口可达，但 Actuator 健康状态未通过。",
+                                    url
+                            );
+                        }
+                        return serviceStatus(
+                                target.name(),
+                                "DOWN",
+                                "Gateway 返回 HTTP " + response.statusCode() + "，且 Actuator 健康状态未通过。",
+                                url
+                        );
+                    });
+        } catch (RuntimeException ex) {
+            return CompletableFuture.completedFuture(serviceStatus(
+                    target.name(),
+                    actuatorStatus.getStatus(),
+                    actuatorStatus.getReason() + "；Gateway 地址配置无效：" + ex.getClass().getSimpleName(),
+                    actuatorStatus.getSource()
+            ));
         }
+    }
+
+    private String actuatorUrl(HealthTarget target) {
+        return "http://" + target.host() + ":" + target.port() + "/actuator/health";
+    }
+
+    private String rootCauseName(Throwable throwable) {
+        Throwable current = throwable;
+        while ((current instanceof CompletionException || current.getCause() != null)
+                && current.getCause() != null
+                && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current.getClass().getSimpleName();
     }
 
     private AdminDashboardOverviewVO.OpsMetricsVO opsMetrics() {
@@ -834,6 +1038,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (!DASHBOARD_QUERY_TABLES.contains(tableName)) {
             return false;
         }
+        MetadataLookupCache cache = metadataLookupCache.get();
+        if (cache != null) {
+            return cache.tableExists().computeIfAbsent(tableName, this::queryTableExists);
+        }
+        return queryTableExists(tableName);
+    }
+
+    private boolean queryTableExists(String tableName) {
         String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
         try {
             Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
@@ -848,15 +1060,53 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         if (!DASHBOARD_QUERY_TABLES.contains(tableName) || !isSafeIdentifier(columnName)) {
             return false;
         }
+        ColumnRef columnRef = new ColumnRef(tableName, columnName);
+        MetadataLookupCache cache = metadataLookupCache.get();
+        if (cache != null) {
+            return cache.columnExists().computeIfAbsent(columnRef, this::queryColumnExists);
+        }
+        return queryColumnExists(columnRef);
+    }
+
+    private boolean queryColumnExists(ColumnRef columnRef) {
         String sql = "SELECT COUNT(1) FROM information_schema.columns "
                 + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
         try {
-            Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName, columnName);
+            Long count = jdbcTemplate.queryForObject(
+                    sql,
+                    Long.class,
+                    columnRef.tableName(),
+                    columnRef.columnName()
+            );
             return count != null && count > 0;
         } catch (RuntimeException ex) {
-            log.warn("Admin dashboard column existence check failed, table={}, column={}", tableName, columnName, ex);
+            log.warn(
+                    "Admin dashboard column existence check failed, table={}, column={}",
+                    columnRef.tableName(),
+                    columnRef.columnName(),
+                    ex
+            );
             return false;
         }
+    }
+
+    private <T> T withMetadataLookupCache(Supplier<T> action) {
+        if (metadataLookupCache.get() != null) {
+            return action.get();
+        }
+        metadataLookupCache.set(new MetadataLookupCache(new HashMap<>(), new HashMap<>()));
+        try {
+            return action.get();
+        } finally {
+            metadataLookupCache.remove();
+        }
+    }
+
+    private record ColumnRef(String tableName, String columnName) {
+    }
+
+    private record MetadataLookupCache(Map<String, Boolean> tableExists,
+                                       Map<ColumnRef, Boolean> columnExists) {
     }
 
     private String quoteIdentifier(String identifier) {

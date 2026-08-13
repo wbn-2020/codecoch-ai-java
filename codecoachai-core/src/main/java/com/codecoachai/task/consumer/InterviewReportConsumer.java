@@ -64,7 +64,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
         }
 
         try {
-            boolean firstTime = asyncTaskService.acquire(envelope, MAX_RETRY);
+            boolean firstTime = asyncTaskService.acquireRegistered(envelope, MAX_RETRY);
             if (!firstTime) {
                 return;
             }
@@ -136,7 +136,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             notificationService.notifyTaskDone(
                     payload.getUserId(),
                     INTERVIEW_REPORT_BIZ_TYPE,
-                    String.valueOf(payload.getSessionId()),
+                    String.valueOf(payload.getReportId()),
                     REPORT_READY_TITLE,
                     REPORT_READY_CONTENT);
         } catch (TerminalTaskFailureException terminalEx) {
@@ -183,7 +183,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
         notificationService.notifyTaskFailed(
                 payload.getUserId(),
                 INTERVIEW_REPORT_BIZ_TYPE,
-                String.valueOf(payload.getSessionId()),
+                String.valueOf(payload.getReportId()),
                 REPORT_FAILED_TITLE,
                 reason);
     }

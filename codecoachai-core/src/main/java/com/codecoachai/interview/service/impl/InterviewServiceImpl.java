@@ -71,6 +71,7 @@ import com.codecoachai.interview.mapper.InterviewStageMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.scenario.InterviewScenarioBinding;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
+import com.codecoachai.interview.scenario.InterviewRubricVersionMapper;
 import com.codecoachai.interview.scenario.ScenarioBindingCreateDTO;
 import com.codecoachai.interview.scenario.ScenarioBindingVO;
 import com.codecoachai.interview.scenario.ScenarioRubricService;
@@ -80,6 +81,7 @@ import com.codecoachai.interview.service.InterviewService;
 import com.codecoachai.interview.service.InterviewVoiceService;
 import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryService;
 import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.codecoachai.interview.support.InterviewReportComparabilityPolicy;
 import com.codecoachai.interview.support.InterviewReportScoringContract;
@@ -157,9 +159,11 @@ public class InterviewServiceImpl implements InterviewService {
     private final VoiceDeliverySummaryService voiceDeliverySummaryService;
     private final ScenarioRubricService scenarioRubricService;
     private final InterviewScenarioBindingMapper scenarioBindingMapper;
+    private final InterviewRubricVersionMapper rubricVersionMapper;
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final InterviewReportComparabilityPolicy comparabilityPolicy;
+    private final AsyncTaskService asyncTaskService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -628,6 +632,7 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setFollowUpReason(evaluation == null ? null : evaluation.getFollowUpReason());
         vo.setFollowUpValid(evaluation == null ? null : evaluation.getFollowUpValid());
         vo.setNextQuestion(nextQuestion);
+        vo.setAnswerDurationSeconds(answerMessage.getAnswerDurationSeconds());
         if (voiceTranscript != null) {
             vo.setVoiceSubmissionId(voiceTranscript.getVoiceSubmissionId());
             vo.setTranscriptId(voiceTranscript.getTranscriptId());
@@ -668,6 +673,8 @@ public class InterviewServiceImpl implements InterviewService {
         }
         InterviewMessage answerMessage = saveMessage(session, stage, question, "USER", "ANSWER", dto.getAnswerContent(), null, null,
                 currentAiQuestion.getId(), false, session.getCurrentFollowUpCount(), null, null);
+        answerMessage.setAnswerDurationSeconds(serverAnswerDurationSeconds(currentAiQuestion));
+        messageMapper.updateById(answerMessage);
         if (voiceTranscript != null) {
             interviewVoiceService.markTranscriptSubmitted(session.getId(), voiceTranscript.getTranscriptId(), answerMessage.getId());
         }
@@ -1468,7 +1475,8 @@ public class InterviewServiceImpl implements InterviewService {
                 .and(wrapper -> wrapper
                         .in(InterviewSession::getReportStatus, List.of(
                                 ReportStatusEnum.NOT_GENERATED.name(),
-                                ReportStatusEnum.FAILED.name()))
+                                ReportStatusEnum.FAILED.name(),
+                                ReportStatusEnum.UNSCORABLE.name()))
                         .or()
                         .isNull(InterviewSession::getReportStatus))
                 .set(InterviewSession::getReportStatus, ReportStatusEnum.GENERATING.name())
@@ -1516,12 +1524,27 @@ public class InterviewServiceImpl implements InterviewService {
             return new PreparedReportGeneration(
                     responseReport, buildExistingReportResponse(session, responseReport), false);
         }
+        initializeReportDispatchReceipt(report);
+        asyncTaskService.registerPending(
+                report.getAsyncMessageId(),
+                "interview.report",
+                String.valueOf(report.getId()),
+                session.getUserId(),
+                report.getAsyncTraceId(),
+                com.codecoachai.common.mq.payload.InterviewReportPayload.builder()
+                        .sessionId(session.getId())
+                        .reportId(report.getId())
+                        .userId(session.getUserId())
+                        .generationToken(report.getGenerationToken())
+                        .build(),
+                3);
 
         FinishInterviewVO vo = new FinishInterviewVO();
         vo.setId(session.getId());
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setReport(toReportVO(report, session));
+        attachReportDispatchReceipt(vo, report);
         return new PreparedReportGeneration(report, vo, true);
     }
 
@@ -1554,6 +1577,7 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setStatus(session.getStatus());
         vo.setReportStatus(session.getReportStatus());
         vo.setReport(toReportVO(existing, session));
+        attachReportDispatchReceipt(vo, existing);
         return vo;
     }
 
@@ -1564,12 +1588,16 @@ public class InterviewServiceImpl implements InterviewService {
             MqDispatchReceipt receipt = interviewMqDispatcher.dispatchReportWithReceipt(
                     sessionId, userId, reportId, generationToken);
             if (receipt != null) {
-                attachReportDispatchReceipt(vo, receipt);
+                applyReportDispatchReceipt(report, receipt);
+                attachReportDispatchReceipt(vo, report);
                 return;
             }
             log.warn("面试报告 MQ 投递不可用，回退本地异步生成 sessionId={} reportId={}",
                     sessionId, reportId);
-            reportAsyncService.generateReportAsync(sessionId, reportId, generationToken);
+            markReportLocalAsync(report);
+            attachReportDispatchReceipt(vo, report);
+            reportAsyncService.generateReportAsync(
+                    sessionId, reportId, generationToken, report.getAsyncMessageId());
         };
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             action.run();
@@ -1583,15 +1611,51 @@ public class InterviewServiceImpl implements InterviewService {
         });
     }
 
-    private void attachReportDispatchReceipt(FinishInterviewVO vo, MqDispatchReceipt receipt) {
-        if (vo == null || receipt == null) {
+    private void initializeReportDispatchReceipt(InterviewReport report) {
+        if (report == null || report.getId() == null || !StringUtils.hasText(report.getGenerationToken())) {
             return;
         }
-        vo.setAsyncMessageId(receipt.getMessageId());
-        vo.setAsyncTraceId(receipt.getTraceId());
-        vo.setAsyncBizType(receipt.getBizType());
-        vo.setAsyncBizId(receipt.getBizId());
-        vo.setAsyncSendStatus(receipt.getSendStatus());
+        report.setAsyncMessageId("interview.report:" + report.getId() + ":" + report.getGenerationToken());
+        report.setAsyncTraceId(report.getGenerationToken());
+        report.setAsyncBizType("interview.report");
+        report.setAsyncBizId(String.valueOf(report.getId()));
+        report.setAsyncSendStatus("PENDING");
+        report.setAsyncDispatchMode("PENDING");
+        saveReport(report);
+    }
+
+    private void applyReportDispatchReceipt(InterviewReport report, MqDispatchReceipt receipt) {
+        if (report == null || receipt == null) {
+            return;
+        }
+        report.setAsyncMessageId(receipt.getMessageId());
+        report.setAsyncTraceId(receipt.getTraceId());
+        report.setAsyncBizType(receipt.getBizType());
+        report.setAsyncBizId(receipt.getBizId());
+        report.setAsyncSendStatus(receipt.getSendStatus());
+        report.setAsyncDispatchMode("MQ");
+        saveReport(report);
+    }
+
+    private void markReportLocalAsync(InterviewReport report) {
+        if (report == null) {
+            return;
+        }
+        report.setAsyncSendStatus("LOCAL_RUNNING");
+        report.setAsyncDispatchMode("LOCAL_ASYNC");
+        saveReport(report);
+    }
+
+    private void attachReportDispatchReceipt(FinishInterviewVO vo, InterviewReport report) {
+        if (vo == null || report == null) {
+            return;
+        }
+        vo.setAsyncMessageId(report.getAsyncMessageId());
+        vo.setAsyncTraceId(report.getAsyncTraceId());
+        vo.setAsyncBizType(report.getAsyncBizType());
+        vo.setAsyncBizId(report.getAsyncBizId());
+        vo.setAsyncSendStatus(report.getAsyncSendStatus());
+        vo.setAsyncDispatchMode(report.getAsyncDispatchMode());
     }
 
     private void syncInterviewSearchAfterCommit(Long sessionId, Long userId) {
@@ -2088,6 +2152,7 @@ public class InterviewServiceImpl implements InterviewService {
         message.setContent(content);
         if ("QUESTION".equals(type) || "FOLLOW_UP".equals(type)) {
             message.setQuestionContent(content);
+            message.setQuestionPresentedAt(LocalDateTime.now());
         }
         if ("ANSWER".equals(type)) {
             message.setUserAnswer(content);
@@ -2104,6 +2169,21 @@ public class InterviewServiceImpl implements InterviewService {
         message.setComment(comment);
         messageMapper.insert(message);
         return message;
+    }
+
+    private int serverAnswerDurationSeconds(InterviewMessage question) {
+        LocalDateTime presentedAt = question == null
+                ? null
+                : firstNonNull(question.getQuestionPresentedAt(), question.getCreatedAt());
+        if (presentedAt == null) {
+            return 0;
+        }
+        long elapsed = java.time.Duration.between(presentedAt, LocalDateTime.now()).getSeconds();
+        return (int) Math.min(24 * 60 * 60, Math.max(0, elapsed));
+    }
+
+    private <T> T firstNonNull(T first, T second) {
+        return first != null ? first : second;
     }
 
     private GenerateFollowUpDTO buildFollowUpDTO(InnerQuestionVO question, InterviewStage stage,
@@ -2193,6 +2273,9 @@ public class InterviewServiceImpl implements InterviewService {
         vo.setStageProgress(stageProgress(stage));
         vo.setOverallProgress(overallProgress(session));
         vo.setInterviewStatus(session.getStatus());
+        vo.setQuestionPresentedAt(firstNonNull(
+                message.getQuestionPresentedAt(),
+                message.getCreatedAt()));
         return vo;
     }
 
@@ -2289,6 +2372,23 @@ public class InterviewServiceImpl implements InterviewService {
         return "scenario:" + binding.getScenarioVersionId() + ":rubric:" + binding.getRubricVersionId();
     }
 
+    private String reportRubricDimensions(Long sessionId) {
+        if (sessionId == null) {
+            return null;
+        }
+        InterviewScenarioBinding binding = scenarioBindingMapper.selectOne(
+                new LambdaQueryWrapper<InterviewScenarioBinding>()
+                        .eq(InterviewScenarioBinding::getSessionId, sessionId)
+                        .eq(InterviewScenarioBinding::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (binding == null || binding.getRubricVersionId() == null) {
+            return null;
+        }
+        com.codecoachai.interview.scenario.InterviewRubricVersion rubric =
+                rubricVersionMapper.selectById(binding.getRubricVersionId());
+        return rubric == null ? null : rubric.getDimensionsJson();
+    }
+
     private boolean isCurrentReportAttempt(Long sessionId, Long reportId, String generationToken) {
         if (sessionId == null || reportId == null || !StringUtils.hasText(generationToken)) {
             return false;
@@ -2305,6 +2405,19 @@ public class InterviewServiceImpl implements InterviewService {
 
     private void applyReportContent(InterviewReport report, GenerateReportVO aiReport, List<InterviewMessage> messages) {
         int answerCount = countScorableAnswers(messages);
+        InterviewReportScoringContract.Validation scoringContract =
+                InterviewReportScoringContract.validate(
+                        objectMapper,
+                        aiReport == null ? null : aiReport.getTotalScore(),
+                        reportRubricVersion(report.getSessionId()),
+                        aiReport == null ? null : aiReport.getRubricScores(),
+                        reportRubricDimensions(report.getSessionId()));
+        if (!scoringContract.valid()) {
+            markReportAiIncomplete(report);
+            report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
+                    + " [" + scoringContract.reasonCode() + "]");
+            return;
+        }
         if (aiReportMissingDisplayContent(aiReport)
                 || !hasExpectedQaReviews(aiReport == null ? null : aiReport.getQaReview(), answerCount)) {
             applyFallbackReportContent(report, aiReport, messages, answerCount);
@@ -3102,10 +3215,9 @@ public class InterviewServiceImpl implements InterviewService {
         }
         if ("INTERVIEW_REPORT".equalsIgnoreCase(profile.getSourceType())) {
             InterviewReport sourceReport = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
-                    .eq(InterviewReport::getSessionId, profile.getSourceBizId())
+                    .eq(InterviewReport::getId, profile.getSourceBizId())
                     .eq(InterviewReport::getUserId, userId)
                     .eq(InterviewReport::getDeleted, CommonConstants.NO)
-                    .orderByDesc(InterviewReport::getId)
                     .last("limit 1"));
             if (!InterviewReportTrustPolicy.isTrustedForFormalAction(sourceReport)) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源报告可信度不足");

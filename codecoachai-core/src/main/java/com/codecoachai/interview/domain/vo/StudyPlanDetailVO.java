@@ -9,6 +9,7 @@ public class StudyPlanDetailVO {
 
     private Long id;
     private Long reportId;
+    private Long sourceId;
     private Long targetJobId;
     private Long skillProfileId;
     private Long matchReportId;

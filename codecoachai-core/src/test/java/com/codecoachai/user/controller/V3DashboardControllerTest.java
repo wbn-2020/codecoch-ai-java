@@ -6,7 +6,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import com.codecoachai.user.domain.vo.V3DashboardVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -55,6 +57,28 @@ class V3DashboardControllerTest {
                 .anyMatch(path -> path != null && path.startsWith("/skill-profiles")));
     }
 
+    @Test
+    void skillRadarSkipsGapWithoutQuantifiedLevel() throws Exception {
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+
+        List<Map<String, Object>> radar = invokeToRadar(controller, List.of(gap("JAVA", null)));
+
+        assertEquals(List.of(), radar);
+    }
+
+    @Test
+    void skillRadarAveragesOnlyQuantifiedGapsWithinCategory() throws Exception {
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+
+        List<Map<String, Object>> radar = invokeToRadar(
+                controller,
+                List.of(gap("JAVA", null), gap("JAVA", 3)));
+
+        assertEquals(1, radar.size());
+        assertEquals("JAVA", radar.get(0).get("category"));
+        assertEquals(2L, radar.get(0).get("score"));
+    }
+
     private static V3DashboardVO.NextActionVO action(
             List<V3DashboardVO.NextActionVO> actions,
             String actionType) {
@@ -71,6 +95,22 @@ class V3DashboardControllerTest {
         Method method = V3DashboardController.class.getDeclaredMethod("nextActions", V3DashboardVO.class);
         method.setAccessible(true);
         return (List<V3DashboardVO.NextActionVO>) method.invoke(controller, dashboard);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> invokeToRadar(
+            V3DashboardController controller,
+            List<Map<String, Object>> gaps) throws Exception {
+        Method method = V3DashboardController.class.getDeclaredMethod("toRadar", List.class);
+        method.setAccessible(true);
+        return (List<Map<String, Object>>) method.invoke(controller, gaps);
+    }
+
+    private static Map<String, Object> gap(String category, Integer gapLevel) {
+        Map<String, Object> gap = new HashMap<>();
+        gap.put("category", category);
+        gap.put("gap_level", gapLevel);
+        return gap;
     }
 
     private static JdbcTemplate nullJdbcTemplate() {

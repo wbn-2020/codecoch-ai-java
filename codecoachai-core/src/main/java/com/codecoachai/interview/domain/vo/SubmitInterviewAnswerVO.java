@@ -28,4 +28,5 @@ public class SubmitInterviewAnswerVO {
     private Boolean voiceLowConfidence;
     private Boolean voiceFallback;
     private String voiceTraceId;
+    private Integer answerDurationSeconds;
 }

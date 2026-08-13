@@ -47,7 +47,7 @@ class AgentDailyPlanConsumerTest {
     @Test
     void canceledRunDoesNotMarkAsyncTaskSuccessOrSendDoneNotification() {
         MqMessage<AgentDailyPlanPayload> envelope = envelope();
-        when(asyncTaskService.acquire(envelope, 3)).thenReturn(true);
+        when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
         AgentDailyPlanVO plan = new AgentDailyPlanVO();
         plan.setRunId(77L);
         plan.setStatus("CANCELED");
@@ -64,7 +64,7 @@ class AgentDailyPlanConsumerTest {
     @Test
     void terminalBusinessFailureMarksAgentRunFailed() {
         MqMessage<AgentDailyPlanPayload> envelope = envelope();
-        when(asyncTaskService.acquire(envelope, 3)).thenReturn(true);
+        when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
         when(aiFeignClient.executeAgentDailyPlan(eq(77L), any()))
                 .thenReturn(Result.fail(ErrorCode.PARAM_ERROR.getCode(), "invalid target job"));
 
@@ -95,7 +95,7 @@ class AgentDailyPlanConsumerTest {
     @Test
     void retryableFailureMarksFailedAndRethrowsForMqRetryOnly() {
         MqMessage<AgentDailyPlanPayload> envelope = envelope();
-        when(asyncTaskService.acquire(envelope, 3)).thenReturn(true);
+        when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
         when(aiFeignClient.executeAgentDailyPlan(eq(77L), any()))
                 .thenReturn(Result.fail(ErrorCode.SYSTEM_ERROR.getCode(), "upstream temporarily unavailable"));
 

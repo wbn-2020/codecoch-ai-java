@@ -88,6 +88,20 @@ class JobApplicationLifecycleServiceImplTest {
     }
 
     @Test
+    void archivedApplicationCannotTransition() {
+        when(applicationMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+
+        assertThrows(BusinessException.class,
+                () -> service.transitionForUser(7L, 88L, "ACCEPTED", 2, "archived-transition"));
+
+        ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(applicationMapper).selectOne(queryCaptor.capture());
+        assertTrue(queryCaptor.getValue().getSqlSegment().contains("archived_at IS NULL"));
+        verify(applicationMapper, never()).transitionStatus(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void sameIdempotencyKeyWithDifferentStatusIsRejected() {
         JobApplication application = application(88L, 7L, "OFFER", 2);
         JobApplicationEvent existing = new JobApplicationEvent();

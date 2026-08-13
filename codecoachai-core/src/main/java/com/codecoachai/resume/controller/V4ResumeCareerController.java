@@ -6,6 +6,7 @@ import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationEventReviewGenerateDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
@@ -24,6 +25,7 @@ import jakarta.validation.Valid;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -126,9 +128,11 @@ public class V4ResumeCareerController {
     public Result<List<JobApplicationVO>> listApplications(@RequestParam(required = false) String status,
                                                            @RequestParam(required = false) Integer page,
                                                            @RequestParam(required = false) Integer size,
-                                                           @RequestParam(required = false) String keyword) {
+                                                           @RequestParam(required = false) String keyword,
+                                                           @RequestParam(required = false, defaultValue = "false")
+                                                           boolean includeArchived) {
         SecurityAssert.requireLoginUserId();
-        return Result.success(v4ResumeCareerService.listApplications(status, page, size, keyword));
+        return Result.success(v4ResumeCareerService.listApplications(status, page, size, keyword, includeArchived));
     }
 
     @GetMapping("/applications/stats")
@@ -147,6 +151,37 @@ public class V4ResumeCareerController {
     public Result<JobApplicationVO> updateApplication(@PathVariable Long id, @RequestBody JobApplicationSaveDTO dto) {
         SecurityAssert.requireLoginUserId();
         return Result.success(v4ResumeCareerService.updateApplication(id, dto));
+    }
+
+    @OperationLog(module = "resume", action = "ARCHIVE_JOB_APPLICATION",
+            description = "归档求职投递记录", logArgs = false, logResponse = false)
+    @PostMapping("/applications/{id}/archive")
+    public Result<JobApplicationVO> archiveApplication(@PathVariable Long id,
+                                                        @RequestBody(required = false) JobApplicationArchiveDTO dto) {
+        SecurityAssert.requireLoginUserId();
+        return Result.success(v4ResumeCareerService.archiveApplication(
+                id, dto == null ? new JobApplicationArchiveDTO() : dto));
+    }
+
+    @OperationLog(module = "resume", action = "RESTORE_JOB_APPLICATION",
+            description = "恢复已归档求职投递记录", logArgs = false, logResponse = false)
+    @PostMapping("/applications/{id}/restore")
+    public Result<JobApplicationVO> restoreApplication(@PathVariable Long id,
+                                                        @RequestBody(required = false) JobApplicationArchiveDTO dto) {
+        SecurityAssert.requireLoginUserId();
+        return Result.success(v4ResumeCareerService.restoreApplication(
+                id, dto == null ? new JobApplicationArchiveDTO() : dto));
+    }
+
+    @OperationLog(module = "resume", action = "DELETE_JOB_APPLICATION",
+            description = "删除已归档求职投递记录", logArgs = false, logResponse = false)
+    @DeleteMapping("/applications/{id}")
+    public Result<Void> deleteApplication(@PathVariable Long id,
+                                          @RequestBody(required = false) JobApplicationArchiveDTO dto) {
+        SecurityAssert.requireLoginUserId();
+        v4ResumeCareerService.deleteApplication(
+                id, dto == null ? new JobApplicationArchiveDTO() : dto);
+        return Result.success();
     }
 
     @GetMapping("/applications/{id}/events")

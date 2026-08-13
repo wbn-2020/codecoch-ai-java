@@ -2,6 +2,7 @@ package com.codecoachai.interview.domain.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -29,4 +30,6 @@ public class InterviewMessage extends BaseEntity {
     private String knowledgePoints;
     private Integer score;
     private String comment;
+    private LocalDateTime questionPresentedAt;
+    private Integer answerDurationSeconds;
 }

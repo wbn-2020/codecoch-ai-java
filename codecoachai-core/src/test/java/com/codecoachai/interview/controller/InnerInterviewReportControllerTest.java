@@ -117,7 +117,7 @@ class InnerInterviewReportControllerTest {
         assertEquals("[\"review by topic\"]", persisted.getReviewSuggestions());
         assertEquals("[\"keep practicing\"]", persisted.getSuggestions());
         assertEquals("[{\"question\":\"Q1\"}]", persisted.getQaReview());
-        assertEquals("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]", persisted.getRubricScores());
+        assertEquals(formalRubricScores(), persisted.getRubricScores());
         assertEquals("full report body", persisted.getReportContent());
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
     }
@@ -201,7 +201,7 @@ class InnerInterviewReportControllerTest {
     }
 
     @Test
-    void completeReportRecoversEmptyAiPayloadFromStoredEvaluationEvidence() {
+    void completeReportKeepsRecoveredSingleDimensionEvidenceUnscorable() {
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
@@ -225,16 +225,17 @@ class InnerInterviewReportControllerTest {
         ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
         verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
         InterviewReport persisted = reportCaptor.getValue();
-        assertEquals(ReportStatusEnum.GENERATED.name(), persisted.getStatus());
-        assertEquals(84, persisted.getTotalScore());
+        assertEquals(ReportStatusEnum.UNSCORABLE.name(), persisted.getStatus());
+        assertEquals(null, persisted.getTotalScore());
         assertTrue(persisted.getRubricScores().contains("ANSWER_QUALITY"));
         assertTrue(persisted.getRubricScores().contains("STORED_INTERVIEW_EVALUATION"));
+        assertEquals(null, persisted.getRubricVersion());
         assertTrue(persisted.getQaReview().contains("回答一"));
         assertTrue(persisted.getQaReview().contains("点评二"));
         assertTrue(persisted.getSummary().contains("2 条有效回答"));
         assertTrue(persisted.getReportContent().contains("综合得分 84 分"));
-        verify(interviewMqDispatcher).dispatchInterviewSearchUpsert(1L, 10L);
-        verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
 
     @Test
@@ -419,8 +420,18 @@ class InnerInterviewReportControllerTest {
                 "reviewSuggestions", "[\"review by topic\"]",
                 "suggestions", "[\"keep practicing\"]",
                 "qaReview", "[{\"question\":\"Q1\"}]",
-                "rubricScores", "[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]",
+                "rubricScores", formalRubricScores(),
                 "reportContent", "full report body");
+    }
+
+    private String formalRubricScores() {
+        return """
+                [{"dimension":"EXPRESSION_STRUCTURE","score":4.1},
+                 {"dimension":"TECHNICAL_DEPTH","score":4.1},
+                 {"dimension":"BUSINESS_UNDERSTANDING","score":4.1},
+                 {"dimension":"RISK_AWARENESS","score":4.1},
+                 {"dimension":"IMPLEMENTABILITY","score":4.1}]
+                """.replaceAll("\\s+", "");
     }
 
     private List<InterviewMessage> scoredMessages() {

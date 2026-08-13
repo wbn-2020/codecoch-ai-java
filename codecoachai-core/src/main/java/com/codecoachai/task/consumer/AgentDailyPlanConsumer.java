@@ -56,7 +56,7 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
             MDC.put("traceId", envelope.getTraceId());
         }
         try {
-            if (!asyncTaskService.acquire(envelope, MAX_RETRY)) {
+            if (!asyncTaskService.acquireRegistered(envelope, MAX_RETRY)) {
                 return;
             }
             AgentDailyPlanPayload payload = envelope.getPayload();

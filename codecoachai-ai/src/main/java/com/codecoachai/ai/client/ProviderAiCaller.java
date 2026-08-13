@@ -57,10 +57,65 @@ public class ProviderAiCaller {
             throw new AiProviderException(AiFailureType.CONFIG_ERROR,
                     "Provider base-url or api-key empty: " + providerName);
         }
+        return chatWithConfig(providerName, cfg, prompt, modelType);
+    }
+
+    /**
+     * 对指定的数据库模型配置执行一次低成本实时测活。
+     * <p>测活不依赖 enabled 状态，但仍复用端点白名单、TLS 和安全 HTTP 客户端。
+     */
+    public CallResult probe(AiModelConfig modelConfig, String prompt) {
+        return chat(modelConfig, prompt, "chat", true);
+    }
+
+    /**
+     * 使用一条精确的数据库模型配置调用模型，不再按 provider 二次选取模型。
+     * 供全局默认模型路由和管理端测活共用。
+     */
+    public CallResult chat(AiModelConfig modelConfig, String prompt, String modelType) {
+        return chat(modelConfig, prompt, modelType, false);
+    }
+
+    private CallResult chat(
+            AiModelConfig modelConfig,
+            String prompt,
+            String modelType,
+            boolean lowCostProbe) {
+        if (modelConfig == null
+                || !StringUtils.hasText(modelConfig.getProvider())
+                || !StringUtils.hasText(modelConfig.getModelCode())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "AI model config is incomplete");
+        }
+        AiRouterProperties.ProviderConfig cfg = databaseProviderConfig(modelConfig);
+        if (!StringUtils.hasText(cfg.getBaseUrl()) || !StringUtils.hasText(cfg.getApiKey())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider base-url or api-key empty: " + modelConfig.getProvider());
+        }
+        cfg.setChatModel(modelConfig.getModelCode());
+        cfg.setReasonerModel(modelConfig.getModelCode());
+        if (lowCostProbe) {
+            cfg.setTemperature(0.0);
+            cfg.setMaxTokens(Math.min(
+                    cfg.getMaxTokens() == null || cfg.getMaxTokens() <= 0 ? 64 : cfg.getMaxTokens(),
+                    64));
+        }
+        return chatWithConfig(modelConfig.getProvider(), cfg, prompt, modelType);
+    }
+
+    private CallResult chatWithConfig(
+            String providerName,
+            AiRouterProperties.ProviderConfig cfg,
+            String prompt,
+            String modelType) {
 
         String model = "reasoner".equalsIgnoreCase(modelType)
                 ? (StringUtils.hasText(cfg.getReasonerModel()) ? cfg.getReasonerModel() : cfg.getChatModel())
                 : cfg.getChatModel();
+        if (!StringUtils.hasText(model)) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider chat model empty: " + providerName);
+        }
 
         URI url = resolveChatEndpoint(providerName, cfg.getBaseUrl());
         Map<String, Object> body = Map.of(
@@ -176,9 +231,44 @@ public class ProviderAiCaller {
             throw new AiProviderException(AiFailureType.CONFIG_ERROR,
                     "Provider base-url or api-key empty: " + providerName);
         }
+        return chatStreamWithConfig(providerName, cfg, prompt, modelType, onDelta);
+    }
+
+    /**
+     * 使用一条精确的数据库模型配置执行流式调用。
+     */
+    public CallResult chatStream(
+            AiModelConfig modelConfig,
+            String prompt,
+            String modelType,
+            Consumer<String> onDelta) {
+        if (modelConfig == null
+                || !StringUtils.hasText(modelConfig.getProvider())
+                || !StringUtils.hasText(modelConfig.getModelCode())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "AI model config is incomplete");
+        }
+        AiRouterProperties.ProviderConfig cfg = databaseProviderConfig(modelConfig);
+        if (!StringUtils.hasText(cfg.getBaseUrl()) || !StringUtils.hasText(cfg.getApiKey())) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider base-url or api-key empty: " + modelConfig.getProvider());
+        }
+        return chatStreamWithConfig(modelConfig.getProvider(), cfg, prompt, modelType, onDelta);
+    }
+
+    private CallResult chatStreamWithConfig(
+            String providerName,
+            AiRouterProperties.ProviderConfig cfg,
+            String prompt,
+            String modelType,
+            Consumer<String> onDelta) {
         String model = "reasoner".equalsIgnoreCase(modelType)
                 ? (StringUtils.hasText(cfg.getReasonerModel()) ? cfg.getReasonerModel() : cfg.getChatModel())
                 : cfg.getChatModel();
+        if (!StringUtils.hasText(model)) {
+            throw new AiProviderException(AiFailureType.CONFIG_ERROR,
+                    "Provider chat model empty: " + providerName);
+        }
         URI url = resolveChatEndpoint(providerName, cfg.getBaseUrl());
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
@@ -279,9 +369,13 @@ public class ProviderAiCaller {
         if (model == null) {
             return null;
         }
+        return databaseProviderConfig(model);
+    }
+
+    private AiRouterProperties.ProviderConfig databaseProviderConfig(AiModelConfig model) {
         AiRouterProperties.ProviderConfig cfg = new AiRouterProperties.ProviderConfig();
         cfg.setBaseUrl(model.getApiBaseUrl());
-        cfg.setApiKey(decryptApiKey(providerName, model.getApiKey()));
+        cfg.setApiKey(decryptApiKey(model.getProvider(), model.getApiKey()));
         cfg.setChatModel(model.getModelCode());
         cfg.setReasonerModel(model.getModelCode());
         cfg.setEmbeddingModel(model.getModelCode());
@@ -306,6 +400,29 @@ public class ProviderAiCaller {
             throw new AiProviderException(AiFailureType.CONFIG_ERROR,
                     "Provider endpoint rejected: " + providerName, null, ex);
         }
+    }
+
+    /**
+     * 返回唯一的启用全局默认模型；多个历史默认标记并存时返回 {@code null}，
+     * 由路由层回退到运行配置，避免静默把任意一个模型当作全局默认。
+     */
+    public AiModelConfig findUniqueEnabledGlobalDefaultModel() {
+        List<AiModelConfig> candidates;
+        try {
+            candidates = modelConfigMapper.selectList(new LambdaQueryWrapper<AiModelConfig>()
+                    .eq(AiModelConfig::getEnabled, 1)
+                    .eq(AiModelConfig::getDefaultModel, 1)
+                    .orderByDesc(AiModelConfig::getUpdatedAt)
+                    .orderByAsc(AiModelConfig::getSortOrder)
+                    .last("LIMIT 2"));
+        } catch (RuntimeException ex) {
+            log.warn("Unable to resolve database global default AI model; using runtime provider config", ex);
+            return null;
+        }
+        if (candidates == null || candidates.size() != 1) {
+            return null;
+        }
+        return candidates.get(0);
     }
 
     private URI resolveEmbeddingEndpoint(String providerName, String baseUrl) {

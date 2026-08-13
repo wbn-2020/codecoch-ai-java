@@ -72,6 +72,7 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
+import com.codecoachai.common.mq.payload.AgentDailyPlanPayload;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -88,8 +89,10 @@ import java.util.UUID;
 import java.util.function.Consumer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -131,6 +134,57 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final String RESUME_OPTIMIZE_STATUS_SUCCESS = "SUCCESS";
     private static final int DEFAULT_TASK_COUNT = 3;
     private static final int DEFAULT_MAX_TOTAL_MINUTES = 120;
+    private static final int DAILY_PLAN_ASYNC_MAX_RETRY = 3;
+    private static final String ASYNC_STATUS_PENDING = "PENDING";
+    private static final String ASYNC_STATUS_RUNNING = "RUNNING";
+    private static final String ASYNC_STATUS_SUCCESS = "SUCCESS";
+    private static final String ASYNC_STATUS_FAILED = "FAILED";
+    private static final String ASYNC_REGISTRATION_MESSAGE_PREFIX = "agent-daily-plan-register-";
+    private static final String REGISTER_ASYNC_TASK_SQL = """
+            INSERT INTO async_task (
+                message_id, biz_type, biz_id, user_id, trace_id, status,
+                retry_count, max_retry, payload, created_at, updated_at, deleted
+            ) VALUES (?, ?, ?, ?, ?, 'PENDING', 0, ?, ?, ?, ?, 0)
+            """;
+    private static final String CLAIM_LOCAL_ASYNC_TASK_SQL = """
+            UPDATE async_task
+               SET status = 'RUNNING',
+                   lease_token = ?,
+                   failure_reason = NULL,
+                   result = NULL,
+                   started_at = ?,
+                   completed_at = NULL,
+                   updated_at = ?
+             WHERE message_id = ?
+               AND deleted = 0
+               AND status = 'PENDING'
+               AND lease_token IS NULL
+            """;
+    private static final String COMPLETE_LOCAL_ASYNC_TASK_SQL = """
+            UPDATE async_task
+               SET status = 'SUCCESS',
+                   lease_token = NULL,
+                   result = ?,
+                   failure_reason = NULL,
+                   completed_at = ?,
+                   updated_at = ?
+             WHERE message_id = ?
+               AND deleted = 0
+               AND status = 'RUNNING'
+               AND lease_token = ?
+            """;
+    private static final String FAIL_LOCAL_ASYNC_TASK_SQL = """
+            UPDATE async_task
+               SET status = 'FAILED',
+                   lease_token = NULL,
+                   failure_reason = ?,
+                   completed_at = ?,
+                   updated_at = ?
+             WHERE message_id = ?
+               AND deleted = 0
+               AND status = 'RUNNING'
+               AND lease_token = ?
+            """;
     private static final int DEGRADED_PLAN_MINUTES = 15;
     private static final String DEGRADED_PLAN_CANDIDATE_ID = "degraded-minimal-action";
     private static final String DEGRADED_PLAN_SUMMARY =
@@ -183,6 +237,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private final ResumeOptimizeRecordEvidenceFeignClient resumeOptimizeRecordEvidenceFeignClient;
     private final ObjectMapper objectMapper;
     private final AgentMqDispatcher agentMqDispatcher;
+    private final JdbcTemplate jdbcTemplate;
     private final TransactionTemplate transactionTemplate;
 
     @Value("${codecoachai.agent.daily-plan.timeout-recovery.stale-minutes:15}")
@@ -214,13 +269,27 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             cancelActiveRuns(userId, scopeTargetJobId, planDate);
         }
 
-        RunCreateResult createResult = createRun(userId, scopeTargetJobId, planDate);
-        AgentRun run = createResult.run();
-        if (!createResult.created()) {
+        RunRegistrationResult registrationResult = transactionTemplate.execute(status -> {
+            RunCreateResult createResult = createRun(userId, scopeTargetJobId, planDate);
+            AgentRun createdRun = createResult.run();
+            if (!createResult.created()) {
+                return new RunRegistrationResult(createdRun, false, null, false);
+            }
+            request.setExecutionToken(createdRun.getExecutionToken());
+            AsyncTaskRegistration registration =
+                    registerDailyPlanAsyncTask(createdRun.getId(), userId, request);
+            boolean dispatchDeferred = deferDailyPlanDispatchAfterCommit(
+                    createdRun.getId(), userId, request, registration);
+            return new RunRegistrationResult(createdRun, true, registration, dispatchDeferred);
+        });
+        if (registrationResult == null) {
+            throw new IllegalStateException("Agent daily plan run registration transaction returned no result");
+        }
+        AgentRun run = registrationResult.run();
+        if (!registrationResult.created()) {
             return toDailyPlan(run);
         }
-        request.setExecutionToken(run.getExecutionToken());
-        if (deferDailyPlanDispatchAfterCommit(run.getId(), userId, request)) {
+        if (registrationResult.dispatchDeferred()) {
             return toDailyPlan(agentRunMapper.selectById(run.getId()));
         }
         try {
@@ -231,7 +300,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         } catch (RuntimeException ex) {
             log.warn("Agent daily plan dispatch failed before local fallback runId={} userId={}", run.getId(), userId, ex);
         }
-        return executeDailyPlanRun(userId, run, request);
+        return executeRegisteredLocalFallback(registrationResult.registration(), userId, run.getId(), request);
     }
 
     @Override
@@ -356,26 +425,16 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     @Override
     public List<AgentTaskVO> todayTasks(Long userId, Long targetJobId, LocalDate date, String status) {
         LocalDate dueDate = date == null ? LocalDate.now() : date;
-        // This is a read-only endpoint. Resolving a missing target through the full Agent context
-        // calls the resume service and can make the task list wait on unrelated remote work.
-        AgentRun run = latestActiveRunForTodayTasks(userId, targetJobId, dueDate);
-        if (run == null) {
-            return List.of();
-        }
-        if (AgentRunStatusEnum.RUNNING.name().equals(run.getStatus()) && isStaleRunning(run)) {
-            markFailed(run, AgentErrorCode.RUN_TIMEOUT, "计划生成超时，请重新生成今日计划。",
-                    durationFromStart(run));
-            return List.of();
-        }
+        // "Today" is a business-date snapshot across every target and plan for this user.
+        // This keeps dashboard, today, and task-center task facts aligned.
         return agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                         .eq(AgentTask::getUserId, userId)
-                        .eq(AgentTask::getAgentRunId, run.getId())
                         .eq(AgentTask::getDeleted, 0)
                         .eq(AgentTask::getDueDate, dueDate)
                         .eq(StringUtils.hasText(status), AgentTask::getStatus, status)
                         .orderByAsc(AgentTask::getSortOrder)
                         .orderByAsc(AgentTask::getId))
-                .stream().map(task -> toReviewedTaskVO(task, run)).toList();
+                .stream().map(this::toReviewedTaskVOWithRunTrace).toList();
     }
 
     @Override
@@ -928,10 +987,47 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setAsyncTraceId(receipt.getTraceId());
         vo.setAsyncBizType(receipt.getBizType());
         vo.setAsyncBizId(receipt.getBizId());
+        vo.setAsyncReceiptStatus("MQ_ACCEPTED");
         return vo;
     }
 
-    private boolean deferDailyPlanDispatchAfterCommit(Long runId, Long userId, DailyPlanGenerateDTO request) {
+    private AsyncTaskRegistration registerDailyPlanAsyncTask(Long runId,
+                                                             Long userId,
+                                                             DailyPlanGenerateDTO request) {
+        String messageId = ASYNC_REGISTRATION_MESSAGE_PREFIX + runId;
+        String bizId = String.valueOf(runId);
+        LocalDateTime now = LocalDateTime.now();
+        AgentDailyPlanPayload payload = AgentDailyPlanPayload.builder()
+                .runId(runId)
+                .userId(userId)
+                .executionToken(request.getExecutionToken())
+                .targetJobId(request.getTargetJobId())
+                .date(request.getDate())
+                .maxTotalMinutes(request.getMaxTotalMinutes())
+                .taskCount(request.getTaskCount())
+                .forceRegenerate(request.getForceRegenerate())
+                .build();
+        int inserted = jdbcTemplate.update(
+                REGISTER_ASYNC_TASK_SQL,
+                messageId,
+                AgentMqDispatcher.BIZ_TYPE_DAILY_PLAN_GENERATE,
+                bizId,
+                userId,
+                MDC.get("traceId"),
+                DAILY_PLAN_ASYNC_MAX_RETRY,
+                toJson(payload),
+                now,
+                now);
+        if (inserted != 1) {
+            throw new IllegalStateException("Agent daily plan async task registration failed");
+        }
+        return new AsyncTaskRegistration(messageId);
+    }
+
+    private boolean deferDailyPlanDispatchAfterCommit(Long runId,
+                                                      Long userId,
+                                                      DailyPlanGenerateDTO request,
+                                                      AsyncTaskRegistration registration) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             return false;
         }
@@ -944,21 +1040,22 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                     if (receipt != null) {
                         return;
                     }
-                    fallbackDailyPlanAfterCommit(runId, userId, dispatchRequest, null);
+                    fallbackDailyPlanAfterCommit(registration, runId, userId, dispatchRequest, null);
                 } catch (RuntimeException ex) {
-                    fallbackDailyPlanAfterCommit(runId, userId, dispatchRequest, ex);
+                    fallbackDailyPlanAfterCommit(registration, runId, userId, dispatchRequest, ex);
                 }
             }
         });
         return true;
     }
 
-    private void fallbackDailyPlanAfterCommit(Long runId,
+    private void fallbackDailyPlanAfterCommit(AsyncTaskRegistration registration,
+                                              Long runId,
                                               Long userId,
                                               DailyPlanGenerateDTO dispatchRequest,
                                               RuntimeException dispatchError) {
         try {
-            DailyPlanVO fallback = executeDailyPlan(userId, runId, dispatchRequest);
+            DailyPlanVO fallback = executeRegisteredLocalFallback(registration, userId, runId, dispatchRequest);
             if (dispatchError == null) {
                 log.warn("Agent daily plan dispatch returned no receipt after commit, fallback to local execution runId={} userId={} status={}",
                         runId, userId, fallback == null ? null : fallback.getStatus());
@@ -1071,6 +1168,81 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         if (!records.isEmpty()) {
             usageReferenceService.recordAll(records);
         }
+    }
+
+    private DailyPlanVO executeRegisteredLocalFallback(AsyncTaskRegistration registration,
+                                                       Long userId,
+                                                       Long runId,
+                                                       DailyPlanGenerateDTO request) {
+        LocalDateTime startedAt = LocalDateTime.now();
+        String leaseToken = UUID.randomUUID().toString();
+        int claimed = jdbcTemplate.update(
+                CLAIM_LOCAL_ASYNC_TASK_SQL,
+                leaseToken,
+                startedAt,
+                startedAt,
+                registration.messageId());
+        if (claimed != 1) {
+            log.info("Agent daily plan local fallback skipped because async task was already claimed runId={} userId={}",
+                    runId, userId);
+            return currentDailyPlan(userId, runId);
+        }
+        try {
+            DailyPlanVO result = executeDailyPlan(userId, runId, request);
+            if (result != null && ASYNC_STATUS_SUCCESS.equalsIgnoreCase(result.getStatus())) {
+                completeLocalAsyncTask(registration, leaseToken, result);
+            } else {
+                failLocalAsyncTask(registration, leaseToken,
+                        result == null ? "Agent daily plan local fallback returned no result"
+                                : firstText(result.getErrorMessage(),
+                                        "Agent daily plan local fallback ended with status " + result.getStatus()));
+            }
+            return result;
+        } catch (RuntimeException ex) {
+            failLocalAsyncTask(registration, leaseToken, ex.getMessage());
+            throw ex;
+        }
+    }
+
+    private void completeLocalAsyncTask(AsyncTaskRegistration registration,
+                                        String leaseToken,
+                                        DailyPlanVO result) {
+        LocalDateTime completedAt = LocalDateTime.now();
+        int updated = jdbcTemplate.update(
+                COMPLETE_LOCAL_ASYNC_TASK_SQL,
+                toJson(result),
+                completedAt,
+                completedAt,
+                registration.messageId(),
+                leaseToken);
+        if (updated != 1) {
+            log.warn("Agent daily plan local fallback success was not recorded messageId={}",
+                    registration.messageId());
+        }
+    }
+
+    private void failLocalAsyncTask(AsyncTaskRegistration registration,
+                                    String leaseToken,
+                                    String reason) {
+        LocalDateTime completedAt = LocalDateTime.now();
+        int updated = jdbcTemplate.update(
+                FAIL_LOCAL_ASYNC_TASK_SQL,
+                localAsyncFailureReason(reason),
+                completedAt,
+                completedAt,
+                registration.messageId(),
+                leaseToken);
+        if (updated != 1) {
+            log.warn("Agent daily plan local fallback failure was not recorded messageId={}",
+                    registration.messageId());
+        }
+    }
+
+    private String localAsyncFailureReason(String reason) {
+        String message = StringUtils.hasText(reason)
+                ? reason.trim()
+                : "Agent daily plan local fallback failed";
+        return message.length() > 2000 ? message.substring(0, 2000) : message;
     }
 
     private AgentContextUsageReferenceRecordDTO baseUsageReference(Long userId, AgentRun run, String sourceType,
@@ -1190,6 +1362,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         vo.setPlanDate(run.getPlanDate());
         vo.setCreatedAt(run.getCreatedAt());
         vo.setStatus(run.getStatus());
+        applyAsyncRunCorrelation(vo, run);
         vo.setErrorCode(run.getErrorCode());
         vo.setErrorMessage(friendlyAgentErrorMessage(run.getErrorCode(), run.getErrorMessage()));
         applyFailureDiagnosis(vo, run.getErrorCode(), run.getErrorMessage());
@@ -1212,6 +1385,16 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .stream().map(task -> toReviewedTaskVO(task, run)).toList());
         vo.setActivationHandoffs(planActivationHandoffs(run));
         return vo;
+    }
+
+    private void applyAsyncRunCorrelation(DailyPlanVO vo, AgentRun run) {
+        if (vo == null || run == null || run.getId() == null
+                || !AgentRunStatusEnum.RUNNING.name().equals(run.getStatus())) {
+            return;
+        }
+        vo.setAsyncBizType(AgentMqDispatcher.BIZ_TYPE_DAILY_PLAN_GENERATE);
+        vo.setAsyncBizId(String.valueOf(run.getId()));
+        vo.setAsyncReceiptStatus("RUN_REGISTERED");
     }
 
     private AgentRunDetailVO toRunDetail(AgentRun run) {
@@ -1306,18 +1489,6 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .last("limit 1"));
     }
 
-    private AgentRun latestActiveRunForTodayTasks(Long userId, Long targetJobId, LocalDate planDate) {
-        LambdaQueryWrapper<AgentRun> query = new LambdaQueryWrapper<AgentRun>()
-                .eq(AgentRun::getUserId, userId)
-                .eq(AgentRun::getAgentType, AGENT_TYPE)
-                .eq(AgentRun::getPlanDate, planDate)
-                .eq(targetJobId != null, AgentRun::getTargetJobId, targetJobId)
-                .in(AgentRun::getStatus, ACTIVE_PLAN_STATUSES)
-                .orderByDesc(AgentRun::getCreatedAt)
-                .last("limit 1");
-        return agentRunMapper.selectOne(query);
-    }
-
     private Long resolveTargetJobIdForScope(Long userId, Long requestedTargetJobId, LocalDate planDate) {
         if (requestedTargetJobId != null) {
             return requestedTargetJobId;
@@ -1404,6 +1575,15 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private record RunCreateResult(AgentRun run, boolean created) {
+    }
+
+    private record RunRegistrationResult(AgentRun run,
+                                         boolean created,
+                                         AsyncTaskRegistration registration,
+                                         boolean dispatchDeferred) {
+    }
+
+    private record AsyncTaskRegistration(String messageId) {
     }
 
     private record BusinessActionEvidence(LocalDate evidenceDate) {

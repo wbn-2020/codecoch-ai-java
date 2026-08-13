@@ -198,7 +198,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     @Override
     public void feedbackInterviewWeakPoints(InterviewWeakPointFeedbackDTO dto) {
         if (dto == null || dto.getUserId() == null || dto.getTargetJobId() == null
-                || dto.getInterviewId() == null || dto.getWeakPoints() == null || dto.getWeakPoints().isEmpty()) {
+                || dto.getReportId() == null || dto.getWeakPoints() == null || dto.getWeakPoints().isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "interview weak point feedback is incomplete");
         }
         TargetJob targetJob = targetJobMapper.selectById(dto.getTargetJobId());
@@ -224,7 +224,7 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             item.setRecommendedActionsJson(toJson(List.of("结合面试报告复盘该弱项", "补充相关项目案例和原理细节", "完成针对性题目训练")));
             item.setPriority(nextPriority++);
             item.setSourceType("INTERVIEW_REPORT");
-            item.setSourceBizId(dto.getInterviewId());
+            item.setSourceBizId(dto.getReportId());
             gapItemMapper.insert(item);
         }
         upsertAbilityProfileUpdates(dto);
@@ -391,9 +391,9 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         created.setUserId(dto.getUserId());
         created.setTargetJobId(dto.getTargetJobId());
         created.setMatchReportId(dto.getMatchReportId());
-        created.setProfileName("Interview feedback profile " + dto.getInterviewId());
+        created.setProfileName("Interview feedback profile " + dto.getReportId());
         created.setSourceType("INTERVIEW_REPORT");
-        created.setSourceBizId(dto.getInterviewId());
+        created.setSourceBizId(dto.getReportId());
         created.setStatus(SkillProfileStatus.SUCCESS.getCode());
         created.setSummary("Generated from interview report weak-point feedback.");
         created.setOverallLevel(2);
@@ -510,13 +510,11 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             item.setCategory(textValue(gap, "category"));
             item.setTargetLevel(integerValue(gap, "targetLevel"));
             item.setCurrentLevel(integerValue(gap, "currentLevel"));
-            item.setGapLevel(firstInteger(integerValue(gap, "gapLevel"), gapLevel(item)));
             item.setConfidence(decimalValue(gap, "confidence"));
-            item.setSeverity(firstText(textValue(gap, "severity"), severityFromGapLevel(item.getGapLevel())));
             item.setEvidenceSourcesJson(jsonArrayText(gap, "evidenceSources"));
             item.setGapDescription(firstText(textValue(gap, "gapDescription"), textValue(gap, "description")));
             item.setRecommendedActionsJson(jsonArrayText(gap, "recommendedActions"));
-            item.setPriority(firstInteger(integerValue(gap, "priority"), index));
+            normalizeGapActionability(item, integerValue(gap, "priority"), index);
             item.setSourceType(SOURCE_RESUME_JOB_MATCH);
             item.setSourceBizId(profile.getMatchReportId());
             gapItemMapper.insert(item);
@@ -882,6 +880,13 @@ public class SkillProfileServiceImpl implements SkillProfileService {
                 items.addAll(profileGapItems(overlay));
             }
         }
+        int fallbackPriority = 1;
+        for (SkillGapItem item : items) {
+            if (item.getTargetLevel() != null && item.getCurrentLevel() != null) {
+                normalizeGapActionability(item, item.getPriority(), fallbackPriority);
+            }
+            fallbackPriority++;
+        }
         return items.stream()
                 .sorted(Comparator
                         .comparing((SkillGapItem item) ->
@@ -1108,10 +1113,35 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         return Math.max(0, item.getTargetLevel() - item.getCurrentLevel());
     }
 
-    private String severityFromGapLevel(Integer gapLevel) {
-        if (gapLevel == null) {
-            return "MEDIUM";
+    private void normalizeGapActionability(SkillGapItem item, Integer requestedPriority, int fallbackPriority) {
+        Integer quantifiedGap = gapLevel(item);
+        if (quantifiedGap == null) {
+            item.setGapLevel(null);
+            item.setSeverity("UNQUANTIFIED");
+            item.setPriority(null);
+            return;
         }
+        item.setGapLevel(quantifiedGap);
+        if (quantifiedGap == 0) {
+            item.setSeverity("NORMAL");
+            item.setPriority(null);
+            return;
+        }
+        if (!hasEvidence(item.getEvidenceSourcesJson())) {
+            item.setSeverity("NORMAL");
+            item.setPriority(null);
+            return;
+        }
+        item.setSeverity(severityFromGapLevel(quantifiedGap));
+        item.setPriority(firstInteger(requestedPriority, fallbackPriority));
+    }
+
+    private boolean hasEvidence(String evidenceSourcesJson) {
+        JsonNode evidenceSources = readJsonOrNull(evidenceSourcesJson);
+        return evidenceSources != null && evidenceSources.isArray() && !evidenceSources.isEmpty();
+    }
+
+    private String severityFromGapLevel(Integer gapLevel) {
         if (gapLevel >= 3) {
             return "HIGH";
         }

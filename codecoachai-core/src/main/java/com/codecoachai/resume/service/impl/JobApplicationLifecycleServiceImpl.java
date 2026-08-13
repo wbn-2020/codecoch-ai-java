@@ -143,6 +143,7 @@ public class JobApplicationLifecycleServiceImpl implements JobApplicationLifecyc
                 .eq(JobApplication::getId, id)
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("FOR UPDATE"));
         if (application == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Application not found");

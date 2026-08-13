@@ -2,6 +2,7 @@ package com.codecoachai.interview.convert;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.codecoachai.interview.domain.entity.InterviewReport;
@@ -78,6 +79,17 @@ class InterviewConvertTest {
     }
 
     @Test
+    void untrustedReportDoesNotExposeAFormalScore() {
+        InterviewReport report = generatedReport();
+        report.setRubricScores("[{\"sampleInsufficient\":true}]");
+
+        InterviewReportVO vo = InterviewConvert.toReportVO(report);
+
+        assertNull(vo.getTotalScore());
+        assertEquals("FALLBACK", vo.getTrustStatus());
+    }
+
+    @Test
     void generatedReportExposesRubricFollowUpTreeAndAdviceEvidence() {
         InterviewReport report = generatedReport();
         report.setRubricScores("""
@@ -134,6 +146,22 @@ class InterviewConvertTest {
         report.setAdviceEvidence("""
                 [
                   {"title":"客户端直接指定行动","sampleInsufficient":false,"evidenceSources":[{"sourceType":"CLIENT","sourceId":88,"sourceSummary":"客户端输入"}]}
+                ]
+                """);
+
+        InterviewReportVO vo = InterviewConvert.toReportVO(report);
+
+        assertTrue(vo.getNextActions().isEmpty());
+        assertEquals("PARTIAL", vo.getTrustStatus());
+    }
+
+    @Test
+    void interviewReportEvidenceMustUseReportIdRatherThanSessionId() {
+        InterviewReport report = generatedReport();
+        report.setAdviceEvidence("""
+                [
+                  {"title":"误用会话编号","sampleInsufficient":false,
+                   "evidenceSources":[{"sourceType":"INTERVIEW_REPORT","sourceId":66,"sourceSummary":"错误的会话编号"}]}
                 ]
                 """);
 

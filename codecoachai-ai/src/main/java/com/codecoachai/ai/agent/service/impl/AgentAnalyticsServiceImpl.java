@@ -108,7 +108,8 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
         LocalDate end = LocalDate.now();
         LocalDate start = end.minusDays(normalizeDays(days) - 1L);
         return topMetrics(userTasks(userId, start, end).stream()
-                .map(task -> firstText(task.getRelatedSkillName(), task.getRelatedSkillCode(), "Unclassified"))
+                .filter(task -> AgentTaskStatusEnum.DONE.name().equals(task.getStatus()))
+                .map(task -> firstText(task.getRelatedSkillName(), task.getRelatedSkillCode()))
                 .toList(), 5);
     }
 

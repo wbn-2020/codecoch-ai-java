@@ -181,6 +181,7 @@ public class CareerCampaignServiceImpl implements CareerCampaignService {
                 .eq(JobApplication::getUserId, campaign.getUserId())
                 .eq(JobApplication::getCampaignId, campaignId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .in(JobApplication::getStatus, OPEN_APPLICATION_STATUSES));
         if (open > 0 && !retainOpenApplications) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
@@ -239,6 +240,7 @@ public class CareerCampaignServiceImpl implements CareerCampaignService {
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, campaign.getUserId())
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .isNull(JobApplication::getCampaignId)
                 .set(JobApplication::getCampaignId, campaignId)
                 .setSql("lock_version = lock_version + 1"));
@@ -283,6 +285,7 @@ public class CareerCampaignServiceImpl implements CareerCampaignService {
                 .eq(JobApplication::getUserId, campaign.getUserId())
                 .eq(JobApplication::getCampaignId, campaignId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .set(JobApplication::getCampaignId, null)
                 .setSql("lock_version = lock_version + 1"));
         if (updatedRows != 1) {
@@ -356,7 +359,8 @@ public class CareerCampaignServiceImpl implements CareerCampaignService {
         JobApplication application = applicationMapper.selectOne(new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO));
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt));
         if (application == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Application not found");
         }
@@ -394,7 +398,8 @@ public class CareerCampaignServiceImpl implements CareerCampaignService {
         Long count = applicationMapper.selectCount(new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getUserId, campaign.getUserId())
                 .eq(JobApplication::getCampaignId, campaign.getId())
-                .eq(JobApplication::getDeleted, CommonConstants.NO));
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt));
         view.setApplicationCount(count == null ? 0 : Math.toIntExact(count));
         return view;
     }

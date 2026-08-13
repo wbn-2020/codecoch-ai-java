@@ -1,13 +1,16 @@
 package com.codecoachai.ai.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import com.codecoachai.ai.security.AiProviderEndpointPolicy;
@@ -99,6 +102,22 @@ class ProviderAiCallerTest {
                 eq("static-key"),
                 any(String.class),
                 any(Duration.class));
+    }
+
+    @Test
+    void missingChatModelFailsBeforeAnyHttpRequestForRegularAndStreamingCalls() {
+        routerProperties.getProviders().get("deepseek").setChatModel("");
+
+        AiProviderException regularException = assertThrows(
+                AiProviderException.class,
+                () -> caller.chat("deepseek", "hello", "chat"));
+        AiProviderException streamException = assertThrows(
+                AiProviderException.class,
+                () -> caller.chatStream("deepseek", "hello", "chat", ignored -> { }));
+
+        assertEquals(AiFailureType.CONFIG_ERROR, regularException.getFailureType());
+        assertEquals(AiFailureType.CONFIG_ERROR, streamException.getFailureType());
+        verifyNoInteractions(providerHttpClient);
     }
 
     private static AiModelConfig model(Long id, String baseUrl, String modelCode, String apiKey) {

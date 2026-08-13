@@ -208,4 +208,23 @@ public interface AsyncTaskMapper extends BaseMapper<AsyncTask> {
                                       @Param("expectedLeaseToken") String expectedLeaseToken,
                                       @Param("reason") String reason,
                                       @Param("failedAt") LocalDateTime failedAt);
+
+    @Update("""
+            UPDATE async_task
+               SET status = #{status},
+                   lease_token = NULL,
+                   failure_reason = #{failureReason},
+                   result = #{result},
+                   completed_at = #{completedAt},
+                   updated_at = #{completedAt}
+             WHERE message_id = #{messageId}
+               AND deleted = 0
+               AND status = 'PENDING'
+               AND lease_token IS NULL
+            """)
+    int completePendingTask(@Param("messageId") String messageId,
+                            @Param("status") String status,
+                            @Param("failureReason") String failureReason,
+                            @Param("result") String result,
+                            @Param("completedAt") LocalDateTime completedAt);
 }

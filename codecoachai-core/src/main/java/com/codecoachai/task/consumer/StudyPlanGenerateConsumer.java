@@ -53,7 +53,7 @@ public class StudyPlanGenerateConsumer implements RocketMQListener<MqMessage<Stu
             MDC.put("traceId", envelope.getTraceId());
         }
         try {
-            if (!asyncTaskService.acquire(envelope, MAX_RETRY)) {
+            if (!asyncTaskService.acquireRegistered(envelope, MAX_RETRY)) {
                 return;
             }
             StudyPlanGeneratePayload payload = envelope.getPayload();

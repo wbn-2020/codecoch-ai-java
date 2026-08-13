@@ -382,6 +382,8 @@ class ResumeJobMatchServiceImplTest {
         Resume resume = new Resume();
         resume.setId(RESUME_ID);
         resume.setUserId(USER_ID);
+        resume.setTitle("Java 后端工程师简历");
+        resume.setRealName("张伟");
         resume.setTargetPosition("Java 后端工程师");
         resume.setSummary("有 Spring Cloud 项目经验");
         resume.setCreatedAt(updatedAt.minusDays(1));

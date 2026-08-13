@@ -52,6 +52,7 @@ import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.mq.StudyPlanMqDispatcher;
 import com.codecoachai.interview.service.StudyPlanService;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -67,6 +68,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -81,7 +83,8 @@ import org.springframework.util.StringUtils;
 @Slf4j
 public class StudyPlanServiceImpl implements StudyPlanService {
 
-    private static final String SOURCE_TYPE_REPORT = "REPORT";
+    private static final String SOURCE_TYPE_REPORT = StudyPlanSourceType.INTERVIEW_REPORT.getCode();
+    private static final String LEGACY_SOURCE_TYPE_REPORT = "REPORT";
     private static final String PLAN_GENERATING = "GENERATING";
     private static final String PLAN_ACTIVE = "ACTIVE";
     private static final String PLAN_FAILED = "FAILED";
@@ -104,6 +107,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private final ObjectMapper objectMapper;
     private final TransactionTemplate transactionTemplate;
     private final Optional<StudyPlanMqDispatcher> studyPlanMqDispatcher;
+    private final AsyncTaskService asyncTaskService;
 
     @Override
     public StudyPlanGenerateVO generate(StudyPlanGenerateDTO dto) {
@@ -124,7 +128,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像链接不完整，请从能力画像页面重新进入");
         }
         InnerSkillProfileVO profile = FeignResultUtils.unwrap(resumeFeignClient.getSkillProfile(dto.getProfileId()));
-        return generateFromSkillProfile(dto, profile, StudyPlanSourceType.JD_GAP, dto.getProfileId());
+        return generateFromSkillProfile(dto, profile);
     }
 
     @Override
@@ -147,7 +151,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         gapDTO.setDailyMinutes(dto.getDailyMinutes());
         gapDTO.setStartDate(dto.getStartDate());
         gapDTO.setPlanTitle(dto.getPlanTitle());
-        return generateFromSkillProfile(gapDTO, profile, StudyPlanSourceType.RESUME_JOB_MATCH, dto.getMatchReportId());
+        return generateFromSkillProfile(gapDTO, profile);
     }
 
     @Override
@@ -335,6 +339,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         dto.setTargetPosition(plan.getTargetPosition());
         dto.setIndustryDirection(plan.getIndustryDirection());
         dto.setExpectedDurationDays(plan.getDurationDays());
+        dto.setDailyMinutes(plan.getDailyMinutes());
         StudyPlan prepared = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, plan));
         return submitForGeneration(prepared, null);
     }
@@ -354,21 +359,70 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (!PLAN_GENERATING.equals(plan.getPlanStatus())) {
             return toGenerateVO(plan);
         }
-        if (SOURCE_TYPE_REPORT.equals(plan.getSourceType()) || plan.getReportId() != null) {
+        if (SOURCE_TYPE_REPORT.equals(plan.getSourceType())
+                || LEGACY_SOURCE_TYPE_REPORT.equals(plan.getSourceType())
+                || plan.getReportId() != null) {
             return executeReportPlan(plan);
         }
         return executeTargetedPlan(plan);
     }
 
     private StudyPlanGenerateVO submitForGeneration(StudyPlan plan, Integer skillGapCount) {
+        if (plan == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划创建失败，请稍后重试");
+        }
+        if (!isAsyncDispatchAvailable()) {
+            StudyPlanGenerateVO vo = executeGeneration(plan.getId(), plan.getUserId());
+            if (skillGapCount != null) {
+                vo.setSkillGapCount(skillGapCount);
+            }
+            return vo;
+        }
+        MqDispatchReceipt provisionalReceipt = registerPendingDispatch(plan);
         MqDispatchReceipt receipt = dispatchGenerate(plan);
-        StudyPlanGenerateVO vo = receipt == null
-                ? executeGeneration(plan.getId(), plan.getUserId())
-                : withAsyncReceipt(toGenerateVO(plan), receipt);
+        StudyPlanGenerateVO vo;
+        if (receipt == null) {
+            vo = executeGeneration(plan.getId(), plan.getUserId());
+            asyncTaskService.completePending(
+                    provisionalReceipt.getMessageId(),
+                    PLAN_ACTIVE.equalsIgnoreCase(vo.getPlanStatus()),
+                    vo,
+                    vo.getFailureReason());
+        } else {
+            provisionalReceipt.setSendStatus(receipt.getSendStatus());
+            vo = withAsyncReceipt(toGenerateVO(plan), provisionalReceipt);
+        }
         if (skillGapCount != null) {
             vo.setSkillGapCount(skillGapCount);
         }
         return vo;
+    }
+
+    private boolean isAsyncDispatchAvailable() {
+        return studyPlanMqDispatcher.map(StudyPlanMqDispatcher::isAvailable).orElse(false);
+    }
+
+    private MqDispatchReceipt registerPendingDispatch(StudyPlan plan) {
+        String traceId = UUID.randomUUID().toString().replace("-", "");
+        String messageId = STUDY_PLAN_ASYNC_BIZ_TYPE + ":" + plan.getId() + ":" + traceId;
+        asyncTaskService.registerPending(
+                messageId,
+                STUDY_PLAN_ASYNC_BIZ_TYPE,
+                String.valueOf(plan.getId()),
+                plan.getUserId(),
+                traceId,
+                com.codecoachai.common.mq.payload.StudyPlanGeneratePayload.builder()
+                        .planId(plan.getId())
+                        .userId(plan.getUserId())
+                        .build(),
+                3);
+        return MqDispatchReceipt.builder()
+                .messageId(messageId)
+                .traceId(traceId)
+                .bizType(STUDY_PLAN_ASYNC_BIZ_TYPE)
+                .bizId(String.valueOf(plan.getId()))
+                .sendStatus("PENDING")
+                .build();
     }
 
     private MqDispatchReceipt dispatchGenerate(StudyPlan plan) {
@@ -393,12 +447,13 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         try {
             GenerateLearningPlanDTO aiRequest = readRequestJson(plan, GenerateLearningPlanDTO.class);
             GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(aiFeignClient.generateLearningPlan(aiRequest));
-            validateAiPlan(aiPlan);
+            validateAiPlan(aiPlan, aiRequest.getExpectedDurationDays(), aiRequest.getDailyMinutes());
             StudyPlan success = transactionTemplate.execute(status -> markReportPlanSuccess(plan, aiPlan));
             return toGenerateVO(success);
         } catch (RuntimeException ex) {
             log.warn("Study plan generation failed, planId={}, reportId={}", plan.getId(), plan.getReportId(), ex);
-            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId(), plan.getUserId()));
+            StudyPlan failed = transactionTemplate.execute(status ->
+                    markStudyPlanFailed(plan.getId(), plan.getUserId(), ex));
             return toGenerateVO(failed);
         }
     }
@@ -410,7 +465,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                     new TypeReference<List<InnerSkillGapItemVO>>() {});
             GenerateLearningPlanVO aiPlan = FeignResultUtils.unwrap(
                     aiFeignClient.generateTargetedStudyPlan(aiRequest));
-            validateAiPlan(aiPlan);
+            validateAiPlan(aiPlan, aiRequest.getAvailableDays(), aiRequest.getDailyMinutes());
             StudyPlan success = transactionTemplate.execute(status ->
                     markTargetedPlanSuccess(plan, aiPlan, selectedGaps, aiRequest));
             StudyPlanGenerateVO vo = toGenerateVO(success);
@@ -419,7 +474,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         } catch (RuntimeException ex) {
             log.warn("Gap-driven study plan generation failed, planId={}, profileId={}",
                     plan.getId(), plan.getSkillProfileId(), ex);
-            StudyPlan failed = transactionTemplate.execute(status -> markStudyPlanFailed(plan.getId(), plan.getUserId()));
+            StudyPlan failed = transactionTemplate.execute(status ->
+                    markStudyPlanFailed(plan.getId(), plan.getUserId(), ex));
             return toGenerateVO(failed);
         }
     }
@@ -430,7 +486,6 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         cleanupRelations(plan.getId(), plan.getUserId());
         plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), defaultTitle(plan)));
         plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
-        plan.setDurationDays(normalizeDuration(aiPlan.getDurationDays()));
         plan.setAiCallLogId(aiPlan.getAiCallLogId());
         plan.setResultJson(toJson(aiPlan));
         plan.setFailureReason(null);
@@ -449,9 +504,6 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         insertTargetedTasks(plan, aiPlan, selectedGaps == null ? List.of() : selectedGaps);
         plan.setPlanTitle(firstText(aiPlan.getPlanTitle(), plan.getPlanTitle()));
         plan.setPlanSummary(firstText(aiPlan.getPlanSummary(), plan.getPlanSummary()));
-        plan.setDurationDays(aiPlan.getDurationDays() == null
-                ? normalizeDuration(aiRequest.getAvailableDays())
-                : normalizeDuration(aiPlan.getDurationDays()));
         plan.setAiCallLogId(aiPlan.getAiCallLogId());
         plan.setResultJson(toJson(aiPlan));
         plan.setFailureReason(null);
@@ -460,12 +512,12 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return plan;
     }
 
-    private StudyPlan markStudyPlanFailed(Long planId, Long userId) {
+    private StudyPlan markStudyPlanFailed(Long planId, Long userId, RuntimeException cause) {
         cleanupTasks(planId, userId);
         cleanupRelations(planId, userId);
         StudyPlan plan = getOwnedPlan(planId, userId);
         plan.setPlanStatus(PLAN_FAILED);
-        plan.setFailureReason(studyPlanFailureMessage());
+        plan.setFailureReason(studyPlanFailureMessage(cause));
         updateOwnedPlan(plan);
         return plan;
     }
@@ -499,6 +551,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setTargetPosition(firstText(dto.getTargetPosition(), session.getTargetPosition()));
         plan.setIndustryDirection(firstText(dto.getIndustryDirection(), session.getIndustryDirection()));
         plan.setDurationDays(normalizeDuration(dto.getExpectedDurationDays()));
+        plan.setDailyMinutes(normalizeDailyMinutes(dto.getDailyMinutes()));
         plan.setPlanStatus(PLAN_GENERATING);
         plan.setFailureReason(null);
         plan.setRequestJson(toJson(dto));
@@ -516,25 +569,23 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     private StudyPlanGenerateVO generateFromSkillProfile(StudyPlanGenerateFromGapDTO dto,
-                                                         InnerSkillProfileVO profile,
-                                                         StudyPlanSourceType sourceType,
-                                                         Long sourceBizId) {
+                                                         InnerSkillProfileVO profile) {
         Long userId = requireCurrentUserId();
         validateSkillProfile(profile, userId);
         int days = normalizeGapDays(dto.getDays());
         int dailyMinutes = normalizeDailyMinutes(dto.getDailyMinutes());
-        LocalDate startDate = dto.getStartDate() == null ? LocalDate.now() : dto.getStartDate();
+        LocalDate startDate = dto.getStartDate() == null ? LocalDate.now(BUSINESS_ZONE_ID) : dto.getStartDate();
         List<InnerSkillGapItemVO> selectedGaps = resolveSelectedGaps(profile, dto.getGapItemIds());
 
         StudyPlan plan = transactionTemplate.execute(status ->
-                prepareTargetedPlan(dto, profile, sourceType, sourceBizId, selectedGaps,
+                prepareTargetedPlan(dto, profile, profileSourceType(profile), profileSourceBizId(profile), selectedGaps,
                         days, dailyMinutes, startDate));
         return submitForGeneration(plan, selectedGaps.size());
     }
 
     private StudyPlan prepareTargetedPlan(StudyPlanGenerateFromGapDTO dto,
                                           InnerSkillProfileVO profile,
-                                          StudyPlanSourceType sourceType,
+                                          String sourceType,
                                           Long sourceBizId,
                                           List<InnerSkillGapItemVO> selectedGaps,
                                           int days,
@@ -542,7 +593,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                                           LocalDate startDate) {
         StudyPlan plan = new StudyPlan();
         plan.setUserId(profile.getUserId());
-        plan.setSourceType(sourceType.getCode());
+        plan.setSourceType(sourceType);
         plan.setSourceId(sourceBizId);
         plan.setTargetJobId(profile.getTargetJobId());
         plan.setSkillProfileId(profile.getProfileId());
@@ -683,10 +734,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         }
         if ("INTERVIEW_REPORT".equalsIgnoreCase(sourceType)) {
             InterviewReport sourceReport = reportMapper.selectOne(new LambdaQueryWrapper<InterviewReport>()
-                    .eq(InterviewReport::getSessionId, profile.getSourceBizId())
+                    .eq(InterviewReport::getId, profile.getSourceBizId())
                     .eq(InterviewReport::getUserId, userId)
                     .eq(InterviewReport::getDeleted, CommonConstants.NO)
-                    .orderByDesc(InterviewReport::getId)
                     .last("limit 1"));
             if (!InterviewReportTrustPolicy.isTrustedForFormalAction(sourceReport)) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源报告可信度不足，不能生成学习计划");
@@ -696,11 +746,20 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         throw new BusinessException(ErrorCode.PARAM_ERROR, "能力画像来源不可信，不能生成学习计划");
     }
 
+    private String profileSourceType(InnerSkillProfileVO profile) {
+        return profile.getSourceType();
+    }
+
+    private Long profileSourceBizId(InnerSkillProfileVO profile) {
+        return firstLong(profile.getSourceBizId(), profile.getMatchReportId(), profile.getProfileId());
+    }
+
     private List<InnerSkillGapItemVO> resolveSelectedGaps(InnerSkillProfileVO profile, List<Long> gapItemIds) {
         List<InnerSkillGapItemVO> available = profile.getGapItems().stream()
                 .filter(Objects::nonNull)
                 .filter(gap -> profile.getProfileId().equals(gap.getProfileId()))
                 .filter(gap -> profile.getUserId().equals(gap.getUserId()))
+                .filter(this::isActionableGap)
                 .sorted(Comparator.comparing(gap -> firstInteger(gap.getPriority(), Integer.MAX_VALUE)))
                 .toList();
         if (gapItemIds == null || gapItemIds.isEmpty()) {
@@ -729,6 +788,11 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return selected;
     }
 
+    private boolean isActionableGap(InnerSkillGapItemVO gap) {
+        Integer gapLevel = gap.getGapLevel();
+        return gapLevel != null && gapLevel > 0 && gap.getPriority() != null;
+    }
+
     private InnerSkillGapItemVO resolveTaskGap(GenerateLearningPlanVO.ItemVO item,
                                                List<InnerSkillGapItemVO> selectedGaps,
                                                Map<Long, InnerSkillGapItemVO> gapById) {
@@ -750,7 +814,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     private LocalDate targetedPlannedDate(StudyPlan plan, GenerateLearningPlanVO.ItemVO item, int stageNo) {
-        LocalDate start = plan.getStartDate() == null ? LocalDate.now() : plan.getStartDate();
+        LocalDate start = plan.getStartDate() == null ? LocalDate.now(BUSINESS_ZONE_ID) : plan.getStartDate();
         int dayOffset = firstInteger(item.getDayOffset(), stageNo);
         return start.plusDays(Math.max(0, dayOffset - 1));
     }
@@ -856,6 +920,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         request.setQuestionPerformanceSummary(questionPerformanceSummary(session.getId()));
         request.setResumeWeaknessSummary(resumeWeaknessSummary(resume, optimizeRecord));
         request.setExpectedDurationDays(plan.getDurationDays());
+        request.setDailyMinutes(plan.getDailyMinutes());
         request.setExtraRequirements(dto.getExtraRequirements());
         return request;
     }
@@ -883,6 +948,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 task.setTaskDescription(item.getTaskDescription());
                 task.setTaskType(normalizeTaskType(item.getTaskType()));
                 task.setPriority(normalizePriority(item.getPriority()));
+                task.setEstimatedMinutes(item.getEstimatedMinutes());
                 task.setEstimatedHours(item.getEstimatedHours() == null ? 1 : Math.max(1, item.getEstimatedHours()));
                 task.setTaskStatus(TASK_TODO);
                 task.setRelatedQuestionIdsJson(toJson(item.getRelatedQuestionIds() == null
@@ -1063,7 +1129,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     private LocalDate plannedDate(StudyPlan plan, Integer stageNo) {
-        LocalDate startDate = plan.getCreatedAt() == null ? LocalDate.now() : plan.getCreatedAt().toLocalDate();
+        LocalDate startDate = plan.getCreatedAt() == null
+                ? LocalDate.now(BUSINESS_ZONE_ID)
+                : plan.getCreatedAt().toLocalDate();
         return startDate.plusDays(Math.max(0, normalizeTaskDayIndex(stageNo) - 1));
     }
 
@@ -1094,6 +1162,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlanDetailVO vo = new StudyPlanDetailVO();
         vo.setId(plan.getId());
         vo.setReportId(plan.getReportId());
+        vo.setSourceId(plan.getSourceId());
         vo.setTargetJobId(plan.getTargetJobId());
         vo.setSkillProfileId(plan.getSkillProfileId());
         vo.setMatchReportId(plan.getMatchReportId());
@@ -1269,7 +1338,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return vo;
     }
 
-    private void validateAiPlan(GenerateLearningPlanVO aiPlan) {
+    private void validateAiPlan(GenerateLearningPlanVO aiPlan, Integer requestedDurationDays,
+                                Integer dailyMinutes) {
         if (aiPlan == null || aiPlan.getStages() == null || aiPlan.getStages().isEmpty()) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少阶段任务");
         }
@@ -1278,9 +1348,51 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (!hasItem) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少可执行任务");
         }
+        if (requestedDurationDays == null || requestedDurationDays < 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划请求天数无效");
+        }
+        if (!requestedDurationDays.equals(aiPlan.getDurationDays())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "AI 返回学习天数与请求不一致，期望 " + requestedDurationDays
+                            + " 天，实际 " + aiPlan.getDurationDays() + " 天");
+        }
+        if (dailyMinutes == null) {
+            return;
+        }
+        Map<Integer, Integer> minutesByDay = new LinkedHashMap<>();
+        for (GenerateLearningPlanVO.StageVO stage : aiPlan.getStages()) {
+            if (stage == null || stage.getItems() == null) {
+                continue;
+            }
+            int stageNo = normalizeTaskDayIndex(stage.getStageNo());
+            for (GenerateLearningPlanVO.ItemVO item : stage.getItems()) {
+                if (item == null) {
+                    continue;
+                }
+                Integer estimatedMinutes = item.getEstimatedMinutes();
+                if (estimatedMinutes == null || estimatedMinutes < 1) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 返回任务缺少有效的预计分钟数");
+                }
+                if (estimatedMinutes > dailyMinutes) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                            "AI 返回任务预计时长 " + estimatedMinutes + " 分钟超过每日预算 "
+                                    + dailyMinutes + " 分钟");
+                }
+                int dayIndex = Math.max(1, firstInteger(item.getDayOffset(), stageNo));
+                int dailyTotal = minutesByDay.merge(dayIndex, estimatedMinutes, Integer::sum);
+                if (dailyTotal > dailyMinutes) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                            "AI 返回第 " + dayIndex + " 天任务总时长 " + dailyTotal
+                                    + " 分钟超过每日预算 " + dailyMinutes + " 分钟");
+                }
+            }
+        }
     }
 
-    private String studyPlanFailureMessage() {
+    private String studyPlanFailureMessage(RuntimeException cause) {
+        if (cause instanceof BusinessException && StringUtils.hasText(cause.getMessage())) {
+            return "学习计划生成失败：" + cause.getMessage();
+        }
         return "学习计划生成失败：AI 返回内容暂时不可用，请稍后重试，或返回报告页重新生成。";
     }
 
@@ -1405,13 +1517,10 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (durationDays == null) {
             return DEFAULT_DURATION_DAYS;
         }
-        if (durationDays <= 7) {
-            return 7;
+        if (durationDays < 1 || durationDays > 60) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习天数需要在 1 到 60 天之间");
         }
-        if (durationDays <= 14) {
-            return 14;
-        }
-        return 30;
+        return durationDays;
     }
 
     private int normalizeGapDays(Integer days) {

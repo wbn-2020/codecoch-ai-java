@@ -577,10 +577,7 @@ public class InnerInterviewReportController {
             rubric.put("evidenceCount", answers.size());
             rubric.put("evidenceSource", "STORED_INTERVIEW_EVALUATION");
             report.setRubricScores(writeJson(List.of(rubric), "[]"));
-        }
-        if (StringUtils.hasText(report.getRubricScores())
-                && !StringUtils.hasText(report.getRubricVersion())) {
-            report.setRubricVersion(InterviewRubricVersion.CURRENT);
+            report.setRubricVersion(null);
         }
         String evidenceSummary = totalScore == null
                 ? "本场面试包含 " + answers.size() + " 条有效回答，问答明细已保留，但缺少可信的逐题评分证据。"

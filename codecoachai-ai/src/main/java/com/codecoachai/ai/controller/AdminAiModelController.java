@@ -2,9 +2,15 @@ package com.codecoachai.ai.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.codecoachai.ai.client.AiProviderException;
+import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
+import com.codecoachai.ai.domain.dto.AiModelProbeDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.AiModelHealthLogRow;
+import com.codecoachai.ai.domain.vo.AiModelProbeVO;
 import com.codecoachai.ai.domain.vo.AiModelHealthSummaryVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
@@ -45,9 +51,11 @@ public class AdminAiModelController {
     private static final String PERM_MODEL_LIST = "admin:ai:model:list";
     private static final String PERM_MODEL_WRITE = "admin:ai:model:write";
     private static final String PERM_MODEL_PUBLISH = "admin:ai:model:publish";
+    private static final String MODEL_PROBE_PROMPT = "请仅回复：连接正常。";
 
     private final AiModelConfigMapper mapper;
     private final AiCallLogMapper aiCallLogMapper;
+    private final ProviderAiCaller providerAiCaller;
     private final AesGcmTextEncryptor apiKeyEncryptor;
     private final AiProviderEndpointPolicy endpointPolicy;
     private final AdminPermissionGuard permissionGuard;
@@ -118,9 +126,10 @@ public class AdminAiModelController {
                 () -> {
                     AiModelConfig entity = new AiModelConfig();
                     apply(entity, dto);
+                    ensureDefaultModelEnabled(entity);
                     ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), null);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-                        clearDefault(entity.getProvider(), null);
+                        clearGlobalDefault(null);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
                     writeModelConfigWithDefaultGuard(() -> mapper.insert(entity));
@@ -140,10 +149,13 @@ public class AdminAiModelController {
                 dto == null ? null : dto.getIdempotencyKey(),
                 () -> {
                     AiModelConfig entity = get(id);
+                    Integer originalDefaultModel = entity.getDefaultModel();
                     apply(entity, dto);
+                    ensureExistingDefaultIsNotCleared(originalDefaultModel, entity.getDefaultModel());
+                    ensureDefaultModelEnabled(entity);
                     ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), id);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-                        clearDefault(entity.getProvider(), id);
+                        clearGlobalDefault(id);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
                     writeModelConfigWithDefaultGuard(() -> mapper.updateById(entity));
@@ -164,7 +176,7 @@ public class AdminAiModelController {
                 dto == null ? null : dto.getIdempotencyKey(),
                 () -> {
                     AiModelConfig entity = get(id);
-                    clearDefault(entity.getProvider(), id);
+                    clearGlobalDefault(id);
                     entity.setDefaultModel(1);
                     entity.setEnabled(1);
                     encryptPlainApiKeyBeforeSave(entity);
@@ -199,6 +211,37 @@ public class AdminAiModelController {
                     encryptPlainApiKeyBeforeSave(entity);
                     mapper.updateById(entity);
                     return Result.success(maskApiKey(entity));
+        });
+    }
+
+    @PostMapping("/admin/ai/models/{id}/probe")
+    @OperationLog(module = "ai", action = "PROBE_AI_MODEL", description = "Probe AI model connectivity",
+            logArgs = false, logResponse = false)
+    public Result<AiModelProbeVO> probe(@PathVariable Long id,
+                                        @RequestBody(required = false) AiModelProbeDTO dto) {
+        permissionGuard.require(PERM_MODEL_PUBLISH);
+        return runConfirmedOperation("ai-model-probe:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig modelConfig = get(id);
+                    String probePrompt = resolveProbePrompt(dto == null ? null : dto.getPrompt());
+                    long startedAt = System.currentTimeMillis();
+                    try {
+                        ProviderAiCaller.CallResult callResult =
+                                providerAiCaller.probe(modelConfig, probePrompt);
+                        AiModelProbeVO result = successProbe(modelConfig, callResult, probePrompt);
+                        recordProbeLog(modelConfig, callResult, null, 1,
+                                System.currentTimeMillis() - startedAt);
+                        return Result.success(result);
+                    } catch (AiProviderException ex) {
+                        AiModelProbeVO result = failureProbe(modelConfig, ex,
+                                System.currentTimeMillis() - startedAt, probePrompt);
+                        recordProbeLog(modelConfig, null, result.getMessage(), 0, result.getElapsedMs());
+                        return Result.success(result);
+                    }
                 });
     }
 
@@ -258,8 +301,12 @@ public class AdminAiModelController {
         }
         entity.setTemperature(dto.getTemperature());
         entity.setMaxTokens(dto.getMaxTokens());
-        entity.setDefaultModel(dto.getDefaultModel() != null ? dto.getDefaultModel()
-                : dto.getIsDefault() == null ? 0 : dto.getIsDefault());
+        Integer requestedDefault = dto.getDefaultModel() != null ? dto.getDefaultModel() : dto.getIsDefault();
+        if (requestedDefault != null) {
+            entity.setDefaultModel(requestedDefault);
+        } else if (entity.getDefaultModel() == null) {
+            entity.setDefaultModel(0);
+        }
         entity.setEnabled(dto.getEnabled() != null ? dto.getEnabled()
                 : dto.getStatus() == null ? 1 : dto.getStatus());
         entity.setSortOrder(dto.getSortOrder() == null ? 100 : dto.getSortOrder());
@@ -274,11 +321,25 @@ public class AdminAiModelController {
         return entity;
     }
 
-    private void clearDefault(String provider, Long excludeId) {
+    private void clearGlobalDefault(Long excludeId) {
         mapper.update(null, new LambdaUpdateWrapper<AiModelConfig>()
-                .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    private void ensureDefaultModelEnabled(AiModelConfig entity) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel())
+                && !Integer.valueOf(1).equals(entity.getEnabled())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "默认模型必须保持启用状态");
+        }
+    }
+
+    private void ensureExistingDefaultIsNotCleared(Integer originalDefaultModel, Integer updatedDefaultModel) {
+        if (Integer.valueOf(1).equals(originalDefaultModel)
+                && !Integer.valueOf(1).equals(updatedDefaultModel)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "当前默认模型不能通过编辑取消默认，请先将其它启用模型设为默认");
+        }
     }
 
     private void writeModelConfigWithDefaultGuard(Runnable action) {
@@ -290,7 +351,7 @@ public class AdminAiModelController {
                         "同一供应商下已存在相同的模型标识，请修改后重试");
             }
             throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "同一供应商只能有一个默认模型，请刷新后重试");
+                    "全局默认模型冲突，请刷新后重试");
         }
     }
 
@@ -330,6 +391,89 @@ public class AdminAiModelController {
             entity.setApiKey(null);
         }
         return entity;
+    }
+
+    private AiModelProbeVO successProbe(
+            AiModelConfig modelConfig,
+            ProviderAiCaller.CallResult callResult,
+            String probePrompt) {
+        AiModelProbeVO result = new AiModelProbeVO();
+        result.setModelId(modelConfig.getId());
+        result.setProvider(modelConfig.getProvider());
+        result.setModelCode(modelConfig.getModelCode());
+        result.setSuccess(true);
+        result.setStatus("SUCCESS");
+        result.setFailureType(AiFailureType.NONE.name());
+        result.setElapsedMs(callResult.getElapsedMs());
+        result.setPromptTokens(callResult.getPromptTokens());
+        result.setCompletionTokens(callResult.getCompletionTokens());
+        result.setTotalTokens(callResult.getTotalTokens());
+        result.setMessage("连接成功");
+        result.setRequestPromptPreview(SensitiveTextMasker.safePreview(probePrompt));
+        result.setResponsePreview(SensitiveTextMasker.safePreview(callResult.getContent()));
+        return result;
+    }
+
+    private AiModelProbeVO failureProbe(
+            AiModelConfig modelConfig,
+            AiProviderException exception,
+            long elapsedMs,
+            String probePrompt) {
+        AiModelProbeVO result = new AiModelProbeVO();
+        result.setModelId(modelConfig.getId());
+        result.setProvider(modelConfig.getProvider());
+        result.setModelCode(modelConfig.getModelCode());
+        result.setSuccess(false);
+        result.setStatus("FAILED");
+        result.setFailureType(exception.getFailureType() == null
+                ? AiFailureType.UNKNOWN_ERROR.name()
+                : exception.getFailureType().name());
+        result.setHttpStatus(exception.getHttpStatus());
+        result.setElapsedMs(elapsedMs);
+        result.setMessage(SensitiveTextMasker.safePreview(exception.getMessage()));
+        result.setRequestPromptPreview(SensitiveTextMasker.safePreview(probePrompt));
+        return result;
+    }
+
+    private String resolveProbePrompt(String prompt) {
+        if (!StringUtils.hasText(prompt)) {
+            return MODEL_PROBE_PROMPT;
+        }
+        String value = prompt.trim();
+        if (value.length() > 500) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "测试语句不能超过 500 个字符");
+        }
+        return value;
+    }
+
+    private void recordProbeLog(
+            AiModelConfig modelConfig,
+            ProviderAiCaller.CallResult callResult,
+            String failureMessage,
+            Integer success,
+            long elapsedMs) {
+        try {
+            AiCallLog logEntry = new AiCallLog();
+            logEntry.setScene("ADMIN_MODEL_PROBE");
+            logEntry.setModelName(modelConfig.getModelCode());
+            logEntry.setModel(modelConfig.getModelCode());
+            logEntry.setRouteTrace(modelConfig.getProvider());
+            logEntry.setElapsedMs(elapsedMs);
+            logEntry.setCostMillis(elapsedMs);
+            logEntry.setSuccess(success);
+            logEntry.setStatus(success);
+            logEntry.setErrorMessage(failureMessage);
+            if (callResult != null) {
+                logEntry.setPromptTokens(callResult.getPromptTokens());
+                logEntry.setCompletionTokens(callResult.getCompletionTokens());
+                logEntry.setTotalTokens(callResult.getTotalTokens());
+                logEntry.setEstimatedCost(callResult.getEstimatedCost());
+                logEntry.setTokenCost(callResult.getEstimatedCost());
+            }
+            aiCallLogMapper.insert(logEntry);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to persist AI model probe log for modelId={}", modelConfig.getId(), ex);
+        }
     }
 
     private void applyListSummary(AiModelConfig entity, Map<String, AiModelHealthLogRow> healthRows) {

@@ -7,7 +7,9 @@ import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.common.web.log.OperationLog;
+import com.codecoachai.common.vector.domain.VectorCollectionInfo;
 import com.codecoachai.common.vector.service.VectorIndexJobService;
+import com.codecoachai.common.vector.service.VectorStoreClient;
 import com.codecoachai.question.config.QuestionDuplicateProperties;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import java.util.LinkedHashMap;
@@ -37,6 +39,7 @@ public class QuestionEmbeddingController {
     private final QuestionEmbeddingIndexService questionEmbeddingIndexService;
     private final QuestionDuplicateProperties questionDuplicateProperties;
     private final VectorIndexJobService vectorIndexJobService;
+    private final VectorStoreClient vectorStoreClient;
     private final AdminPermissionGuard adminPermissionGuard;
     private final AdminOperationConfirmationGuard operationConfirmationGuard;
 
@@ -50,6 +53,7 @@ public class QuestionEmbeddingController {
         if (requiresPreview(dto, reason, idempotencyKey)) {
             return Result.success(questionVectorPreview(VECTOR_JOB_QUESTION_REBUILD, limit, reason, idempotencyKey));
         }
+        requireMaintenanceReady(VECTOR_JOB_QUESTION_REBUILD);
         String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_QUESTION_REBUILD, reason, idempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_REBUILD, VECTOR_SCOPE_QUESTION, null, limit);
         try {
@@ -81,6 +85,7 @@ public class QuestionEmbeddingController {
         if (requiresPreview(dto, reason, idempotencyKey)) {
             return Result.success(questionVectorPreview(VECTOR_JOB_QUESTION_RETRY, limit, reason, idempotencyKey));
         }
+        requireMaintenanceReady(VECTOR_JOB_QUESTION_RETRY);
         String lockKey = acquireMaintenanceIdempotencyKey(VECTOR_JOB_QUESTION_RETRY, reason, idempotencyKey);
         Long jobId = vectorIndexJobService.start(VECTOR_JOB_QUESTION_RETRY, VECTOR_SCOPE_QUESTION, VECTOR_SCOPE_FAILED_OR_STALE, limit);
         try {
@@ -162,6 +167,36 @@ public class QuestionEmbeddingController {
     private String acquireMaintenanceIdempotencyKey(String operation, String reason, String idempotencyKey) {
         return operationConfirmationGuard.requireConfirmed("question-vector-maintenance:" + operation,
                 true, false, reason, idempotencyKey);
+    }
+
+    private void requireMaintenanceReady(String operation) {
+        final boolean enabled;
+        try {
+            enabled = vectorStoreClient.isEnabled();
+        } catch (RuntimeException ex) {
+            throw maintenanceRejected("无法确认向量存储运行状态，请先恢复健康探测。");
+        }
+        if (!enabled) {
+            throw maintenanceRejected("向量存储未启用，题目语义索引维护操作已拒绝。");
+        }
+
+        final VectorCollectionInfo collection;
+        try {
+            collection = vectorStoreClient.collectionInfo(QuestionEmbeddingIndexService.QUESTION_COLLECTION);
+        } catch (RuntimeException ex) {
+            throw maintenanceRejected("题目语义索引集合探测失败，请先恢复 Qdrant 连接。");
+        }
+        if (collection == null || "ERROR".equalsIgnoreCase(collection.getStatus())) {
+            throw maintenanceRejected("题目语义索引集合状态异常，请先恢复 Qdrant 连接。");
+        }
+        if (VECTOR_JOB_QUESTION_RETRY.equals(operation)
+                && !Boolean.TRUE.equals(collection.getExists())) {
+            throw maintenanceRejected("题目语义索引集合尚未初始化，请先执行受控全量重建。");
+        }
+    }
+
+    private BusinessException maintenanceRejected(String message) {
+        return new BusinessException(ErrorCode.SEMANTIC_VALIDATION_ERROR, message);
     }
 
     private void releaseMaintenanceIdempotencyKey(String lockKey) {

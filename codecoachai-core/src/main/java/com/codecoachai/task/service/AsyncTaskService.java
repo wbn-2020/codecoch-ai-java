@@ -96,6 +96,61 @@ public class AsyncTaskService {
      * @return {@code true} when this consumer owns the fenced RUNNING lease
      */
     public boolean acquire(MqMessage<?> envelope, int maxRetry) {
+        return acquire(envelope, maxRetry, false);
+    }
+
+    /**
+     * Claims a task that may have been registered by business key before MQ dispatch.
+     *
+     * <p>When the producer-side registration still has its provisional message id,
+     * the first consumer atomically binds the real MQ message id and then claims
+     * the existing PENDING row.
+     */
+    public boolean acquireRegistered(MqMessage<?> envelope, int maxRetry) {
+        return acquire(envelope, maxRetry, true);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AsyncTask registerPending(String messageId,
+                                     String bizType,
+                                     String bizId,
+                                     Long userId,
+                                     String traceId,
+                                     Object payload,
+                                     int maxRetry) {
+        if (!StringUtils.hasText(messageId) || !StringUtils.hasText(bizType)) {
+            throw new IllegalArgumentException("Async task messageId and bizType are required");
+        }
+        AsyncTask existing = findByMessageId(messageId);
+        if (existing != null) {
+            return existing;
+        }
+        LocalDateTime now = leaseTimestamp();
+        AsyncTask task = new AsyncTask();
+        task.setMessageId(messageId);
+        task.setBizType(bizType);
+        task.setBizId(bizId);
+        task.setUserId(userId);
+        task.setTraceId(traceId);
+        task.setStatus(STATUS_PENDING);
+        task.setRetryCount(0);
+        task.setMaxRetry(effectiveMaxRetry(maxRetry));
+        task.setPayload(toJson(payload));
+        task.setCreatedAt(now);
+        task.setUpdatedAt(now);
+        try {
+            asyncTaskMapper.insert(task);
+            return task;
+        } catch (DuplicateKeyException duplicate) {
+            AsyncTask concurrent = findByMessageId(messageId);
+            if (concurrent != null) {
+                return concurrent;
+            }
+            throw duplicate;
+        }
+    }
+
+    private boolean acquire(MqMessage<?> envelope, int maxRetry, boolean reuseRegisteredTask) {
         if (envelope == null || !StringUtils.hasText(envelope.getMessageId())) {
             throw new IllegalArgumentException("MQ messageId is required");
         }
@@ -103,6 +158,26 @@ public class AsyncTaskService {
         AsyncTask existing = findByMessageId(envelope.getMessageId());
         if (existing != null) {
             return acquireExisting(envelope, existing, effectiveMaxRetry(maxRetry));
+        }
+        if (reuseRegisteredTask) {
+            AsyncTask registered = findRegistration(envelope);
+            if (registered != null) {
+                if (STATUS_RUNNING.equals(registered.getStatus())) {
+                    return acquireExpiredRegisteredRunning(envelope, registered,
+                            effectiveMaxRetry(maxRetry));
+                }
+                if (!STATUS_PENDING.equals(registered.getStatus())) {
+                    log.info("MQ registered task already claimed or completed messageId={} bizType={} bizId={} status={}",
+                            envelope.getMessageId(), envelope.getBizType(), envelope.getBizId(),
+                            registered.getStatus());
+                    return false;
+                }
+                AsyncTask bound = bindRegisteredMessage(envelope, registered, effectiveMaxRetry(maxRetry));
+                if (bound == null) {
+                    return false;
+                }
+                return acquireExisting(envelope, bound, effectiveMaxRetry(maxRetry));
+            }
         }
 
         LocalDateTime now = leaseTimestamp();
@@ -133,6 +208,111 @@ public class AsyncTaskService {
         }
 
         return activateLease(newLease(envelope, retryCount, effectiveMaxRetry, leaseToken));
+    }
+
+    private boolean acquireExpiredRegisteredRunning(MqMessage<?> envelope,
+                                                    AsyncTask registered,
+                                                    int maxRetry) {
+        LocalDateTime now = leaseTimestamp();
+        if (!isDatabaseLeaseExpired(registered, now)) {
+            log.info("MQ registered task has an active database lease messageId={} bizType={} bizId={}",
+                    envelope.getMessageId(), envelope.getBizType(), envelope.getBizId());
+            return false;
+        }
+        String leaseToken = nextLeaseToken();
+        int updated;
+        try {
+            com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<AsyncTask> claim =
+                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<AsyncTask>()
+                            .eq(AsyncTask::getId, registered.getId())
+                            .eq(AsyncTask::getMessageId, registered.getMessageId())
+                            .eq(AsyncTask::getStatus, STATUS_RUNNING)
+                            .set(AsyncTask::getMessageId, envelope.getMessageId())
+                            .set(AsyncTask::getTraceId, envelope.getTraceId())
+                            .set(AsyncTask::getUserId, envelope.getUserId())
+                            .set(AsyncTask::getPayload, toJson(envelope.getPayload()))
+                            .set(AsyncTask::getLeaseToken, leaseToken)
+                            .set(AsyncTask::getStartedAt, now)
+                            .set(AsyncTask::getMaxRetry,
+                                    Math.max(maxRetry, registered.getMaxRetry() == null
+                                            ? 0 : registered.getMaxRetry()))
+                            .set(AsyncTask::getUpdatedAt, now);
+            if (StringUtils.hasText(registered.getLeaseToken())) {
+                claim.eq(AsyncTask::getLeaseToken, registered.getLeaseToken());
+            } else {
+                claim.isNull(AsyncTask::getLeaseToken);
+            }
+            LocalDateTime expiresBefore = leaseExpiresBefore(now);
+            claim.and(wrapper -> wrapper.isNull(AsyncTask::getStartedAt)
+                    .or()
+                    .le(AsyncTask::getStartedAt, expiresBefore));
+            updated = asyncTaskMapper.update(null, claim);
+        } catch (DuplicateKeyException duplicate) {
+            AsyncTask concurrent = findByMessageId(envelope.getMessageId());
+            if (concurrent != null) {
+                return acquireExisting(envelope, concurrent, maxRetry);
+            }
+            throw duplicate;
+        }
+        if (updated != 1) {
+            log.info("MQ registered RUNNING task takeover lost CAS race messageId={} bizType={} bizId={}",
+                    envelope.getMessageId(), envelope.getBizType(), envelope.getBizId());
+            return false;
+        }
+        int retryCount = Math.max(0,
+                registered.getRetryCount() == null ? 0 : registered.getRetryCount());
+        return activateLease(newLease(envelope, retryCount, maxRetry, leaseToken));
+    }
+
+    private AsyncTask findRegistration(MqMessage<?> envelope) {
+        if (!StringUtils.hasText(envelope.getBizType()) || !StringUtils.hasText(envelope.getBizId())) {
+            return null;
+        }
+        return asyncTaskMapper.selectOne(
+                new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getBizType, envelope.getBizType())
+                        .eq(AsyncTask::getBizId, envelope.getBizId())
+                        .orderByDesc(AsyncTask::getCreatedAt)
+                        .last("limit 1"));
+    }
+
+    private AsyncTask bindRegisteredMessage(MqMessage<?> envelope, AsyncTask registered, int maxRetry) {
+        LocalDateTime now = leaseTimestamp();
+        int updated;
+        try {
+            updated = asyncTaskMapper.update(null,
+                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<AsyncTask>()
+                            .eq(AsyncTask::getId, registered.getId())
+                            .eq(AsyncTask::getMessageId, registered.getMessageId())
+                            .eq(AsyncTask::getStatus, STATUS_PENDING)
+                            .isNull(AsyncTask::getLeaseToken)
+                            .set(AsyncTask::getMessageId, envelope.getMessageId())
+                            .set(AsyncTask::getTraceId, envelope.getTraceId())
+                            .set(AsyncTask::getUserId, envelope.getUserId())
+                            .set(AsyncTask::getPayload, toJson(envelope.getPayload()))
+                            .set(AsyncTask::getMaxRetry,
+                                    Math.max(maxRetry, registered.getMaxRetry() == null ? 0 : registered.getMaxRetry()))
+                            .set(AsyncTask::getUpdatedAt, now));
+        } catch (DuplicateKeyException duplicate) {
+            AsyncTask concurrent = findByMessageId(envelope.getMessageId());
+            if (concurrent != null) {
+                return concurrent;
+            }
+            throw duplicate;
+        }
+        if (updated != 1) {
+            log.info("MQ registered task binding lost CAS race messageId={} bizType={} bizId={}",
+                    envelope.getMessageId(), envelope.getBizType(), envelope.getBizId());
+            return null;
+        }
+        registered.setMessageId(envelope.getMessageId());
+        registered.setTraceId(envelope.getTraceId());
+        registered.setUserId(envelope.getUserId());
+        registered.setPayload(toJson(envelope.getPayload()));
+        registered.setMaxRetry(Math.max(maxRetry,
+                registered.getMaxRetry() == null ? 0 : registered.getMaxRetry()));
+        registered.setUpdatedAt(now);
+        return registered;
     }
 
     private AsyncTask findByMessageId(String messageId) {
@@ -174,20 +354,32 @@ public class AsyncTaskService {
                         envelope.getMessageId());
                 return false;
             }
-            if (!StringUtils.hasText(existing.getLeaseToken())) {
-                log.error("Expired RUNNING task has no persistent lease token; claim rejected messageId={}",
-                        envelope.getMessageId());
-                return false;
-            }
             leaseToken = nextLeaseToken();
-            updated = asyncTaskMapper.stealRunningTask(
-                    existing.getId(),
-                    existing.getLeaseToken(),
-                    leaseToken,
-                    now,
-                    leaseExpiresBefore(now),
-                    maxRetry,
-                    now);
+            if (StringUtils.hasText(existing.getLeaseToken())) {
+                updated = asyncTaskMapper.stealRunningTask(
+                        existing.getId(),
+                        existing.getLeaseToken(),
+                        leaseToken,
+                        now,
+                        leaseExpiresBefore(now),
+                        maxRetry,
+                        now);
+            } else {
+                updated = asyncTaskMapper.update(null,
+                        new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<AsyncTask>()
+                                .eq(AsyncTask::getId, existing.getId())
+                                .eq(AsyncTask::getStatus, STATUS_RUNNING)
+                                .isNull(AsyncTask::getLeaseToken)
+                                .and(wrapper -> wrapper.isNull(AsyncTask::getStartedAt)
+                                        .or()
+                                        .le(AsyncTask::getStartedAt, leaseExpiresBefore(now)))
+                                .set(AsyncTask::getLeaseToken, leaseToken)
+                                .set(AsyncTask::getStartedAt, now)
+                                .set(AsyncTask::getMaxRetry,
+                                        Math.max(maxRetry, existing.getMaxRetry() == null
+                                                ? 0 : existing.getMaxRetry()))
+                                .set(AsyncTask::getUpdatedAt, now));
+            }
         } else {
             log.warn("MQ task has unsupported state, skip messageId={} status={}",
                     envelope.getMessageId(), status);
@@ -301,6 +493,24 @@ public class AsyncTaskService {
         if (updated != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Task status changed while retry dispatch was in progress");
+        }
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void completePending(String messageId, boolean successful, Object result, String reason) {
+        if (!StringUtils.hasText(messageId)) {
+            throw new IllegalArgumentException("Async task messageId is required");
+        }
+        String status = successful ? STATUS_SUCCESS : STATUS_FAILED;
+        int updated = asyncTaskMapper.completePendingTask(
+                messageId,
+                status,
+                successful ? null : truncate(safeFailureReason(reason), 2000),
+                successful && result != null ? toJson(result) : null,
+                leaseTimestamp());
+        if (updated != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Task status changed; refresh before completing it");
         }
     }
 

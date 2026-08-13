@@ -53,6 +53,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 
 @ExtendWith(MockitoExtension.class)
 class SkillProfileServiceImplTest {
@@ -134,6 +135,7 @@ class SkillProfileServiceImplTest {
         assertEquals(null, created.getMatchReportId());
         assertEquals(USER_ID, created.getUserId());
         assertEquals("INTERVIEW_REPORT", created.getSourceType());
+        assertEquals(REPORT_ID, created.getSourceBizId());
 
         ArgumentCaptor<SkillGapItem> gapCaptor = ArgumentCaptor.forClass(SkillGapItem.class);
         verify(gapItemMapper).insert(gapCaptor.capture());
@@ -141,7 +143,7 @@ class SkillProfileServiceImplTest {
         assertEquals(999L, gap.getProfileId());
         assertEquals("INTERVIEW_FEEDBACK", gap.getCategory());
         assertEquals("INTERVIEW_REPORT", gap.getSourceType());
-        assertEquals(INTERVIEW_ID, gap.getSourceBizId());
+        assertEquals(REPORT_ID, gap.getSourceBizId());
     }
 
     @Test
@@ -207,6 +209,10 @@ class SkillProfileServiceImplTest {
         assertThrows(BusinessException.class, () -> service.feedbackInterviewWeakPoints(null));
         assertThrows(BusinessException.class,
                 () -> service.feedbackInterviewWeakPoints(feedback(null, null, List.of())));
+        InterviewWeakPointFeedbackDTO missingReport = feedback(null, null, List.of("弱项"));
+        missingReport.setReportId(null);
+        assertThrows(BusinessException.class,
+                () -> service.feedbackInterviewWeakPoints(missingReport));
     }
 
     @Test
@@ -353,6 +359,94 @@ class SkillProfileServiceImplTest {
                 .allMatch(gap -> base.getId().equals(gap.getProfileId())));
         assertTrue(detail.getGapItems().stream()
                 .anyMatch(gap -> "实战反馈短板".equals(gap.getSkillName())));
+    }
+
+    @Test
+    void detailNormalizesHistoricalContradictoryGapActionability() {
+        TargetJob job = new TargetJob();
+        job.setId(TARGET_JOB_ID);
+        job.setUserId(USER_ID);
+        when(targetJobMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(job);
+        SkillProfile profile = trustedProfile();
+        when(profileMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(profile));
+        SkillGapItem historical = gapItem(1L, "HIGH", "已达标技能");
+        historical.setTargetLevel(3);
+        historical.setCurrentLevel(3);
+        historical.setGapLevel(3);
+        historical.setPriority(1);
+        historical.setEvidenceSourcesJson("[\"JD\"]");
+        when(gapItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(historical));
+
+        var detail = service.getByTargetJob(TARGET_JOB_ID);
+
+        assertEquals(0, detail.getGapItems().get(0).getGapLevel());
+        assertEquals("NORMAL", detail.getGapItems().get(0).getSeverity());
+        assertNull(detail.getGapItems().get(0).getPriority());
+    }
+
+    @Test
+    void unquantifiedOrNonPositiveGapsDoNotPersistActionPriority() throws Exception {
+        SkillProfile profile = resumeMatchProfile();
+        when(profileMapper.selectById(profile.getId())).thenReturn(profile);
+        when(profileMapper.selectById(profile.getId())).thenReturn(profile, profile);
+
+        ReflectionTestUtils.invokeMethod(service, "markSuccess", profile.getId(), new ObjectMapper().readTree("""
+                {
+                  "skillGaps": [
+                    {
+                      "skillName": "系统设计",
+                      "targetLevel": 0,
+                      "severity": "HIGH",
+                      "priority": 1,
+                      "evidenceSources": ["JD"]
+                    },
+                    {
+                      "skillName": "Java",
+                      "targetLevel": 3,
+                      "currentLevel": 4,
+                      "severity": "HIGH",
+                      "priority": 2,
+                      "evidenceSources": ["项目经历"]
+                    },
+                    {
+                      "skillName": "Redis",
+                      "targetLevel": 4,
+                      "currentLevel": 1,
+                      "severity": "LOW",
+                      "priority": 3,
+                      "evidenceSources": []
+                    },
+                    {
+                      "skillName": "消息队列",
+                      "targetLevel": 4,
+                      "currentLevel": 1,
+                      "severity": "LOW",
+                      "priority": 4,
+                      "evidenceSources": ["JD", "项目经历"]
+                    }
+                  ]
+                }
+                """), 55L);
+
+        ArgumentCaptor<SkillGapItem> captor = ArgumentCaptor.forClass(SkillGapItem.class);
+        verify(gapItemMapper, times(4)).insert(captor.capture());
+        List<SkillGapItem> gaps = captor.getAllValues();
+
+        assertNull(gaps.get(0).getGapLevel());
+        assertEquals("UNQUANTIFIED", gaps.get(0).getSeverity());
+        assertNull(gaps.get(0).getPriority());
+
+        assertEquals(0, gaps.get(1).getGapLevel());
+        assertEquals("NORMAL", gaps.get(1).getSeverity());
+        assertNull(gaps.get(1).getPriority());
+
+        assertEquals(3, gaps.get(2).getGapLevel());
+        assertEquals("NORMAL", gaps.get(2).getSeverity());
+        assertNull(gaps.get(2).getPriority());
+
+        assertEquals(3, gaps.get(3).getGapLevel());
+        assertEquals("HIGH", gaps.get(3).getSeverity());
+        assertEquals(4, gaps.get(3).getPriority());
     }
 
     private SkillProfile trustedProfile() {

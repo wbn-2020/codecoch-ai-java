@@ -247,6 +247,7 @@ public class ExperimentV2ServiceImpl implements ExperimentV2Service {
                 .eq(JobApplication::getId, request.getApplicationId())
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("limit 1"));
         if (application == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Application not found");

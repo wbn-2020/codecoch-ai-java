@@ -201,9 +201,13 @@ public class V3DashboardController {
     private List<Map<String, Object>> toRadar(List<Map<String, Object>> gaps) {
         Map<String, long[]> grouped = new LinkedHashMap<>();
         for (Map<String, Object> gap : gaps) {
+            Integer gapLevel = intValue(gap.get("gap_level"));
+            if (gapLevel == null) {
+                continue;
+            }
             String category = StringUtils.hasText(stringValue(gap.get("category"))) ? stringValue(gap.get("category")) : "GENERAL";
             long[] stat = grouped.computeIfAbsent(category, key -> new long[]{0, 0});
-            stat[0] += Math.max(0, 5 - nullToZero(intValue(gap.get("gap_level"))));
+            stat[0] += Math.max(0, 5 - gapLevel);
             stat[1]++;
         }
         List<Map<String, Object>> radar = new ArrayList<>();

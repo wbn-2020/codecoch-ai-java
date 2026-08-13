@@ -14,6 +14,14 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface JobApplicationMapper extends BaseMapper<JobApplication> {
 
+    @Select("""
+            SELECT *
+              FROM job_application
+             WHERE id = #{id}
+             LIMIT 1
+            """)
+    JobApplication selectIncludingDeleted(@Param("id") Long id);
+
     @Update("""
             UPDATE job_application
                SET status = #{status},
@@ -24,6 +32,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
              WHERE id = #{applicationId}
                AND user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND UPPER(TRIM(status)) = #{expectedStatus}
                AND lock_version = #{expectedLockVersion}
             """)
@@ -40,7 +49,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
                    SUM(CASE WHEN UPPER(TRIM(status)) IN ('SAVED','PREPARING','APPLIED','INTERVIEWING','OFFER')
                             THEN 1 ELSE 0 END) AS activeCount,
                    SUM(CASE WHEN UPPER(TRIM(status)) IN ('SAVED','PREPARING','APPLIED','INTERVIEWING','OFFER')
-                                 AND next_follow_up_at IS NOT NULL AND next_follow_up_at < #{now}
+                                 AND next_follow_up_at IS NOT NULL AND next_follow_up_at < #{dayStart}
                             THEN 1 ELSE 0 END) AS overdueFollowUpCount,
                    SUM(CASE WHEN UPPER(TRIM(status)) IN ('SAVED','PREPARING','APPLIED','INTERVIEWING','OFFER')
                                  AND next_follow_up_at >= #{dayStart} AND next_follow_up_at < #{dayEnd}
@@ -56,10 +65,11 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
                    SUM(CASE WHEN UPPER(TRIM(status)) = 'REJECTED' THEN 1 ELSE 0 END) AS rejectedCount,
                    SUM(CASE WHEN UPPER(TRIM(status)) = 'CLOSED' THEN 1 ELSE 0 END) AS closedCount
               FROM job_application
-             WHERE user_id = #{userId} AND deleted = 0
+             WHERE user_id = #{userId}
+               AND deleted = 0
+               AND archived_at IS NULL
             """)
     ApplicationStatsAggregate selectStats(@Param("userId") Long userId,
-                                          @Param("now") LocalDateTime now,
                                           @Param("dayStart") LocalDateTime dayStart,
                                           @Param("dayEnd") LocalDateTime dayEnd,
                                           @Param("staleBefore") LocalDateTime staleBefore);
@@ -67,7 +77,9 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
     @Select("""
             SELECT UPPER(TRIM(status)) AS status, COUNT(1) AS count
               FROM job_application
-             WHERE user_id = #{userId} AND deleted = 0
+             WHERE user_id = #{userId}
+               AND deleted = 0
+               AND archived_at IS NULL
              GROUP BY UPPER(TRIM(status))
              ORDER BY UPPER(TRIM(status))
             """)
@@ -78,6 +90,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
               FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND UPPER(TRIM(status)) IN ('SAVED','PREPARING','APPLIED','INTERVIEWING','OFFER')
                AND next_follow_up_at IS NOT NULL
                AND (
@@ -101,6 +114,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
               FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND COALESCE(applied_at, created_at, updated_at) >= #{startAt}
                AND COALESCE(applied_at, created_at, updated_at) <= #{endAt}
              ORDER BY applied_at DESC, created_at DESC, updated_at DESC, id DESC
@@ -114,6 +128,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
               FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND (applied_at BETWEEN #{startAt} AND #{endAt} OR applied_at IS NULL)
              ORDER BY updated_at DESC, id DESC
              LIMIT 1001
@@ -128,6 +143,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
               FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
              ORDER BY updated_at DESC, id DESC
              LIMIT 1001
             """)
@@ -140,6 +156,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
               FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND COALESCE(applied_at, created_at, updated_at) &gt;= #{rangeStartUtc}
                AND COALESCE(applied_at, created_at, updated_at) &lt; #{rangeEndUtc}
                AND COALESCE(created_at, applied_at, updated_at) &lt;= #{sourceCutoffAt}
@@ -165,6 +182,7 @@ public interface JobApplicationMapper extends BaseMapper<JobApplication> {
              FROM job_application
              WHERE user_id = #{userId}
                AND deleted = 0
+               AND archived_at IS NULL
                AND COALESCE(created_at, applied_at, updated_at) &lt;= #{sourceCutoffAt}
                AND (updated_at IS NULL OR updated_at &lt;= #{sourceCutoffAt})
                AND id IN

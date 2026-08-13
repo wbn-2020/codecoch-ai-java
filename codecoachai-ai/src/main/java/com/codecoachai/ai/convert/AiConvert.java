@@ -7,6 +7,9 @@ import com.codecoachai.ai.domain.entity.PromptTemplateVersion;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.operations.AiOperationsDictionary;
+import com.codecoachai.ai.operations.AiOperationsDictionary.FailureDescription;
+import com.codecoachai.ai.operations.AiOperationsDictionary.SceneDescription;
 import com.codecoachai.ai.security.SensitiveTextMasker;
 
 public final class AiConvert {
@@ -86,6 +89,10 @@ public final class AiConvert {
         vo.setId(log.getId());
         vo.setUserId(log.getUserId());
         vo.setScene(log.getScene());
+        SceneDescription scene = AiOperationsDictionary.describeScene(log.getScene());
+        vo.setSceneLabel(scene.label());
+        vo.setSceneCategory(scene.category());
+        vo.setSceneRegistered(scene.registered());
         vo.setModelName(log.getModelName());
         vo.setPromptTemplateId(log.getPromptTemplateId());
         vo.setPromptTemplateVersionId(log.getPromptTemplateVersionId());
@@ -126,6 +133,13 @@ public final class AiConvert {
         vo.setStatus(log.getStatus());
         vo.setErrorMessage(SensitiveTextMasker.maskText(log.getErrorMessage()));
         vo.setErrorMessagePreview(includeTextPreview ? preview(log.getErrorMessage()) : null);
+        FailureDescription failure = AiOperationsDictionary.describeFailure(
+                log.getErrorMessage(), log.getSuccess(), log.getStatus());
+        vo.setFailureType(failure.code());
+        vo.setFailureTypeLabel(failure.label());
+        vo.setFailureHttpStatus(failure.httpStatus());
+        vo.setOperatorMessage(failure.operatorMessage());
+        vo.setOperatorSuggestion(failure.operatorSuggestion());
         vo.setRequestBody(includeRawFields ? log.getRequestBody() : null);
         vo.setRequestBodyPreview(includeTextPreview ? preview(log.getRequestBody()) : null);
         vo.setRequestBodyHash(SensitiveTextMasker.sha256Prefix(log.getRequestBody()));

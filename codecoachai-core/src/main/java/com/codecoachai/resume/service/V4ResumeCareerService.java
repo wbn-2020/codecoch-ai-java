@@ -1,6 +1,7 @@
 package com.codecoachai.resume.service;
 
 import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
 import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
@@ -30,9 +31,14 @@ public interface V4ResumeCareerService {
     ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto);
     List<JobApplicationVO> listApplications(String status);
     List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword);
+    List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword,
+                                            boolean includeArchived);
     JobApplicationStatsVO getApplicationStats(LocalDateTime now);
     JobApplicationVO createApplication(JobApplicationSaveDTO dto);
     JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto);
+    JobApplicationVO archiveApplication(Long id, JobApplicationArchiveDTO dto);
+    JobApplicationVO restoreApplication(Long id, JobApplicationArchiveDTO dto);
+    void deleteApplication(Long id, JobApplicationArchiveDTO dto);
     List<JobApplicationEventVO> listApplicationEvents(Long applicationId);
     JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto);
     JobApplicationEventVO createApplicationEventForUser(Long userId, Long applicationId, JobApplicationEventSaveDTO dto);

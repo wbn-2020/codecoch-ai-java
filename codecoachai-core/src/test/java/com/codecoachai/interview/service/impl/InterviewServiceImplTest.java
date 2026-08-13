@@ -13,6 +13,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +38,7 @@ import com.codecoachai.interview.domain.enums.InterviewModeEnum;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.enums.InterviewStatusEnum;
 import com.codecoachai.interview.domain.vo.FinishInterviewVO;
+import com.codecoachai.interview.domain.vo.CurrentQuestionVO;
 import com.codecoachai.interview.domain.vo.InterviewReportVO;
 import com.codecoachai.interview.domain.vo.InterviewReportGenerateResultVO;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
@@ -76,6 +78,7 @@ import com.codecoachai.interview.service.InterviewVoiceService;
 import com.codecoachai.interview.support.InterviewReportComparabilityPolicy;
 import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryService;
 import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import feign.Request;
 import feign.Response;
@@ -93,6 +96,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.MockedStatic;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.aop.framework.ProxyFactory;
@@ -142,6 +146,10 @@ class InterviewServiceImplTest {
     private ScenarioRubricService scenarioRubricService;
     @Mock
     private InterviewScenarioBindingMapper scenarioBindingMapper;
+    @Mock
+    private com.codecoachai.interview.scenario.InterviewRubricVersionMapper rubricVersionMapper;
+    @Mock
+    private AsyncTaskService asyncTaskService;
 
     private InterviewService service;
     private InterviewServiceImpl target;
@@ -179,9 +187,11 @@ class InterviewServiceImplTest {
                 voiceDeliverySummaryService,
                 scenarioRubricService,
                 scenarioBindingMapper,
+                rubricVersionMapper,
                 new ObjectMapper(),
                 new TransactionTemplate(new FlaggingTransactionManager()),
-                new InterviewReportComparabilityPolicy(new ObjectMapper()));
+                new InterviewReportComparabilityPolicy(new ObjectMapper()),
+                asyncTaskService);
         service = transactionalProxy(target);
         lenient().when(sessionMapper.update(any(), any(Wrapper.class))).thenReturn(1);
         lenient().when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
@@ -492,6 +502,53 @@ class InterviewServiceImplTest {
         StartInterviewVO result = service.start(1L);
 
         assertNotNull(result.getCurrentQuestion());
+    }
+
+    @Test
+    void currentQuestionFallsBackToCreatedAtForLegacyQuestionTiming() {
+        InterviewSession session = waitingSession();
+        InterviewStage stage = stage();
+        InterviewMessage currentQuestion = currentQuestionMessage();
+        LocalDateTime createdAt = LocalDateTime.now().minusSeconds(65);
+        currentQuestion.setCreatedAt(createdAt);
+        currentQuestion.setQuestionPresentedAt(null);
+        when(sessionMapper.selectById(1L)).thenReturn(session);
+        when(messageMapper.selectOne(any())).thenReturn(currentQuestion);
+        when(stageMapper.selectById(11L)).thenReturn(stage);
+
+        CurrentQuestionVO result = service.currentQuestion(1L);
+
+        assertEquals(createdAt, result.getQuestionPresentedAt());
+    }
+
+    @Test
+    void serverAnswerDurationReturnsZeroForFutureQuestionTime() throws Exception {
+        InterviewMessage question = currentQuestionMessage();
+        question.setQuestionPresentedAt(LocalDateTime.now().plusMinutes(1));
+
+        assertEquals(0, invokeServerAnswerDurationSeconds(question));
+    }
+
+    @Test
+    void serverAnswerDurationCountsElapsedSecondsAcrossMidnight() throws Exception {
+        LocalDateTime presentedAt = LocalDateTime.of(2026, 8, 11, 23, 59, 30);
+        LocalDateTime answeredAt = LocalDateTime.of(2026, 8, 12, 0, 1, 5);
+        InterviewMessage question = currentQuestionMessage();
+        question.setQuestionPresentedAt(presentedAt);
+
+        try (MockedStatic<LocalDateTime> localDateTime =
+                     org.mockito.Mockito.mockStatic(LocalDateTime.class, CALLS_REAL_METHODS)) {
+            localDateTime.when(() -> LocalDateTime.now()).thenReturn(answeredAt);
+            assertEquals(95, invokeServerAnswerDurationSeconds(question));
+        }
+    }
+
+    @Test
+    void serverAnswerDurationCapsElapsedTimeAtTwentyFourHours() throws Exception {
+        InterviewMessage question = currentQuestionMessage();
+        question.setQuestionPresentedAt(LocalDateTime.now().minusHours(25));
+
+        assertEquals(86400, invokeServerAnswerDurationSeconds(question));
     }
 
     @Test
@@ -846,7 +903,7 @@ class InterviewServiceImplTest {
         assertNotNull(result.getReport());
         assertEquals(77L, result.getReport().getId());
         verify(interviewMqDispatcher, never()).dispatchReportWithReceipt(anyLong(), anyLong(), anyLong(), any());
-        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any());
+        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any(), any());
     }
 
     @Test
@@ -950,7 +1007,7 @@ class InterviewServiceImplTest {
         assertEquals("SENT", result.getAsyncSendStatus());
         verify(interviewMqDispatcher).dispatchReportWithReceipt(eq(1L), eq(10L), eq(91L),
                 argThat(token -> token != null && !token.isBlank()));
-        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any());
+        verify(reportAsyncService, never()).generateReportAsync(anyLong(), anyLong(), any(), any());
     }
 
     private InterviewService transactionalProxy(InterviewServiceImpl target) {
@@ -1141,7 +1198,15 @@ class InterviewServiceImplTest {
     private InterviewReport comparableReport() {
         InterviewReport report = generatedReportForSession();
         report.setRubricVersion("INTERVIEW_RUBRIC_V1");
-        report.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]");
+        report.setRubricScores("""
+                [
+                  {"dimension":"EXPRESSION_STRUCTURE","score":4.0},
+                  {"dimension":"TECHNICAL_DEPTH","score":4.5},
+                  {"dimension":"BUSINESS_UNDERSTANDING","score":4.0},
+                  {"dimension":"RISK_AWARENESS","score":4.0},
+                  {"dimension":"IMPLEMENTABILITY","score":4.0}
+                ]
+                """);
         return report;
     }
 
@@ -1268,6 +1333,13 @@ class InterviewServiceImplTest {
         return (String) method.invoke(target, request, trainingScene);
     }
 
+    private int invokeServerAnswerDurationSeconds(InterviewMessage question) throws Exception {
+        Method method = InterviewServiceImpl.class.getDeclaredMethod(
+                "serverAnswerDurationSeconds", InterviewMessage.class);
+        method.setAccessible(true);
+        return (int) method.invoke(target, question);
+    }
+
     private InterviewReportVO invokeToReportVO(InterviewReport report, InterviewSession session) throws Exception {
         Method method = InterviewServiceImpl.class.getDeclaredMethod(
                 "toReportVO", InterviewReport.class, InterviewSession.class);
@@ -1298,7 +1370,15 @@ class InterviewServiceImplTest {
         vo.setSuggestions("[\"Review cache consistency\"]");
         vo.setReviewSuggestions("[\"Practice one follow-up\"]");
         vo.setQaReview("[{\"questionContent\":\"How do you keep Redis and MySQL consistent?\",\"userAnswer\":\"Use delayed double delete\"}]");
-        vo.setRubricScores("[{\"dimension\":\"TECHNICAL_DEPTH\",\"score\":4}]");
+        vo.setRubricScores("""
+                [
+                  {"dimension":"EXPRESSION_STRUCTURE","score":4.5},
+                  {"dimension":"TECHNICAL_DEPTH","score":4.5},
+                  {"dimension":"BUSINESS_UNDERSTANDING","score":4.25},
+                  {"dimension":"RISK_AWARENESS","score":4.0},
+                  {"dimension":"IMPLEMENTABILITY","score":4.25}
+                ]
+                """);
         vo.setAdviceEvidence("""
                 [{"title":"Practice cache consistency","evidenceSources":[
                   {"sourceType":"INTERVIEW_REPORT","sourceId":88,"sourceSummary":"Report evidence"}

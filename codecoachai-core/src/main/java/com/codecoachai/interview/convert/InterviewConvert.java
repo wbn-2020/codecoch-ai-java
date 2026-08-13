@@ -87,7 +87,9 @@ public final class InterviewConvert {
         InterviewListVO vo = toListVO(session);
         if (report != null) {
             vo.setReportId(report.getId());
-            vo.setTotalScore(report.getTotalScore());
+            if (InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
+                vo.setTotalScore(report.getTotalScore());
+            }
         }
         return vo;
     }
@@ -113,6 +115,8 @@ public final class InterviewConvert {
         vo.setScore(message.getScore());
         vo.setComment(message.getComment());
         vo.setCreatedAt(message.getCreatedAt());
+        vo.setQuestionPresentedAt(message.getQuestionPresentedAt());
+        vo.setAnswerDurationSeconds(message.getAnswerDurationSeconds());
         return vo;
     }
 
@@ -125,7 +129,8 @@ public final class InterviewConvert {
         vo.setSessionId(report.getSessionId());
         vo.setUserId(report.getUserId());
         vo.setStatus(report.getStatus());
-        vo.setTotalScore(report.getTotalScore());
+        boolean trustedForFormalAction = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+        vo.setTotalScore(trustedForFormalAction ? report.getTotalScore() : null);
         vo.setSummary(report.getSummary());
         Map<String, Object> stageScores = parseMap(report.getStageScores());
         vo.setStageScores(stageScores);
@@ -150,13 +155,19 @@ public final class InterviewConvert {
         vo.setGeneratedAt(report.getGeneratedAt());
         vo.setCreatedAt(report.getCreatedAt());
         vo.setFailureReason(report.getFailureReason());
+        vo.setAsyncMessageId(report.getAsyncMessageId());
+        vo.setAsyncTraceId(report.getAsyncTraceId());
+        vo.setAsyncBizType(report.getAsyncBizType());
+        vo.setAsyncBizId(report.getAsyncBizId());
+        vo.setAsyncSendStatus(report.getAsyncSendStatus());
+        vo.setAsyncDispatchMode(report.getAsyncDispatchMode());
         vo.setSourceType(REPORT_SOURCE_TYPE);
         vo.setSourceId(report.getId());
         vo.setTrustStatus(reportTrustStatus(report));
         vo.setEvidenceSummary(reportEvidenceSummary(report));
         vo.setFallback(reportFallback(report));
         boolean generated = "GENERATED".equalsIgnoreCase(report.getStatus());
-        boolean strongRemediationAvailable = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+        boolean strongRemediationAvailable = trustedForFormalAction;
         vo.setRemediationAvailable(generated);
         vo.setStrongRemediationAvailable(strongRemediationAvailable);
         vo.setStrongRemediationUnavailableReason(strongRemediationAvailable

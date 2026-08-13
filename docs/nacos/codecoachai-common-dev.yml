@@ -105,7 +105,7 @@ management:
         include: health,info,prometheus
 
 rocketmq:
-  name-server: 127.0.0.1:9876
+  name-server: rocketmq-namesrv:9876
   producer:
     group: codecoachai-producer
     send-message-timeout: 5000

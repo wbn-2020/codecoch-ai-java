@@ -26,6 +26,8 @@ public class AiModelConfig extends BaseEntity {
     private Integer enabled;
     private Integer sortOrder;
     private String remark;
+    private String governanceStatus;
+    private String governanceNote;
     @TableField(exist = false)
     private String apiKeyMasked;
     @TableField(exist = false)

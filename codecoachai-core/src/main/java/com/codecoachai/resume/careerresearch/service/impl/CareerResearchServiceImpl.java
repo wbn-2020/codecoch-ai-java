@@ -382,6 +382,7 @@ public class CareerResearchServiceImpl implements CareerResearchService {
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
                 .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt)
                 .last("LIMIT 1"));
         if (application == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "机会不存在");

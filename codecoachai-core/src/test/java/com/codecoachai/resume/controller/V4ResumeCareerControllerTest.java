@@ -15,7 +15,9 @@ import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
 import com.codecoachai.resume.domain.dto.JobApplicationEventReviewGenerateDTO;
+import com.codecoachai.resume.domain.vo.JobApplicationVO;
 import com.codecoachai.resume.domain.vo.JobApplicationEventStructuredReviewVO;
 import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
 import com.codecoachai.resume.domain.vo.ResumeVersionVO;
@@ -183,6 +185,25 @@ class V4ResumeCareerControllerTest {
 
         assertEquals("REJECTION", result.getScenario());
         verify(jobApplicationEventReviewService).generate(8L, 9L, request);
+    }
+
+    @Test
+    void archiveAndRestoreDelegateToCareerService() {
+        JobApplicationArchiveDTO archive = new JobApplicationArchiveDTO();
+        archive.setExpectedLockVersion(3);
+        archive.setReason("停止跟进");
+        JobApplicationVO archived = new JobApplicationVO();
+        archived.setId(8L);
+        archived.setLockVersion(4);
+        when(v4ResumeCareerService.archiveApplication(8L, archive)).thenReturn(archived);
+        when(v4ResumeCareerService.restoreApplication(8L, archive)).thenReturn(archived);
+
+        assertEquals(8L, controller.archiveApplication(8L, archive).getData().getId());
+        assertEquals(8L, controller.restoreApplication(8L, archive).getData().getId());
+        controller.deleteApplication(8L, archive);
+        verify(v4ResumeCareerService).archiveApplication(8L, archive);
+        verify(v4ResumeCareerService).restoreApplication(8L, archive);
+        verify(v4ResumeCareerService).deleteApplication(8L, archive);
     }
 
     private static ResumeApplyAiSuggestionDTO confirmedSuggestionDto() {

@@ -122,6 +122,7 @@ public class CareerCampaignReviewEvidenceServiceImpl implements CareerCampaignRe
                         .eq(JobApplication::getUserId, userId)
                         .eq(JobApplication::getCampaignId, campaignId)
                         .eq(JobApplication::getDeleted, CommonConstants.NO)
+                        .isNull(JobApplication::getArchivedAt)
                         .le(JobApplication::getUpdatedAt, cutoff)
                         .orderByDesc(JobApplication::getUpdatedAt)
                         .orderByDesc(JobApplication::getId)

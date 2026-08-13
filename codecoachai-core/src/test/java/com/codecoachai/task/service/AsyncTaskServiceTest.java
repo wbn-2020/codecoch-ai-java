@@ -19,6 +19,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -130,6 +131,27 @@ class AsyncTaskServiceTest {
     }
 
     @Test
+    void registerPendingPersistsTaskBeforeDispatch() {
+        when(asyncTaskMapper.selectOne(any())).thenReturn(null);
+
+        AsyncTask registered = service.registerPending(
+                "interview.report:91:token-1",
+                "interview.report",
+                "91",
+                10L,
+                "token-1",
+                "payload",
+                3);
+
+        ArgumentCaptor<AsyncTask> taskCaptor = ArgumentCaptor.forClass(AsyncTask.class);
+        verify(asyncTaskMapper).insert(taskCaptor.capture());
+        assertEquals("PENDING", taskCaptor.getValue().getStatus());
+        assertEquals("interview.report", taskCaptor.getValue().getBizType());
+        assertEquals("91", taskCaptor.getValue().getBizId());
+        assertEquals(registered, taskCaptor.getValue());
+    }
+
+    @Test
     void acquireReadyTaskUsesNullToNewTokenCas() {
         AsyncTask pending = task("msg-pending", "PENDING");
         pending.setUpdatedAt(NOW.minusSeconds(10));
@@ -148,6 +170,65 @@ class AsyncTaskServiceTest {
                 LEASE_DURATION)).thenReturn(true);
 
         assertTrue(service.acquire(message("msg-pending"), 3));
+    }
+
+    @Test
+    void acquireRegisteredBindsRealMessageIdAndClaimsExistingBusinessTask() {
+        AsyncTask registered = task("agent-daily-plan-register-77", "PENDING");
+        registered.setBizType("agent.daily-plan.generate");
+        registered.setBizId("77");
+        when(asyncTaskMapper.selectOne(any())).thenReturn(null, registered);
+        when(asyncTaskMapper.update(isNull(), any())).thenReturn(1);
+        when(asyncTaskMapper.claimReadyTask(
+                registered.getId(),
+                "PENDING",
+                null,
+                "token-default",
+                NOW,
+                3,
+                NOW)).thenReturn(1);
+        when(valueOperations.setIfAbsent(
+                RedisKeyConstants.mqConsumedKey("msg-agent-daily-1"),
+                "token-default",
+                LEASE_DURATION)).thenReturn(true);
+        MqMessage<String> envelope = message("msg-agent-daily-1");
+        envelope.setBizType("agent.daily-plan.generate");
+        envelope.setBizId("77");
+
+        assertTrue(service.acquireRegistered(envelope, 3));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AsyncTask>> updateCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(asyncTaskMapper).update(isNull(), updateCaptor.capture());
+        assertTrue(updateCaptor.getValue().getSqlSet().contains("message_id"));
+        verify(asyncTaskMapper, never()).insert(any(AsyncTask.class));
+    }
+
+    @Test
+    void acquireRegisteredTakesOverExpiredUnfencedLocalFallback() {
+        AsyncTask running = task("agent-daily-plan-register-77", "RUNNING");
+        running.setBizType("agent.daily-plan.generate");
+        running.setBizId("77");
+        running.setLeaseToken(null);
+        running.setStartedAt(NOW.minusMinutes(6));
+        when(asyncTaskMapper.selectOne(any())).thenReturn(null, running);
+        when(asyncTaskMapper.update(isNull(), any())).thenReturn(1);
+        when(valueOperations.setIfAbsent(
+                RedisKeyConstants.mqConsumedKey("msg-agent-daily-1"),
+                "token-default",
+                LEASE_DURATION)).thenReturn(true);
+        MqMessage<String> envelope = message("msg-agent-daily-1");
+        envelope.setBizType("agent.daily-plan.generate");
+        envelope.setBizId("77");
+
+        assertTrue(service.acquireRegistered(envelope, 3));
+
+        verify(asyncTaskMapper, never()).insert(any(AsyncTask.class));
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Wrapper<AsyncTask>> updateCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(asyncTaskMapper).update(isNull(), updateCaptor.capture());
+        assertTrue(updateCaptor.getValue().getSqlSet().contains("lease_token"));
+        assertTrue(updateCaptor.getValue().getSqlSet().contains("started_at"));
     }
 
     @Test

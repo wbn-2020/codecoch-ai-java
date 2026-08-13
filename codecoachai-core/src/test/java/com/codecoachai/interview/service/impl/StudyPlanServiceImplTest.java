@@ -4,15 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
+import com.codecoachai.interview.domain.dto.StudyPlanGenerateFromGapDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanQueryDTO;
 import com.codecoachai.interview.domain.dto.StudyPlanGenerateDTO;
 import com.codecoachai.interview.domain.entity.InterviewMessage;
@@ -28,6 +33,11 @@ import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
 import com.codecoachai.interview.feign.AiFeignClient;
 import com.codecoachai.interview.feign.ResumeFeignClient;
+import com.codecoachai.interview.feign.dto.GenerateLearningPlanDTO;
+import com.codecoachai.interview.feign.dto.GenerateTargetedStudyPlanDTO;
+import com.codecoachai.interview.feign.vo.GenerateLearningPlanVO;
+import com.codecoachai.interview.feign.vo.InnerSkillGapItemVO;
+import com.codecoachai.interview.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.interview.mapper.InterviewMessageMapper;
 import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
@@ -35,6 +45,7 @@ import com.codecoachai.interview.mapper.StudyPlanMapper;
 import com.codecoachai.interview.mapper.StudyPlanSkillRelationMapper;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
 import com.codecoachai.interview.mq.StudyPlanMqDispatcher;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -46,9 +57,12 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @ExtendWith(MockitoExtension.class)
@@ -80,6 +94,8 @@ class StudyPlanServiceImplTest {
     private TransactionTemplate transactionTemplate;
     @Mock
     private StudyPlanMqDispatcher studyPlanMqDispatcher;
+    @Mock
+    private AsyncTaskService asyncTaskService;
 
     private StudyPlanServiceImpl service;
 
@@ -111,9 +127,10 @@ class StudyPlanServiceImplTest {
                 messageMapper,
                 resumeFeignClient,
                 aiFeignClient,
-                new ObjectMapper(),
+                new ObjectMapper().findAndRegisterModules(),
                 transactionTemplate,
-                Optional.of(studyPlanMqDispatcher));
+                Optional.of(studyPlanMqDispatcher),
+                asyncTaskService);
     }
 
     @AfterEach
@@ -157,6 +174,7 @@ class StudyPlanServiceImplTest {
 
         StudyPlanDetailVO detail = service.detail(PLAN_ID);
 
+        assertEquals(9001L, detail.getSourceId());
         assertEquals(1, detail.getTasks().size());
         assertEquals(1, detail.getTotalTaskCount());
         @SuppressWarnings("unchecked")
@@ -232,6 +250,53 @@ class StudyPlanServiceImplTest {
     }
 
     @Test
+    void generateFromReportUsesCanonicalInterviewReportSourceId() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InterviewReport report = generatedReport();
+        InterviewSession session = new InterviewSession();
+        session.setId(report.getSessionId());
+        session.setUserId(USER_ID);
+        session.setTargetJobId(TARGET_JOB_ID);
+        stubTransactions();
+        when(studyPlanMqDispatcher.isAvailable()).thenReturn(true);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(studyPlanMapper.selectOne(any())).thenReturn(null);
+        when(studyPlanMapper.insert(any(StudyPlan.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, StudyPlan.class).setId(PLAN_ID);
+            return 1;
+        });
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(studyPlanMqDispatcher.dispatchGenerateWithReceipt(any(), any()))
+                .thenReturn(MqDispatchReceipt.builder()
+                        .messageId("study-plan-message-1")
+                        .bizType(StudyPlanMqDispatcher.BIZ_TYPE_GENERATE)
+                        .bizId(String.valueOf(PLAN_ID))
+                        .build());
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+        dto.setExpectedDurationDays(21);
+        dto.setDailyMinutes(90);
+
+        service.generate(dto);
+
+        ArgumentCaptor<StudyPlan> planCaptor = ArgumentCaptor.forClass(StudyPlan.class);
+        verify(studyPlanMapper).insert(planCaptor.capture());
+        assertEquals("INTERVIEW_REPORT", planCaptor.getValue().getSourceType());
+        assertEquals(report.getId(), planCaptor.getValue().getSourceId());
+        assertEquals(report.getId(), planCaptor.getValue().getReportId());
+        assertEquals(report.getSessionId(), planCaptor.getValue().getSessionId());
+        assertEquals(90, planCaptor.getValue().getDailyMinutes());
+        verify(asyncTaskService).registerPending(
+                org.mockito.ArgumentMatchers.startsWith("study-plan.generate:" + PLAN_ID + ":"),
+                org.mockito.ArgumentMatchers.eq(StudyPlanMqDispatcher.BIZ_TYPE_GENERATE),
+                org.mockito.ArgumentMatchers.eq(String.valueOf(PLAN_ID)),
+                org.mockito.ArgumentMatchers.eq(USER_ID),
+                org.mockito.ArgumentMatchers.anyString(),
+                any(),
+                org.mockito.ArgumentMatchers.eq(3));
+    }
+
+    @Test
     void listActivePlansUsesStableUpdatedAtAndIdOrdering() {
         LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
         Page<StudyPlan> page = Page.of(1, 10);
@@ -251,6 +316,282 @@ class StudyPlanServiceImplTest {
         assertTrue(sqlSegment.contains("plan_status"));
         assertTrue(sqlSegment.contains("updated_at DESC"));
         assertTrue(sqlSegment.contains("id DESC"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {21, 90})
+    void executeReportPlanPersistsRequestedDurationDays(int requestedDays) throws Exception {
+        StudyPlan plan = generatingReportPlan(requestedDays);
+        GenerateLearningPlanVO aiPlan = validAiPlan(requestedDays, 30);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("ACTIVE", result.getPlanStatus());
+        ArgumentCaptor<StudyPlan> planCaptor = ArgumentCaptor.forClass(StudyPlan.class);
+        verify(studyPlanMapper).update(planCaptor.capture(), any());
+        assertEquals(requestedDays, planCaptor.getValue().getDurationDays());
+        ArgumentCaptor<StudyTask> taskCaptor = ArgumentCaptor.forClass(StudyTask.class);
+        verify(studyTaskMapper).insert(taskCaptor.capture());
+        assertEquals(30, taskCaptor.getValue().getEstimatedMinutes());
+    }
+
+    @Test
+    void executeReportPlanFailsWhenAiDurationDiffersFromRequest() throws Exception {
+        StudyPlan plan = generatingReportPlan(21, 90);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(validAiPlan(30, 30)));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("期望 21 天，实际 30 天"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeReportPlanFailsWhenTaskExceedsDailyBudget() throws Exception {
+        StudyPlan plan = generatingReportPlan(21, 90);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(validAiPlan(21, 91)));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("91 分钟超过每日预算 90 分钟"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeTargetedPlanFailsWhenTaskExceedsDailyBudget() throws Exception {
+        StudyPlan plan = generatingTargetedPlan(21, 60);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateTargetedStudyPlan(any())).thenReturn(Result.success(validAiPlan(21, 61)));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("61 分钟超过每日预算 60 分钟"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeTargetedPlanFailsWhenSameDayTaskTotalExceedsDailyBudget() throws Exception {
+        StudyPlan plan = generatingTargetedPlan(21, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(21, 35);
+        GenerateLearningPlanVO.ItemVO second = new GenerateLearningPlanVO.ItemVO();
+        second.setDayOffset(1);
+        second.setTaskTitle("Practice concurrency");
+        second.setEstimatedMinutes(30);
+        aiPlan.getStages().get(0).getItems().get(0).setDayOffset(1);
+        aiPlan.getStages().get(0).setItems(List.of(aiPlan.getStages().get(0).getItems().get(0), second));
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateTargetedStudyPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("第 1 天任务总时长 65 分钟超过每日预算 60 分钟"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeTargetedPlanAllowsFullBudgetOnDifferentDays() throws Exception {
+        StudyPlan plan = generatingTargetedPlan(21, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(21, 60);
+        GenerateLearningPlanVO.ItemVO first = aiPlan.getStages().get(0).getItems().get(0);
+        first.setDayOffset(1);
+        GenerateLearningPlanVO.ItemVO second = new GenerateLearningPlanVO.ItemVO();
+        second.setDayOffset(2);
+        second.setTaskTitle("Practice concurrency");
+        second.setEstimatedMinutes(60);
+        aiPlan.getStages().get(0).setItems(List.of(first, second));
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateTargetedStudyPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("ACTIVE", result.getPlanStatus());
+        verify(studyTaskMapper, org.mockito.Mockito.times(2)).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void generateFromGapInheritsTrustedInterviewReportSource() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InnerSkillProfileVO profile = trustedInterviewProfile();
+        StudyPlanGenerateFromGapDTO dto = new StudyPlanGenerateFromGapDTO();
+        dto.setProfileId(profile.getProfileId());
+        dto.setDays(21);
+        dto.setDailyMinutes(90);
+        dto.setStartDate(LocalDate.of(2026, 6, 19));
+        stubTransactions();
+        when(studyPlanMqDispatcher.isAvailable()).thenReturn(true);
+        when(resumeFeignClient.getSkillProfile(profile.getProfileId()))
+                .thenReturn(Result.success(profile));
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        when(studyPlanMapper.selectList(any())).thenReturn(List.of());
+        when(studyPlanMqDispatcher.dispatchGenerateWithReceipt(any(), any()))
+                .thenReturn(MqDispatchReceipt.builder()
+                        .messageId("study-plan-message-1")
+                        .bizType(StudyPlanMqDispatcher.BIZ_TYPE_GENERATE)
+                        .bizId(String.valueOf(PLAN_ID))
+                        .build());
+
+        service.generateFromGap(dto);
+
+        ArgumentCaptor<StudyPlan> planCaptor = ArgumentCaptor.forClass(StudyPlan.class);
+        verify(studyPlanMapper).insert(planCaptor.capture());
+        StudyPlan plan = planCaptor.getValue();
+        assertEquals("INTERVIEW_REPORT", plan.getSourceType());
+        assertEquals(3001L, plan.getSourceId());
+        assertEquals(profile.getProfileId(), plan.getSkillProfileId());
+        assertEquals(21, plan.getDurationDays());
+        assertEquals(90, plan.getDailyMinutes());
+    }
+
+    @Test
+    void generateRejectsDurationAboveSixtyDaysBeforeDispatch() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(3001L);
+        dto.setExpectedDurationDays(61);
+
+        assertThrows(BusinessException.class, () -> service.generate(dto));
+        verify(studyPlanMqDispatcher, never()).dispatchGenerateWithReceipt(any(), any());
+    }
+
+    @Test
+    void fallsBackToLocalExecutionAndCompletesTheRegisteredReceipt() throws Exception {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InterviewReport report = generatedReport();
+        InterviewSession session = new InterviewSession();
+        session.setId(report.getSessionId());
+        session.setUserId(USER_ID);
+        session.setTargetJobId(TARGET_JOB_ID);
+        stubTransactions();
+        when(studyPlanMqDispatcher.isAvailable()).thenReturn(true);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(studyPlanMapper.selectOne(any())).thenReturn(null, generatingReportPlan(21, 90));
+        when(studyPlanMapper.insert(any(StudyPlan.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, StudyPlan.class).setId(PLAN_ID);
+            return 1;
+        });
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(studyPlanMqDispatcher.dispatchGenerateWithReceipt(any(), any())).thenReturn(null);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(validAiPlan(21, 30)));
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+        dto.setExpectedDurationDays(21);
+        dto.setDailyMinutes(90);
+
+        service.generate(dto);
+
+        verify(asyncTaskService).completePending(
+                org.mockito.ArgumentMatchers.startsWith("study-plan.generate:" + PLAN_ID + ":"),
+                org.mockito.ArgumentMatchers.eq(true),
+                any(),
+                org.mockito.ArgumentMatchers.isNull());
+    }
+
+    private StudyPlan generatingReportPlan(int requestedDays) throws Exception {
+        return generatingReportPlan(requestedDays, 90);
+    }
+
+    private StudyPlan generatingReportPlan(int requestedDays, int dailyMinutes) throws Exception {
+        StudyPlan plan = activePlan();
+        plan.setSourceType("REPORT");
+        plan.setPlanStatus("GENERATING");
+        plan.setDurationDays(requestedDays);
+        plan.setDailyMinutes(dailyMinutes);
+        GenerateLearningPlanDTO request = new GenerateLearningPlanDTO();
+        request.setExpectedDurationDays(requestedDays);
+        request.setDailyMinutes(dailyMinutes);
+        plan.setRequestJson(new ObjectMapper().writeValueAsString(request));
+        return plan;
+    }
+
+    private StudyPlan generatingTargetedPlan(int requestedDays, int dailyMinutes) throws Exception {
+        StudyPlan plan = activePlan();
+        plan.setReportId(null);
+        plan.setPlanStatus("GENERATING");
+        plan.setDurationDays(requestedDays);
+        plan.setDailyMinutes(dailyMinutes);
+        GenerateTargetedStudyPlanDTO request = new GenerateTargetedStudyPlanDTO();
+        request.setAvailableDays(requestedDays);
+        request.setDailyMinutes(dailyMinutes);
+        request.setSkillGapsJson("[]");
+        plan.setRequestJson(new ObjectMapper().writeValueAsString(request));
+        return plan;
+    }
+
+    private GenerateLearningPlanVO validAiPlan(int durationDays, int estimatedMinutes) {
+        GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+        item.setTaskTitle("Review concurrency");
+        item.setEstimatedMinutes(estimatedMinutes);
+        GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
+        stage.setStageNo(1);
+        stage.setItems(List.of(item));
+        GenerateLearningPlanVO plan = new GenerateLearningPlanVO();
+        plan.setDurationDays(durationDays);
+        plan.setStages(List.of(stage));
+        return plan;
+    }
+
+    private InnerSkillProfileVO trustedInterviewProfile() {
+        InnerSkillGapItemVO gap = new InnerSkillGapItemVO();
+        gap.setId(7001L);
+        gap.setProfileId(6001L);
+        gap.setUserId(USER_ID);
+        gap.setSkillName("Redis");
+        gap.setGapLevel(2);
+        gap.setPriority(1);
+        InnerSkillProfileVO profile = new InnerSkillProfileVO();
+        profile.setProfileId(6001L);
+        profile.setUserId(USER_ID);
+        profile.setTargetJobId(TARGET_JOB_ID);
+        profile.setSourceType("INTERVIEW_REPORT");
+        profile.setSourceBizId(3001L);
+        profile.setStatus("SUCCESS");
+        profile.setTargetJobTitle("Java 后端工程师");
+        profile.setGapItems(List.of(gap));
+        return profile;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void stubTransactions() {
+        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+            TransactionCallback<?> callback = invocation.getArgument(0);
+            return callback.doInTransaction(null);
+        });
     }
 
     private StudyPlan activePlan() {

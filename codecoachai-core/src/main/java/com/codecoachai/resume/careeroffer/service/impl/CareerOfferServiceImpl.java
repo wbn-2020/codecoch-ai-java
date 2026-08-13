@@ -525,7 +525,8 @@ public class CareerOfferServiceImpl implements CareerOfferService, CareerOfferRe
         JobApplication application = applicationMapper.selectOne(new LambdaQueryWrapper<JobApplication>()
                 .eq(JobApplication::getId, applicationId)
                 .eq(JobApplication::getUserId, userId)
-                .eq(JobApplication::getDeleted, CommonConstants.NO));
+                .eq(JobApplication::getDeleted, CommonConstants.NO)
+                .isNull(JobApplication::getArchivedAt));
         if (application == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "Application not found");
         }

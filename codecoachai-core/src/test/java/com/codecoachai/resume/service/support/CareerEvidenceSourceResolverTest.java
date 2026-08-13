@@ -8,6 +8,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -109,8 +110,10 @@ class CareerEvidenceSourceResolverTest {
                 offerDecisionMapper,
                 activityMapper,
                 objectMapper);
-        when(skillEvidenceMapper.selectOne(any())).thenReturn(currentSkill());
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project());
+        org.mockito.Mockito.lenient().when(skillEvidenceMapper.selectOne(any()))
+                .thenReturn(currentSkill());
+        org.mockito.Mockito.lenient().when(projectEvidenceMapper.selectOne(any()))
+                .thenReturn(project());
     }
 
     @Test
@@ -171,6 +174,18 @@ class CareerEvidenceSourceResolverTest {
 
         assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), error.getCode());
         assertTrue(error.getMessage().contains("不属于指定的项目证据版本"));
+    }
+
+    @Test
+    void ownedApplicationExcludesArchivedApplications() {
+        when(applicationMapper.selectOne(any())).thenReturn(null);
+
+        assertThrows(BusinessException.class, () -> resolver.ownedApplication(USER_ID, 81L));
+
+        org.mockito.ArgumentCaptor<LambdaQueryWrapper<JobApplication>> queryCaptor =
+                org.mockito.ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        org.mockito.Mockito.verify(applicationMapper).selectOne(queryCaptor.capture());
+        assertTrue(queryCaptor.getValue().getSqlSegment().contains("archived_at IS NULL"));
     }
 
     private CareerEvidenceUsageCreateDTO request(String version) {

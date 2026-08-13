@@ -44,6 +44,12 @@ public class InterviewReportVO {
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;
     private String failureReason;
+    private String asyncMessageId;
+    private String asyncTraceId;
+    private String asyncBizType;
+    private String asyncBizId;
+    private String asyncSendStatus;
+    private String asyncDispatchMode;
     private String sourceType;
     private Long sourceId;
     private String trustStatus;
