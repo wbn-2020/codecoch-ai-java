@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.codecoachai.common.core.domain.BaseEntity;
+import java.time.LocalDateTime;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
@@ -25,6 +26,16 @@ public class AiModelConfig extends BaseEntity {
     private Integer enabled;
     private Integer sortOrder;
     private String remark;
+    private String governanceStatus;
+    private String governanceNote;
     @TableField(exist = false)
     private String apiKeyMasked;
+    @TableField(exist = false)
+    private String callHealthStatus;
+    @TableField(exist = false)
+    private LocalDateTime lastCallSuccessAt;
+    @TableField(exist = false)
+    private LocalDateTime lastCallFailureAt;
+    @TableField(exist = false)
+    private String lastCallFailureSummary;
 }

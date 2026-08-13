@@ -38,6 +38,7 @@ frontend application service.
 - `dev-260703`;
 - `dev-fb`;
 - `dev-fb-260803`;
+- `dev-fb-260805`;
 - pull requests targeting those branches;
 - manual `workflow_dispatch`.
 
@@ -45,8 +46,12 @@ The backend job runs:
 
 ```text
 mvn -B -ntp -Dstyle.color=never clean test
-mvn -B -ntp -Dstyle.color=never -DskipTests package
+mvn -B -ntp -Dstyle.color=never -Pphase2-dependency-gates -DskipTests verify
 ```
+
+The phase-two dependency gate is an explicit CI step. It must not be described as a
+runtime acceptance result; RocketMQ, Nacos, health, resource, API and rollback behavior
+still require the test-environment acceptance template.
 
 The frontend job checks out the frontend repository and runs:
 

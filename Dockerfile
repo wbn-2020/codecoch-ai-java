@@ -15,15 +15,7 @@ COPY pom.xml .
 COPY codecoachai-common ./codecoachai-common
 COPY codecoachai-core ./codecoachai-core
 COPY codecoachai-gateway ./codecoachai-gateway
-COPY codecoachai-auth ./codecoachai-auth
-COPY codecoachai-user ./codecoachai-user
 COPY codecoachai-ai ./codecoachai-ai
-COPY codecoachai-resume ./codecoachai-resume
-COPY codecoachai-interview ./codecoachai-interview
-COPY codecoachai-question ./codecoachai-question
-COPY codecoachai-file ./codecoachai-file
-COPY codecoachai-system ./codecoachai-system
-COPY codecoachai-task ./codecoachai-task
 COPY codecoachai-search ./codecoachai-search
 
 RUN case "${SERVICE}" in \

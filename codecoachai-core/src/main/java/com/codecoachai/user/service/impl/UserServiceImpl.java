@@ -1,0 +1,640 @@
+package com.codecoachai.user.service.impl;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.constant.SecurityConstants;
+import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.security.admin.AdminPermissionCache;
+import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.user.convert.UserConvert;
+import com.codecoachai.user.domain.dto.AdminUserQueryDTO;
+import com.codecoachai.user.domain.dto.InnerCreateUserDTO;
+import com.codecoachai.user.domain.dto.InnerResetPasswordDTO;
+import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
+import com.codecoachai.user.domain.dto.UpdateUserProfileDTO;
+import com.codecoachai.user.domain.dto.UpdateUserStatusDTO;
+import com.codecoachai.user.domain.entity.SysUser;
+import com.codecoachai.user.domain.entity.SysUserRole;
+import com.codecoachai.user.domain.vo.AdminUserPageVO;
+import com.codecoachai.user.domain.vo.InnerCreateUserVO;
+import com.codecoachai.user.domain.vo.InnerUserAuthVO;
+import com.codecoachai.user.domain.vo.InnerUserBasicVO;
+import com.codecoachai.user.domain.vo.InnerUserRoleVO;
+import com.codecoachai.user.domain.vo.UserDashboardOverviewVO;
+import com.codecoachai.user.domain.vo.UserOverviewVO;
+import com.codecoachai.user.domain.vo.UserProfileVO;
+import com.codecoachai.user.mapper.SysUserMapper;
+import com.codecoachai.user.mapper.SysUserRoleMapper;
+import com.codecoachai.user.service.RoleService;
+import com.codecoachai.user.service.UserService;
+import java.security.SecureRandom;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import lombok.RequiredArgsConstructor;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
+
+@Service
+@RequiredArgsConstructor
+public class UserServiceImpl implements UserService {
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String TEMP_PASSWORD_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+    private static final String TEMP_PASSWORD_LOWER = "abcdefghijkmnopqrstuvwxyz";
+    private static final String TEMP_PASSWORD_DIGIT = "23456789";
+    private static final String TEMP_PASSWORD_SPECIAL = "@#$%&*!?";
+    private static final String TEMP_PASSWORD_ALL = TEMP_PASSWORD_UPPER
+            + TEMP_PASSWORD_LOWER
+            + TEMP_PASSWORD_DIGIT
+            + TEMP_PASSWORD_SPECIAL;
+    private static final int TEMP_PASSWORD_LENGTH = 16;
+    private static final String BUSINESS_TIMEZONE = "Asia/Shanghai";
+    private static final ZoneId BUSINESS_ZONE_ID = ZoneId.of(BUSINESS_TIMEZONE);
+    private static final Set<String> USER_DASHBOARD_COUNT_TABLES = Set.of(
+            "resume",
+            "resume_analysis_record",
+            "resume_optimize_record",
+            "interview_session",
+            "practice_record",
+            "wrong_record",
+            "user_favorite",
+            "study_plan",
+            "study_task"
+    );
+    private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
+
+    private final SysUserMapper sysUserMapper;
+    private final SysUserRoleMapper sysUserRoleMapper;
+    private final RoleService roleService;
+    private final PasswordEncoder passwordEncoder;
+    private final JdbcTemplate jdbcTemplate;
+    private final AdminPermissionCache adminPermissionCache;
+
+    @Override
+    public UserProfileVO getCurrentUserProfile() {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
+    }
+
+    @Override
+    public UserProfileVO updateCurrentUserProfile(UpdateUserProfileDTO dto) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setNickname(dto.getNickname());
+        user.setAvatarUrl(dto.getAvatarUrl());
+        user.setEmail(dto.getEmail());
+        sysUserMapper.updateById(user);
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
+    }
+
+    @Override
+    public void updateCurrentUserPassword(UpdatePasswordDTO dto) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        if (!dto.getNewPassword().equals(dto.getConfirmPassword())) {
+            throw new BusinessException(ErrorCode.PASSWORD_CONFIRM_NOT_MATCH);
+        }
+        if (!passwordEncoder.matches(dto.getOldPassword(), user.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.OLD_PASSWORD_ERROR);
+        }
+        user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public UserProfileVO updateAvatar(String avatarUrl) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setAvatarUrl(avatarUrl);
+        sysUserMapper.updateById(user);
+        return UserConvert.toProfileVO(user, roleService.listRoleCodesByUserId(userId));
+    }
+
+    @Override
+    public void updatePhone(String phone) {
+        Long userId = requireCurrentUserId();
+        SysUser user = getUserOrThrow(userId);
+        user.setPhone(phone);
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public UserOverviewVO getOverview() {
+        Long userId = requireCurrentUserId();
+        return UserOverviewVO.builder()
+                .resumeCount(toInt(count("resume", "deleted = 0 AND user_id = ?", userId)))
+                .interviewCount(toInt(count("interview_session", "deleted = 0 AND user_id = ?", userId)))
+                .completedInterviewCount(toInt(count("interview_session",
+                        "deleted = 0 AND user_id = ? AND status IN ('FINISHED','COMPLETED')", userId)))
+                .questionAnsweredCount(toInt(count("practice_record", "deleted = 0 AND user_id = ?", userId)))
+                .wrongQuestionCount(toInt(count("wrong_record", "deleted = 0 AND user_id = ?", userId)))
+                .favoriteQuestionCount(toInt(count("user_favorite", "deleted = 0 AND user_id = ?", userId)))
+                .build();
+    }
+
+    @Override
+    public UserDashboardOverviewVO getDashboardOverview() {
+        Long userId = requireCurrentUserId();
+        LocalDate businessDate = LocalDate.now(BUSINESS_ZONE_ID);
+        UserDashboardOverviewVO vo = new UserDashboardOverviewVO();
+        vo.setResumeCount(count("resume", "deleted = 0 AND user_id = ?", userId));
+        vo.setRecentResumeParse(recentResumeParse(userId));
+        vo.setRecentResumeOptimize(recentResumeOptimize(userId));
+        vo.setInterviewCount(count("interview_session", "deleted = 0 AND user_id = ?", userId));
+        vo.setRecentInterview(recentInterview(userId));
+        vo.setRecentReport(recentReport(userId));
+        vo.setStudyPlanCount(count("study_plan", "deleted = 0 AND user_id = ?", userId));
+        UserDashboardOverviewVO.ActiveStudyPlanVO activePlan = activeStudyPlan(userId, businessDate);
+        vo.setActiveStudyPlan(activePlan);
+        vo.setTodayTaskCount(activePlan == null ? 0L : activePlan.getTodayTaskCount().longValue());
+        vo.setTodayCompletedTaskCount(activePlan == null ? 0L : activePlan.getTodayDoneTaskCount().longValue());
+        vo.setBusinessDate(businessDate);
+        vo.setBusinessTimezone(BUSINESS_TIMEZONE);
+        vo.setEntryStatuses(entryStatuses(vo));
+        vo.setGeneratedAt(LocalDateTime.now(BUSINESS_ZONE_ID));
+        return vo;
+    }
+
+    @Override
+    public PageResult<AdminUserPageVO> pageAdminUsers(AdminUserQueryDTO query) {
+        Long currentUserId = requireCurrentUserId();
+        AdminUserQueryDTO safeQuery = query == null ? new AdminUserQueryDTO() : query;
+        Page<SysUser> page = sysUserMapper.selectAdminUserPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
+                normalizeKeyword(safeQuery.getKeyword()), safeQuery.getStatus(), normalizeKeyword(safeQuery.getRoleCode()));
+        if (page.getTotal() == 0
+                && !StringUtils.hasText(safeQuery.getKeyword())
+                && safeQuery.getStatus() == null
+                && !StringUtils.hasText(safeQuery.getRoleCode())
+                && sysUserMapper.selectById(currentUserId) == null) {
+            throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "当前登录账号不在 sys_user 中，请检查认证库与业务库连接、用户迁移和初始化数据。");
+        }
+        Map<Long, List<String>> roleMap = listRoleCodesByUserIds(page.getRecords().stream()
+                .map(SysUser::getId)
+                .toList());
+        List<AdminUserPageVO> records = page.getRecords().stream()
+                .map(user -> UserConvert.toAdminUserPageVO(user, roleMap.getOrDefault(user.getId(), List.of())))
+                .toList();
+        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    private long defaultPage(Long pageNo) {
+        return pageNo == null || pageNo < 1 ? 1L : pageNo;
+    }
+
+    private long defaultSize(Long pageSize) {
+        return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateUserStatus(Long id, UpdateUserStatusDTO dto) {
+        if (!CommonConstants.YES.equals(dto.getStatus()) && !CommonConstants.NO.equals(dto.getStatus())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "status 只能是0或1");
+        }
+        Long currentUserId = requireCurrentUserId();
+        if (currentUserId.equals(id) && CommonConstants.NO.equals(dto.getStatus())) {
+            throw new BusinessException(ErrorCode.DISABLE_SELF_NOT_ALLOWED);
+        }
+        if (CommonConstants.NO.equals(dto.getStatus())) {
+            ensureNotDisablingLastAdmin(id);
+        }
+        SysUser user = getUserOrThrow(id);
+        user.setStatus(dto.getStatus());
+        sysUserMapper.updateById(user);
+        adminPermissionCache.invalidateUserPermissionsAfterCommit(id);
+    }
+
+    @Override
+    public String resetPassword(Long id) {
+        requireCurrentUserId();
+        SysUser user = getUserOrThrow(id);
+        String newPassword = generateTemporaryPassword();
+        user.setPasswordHash(passwordEncoder.encode(newPassword));
+        sysUserMapper.updateById(user);
+        return newPassword;
+    }
+
+    @Override
+    public InnerUserAuthVO getInnerUserByUsername(String username) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getUsername, username)
+                .last("limit 1"));
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        return UserConvert.toInnerUserAuthVO(user, roleService.listRoleCodesByUserId(user.getId()));
+    }
+
+    @Override
+    public InnerUserAuthVO getInnerUserByEmail(String email) {
+        SysUser user = sysUserMapper.selectOne(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getEmail, email)
+                .last("limit 1"));
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        return UserConvert.toInnerUserAuthVO(user, roleService.listRoleCodesByUserId(user.getId()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public InnerCreateUserVO createInnerUser(InnerCreateUserDTO dto) {
+        // 注册由 auth 服务发起，这里在同一事务内创建用户并绑定默认角色，避免出现无角色账号。
+        Long count = sysUserMapper.selectCount(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getUsername, dto.getUsername()));
+        if (count != null && count > 0) {
+            throw new BusinessException(ErrorCode.USERNAME_EXISTS);
+        }
+        SysUser user = new SysUser();
+        user.setUsername(dto.getUsername());
+        user.setPasswordHash(dto.getPasswordHash());
+        user.setNickname(StringUtils.hasText(dto.getNickname()) ? dto.getNickname() : dto.getUsername());
+        user.setEmail(dto.getEmail());
+        user.setStatus(SecurityConstants.USER_STATUS_ENABLED);
+        sysUserMapper.insert(user);
+
+        SysUserRole userRole = new SysUserRole();
+        userRole.setUserId(user.getId());
+        userRole.setRoleId(roleService.getRoleIdByCode(SecurityConstants.ROLE_USER));
+        sysUserRoleMapper.insert(userRole);
+        return UserConvert.toInnerCreateUserVO(user);
+    }
+
+    @Override
+    public InnerUserRoleVO getInnerUserRoles(Long id) {
+        getUserOrThrow(id);
+        InnerUserRoleVO vo = new InnerUserRoleVO();
+        vo.setUserId(id);
+        vo.setRoles(roleService.listRoleCodesByUserId(id));
+        return vo;
+    }
+
+    @Override
+    public InnerUserBasicVO getInnerUser(Long id) {
+        SysUser user = getUserOrThrow(id);
+        return UserConvert.toInnerUserBasicVO(user, roleService.listRoleCodesByUserId(id));
+    }
+
+    @Override
+    public void resetInnerPassword(Long id, InnerResetPasswordDTO dto) {
+        if (dto == null || !StringUtils.hasText(dto.getPasswordHash())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "新密码信息不能为空");
+        }
+        SysUser user = getUserOrThrow(id);
+        user.setPasswordHash(dto.getPasswordHash());
+        sysUserMapper.updateById(user);
+    }
+
+    private SysUser getUserOrThrow(Long id) {
+        SysUser user = sysUserMapper.selectById(id);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
+        return user;
+    }
+
+    private Long requireCurrentUserId() {
+        Long userId = LoginUserContext.getUserId();
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        return userId;
+    }
+
+    private String normalizeKeyword(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private Map<Long, List<String>> listRoleCodesByUserIds(List<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        String placeholders = String.join(",", Collections.nCopies(userIds.size(), "?"));
+        String sql = """
+                SELECT ur.user_id, r.role_code
+                FROM sys_user_role ur
+                JOIN sys_role r ON r.id = ur.role_id
+                WHERE ur.deleted = 0
+                  AND r.deleted = 0
+                  AND r.status = 1
+                  AND ur.user_id IN (%s)
+                ORDER BY ur.user_id ASC, r.id ASC
+                """.formatted(placeholders);
+        Map<Long, List<String>> result = new LinkedHashMap<>();
+        jdbcTemplate.query(sql, userIds.toArray(), rs -> {
+            Long userId = rs.getLong("user_id");
+            String roleCode = rs.getString("role_code");
+            result.computeIfAbsent(userId, ignored -> new java.util.ArrayList<>()).add(roleCode);
+        });
+        return result;
+    }
+
+    private UserDashboardOverviewVO.RecentResumeParseVO recentResumeParse(Long userId) {
+        if (!tableExists("resume_analysis_record")) {
+            return null;
+        }
+        String sql = """
+                SELECT r.id, r.resume_id, f.original_filename, r.parse_status, r.updated_at
+                FROM resume_analysis_record r
+                LEFT JOIN file_info f ON f.id = r.file_id AND f.deleted = 0
+                WHERE r.deleted = 0 AND r.user_id = ?
+                ORDER BY r.updated_at DESC, r.id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentResumeParseVO vo = new UserDashboardOverviewVO.RecentResumeParseVO();
+            vo.setAnalysisRecordId(rs.getLong("id"));
+            vo.setResumeId(nullableLong(rs, "resume_id"));
+            vo.setFileName(rs.getString("original_filename"));
+            vo.setParseStatus(rs.getString("parse_status"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentResumeOptimizeVO recentResumeOptimize(Long userId) {
+        if (!tableExists("resume_optimize_record")) {
+            return null;
+        }
+        String sql = """
+                SELECT id, resume_id, optimize_status, ai_call_log_id, updated_at
+                FROM resume_optimize_record
+                WHERE deleted = 0 AND user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentResumeOptimizeVO vo = new UserDashboardOverviewVO.RecentResumeOptimizeVO();
+            vo.setOptimizeRecordId(rs.getLong("id"));
+            vo.setResumeId(nullableLong(rs, "resume_id"));
+            vo.setOptimizeStatus(rs.getString("optimize_status"));
+            vo.setAiCallLogId(nullableLong(rs, "ai_call_log_id"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentInterviewVO recentInterview(Long userId) {
+        String sql = """
+                SELECT id, title, status, report_status, updated_at
+                FROM interview_session
+                WHERE deleted = 0 AND user_id = ?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentInterviewVO vo = new UserDashboardOverviewVO.RecentInterviewVO();
+            vo.setInterviewId(rs.getLong("id"));
+            vo.setTitle(rs.getString("title"));
+            vo.setStatus(rs.getString("status"));
+            vo.setReportStatus(rs.getString("report_status"));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.RecentReportVO recentReport(Long userId) {
+        String sql = """
+                SELECT r.id, r.session_id, r.status, r.total_score, r.generated_at
+                FROM interview_report r
+                JOIN interview_session s ON s.id = r.session_id AND s.deleted = 0
+                WHERE r.deleted = 0 AND s.user_id = ?
+                ORDER BY COALESCE(r.generated_at, r.updated_at) DESC, r.id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            UserDashboardOverviewVO.RecentReportVO vo = new UserDashboardOverviewVO.RecentReportVO();
+            vo.setReportId(rs.getLong("id"));
+            vo.setInterviewId(rs.getLong("session_id"));
+            vo.setStatus(rs.getString("status"));
+            vo.setTotalScore(nullableInt(rs, "total_score"));
+            vo.setGeneratedAt(toLocalDateTime(rs.getTimestamp("generated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId, LocalDate businessDate) {
+        String sql = """
+                SELECT id, plan_title, plan_summary, plan_status, updated_at
+                FROM study_plan
+                WHERE deleted = 0 AND user_id = ? AND plan_status = 'ACTIVE'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """;
+        return jdbcTemplate.query(sql, rs -> {
+            if (!rs.next()) {
+                return null;
+            }
+            Long planId = rs.getLong("id");
+            long total = count("study_task", "deleted = 0 AND user_id = ? AND plan_id = ?", userId, planId);
+            long done = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND task_status IN ('DONE','COMPLETED')",
+                    userId, planId);
+            long todayTotal = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ?",
+                    userId, planId, businessDate);
+            long todayDone = count("study_task",
+                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ? "
+                            + "AND task_status IN ('DONE','COMPLETED')",
+                    userId, planId, businessDate);
+            int cumulativeProgress = total == 0 ? 0 : Math.toIntExact(done * 100 / total);
+            int todayProgress = todayTotal == 0 ? 0 : Math.toIntExact(todayDone * 100 / todayTotal);
+            UserDashboardOverviewVO.ActiveStudyPlanVO vo = new UserDashboardOverviewVO.ActiveStudyPlanVO();
+            vo.setPlanId(planId);
+            vo.setPlanTitle(rs.getString("plan_title"));
+            vo.setPlanSummary(rs.getString("plan_summary"));
+            vo.setPlanStatus(rs.getString("plan_status"));
+            vo.setTotalTaskCount(toInt(total));
+            vo.setDoneTaskCount(toInt(done));
+            vo.setProgressPercent(cumulativeProgress);
+            vo.setCumulativeTaskCount(toInt(total));
+            vo.setCumulativeDoneTaskCount(toInt(done));
+            vo.setCumulativeProgressPercent(cumulativeProgress);
+            vo.setTodayTaskCount(toInt(todayTotal));
+            vo.setTodayDoneTaskCount(toInt(todayDone));
+            vo.setTodayProgressPercent(todayProgress);
+            vo.setTodayStatus(todayPlanStatus(todayTotal, todayDone));
+            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
+            return vo;
+        }, userId);
+    }
+
+    private String todayPlanStatus(long total, long done) {
+        if (total <= 0) {
+            return "NO_SCHEDULE";
+        }
+        if (done <= 0) {
+            return "NOT_STARTED";
+        }
+        return done >= total ? "COMPLETED" : "IN_PROGRESS";
+    }
+
+    private List<UserDashboardOverviewVO.EntryStatusVO> entryStatuses(UserDashboardOverviewVO vo) {
+        return List.of(
+                entryStatus("resume", vo.getRecentResumeParse() == null ? "TODO" : "AVAILABLE",
+                        vo.getRecentResumeParse() == null ? "No resume parse record found." : "Resume parse record available.",
+                        vo.getRecentResumeParse() == null ? null : vo.getRecentResumeParse().getAnalysisRecordId()),
+                entryStatus("interview", vo.getRecentInterview() == null ? "TODO" : "AVAILABLE",
+                        vo.getRecentInterview() == null ? "No interview found." : "Recent interview available.",
+                        vo.getRecentInterview() == null ? null : vo.getRecentInterview().getInterviewId()),
+                entryStatus("studyPlan", vo.getActiveStudyPlan() == null ? "TODO" : "CONTINUE",
+                        vo.getActiveStudyPlan() == null ? "No active study plan found." : "Active study plan available.",
+                        vo.getActiveStudyPlan() == null ? null : vo.getActiveStudyPlan().getPlanId())
+        );
+    }
+
+    private UserDashboardOverviewVO.EntryStatusVO entryStatus(String key, String status, String reason, Long relatedId) {
+        UserDashboardOverviewVO.EntryStatusVO vo = new UserDashboardOverviewVO.EntryStatusVO();
+        vo.setKey(key);
+        vo.setStatus(status);
+        vo.setReason(reason);
+        vo.setRelatedId(relatedId);
+        return vo;
+    }
+
+    private long count(String tableName, String condition, Object... args) {
+        if (!tableExists(tableName)) {
+            return 0L;
+        }
+        Long count = jdbcTemplate.queryForObject("SELECT COUNT(1) FROM " + quoteIdentifier(tableName) + " WHERE " + condition,
+                Long.class, args);
+        return count == null ? 0L : count;
+    }
+
+    private boolean tableExists(String tableName) {
+        if (!USER_DASHBOARD_COUNT_TABLES.contains(tableName)) {
+            return false;
+        }
+        String sql = "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
+        Long count = jdbcTemplate.queryForObject(sql, Long.class, tableName);
+        return count != null && count > 0;
+    }
+
+    private String quoteIdentifier(String identifier) {
+        if (!isSafeIdentifier(identifier)) {
+            throw new IllegalArgumentException("Unsafe SQL identifier: " + identifier);
+        }
+        return "`" + identifier + "`";
+    }
+
+    private boolean isSafeIdentifier(String identifier) {
+        return identifier != null && identifier.matches(SAFE_IDENTIFIER_PATTERN);
+    }
+
+    private void ensureNotDisablingLastAdmin(Long userId) {
+        boolean targetIsAdmin = roleService.listRoleCodesByUserId(userId).stream()
+                .map(this::normalizeRoleCode)
+                .anyMatch(SecurityConstants.ROLE_ADMIN::equalsIgnoreCase);
+        if (!targetIsAdmin) {
+            return;
+        }
+        Set<Long> activeAdminUserIds = loadActiveAdminUserIdsForUpdate();
+        if (activeAdminUserIds.contains(userId) && activeAdminUserIds.size() <= 1) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "不能禁用最后一个可用管理员账号");
+        }
+    }
+
+    private Set<Long> loadActiveAdminUserIdsForUpdate() {
+        jdbcTemplate.queryForList("""
+                SELECT id
+                FROM sys_role
+                WHERE deleted = 0
+                  AND (UPPER(role_code) = UPPER(?) OR UPPER(role_code) = CONCAT('ROLE_', UPPER(?)))
+                ORDER BY id
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN);
+        return new java.util.LinkedHashSet<>(jdbcTemplate.queryForList("""
+                SELECT u.id
+                FROM sys_user u
+                JOIN sys_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+                JOIN sys_role r ON r.id = ur.role_id AND r.deleted = 0
+                WHERE u.deleted = 0
+                  AND u.status = 1
+                  AND r.status = 1
+                  AND (UPPER(r.role_code) = UPPER(?) OR UPPER(r.role_code) = CONCAT('ROLE_', UPPER(?)))
+                FOR UPDATE
+                """, Long.class, SecurityConstants.ROLE_ADMIN, SecurityConstants.ROLE_ADMIN));
+    }
+
+    private String normalizeRoleCode(String roleCode) {
+        if (!org.springframework.util.StringUtils.hasText(roleCode)) {
+            return "";
+        }
+        String normalized = roleCode.trim();
+        if (normalized.regionMatches(true, 0, "ROLE_", 0, 5)) {
+            normalized = normalized.substring(5);
+        }
+        return normalized;
+    }
+
+    private int toInt(long value) {
+        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
+    }
+
+    private String generateTemporaryPassword() {
+        char[] password = new char[TEMP_PASSWORD_LENGTH];
+        password[0] = randomChar(TEMP_PASSWORD_UPPER);
+        password[1] = randomChar(TEMP_PASSWORD_LOWER);
+        password[2] = randomChar(TEMP_PASSWORD_DIGIT);
+        password[3] = randomChar(TEMP_PASSWORD_SPECIAL);
+        for (int i = 4; i < password.length; i++) {
+            password[i] = randomChar(TEMP_PASSWORD_ALL);
+        }
+        shuffle(password);
+        return new String(password);
+    }
+
+    private char randomChar(String candidates) {
+        return candidates.charAt(SECURE_RANDOM.nextInt(candidates.length()));
+    }
+
+    private void shuffle(char[] chars) {
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = SECURE_RANDOM.nextInt(i + 1);
+            char current = chars[i];
+            chars[i] = chars[j];
+            chars[j] = current;
+        }
+    }
+
+    private Long nullableLong(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        long value = rs.getLong(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private Integer nullableInt(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        int value = rs.getInt(column);
+        return rs.wasNull() ? null : value;
+    }
+
+    private LocalDateTime toLocalDateTime(java.sql.Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toLocalDateTime();
+    }
+}

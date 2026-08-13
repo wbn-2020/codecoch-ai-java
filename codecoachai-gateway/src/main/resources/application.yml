@@ -6,6 +6,7 @@ spring:
   config:
     import:
       - optional:nacos:codecoachai-common-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-redis-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
       - optional:nacos:codecoachai-gateway-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
   cloud:
     nacos:

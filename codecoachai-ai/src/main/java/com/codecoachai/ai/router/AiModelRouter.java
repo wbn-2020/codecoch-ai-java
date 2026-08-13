@@ -3,7 +3,10 @@ package com.codecoachai.ai.router;
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.client.ProviderAiCaller.CallResult;
+import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.config.AiRouterProperties;
+import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
 import com.codecoachai.ai.guard.RetryGuard;
 import com.codecoachai.ai.guard.TokenAccountant;
@@ -31,6 +34,7 @@ import org.springframework.util.StringUtils;
 public class AiModelRouter {
 
     private final AiRouterProperties routerProperties;
+    private final AiProperties aiProperties;
     private final ProviderAiCaller providerAiCaller;
     private final RetryGuard retryGuard;
     private final TokenAccountant tokenAccountant;
@@ -44,6 +48,7 @@ public class AiModelRouter {
         if (ctx == null || !StringUtils.hasText(ctx.getPrompt())) {
             throw new IllegalArgumentException("prompt 不能为空");
         }
+        ensureRealRoutingAllowed();
 
         // 1. 配额检查（按需，可在 ctx 关闭）
         if (Boolean.TRUE.equals(ctx.getCheckQuota())) {
@@ -51,9 +56,12 @@ public class AiModelRouter {
         }
 
         AiRouterProperties.Router routerCfg = routerProperties.getRouter();
+        AiModelConfig databaseDefault = StringUtils.hasText(ctx.getForceProvider())
+                ? null
+                : providerAiCaller.findUniqueEnabledGlobalDefaultModel();
         String primary = StringUtils.hasText(ctx.getForceProvider())
                 ? ctx.getForceProvider()
-                : routerCfg.getDefaultProvider();
+                : databaseDefault == null ? routerCfg.getDefaultProvider() : databaseDefault.getProvider();
         String fallback = Boolean.TRUE.equals(routerCfg.getFallbackEnabled())
                 && !StringUtils.hasText(ctx.getForceProvider())
                 ? routerCfg.getFallbackProvider()
@@ -64,9 +72,14 @@ public class AiModelRouter {
 
         // 2. 主调用 + 重试
         try {
-            routeTrace.append(primary);
+            routeTrace.append(databaseDefault == null
+                    ? primary
+                    : "database-default:" + databaseDefault.getProvider() + "/" + databaseDefault.getModelCode());
+            AiModelConfig selectedDatabaseDefault = databaseDefault;
             CallResult result = retryGuard.execute("ai-router:" + ctx.getScene() + ":" + primary,
-                    () -> providerAiCaller.chat(primary, ctx.getPrompt(), modelType));
+                    () -> selectedDatabaseDefault == null
+                            ? providerAiCaller.chat(primary, ctx.getPrompt(), modelType)
+                            : providerAiCaller.chat(selectedDatabaseDefault, ctx.getPrompt(), modelType));
             return toRouteResult(result, routeTrace.toString(), AiResultSourceEnum.LLM.name(), ctx);
         } catch (AiProviderException primaryEx) {
             if (StringUtils.hasText(fallback)) {
@@ -95,13 +108,17 @@ public class AiModelRouter {
         if (ctx == null || !StringUtils.hasText(ctx.getPrompt())) {
             throw new IllegalArgumentException("prompt 不能为空");
         }
+        ensureRealRoutingAllowed();
         if (Boolean.TRUE.equals(ctx.getCheckQuota())) {
             tokenAccountant.checkQuota(ctx.getUserId());
         }
         AiRouterProperties.Router routerCfg = routerProperties.getRouter();
+        AiModelConfig databaseDefault = StringUtils.hasText(ctx.getForceProvider())
+                ? null
+                : providerAiCaller.findUniqueEnabledGlobalDefaultModel();
         String primary = StringUtils.hasText(ctx.getForceProvider())
                 ? ctx.getForceProvider()
-                : routerCfg.getDefaultProvider();
+                : databaseDefault == null ? routerCfg.getDefaultProvider() : databaseDefault.getProvider();
         String fallback = Boolean.TRUE.equals(routerCfg.getFallbackEnabled())
                 && !StringUtils.hasText(ctx.getForceProvider())
                 ? routerCfg.getFallbackProvider()
@@ -117,15 +134,24 @@ public class AiModelRouter {
             }
         };
         try {
-            CallResult result = providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, primaryDelta);
-            return toRouteResult(result, primary, AiResultSourceEnum.LLM.name(), ctx);
+            CallResult result = databaseDefault == null
+                    ? providerAiCaller.chatStream(primary, ctx.getPrompt(), modelType, primaryDelta)
+                    : providerAiCaller.chatStream(databaseDefault, ctx.getPrompt(), modelType, primaryDelta);
+            String trace = databaseDefault == null
+                    ? primary
+                    : "database-default:" + databaseDefault.getProvider() + "/" + databaseDefault.getModelCode();
+            return toRouteResult(result, trace, AiResultSourceEnum.LLM.name(), ctx);
         } catch (AiProviderException ex) {
             if (!primaryEmitted.get() && StringUtils.hasText(fallback)) {
                 log.warn("Stream provider [{}] failed before first token ({}), fallback to [{}]",
                         primary, ex.getFailureType(), fallback);
                 try {
                     CallResult result = providerAiCaller.chatStream(fallback, ctx.getPrompt(), modelType, onDelta);
-                    return toRouteResult(result, primary + " -> " + fallback, AiResultSourceEnum.FALLBACK.name(), ctx);
+                    String primaryTrace = databaseDefault == null
+                            ? primary
+                            : "database-default:" + databaseDefault.getProvider() + "/" + databaseDefault.getModelCode();
+                    return toRouteResult(result, primaryTrace + " -> " + fallback,
+                            AiResultSourceEnum.FALLBACK.name(), ctx);
                 } catch (AiProviderException fallbackEx) {
                     tokenAccountant.rollbackMinuteCount(ctx.getUserId());
                     throw fallbackEx;
@@ -155,6 +181,19 @@ public class AiModelRouter {
         r.setRouteTrace(trace);
         r.setResultSource(resultSource);
         return r;
+    }
+
+    private void ensureRealRoutingAllowed() {
+        if (!Boolean.TRUE.equals(aiProperties.getEnabled())) {
+            throw new AiProviderException(
+                    AiFailureType.CONFIG_ERROR,
+                    "AI real-provider routing is disabled by codecoachai.ai.enabled");
+        }
+        if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+            throw new AiProviderException(
+                    AiFailureType.CONFIG_ERROR,
+                    "AI real-provider routing is blocked while mock mode is enabled");
+        }
     }
 
     // ========== DTO ==========

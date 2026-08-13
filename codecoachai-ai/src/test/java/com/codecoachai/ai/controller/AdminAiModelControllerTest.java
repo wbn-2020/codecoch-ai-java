@@ -1,7 +1,10 @@
 package com.codecoachai.ai.controller;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -11,8 +14,15 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.codecoachai.ai.client.AiProviderException;
+import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
+import com.codecoachai.ai.domain.dto.AiModelProbeDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.domain.vo.AiModelHealthLogRow;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import com.codecoachai.ai.security.AiProviderEndpointPolicy;
@@ -27,12 +37,19 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
+import java.time.LocalDateTime;
+import java.util.List;
 
 @ExtendWith(MockitoExtension.class)
 class AdminAiModelControllerTest {
 
     @Mock
     private AiModelConfigMapper mapper;
+    @Mock
+    private AiCallLogMapper aiCallLogMapper;
+    @Mock
+    private ProviderAiCaller providerAiCaller;
     @Mock
     private AesGcmTextEncryptor apiKeyEncryptor;
     @Mock
@@ -47,8 +64,11 @@ class AdminAiModelControllerTest {
     @BeforeEach
     void setUp() {
         initTableInfo(AiModelConfig.class);
+        initTableInfo(AiCallLog.class);
         controller = new AdminAiModelController(
                 mapper,
+                aiCallLogMapper,
+                providerAiCaller,
                 apiKeyEncryptor,
                 endpointPolicy,
                 permissionGuard,
@@ -72,6 +92,141 @@ class AdminAiModelControllerTest {
                 "ai-model-create-1234");
         verify(mapper).insert(any(AiModelConfig.class));
         verify(operationConfirmationGuard, never()).release(any());
+    }
+
+    @Test
+    void healthUsesPersistedCallHistoryAndMasksFailureSummary() {
+        when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
+        LocalDateTime failureAt = LocalDateTime.of(2026, 8, 10, 9, 0);
+        LocalDateTime successAt = LocalDateTime.of(2026, 8, 10, 8, 0);
+        AiModelHealthLogRow latestFailure = healthRow(7L, "LATEST", 0, failureAt,
+                "Authorization: Bearer sk-live-secret token=private-value alice@example.com");
+        AiModelHealthLogRow latestSuccess = healthRow(7L, "SUCCESS", 1, successAt, null);
+        AiModelHealthLogRow failureBucket = healthRow(7L, "FAILURE", 0, failureAt,
+                "Authorization: Bearer sk-live-secret token=private-value alice@example.com");
+        when(aiCallLogMapper.selectModelHealthRows(any()))
+                .thenReturn(List.of(latestFailure, latestSuccess, failureBucket));
+
+        var result = controller.health(7L).getData();
+
+        assertEquals("DEGRADED", result.getHealthStatus());
+        assertEquals("FAILED", result.getLastCallStatus());
+        assertEquals(failureAt, result.getLastCallAt());
+        assertEquals(successAt, result.getLastSuccessAt());
+        assertEquals(failureAt, result.getLastFailureAt());
+        assertTrue(result.getLastFailureSummary().contains("******"));
+        assertFalse(result.getLastFailureSummary().contains("sk-live-secret"));
+        assertFalse(result.getLastFailureSummary().contains("private-value"));
+        assertFalse(result.getLastFailureSummary().contains("alice@example.com"));
+        verify(permissionGuard).require("admin:ai:model:list");
+    }
+
+    @Test
+    void healthReturnsUnknownWithoutMatchingCallHistory() {
+        when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
+
+        var result = controller.health(7L).getData();
+
+        assertEquals("UNKNOWN", result.getHealthStatus());
+        assertEquals("UNKNOWN", result.getLastCallStatus());
+        assertNull(result.getLastFailureSummary());
+    }
+
+    @Test
+    void probeUsesExactModelConfigAndPersistsSuccessfulHealthLog() {
+        AiModelConfig model = model(7L, 0, 0);
+        model.setApiBaseUrl("https://api.example.com/v1");
+        model.setApiKey("encrypted-key");
+        when(mapper.selectById(7L)).thenReturn(model);
+
+        ProviderAiCaller.CallResult callResult = new ProviderAiCaller.CallResult();
+        callResult.setProvider("openai");
+        callResult.setModel("gpt-test");
+        callResult.setContent("连接正常");
+        callResult.setElapsedMs(123L);
+        callResult.setPromptTokens(8);
+        callResult.setCompletionTokens(4);
+        callResult.setTotalTokens(12);
+        when(providerAiCaller.probe(eq(model), any())).thenReturn(callResult);
+
+        var result = controller.probe(7L, probeDto(false, "你好，请回复：已连接。")).getData();
+
+        assertTrue(result.isSuccess());
+        assertEquals("SUCCESS", result.getStatus());
+        assertEquals(123L, result.getElapsedMs());
+        verify(permissionGuard).require("admin:ai:model:publish");
+        verify(providerAiCaller).probe(eq(model), eq("你好，请回复：已连接。"));
+        assertEquals("你好，请回复：已连接。", result.getRequestPromptPreview());
+        assertEquals("连接正常", result.getResponsePreview());
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+        verify(mapper, never()).updateById(any(AiModelConfig.class));
+    }
+
+    @Test
+    void probeReturnsMaskedFailureWithoutChangingModelState() {
+        AiModelConfig model = model(7L, 0, 0);
+        when(mapper.selectById(7L)).thenReturn(model);
+        when(providerAiCaller.probe(eq(model), any()))
+                .thenThrow(new AiProviderException(
+                        AiFailureType.HTTP_ERROR,
+                        "Provider openai HTTP 401",
+                        401,
+                        null));
+
+        var result = controller.probe(7L, probeDto(false, "hi")).getData();
+
+        assertFalse(result.isSuccess());
+        assertEquals("FAILED", result.getStatus());
+        assertEquals("HTTP_ERROR", result.getFailureType());
+        assertEquals(401, result.getHttpStatus());
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+        verify(mapper, never()).updateById(any(AiModelConfig.class));
+    }
+
+    @Test
+    void probeUsesDefaultPromptWhenCustomPromptIsBlank() {
+        AiModelConfig model = model(7L, 0, 0);
+        when(mapper.selectById(7L)).thenReturn(model);
+        ProviderAiCaller.CallResult callResult = new ProviderAiCaller.CallResult();
+        callResult.setContent("连接正常");
+        when(providerAiCaller.probe(eq(model), any())).thenReturn(callResult);
+
+        controller.probe(7L, probeDto(false, "  "));
+
+        verify(providerAiCaller).probe(eq(model), eq("请仅回复：连接正常。"));
+    }
+
+    @Test
+    void probeRejectsPromptLongerThanFiveHundredCharactersBeforeCallingProvider() {
+        AiModelConfig model = model(7L, 0, 0);
+        when(mapper.selectById(7L)).thenReturn(model);
+        String oversizedPrompt = "x".repeat(501);
+
+        BusinessException exception = assertThrows(
+                BusinessException.class,
+                () -> controller.probe(7L, probeDto(false, oversizedPrompt)));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        verify(providerAiCaller, never()).probe(any(), any());
+    }
+
+    @Test
+    void listIncludesHealthSummaryFromPersistedCallHistory() {
+        AiModelConfig configuredModel = model(7L, 0, 1);
+        LocalDateTime successAt = LocalDateTime.of(2026, 8, 11, 10, 0);
+        when(mapper.selectList(any())).thenReturn(List.of(configuredModel));
+        when(aiCallLogMapper.selectModelHealthRows(any()))
+                .thenReturn(List.of(
+                        healthRow(7L, "LATEST", 1, successAt, null),
+                        healthRow(7L, "SUCCESS", 1, successAt, null)));
+
+        AiModelConfig result = controller.list(null, null, null, null).getData().get(0);
+
+        assertEquals("HEALTHY", result.getCallHealthStatus());
+        assertEquals(successAt, result.getLastCallSuccessAt());
+        assertNull(result.getLastCallFailureAt());
+        assertNull(result.getLastCallFailureSummary());
+        verify(permissionGuard).require("admin:ai:model:list");
     }
 
     @Test
@@ -99,6 +254,99 @@ class AdminAiModelControllerTest {
 
         assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
         verify(mapper, never()).insert(any(AiModelConfig.class));
+    }
+
+    @Test
+    void createRejectsDuplicateProviderModelCodeBeforeInsert() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        when(mapper.selectCount(any())).thenReturn(1L);
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
+
+        assertTrue(exception.getMessage().contains("已存在相同的模型标识"));
+        verify(mapper, never()).insert(any(AiModelConfig.class));
+    }
+
+    @Test
+    void createReportsGlobalDefaultConflictForUnexpectedDuplicateKey() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        when(mapper.insert(any(AiModelConfig.class)))
+                .thenThrow(new DuplicateKeyException("uk_ai_model_one_global_default"));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("全局默认模型冲突"));
+    }
+
+    @Test
+    void createRejectsDisabledDefaultModelAndReleasesIdempotencyLock() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setDefaultModel(1);
+        dto.setEnabled(0);
+        when(operationConfirmationGuard.requireConfirmed(
+                "ai-model-create:openai:gpt-test",
+                true,
+                false,
+                "confirm ai model save",
+                "ai-model-create-1234"))
+                .thenReturn("redis-lock-key");
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("默认模型必须保持启用状态"));
+        verify(operationConfirmationGuard).release("redis-lock-key");
+        verify(mapper, never()).insert(any(AiModelConfig.class));
+    }
+
+    @Test
+    void updateRejectsDisabledDefaultModelAndReleasesIdempotencyLock() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setDefaultModel(1);
+        dto.setEnabled(0);
+        when(operationConfirmationGuard.requireConfirmed(
+                "ai-model-update:7",
+                true,
+                false,
+                "confirm ai model save",
+                "ai-model-create-1234"))
+                .thenReturn("redis-lock-key");
+        when(mapper.selectById(7L)).thenReturn(model(7L, 0, 1));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.update(7L, dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("默认模型必须保持启用状态"));
+        verify(operationConfirmationGuard).release("redis-lock-key");
+        verify(mapper, never()).updateById(any(AiModelConfig.class));
+    }
+
+    @Test
+    void updateKeepsExistingDefaultWhenDefaultFlagIsNotIncluded() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setDefaultModel(null);
+        dto.setIsDefault(null);
+        when(mapper.selectById(7L)).thenReturn(model(7L, 1, 1));
+
+        controller.update(7L, dto);
+
+        ArgumentCaptor<AiModelConfig> captor = ArgumentCaptor.forClass(AiModelConfig.class);
+        verify(mapper).updateById(captor.capture());
+        assertEquals(1, captor.getValue().getDefaultModel());
+    }
+
+    @Test
+    void updateRejectsClearingCurrentDefaultWithoutSelectingReplacement() {
+        AiModelConfigSaveDTO dto = saveDto(false);
+        dto.setDefaultModel(0);
+        when(mapper.selectById(7L)).thenReturn(model(7L, 1, 1));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> controller.update(7L, dto));
+
+        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("不能通过编辑取消默认"));
+        verify(mapper, never()).updateById(any(AiModelConfig.class));
     }
 
     @Test
@@ -210,6 +458,16 @@ class AdminAiModelControllerTest {
         return dto;
     }
 
+    private static AiModelProbeDTO probeDto(Boolean dryRun, String prompt) {
+        AiModelProbeDTO dto = new AiModelProbeDTO();
+        dto.setConfirm(true);
+        dto.setDryRun(dryRun);
+        dto.setReason("confirm ai model operation");
+        dto.setIdempotencyKey("ai-model-operation-1234");
+        dto.setPrompt(prompt);
+        return dto;
+    }
+
     private static AdminAiModelController.ModelStatusDTO statusDto(Integer status, Boolean dryRun) {
         AdminAiModelController.ModelStatusDTO dto = new AdminAiModelController.ModelStatusDTO();
         dto.setStatus(status);
@@ -229,6 +487,21 @@ class AdminAiModelControllerTest {
         model.setDefaultModel(defaultModel);
         model.setEnabled(enabled);
         return model;
+    }
+
+    private static AiModelHealthLogRow healthRow(
+            Long modelConfigId,
+            String bucket,
+            Integer success,
+            LocalDateTime createdAt,
+            String errorMessage) {
+        AiModelHealthLogRow row = new AiModelHealthLogRow();
+        row.setModelConfigId(modelConfigId);
+        row.setHealthBucket(bucket);
+        row.setSuccess(success);
+        row.setCreatedAt(createdAt);
+        row.setErrorMessage(errorMessage);
+        return row;
     }
 
     private static void initTableInfo(Class<?> entityClass) {

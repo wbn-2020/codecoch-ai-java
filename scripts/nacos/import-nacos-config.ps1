@@ -25,7 +25,14 @@ if (-not (Test-Path -LiteralPath $guardScript)) {
 if ($Target -eq "namespace" -and (-not $Namespace -or $Namespace -eq "public")) {
     throw "Target namespace requires a non-empty dedicated -Namespace value other than public."
 }
-if ($DataId.Count -eq 0 -and $Target -eq "namespace") {
+if ($DataId.Count -eq 0 -and $env:NACOS_DATA_IDS) {
+    $DataId = @(
+        $env:NACOS_DATA_IDS -split "," |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+}
+if ($DataId.Count -eq 0) {
     $profile = if ($env:SPRING_PROFILES_ACTIVE) { $env:SPRING_PROFILES_ACTIVE } else { "dev" }
     if ($profile -notmatch '^[A-Za-z0-9_-]+$') {
         throw "SPRING_PROFILES_ACTIVE must be one simple profile name."

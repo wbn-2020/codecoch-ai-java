@@ -42,6 +42,7 @@ public class DailyPlanVO {
     private String asyncTraceId;
     private String asyncBizType;
     private String asyncBizId;
+    private String asyncReceiptStatus;
     private LocalDateTime startedAt;
     private LocalDateTime finishedAt;
     private LocalDateTime createdAt;

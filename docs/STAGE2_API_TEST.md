@@ -2,6 +2,10 @@
 
 ## 1. Infrastructure
 
+This guide targets the post-first-stage four-service topology. Auth, User, System, File,
+Question, Resume and Interview are business packages inside Core; they are not separate
+processes or Maven deployment modules.
+
 Start infrastructure first:
 
 1. Nacos: `127.0.0.1:8848`
@@ -27,20 +31,21 @@ Do not commit local plaintext passwords.
 
 Recommended order:
 
-1. `codecoachai-gateway`
-2. `codecoachai-auth`
-3. `codecoachai-user`
-4. `codecoachai-question`
-5. `codecoachai-resume`
-6. `codecoachai-ai`
-7. `codecoachai-interview`
-8. `codecoachai-system`
+1. `codecoachai-ai`
+2. `codecoachai-core` with Task consumers disabled
+3. `codecoachai-gateway`
+4. `codecoachai-search`
 
 Gateway default port:
 
 ```text
 http://localhost:8080
 ```
+
+For the second-stage source migration, local Java/service startup is prohibited by the
+execution plan. Use this guide only in the test environment or an explicitly approved
+runtime rehearsal environment. Static, compilation and unit-level checks use
+`-pl codecoachai-core`; do not use the removed legacy Maven module names.
 
 ## 3. Basic Flow
 
@@ -283,4 +288,5 @@ These must not be exposed through Gateway routes:
 /ai/**
 ```
 
-AI user-facing calls are intentionally absent. The frontend uses `/interviews/**`; `interview-service` calls `/inner/ai/**` through Spring Cloud OpenFeign.
+AI user-facing calls are intentionally absent. The frontend uses `/interviews/**`; the
+interview business package inside Core calls `/inner/ai/**` through Spring Cloud OpenFeign.

@@ -4900,12 +4900,12 @@ public class AiServiceImpl implements AiService {
 
     private GenerateReportVO mockReport(GenerateReportDTO dto) {
         GenerateReportVO vo = new GenerateReportVO();
-        vo.setTotalScore(null);
+        applyDeterministicMockReportScore(vo, dto);
         if (applyProjectAwareMockReport(vo)) {
             applyIndustryAwareMockReport(vo, dto);
             return vo;
         }
-        vo.setSummary("本场模拟面试已生成基础参考报告，但未获得可信 AI 评分。请继续答题或重新生成报告后再查看总分。");
+        vo.setSummary("本场模拟面试已生成基于已保存逐题评分的参考报告。该结果来自本地模拟模式，不作为真实 AI 评分结论。");
         vo.setStageScores("{}");
         vo.setWeakPoints("[\"源码细节\",\"执行计划\",\"缓存一致性边界\"]");
         vo.setStrengths("[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\"]");
@@ -5578,8 +5578,7 @@ public class AiServiceImpl implements AiService {
     }
 
     private boolean applyProjectAwareMockReport(GenerateReportVO vo) {
-        vo.setTotalScore(null);
-        vo.setSummary("本场模拟面试已生成项目表达基础参考报告，但未获得可信 AI 评分。请继续答题或重新生成报告后再查看总分。");
+        vo.setSummary("本场模拟面试已生成基于已保存逐题评分的项目表达参考报告。该结果来自本地模拟模式，不作为真实 AI 评分结论。");
         vo.setStageScores("{}");
         vo.setWeakPoints("[\"源码细节\",\"执行计划\",\"缓存一致性边界\",\"项目指标量化\"]");
         vo.setStrengths("[\"能围绕 Java 后端常见题目给出基本结论\",\"能结合 Spring、MySQL、Redis 说明常见处理思路\",\"能够描述项目背景和核心职责\"]");
@@ -5592,6 +5591,69 @@ public class AiServiceImpl implements AiService {
         vo.setQaReview("[]");
         vo.setReportContent(vo.getSummary());
         return true;
+    }
+
+    /**
+     * The mock path is intentionally not an AI assessment. It can still complete the
+     * report contract from scores that were already persisted for this interview so
+     * the consumer receives a recoverable reference report instead of a misleading
+     * RUBRIC_DATA_MISSING technical failure.
+     */
+    private void applyDeterministicMockReportScore(GenerateReportVO vo, GenerateReportDTO dto) {
+        List<Integer> scores = mockReportScores(dto);
+        if (scores.isEmpty()) {
+            vo.setTotalScore(null);
+            vo.setRubricScores(null);
+            return;
+        }
+        int totalScore = (int) Math.round(scores.stream()
+                .mapToInt(Integer::intValue)
+                .average()
+                .orElse(0));
+        vo.setTotalScore(clampScore(totalScore));
+        double rubricScore = Math.max(1D, Math.min(5D, totalScore / 20D));
+        List<Map<String, Object>> rubric = List.of(
+                mockRubricDimension("EXPRESSION_STRUCTURE", rubricScore),
+                mockRubricDimension("TECHNICAL_DEPTH", rubricScore),
+                mockRubricDimension("BUSINESS_UNDERSTANDING", rubricScore),
+                mockRubricDimension("RISK_AWARENESS", rubricScore),
+                mockRubricDimension("IMPLEMENTABILITY", rubricScore));
+        vo.setRubricScores(toJson(rubric));
+        vo.setAdviceEvidence(toJson(List.of(Map.of(
+                "fallback", true,
+                "source", "LOCAL_MOCK",
+                "message", "本地模拟模式仅根据已保存逐题分数生成参考复盘。"
+        ))));
+    }
+
+    private List<Integer> mockReportScores(GenerateReportDTO dto) {
+        if (dto == null || dto.getMessages() == null) {
+            return List.of();
+        }
+        List<Integer> scores = new java.util.ArrayList<>();
+        for (String message : dto.getMessages()) {
+            if (!StringUtils.hasText(message)) {
+                continue;
+            }
+            for (String line : message.split("\\R")) {
+                String trimmed = line == null ? "" : line.trim();
+                if (!trimmed.startsWith("Score") || !trimmed.contains("：")) {
+                    continue;
+                }
+                Integer score = parseScore(trimmed.substring(trimmed.indexOf('：') + 1));
+                if (score != null && score > 0) {
+                    scores.add(clampScore(score));
+                }
+            }
+        }
+        return scores;
+    }
+
+    private Map<String, Object> mockRubricDimension(String dimension, double score) {
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("dimension", dimension);
+        item.put("score", Math.round(score * 10D) / 10D);
+        return item;
     }
 
     private void applyIndustryAwareMockReport(GenerateReportVO vo, GenerateReportDTO dto) {

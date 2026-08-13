@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.codecoachai.ai.mapper.AiCallLogMapper">
+
+    <select id="selectModelHealthRows" resultType="com.codecoachai.ai.domain.vo.AiModelHealthLogRow">
+        <if test="models != null and models.size() > 0">
+            <foreach collection="models" item="model" separator=" UNION ALL ">
+                (
+                    SELECT
+                        #{model.id} AS model_config_id,
+                        'LATEST' AS health_bucket,
+                        log.success,
+                        log.status,
+                        log.created_at,
+                        log.error_message
+                    FROM ai_call_log log
+                    WHERE log.deleted = 0
+                      AND (log.model_name = #{model.modelCode} OR log.model = #{model.modelCode})
+                      AND (
+                          log.route_trace = #{model.provider}
+                          OR log.route_trace LIKE CONCAT(#{model.provider}, ' -> %')
+                          OR log.route_trace LIKE CONCAT('% -> ', #{model.provider})
+                      )
+                    ORDER BY log.created_at DESC
+                    LIMIT 1
+                )
+                UNION ALL
+                (
+                    SELECT
+                        #{model.id} AS model_config_id,
+                        'SUCCESS' AS health_bucket,
+                        log.success,
+                        log.status,
+                        log.created_at,
+                        log.error_message
+                    FROM ai_call_log log
+                    WHERE log.deleted = 0
+                      AND (log.model_name = #{model.modelCode} OR log.model = #{model.modelCode})
+                      AND (
+                          log.route_trace = #{model.provider}
+                          OR log.route_trace LIKE CONCAT(#{model.provider}, ' -> %')
+                          OR log.route_trace LIKE CONCAT('% -> ', #{model.provider})
+                      )
+                      AND COALESCE(log.success, log.status) = 1
+                    ORDER BY log.created_at DESC
+                    LIMIT 1
+                )
+                UNION ALL
+                (
+                    SELECT
+                        #{model.id} AS model_config_id,
+                        'FAILURE' AS health_bucket,
+                        log.success,
+                        log.status,
+                        log.created_at,
+                        log.error_message
+                    FROM ai_call_log log
+                    WHERE log.deleted = 0
+                      AND (log.model_name = #{model.modelCode} OR log.model = #{model.modelCode})
+                      AND (
+                          log.route_trace = #{model.provider}
+                          OR log.route_trace LIKE CONCAT(#{model.provider}, ' -> %')
+                          OR log.route_trace LIKE CONCAT('% -> ', #{model.provider})
+                      )
+                      AND COALESCE(log.success, log.status) = 0
+                    ORDER BY log.created_at DESC
+                    LIMIT 1
+                )
+            </foreach>
+        </if>
+    </select>
+</mapper>

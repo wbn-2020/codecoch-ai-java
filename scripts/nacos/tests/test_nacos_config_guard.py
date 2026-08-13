@@ -260,6 +260,8 @@ class NacosConfigGuardTest(unittest.TestCase):
                         str(config_dir),
                         "--target",
                         "mirror-public",
+                        "--data-id",
+                        self.data_id,
                         "--confirm-write",
                         "--audit-dir",
                         str(audit_dir),
@@ -335,6 +337,8 @@ class NacosConfigGuardTest(unittest.TestCase):
                         str(config_dir),
                         "--target",
                         "builtin-public",
+                        "--data-id",
+                        self.data_id,
                         "--confirm-write",
                         "--audit-dir",
                         str(audit_dir),
@@ -369,6 +373,8 @@ class NacosConfigGuardTest(unittest.TestCase):
                         str(config_dir),
                         "--target",
                         "builtin-public",
+                        "--data-id",
+                        self.data_id,
                         "--confirm-write",
                         "--audit-dir",
                         str(audit_dir),
@@ -408,6 +414,8 @@ class NacosConfigGuardTest(unittest.TestCase):
                         "namespace",
                         "--namespace-id",
                         namespace,
+                        "--data-id",
+                        self.data_id,
                         "--confirm-write",
                         "--allow-create-config",
                         "--create-missing-only",
@@ -450,6 +458,8 @@ class NacosConfigGuardTest(unittest.TestCase):
                         "namespace",
                         "--namespace-id",
                         namespace,
+                        "--data-id",
+                        self.data_id,
                         "--confirm-write",
                         "--allow-create-config",
                         "--create-missing-only",
@@ -547,6 +557,33 @@ class NacosConfigGuardTest(unittest.TestCase):
         self.assertFalse(
             any(request["method"] == "POST" for request in state.requests)
         )
+
+    def test_publish_requires_explicit_data_ids(self) -> None:
+        state = FakeNacosState()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            config_dir = self.create_config_dir(root, "server:\n  port: 8080\n")
+            audit_dir = root / "audit"
+            with RunningFakeNacos(state) as address:
+                code, _, stderr = self.run_guard(
+                    [
+                        "publish",
+                        "--nacos-addr",
+                        address,
+                        "--config-dir",
+                        str(config_dir),
+                        "--target",
+                        "builtin-public",
+                        "--confirm-write",
+                        "--allow-create-config",
+                        "--audit-dir",
+                        str(audit_dir),
+                    ]
+                )
+
+        self.assertEqual(guard.EXIT_ERROR, code)
+        self.assertIn("explicit --data-id", stderr)
+        self.assertFalse(state.requests)
 
 
 if __name__ == "__main__":

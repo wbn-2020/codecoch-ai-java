@@ -22,10 +22,10 @@ class InternalAuthPropertiesTest {
             "receiver-outbound-secret-0123456789abcdef";
     private static final String LEGACY_SECRET =
             "legacy-shared-secret-0123456789abcdefghi";
-    private static final String TASK_CURRENT =
-            "task-current-secret-0123456789abcdefghij";
-    private static final String TASK_PREVIOUS =
-            "task-previous-secret-0123456789abcdefgh";
+    private static final String CORE_CURRENT =
+            "core-current-secret-0123456789abcdefghij";
+    private static final String CORE_PREVIOUS =
+            "core-previous-secret-0123456789abcdefgh";
     private static final String AI_CURRENT =
             "ai-current-secret-0123456789abcdefghijkl";
 
@@ -33,12 +33,12 @@ class InternalAuthPropertiesTest {
     void pinnedCallerUsesOnlyItsConfiguredKeyRing() {
         InternalAuthProperties properties = properties();
         properties.setCallerKeyRings(Map.of(
-                "codecoachai-task", keyRing(TASK_CURRENT, TASK_PREVIOUS),
+                "codecoachai-core", keyRing(CORE_CURRENT, CORE_PREVIOUS),
                 "codecoachai-ai", keyRing(AI_CURRENT)));
 
         assertEquals(
-                List.of(TASK_CURRENT, TASK_PREVIOUS),
-                properties.verificationSecretsFor("codecoachai-task"));
+                List.of(CORE_CURRENT, CORE_PREVIOUS),
+                properties.verificationSecretsFor("codecoachai-core"));
         assertEquals(
                 List.of(AI_CURRENT),
                 properties.verificationSecretsFor("codecoachai-ai"));
@@ -50,18 +50,18 @@ class InternalAuthPropertiesTest {
         properties.setLegacySharedSecret(LEGACY_SECRET);
         properties.setLegacySharedSecretEnabled(true);
         properties.setLegacySharedSecretCallers(
-                Set.of("codecoachai-core", "codecoachai-question", "codecoachai-task"));
-        properties.setCallerKeyRings(Map.of("codecoachai-task", keyRing(TASK_CURRENT)));
+                Set.of("codecoachai-core", "codecoachai-search", "codecoachai-ai"));
+        properties.setCallerKeyRings(Map.of("codecoachai-core", keyRing(CORE_CURRENT)));
 
         assertEquals(
                 List.of(LEGACY_SECRET),
-                properties.verificationSecretsFor("codecoachai-question"));
+                properties.verificationSecretsFor("codecoachai-search"));
         assertEquals(
                 List.of(LEGACY_SECRET),
-                properties.verificationSecretsFor("codecoachai-core"));
+                properties.verificationSecretsFor("codecoachai-ai"));
         assertEquals(
-                List.of(TASK_CURRENT, LEGACY_SECRET),
-                properties.verificationSecretsFor("codecoachai-task"));
+                List.of(CORE_CURRENT, LEGACY_SECRET),
+                properties.verificationSecretsFor("codecoachai-core"));
     }
 
     @Test
@@ -72,7 +72,7 @@ class InternalAuthPropertiesTest {
         properties.setLegacySharedSecretCallers(Set.of());
 
         assertEquals(List.of(), properties.verificationSecretsFor("codecoachai-gateway"));
-        assertEquals(List.of(), properties.verificationSecretsFor("codecoachai-task"));
+        assertEquals(List.of(), properties.verificationSecretsFor("codecoachai-core"));
     }
 
     @Test
@@ -80,13 +80,13 @@ class InternalAuthPropertiesTest {
         InternalAuthProperties properties = properties();
         properties.setLegacySharedSecretEnabled(false);
 
-        assertEquals(List.of(), properties.verificationSecretsFor("codecoachai-task"));
+        assertEquals(List.of(), properties.verificationSecretsFor("codecoachai-core"));
     }
 
     @Test
     void unknownCallerInKeyRingFailsConfigurationValidation() {
         InternalAuthProperties properties = properties();
-        properties.setCallerKeyRings(Map.of("forged-service", keyRing(TASK_CURRENT)));
+        properties.setCallerKeyRings(Map.of("forged-service", keyRing(CORE_CURRENT)));
 
         assertThrows(IllegalStateException.class, properties::validate);
     }
@@ -94,48 +94,48 @@ class InternalAuthPropertiesTest {
     @Test
     void requestPermissionsEnforceMethodAndNormalizedInnerPath() {
         InternalAuthProperties properties = properties();
-        CallerKeyRing task = keyRing(TASK_CURRENT);
-        task.setPermissions(List.of(
+        CallerKeyRing core = keyRing(CORE_CURRENT);
+        core.setPermissions(List.of(
                 "GET /inner/resume/search-documents",
                 "POST /inner/agent/**"));
-        properties.setCallerKeyRings(Map.of("codecoachai-task", task));
+        properties.setCallerKeyRings(Map.of("codecoachai-core", core));
 
         assertTrue(properties.isRequestAllowed(
-                "codecoachai-task", "GET", "/inner/resume/search-documents"));
+                "codecoachai-core", "GET", "/inner/resume/search-documents"));
         assertTrue(properties.isRequestAllowed(
-                "codecoachai-task", "POST", "/inner/agent/job-coach"));
+                "codecoachai-core", "POST", "/inner/agent/job-coach"));
         assertFalse(properties.isRequestAllowed(
-                "codecoachai-task", "POST", "/inner/resume/search-documents"));
+                "codecoachai-core", "POST", "/inner/resume/search-documents"));
         assertFalse(properties.isRequestAllowed(
-                "codecoachai-task", "GET", "/inner/admin/users"));
+                "codecoachai-core", "GET", "/inner/admin/users"));
     }
 
     @Test
     void weakDuplicateAndLegacyReusedCallerKeysFailValidation() {
         InternalAuthProperties weak = properties();
-        weak.setCallerKeyRings(Map.of("codecoachai-task", keyRing("short-secret")));
+        weak.setCallerKeyRings(Map.of("codecoachai-core", keyRing("short-secret")));
         assertThrows(IllegalStateException.class, weak::validate);
 
         InternalAuthProperties duplicate = properties();
         duplicate.setCallerKeyRings(Map.of(
-                "codecoachai-task", keyRing(TASK_CURRENT),
-                "codecoachai-ai", keyRing(TASK_CURRENT)));
+                "codecoachai-core", keyRing(CORE_CURRENT),
+                "codecoachai-ai", keyRing(CORE_CURRENT)));
         assertThrows(IllegalStateException.class, duplicate::validate);
 
         InternalAuthProperties legacyReuse = properties();
         legacyReuse.setLegacySharedSecret(LEGACY_SECRET);
         legacyReuse.setLegacySharedSecretEnabled(true);
-        legacyReuse.setLegacySharedSecretCallers(Set.of("codecoachai-task"));
-        legacyReuse.setCallerKeyRings(Map.of("codecoachai-task", keyRing(LEGACY_SECRET)));
+        legacyReuse.setLegacySharedSecretCallers(Set.of("codecoachai-core"));
+        legacyReuse.setCallerKeyRings(Map.of("codecoachai-core", keyRing(LEGACY_SECRET)));
         assertThrows(IllegalStateException.class, legacyReuse::validate);
     }
 
     @Test
     void missingPermissionAndUnresolvedPlaceholderFailValidation() {
         InternalAuthProperties missingPermission = properties();
-        CallerKeyRing ring = keyRing(TASK_CURRENT);
+        CallerKeyRing ring = keyRing(CORE_CURRENT);
         ring.setPermissions(List.of());
-        missingPermission.setCallerKeyRings(Map.of("codecoachai-task", ring));
+        missingPermission.setCallerKeyRings(Map.of("codecoachai-core", ring));
         assertThrows(IllegalStateException.class, missingPermission::validate);
 
         InternalAuthProperties unresolved = properties();
@@ -149,16 +149,16 @@ class InternalAuthPropertiesTest {
         values.put("codecoachai.internal.auth.secret", OUTBOUND_SECRET);
         values.put("codecoachai.internal.auth.legacy-shared-secret-enabled", "false");
         values.put(
-                "codecoachai.internal.auth.caller-key-rings.codecoachai-task.secrets[0]",
-                TASK_CURRENT);
+                "codecoachai.internal.auth.caller-key-rings.codecoachai-core.secrets[0]",
+                CORE_CURRENT);
         values.put(
-                "codecoachai.internal.auth.caller-key-rings.codecoachai-task.secrets[1]",
-                TASK_PREVIOUS);
+                "codecoachai.internal.auth.caller-key-rings.codecoachai-core.secrets[1]",
+                CORE_PREVIOUS);
         values.put(
-                "codecoachai.internal.auth.caller-key-rings.codecoachai-task.permissions[0]",
+                "codecoachai.internal.auth.caller-key-rings.codecoachai-core.permissions[0]",
                 "POST /inner/job/**");
         values.put(
-                "codecoachai.internal.auth.caller-key-rings.codecoachai-task.forward-user-context",
+                "codecoachai.internal.auth.caller-key-rings.codecoachai-core.forward-user-context",
                 "true");
         StandardEnvironment environment = new StandardEnvironment();
         environment.getPropertySources().addFirst(new MapPropertySource("internal-auth-test", values));
@@ -169,9 +169,9 @@ class InternalAuthPropertiesTest {
         properties.validate();
 
         assertEquals(
-                List.of(TASK_CURRENT, TASK_PREVIOUS),
-                properties.verificationSecretsFor("codecoachai-task"));
-        assertTrue(properties.mayForwardUserContext("codecoachai-task"));
+                List.of(CORE_CURRENT, CORE_PREVIOUS),
+                properties.verificationSecretsFor("codecoachai-core"));
+        assertTrue(properties.mayForwardUserContext("codecoachai-core"));
     }
 
     private InternalAuthProperties properties() {

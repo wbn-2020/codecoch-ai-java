@@ -25,6 +25,9 @@ spring:
           interviewAiFeignClient:
             connectTimeout: 3000
             readTimeout: 40000
+          interviewAgentBusinessActionFeignClient:
+            connectTimeout: 3000
+            readTimeout: 40000
 
 sa-token:
   token-name: Authorization
@@ -142,6 +145,7 @@ codecoachai:
       enabled: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:false}
   resume:
     export:
+      # Upload admission concurrency and wait settings apply at Core startup; restart is required after changes.
       max-concurrent-uploads: ${RESUME_EXPORT_MAX_CONCURRENT_UPLOADS:2}
       upload-acquire-timeout-millis: ${RESUME_EXPORT_UPLOAD_ACQUIRE_TIMEOUT_MILLIS:250}
     campaign-archive:

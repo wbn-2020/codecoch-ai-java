@@ -9,6 +9,9 @@ public class AiCallLogVO {
     private Long id;
     private Long userId;
     private String scene;
+    private String sceneLabel;
+    private String sceneCategory;
+    private Boolean sceneRegistered;
     private String modelName;
     private Long promptTemplateId;
     private Long promptTemplateVersionId;
@@ -48,6 +51,11 @@ public class AiCallLogVO {
     private Integer status;
     private String errorMessage;
     private String errorMessagePreview;
+    private String failureType;
+    private String failureTypeLabel;
+    private Integer failureHttpStatus;
+    private String operatorMessage;
+    private String operatorSuggestion;
     private String requestBody;
     private String requestBodyPreview;
     private String requestBodyHash;

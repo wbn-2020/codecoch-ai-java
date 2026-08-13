@@ -8,7 +8,10 @@ public class AdminAgentOverviewVO {
     private Long totalAgentRuns;
     private Long successAgentRuns;
     private Long failedAgentRuns;
+    private Long degradedAgentRuns;
+    private Long effectiveAgentRuns;
     private Double agentSuccessRate;
+    private Double effectiveSuccessRate;
     private Long avgDurationMs;
     private Long totalAgentTasks;
     private Long doneTaskCount;

@@ -15,6 +15,7 @@ import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
+import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
@@ -30,6 +31,7 @@ import com.codecoachai.ai.service.PromptRenderService;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
+import java.util.List;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,7 +57,7 @@ class AiServiceImplFailureHandlingTest {
         aiProperties.setMockEnabled(false);
         aiProperties.setProvider("openai-compatible");
         aiProperties.setModel("deepseek-chat");
-        when(promptRenderService.render(any(String.class), any(String.class), anyMap()))
+        org.mockito.Mockito.lenient().when(promptRenderService.render(any(String.class), any(String.class), anyMap()))
                 .thenAnswer(invocation -> PromptRenderResult.builder()
                         .scene(invocation.getArgument(0))
                         .renderedPrompt("rendered prompt")
@@ -175,6 +177,46 @@ class AiServiceImplFailureHandlingTest {
 
         assertThrows(BusinessException.class, () -> service.generateQuestionDrafts(questionDraftDTO()));
 
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
+    void generateReportMockUsesPersistedScoresAndMarksFallbackEvidence() throws Exception {
+        AiProperties mockProperties = new AiProperties();
+        mockProperties.setMockEnabled(true);
+        when(promptRenderService.render(any(String.class), any(String.class), anyMap(),
+                any(String.class), org.mockito.ArgumentMatchers.nullable(String.class)))
+                .thenAnswer(invocation -> PromptRenderResult.builder()
+                        .scene(invocation.getArgument(0))
+                        .renderedPrompt("rendered prompt")
+                        .inputVariablesJson("{}")
+                        .modelParamsJson("{}")
+                        .promptHash("hash")
+                        .fallbackUsed(false)
+                        .build());
+        AiServiceImpl mockService = new AiServiceImpl(
+                aiCallLogMapper,
+                promptRenderService,
+                aiCallLogService,
+                mockProperties,
+                new ObjectMapper());
+        GenerateReportDTO dto = new GenerateReportDTO();
+        dto.setInterviewId(42L);
+        dto.setUserId(10L);
+        dto.setMessages(List.of(
+                "Role: AI\nType: EVALUATION\nScore：60\nContent: 基础概念正确。",
+                "Role: AI\nType: EVALUATION\nScore：72\nContent: 需要补充边界条件。"));
+
+        var result = mockService.generateReport(dto);
+        var rubric = new ObjectMapper().readTree(result.getRubricScores());
+        var adviceEvidence = new ObjectMapper().readTree(result.getAdviceEvidence());
+
+        assertEquals(66, result.getTotalScore());
+        assertEquals(5, rubric.size());
+        assertEquals("EXPRESSION_STRUCTURE", rubric.get(0).path("dimension").asText());
+        assertEquals(3.3D, rubric.get(0).path("score").asDouble());
+        assertTrue(adviceEvidence.get(0).path("fallback").asBoolean());
+        assertEquals("LOCAL_MOCK", adviceEvidence.get(0).path("source").asText());
         verify(aiCallLogMapper).insert(any(AiCallLog.class));
     }
 

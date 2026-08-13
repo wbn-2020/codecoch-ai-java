@@ -185,6 +185,24 @@ class AiConvertTest {
         assertFalse(vo.getFallback());
     }
 
+    @Test
+    void logVoAddsOperationalSceneAndFailureDiagnosisWithoutReplacingTechnicalError() {
+        AiCallLog log = sampleLog("ADMIN_MODEL_PROBE");
+        log.setSuccess(0);
+        log.setStatus(0);
+        log.setErrorMessage("errorType=HTTP_ERROR; httpStatus=429; errorRef=abc");
+
+        AiCallLogVO vo = AiConvert.toLogVO(log);
+
+        assertEquals("模型连通性检测", vo.getSceneLabel());
+        assertEquals("模型治理", vo.getSceneCategory());
+        assertEquals("HTTP_ERROR", vo.getFailureType());
+        assertEquals("供应商限流或额度不足", vo.getFailureTypeLabel());
+        assertEquals(429, vo.getFailureHttpStatus());
+        assertTrue(vo.getErrorMessage().contains("errorType=HTTP_ERROR"));
+        assertTrue(vo.getOperatorSuggestion().contains("额度"));
+    }
+
     private AiCallLog sampleLog(String scene) {
         AiCallLog log = new AiCallLog();
         log.setId(1L);

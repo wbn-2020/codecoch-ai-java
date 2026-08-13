@@ -32,6 +32,8 @@ NACOS_STARTUP_GUIDE = REPO_ROOT / "docs" / "nacos" / "CodeCoachAI_本地Nacos启
 OPERATIONS_RUNBOOK = REPO_ROOT / "docs" / "operations" / "release-engineering-runbook.md"
 NACOS_INITIALIZER = REPO_ROOT / "scripts" / "docker" / "nacos-config-init.sh"
 NACOS_START_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "start-nacos-dev.ps1"
+NACOS_IMPORT_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "import-nacos-config.sh"
+NACOS_IMPORT_PS_SCRIPT = REPO_ROOT / "scripts" / "nacos" / "import-nacos-config.ps1"
 HEALTH_CHECK_PATH = REPO_ROOT / "scripts" / "release" / "check_health.py"
 HEALTH_CHECK_SPEC = importlib.util.spec_from_file_location(
     "release_health_check",
@@ -177,6 +179,40 @@ class ContainerContractTest(unittest.TestCase):
         self.assertIn("-Namespace $Namespace", start_script)
         self.assertIn("-Target $Target", start_script)
 
+    def test_bash_nacos_import_defaults_to_current_service_configs(self) -> None:
+        import_script = NACOS_IMPORT_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if [[ -z "${NACOS_DATA_IDS}" ]]',
+            import_script,
+        )
+        self.assertIn('profile="${SPRING_PROFILES_ACTIVE:-dev}"', import_script)
+        for data_id in (
+            "codecoachai-common-${profile}.yml",
+            "codecoachai-redis-${profile}.yml",
+            "codecoachai-gateway-${profile}.yml",
+            "codecoachai-core-${profile}.yml",
+            "codecoachai-ai-${profile}.yml",
+            "codecoachai-search-${profile}.yml",
+        ):
+            self.assertIn(data_id, import_script)
+
+    def test_powershell_nacos_import_uses_the_same_default_data_id_policy(self) -> None:
+        import_script = NACOS_IMPORT_PS_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("$env:NACOS_DATA_IDS", import_script)
+        self.assertIn("ForEach-Object { $_.Trim() }", import_script)
+        self.assertIn("if ($DataId.Count -eq 0)", import_script)
+        for data_id in (
+            "codecoachai-common-$profile.yml",
+            "codecoachai-redis-$profile.yml",
+            "codecoachai-gateway-$profile.yml",
+            "codecoachai-core-$profile.yml",
+            "codecoachai-ai-$profile.yml",
+            "codecoachai-search-$profile.yml",
+        ):
+            self.assertIn(data_id, import_script)
+
     def test_entrypoint_exits_nonzero_when_spring_never_becomes_healthy(self) -> None:
         shell = shutil.which("sh")
         if not shell:
@@ -245,12 +281,51 @@ class ContainerContractTest(unittest.TestCase):
 
     def test_docker_build_accepts_only_deployable_services(self) -> None:
         dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+        root_pom = (REPO_ROOT / "pom.xml").read_text(encoding="utf-8")
+        reactor_modules = set(re.findall(r"<module>\s*([^<]+?)\s*</module>", root_pom))
+
+        source_builder = re.search(
+            r"(?ms)^FROM\s+maven:[^\n]+AS source-builder\s*$"
+            r"(.*?)^RUN case \"\$\{SERVICE\}\" in\s*\\?\s*$",
+            dockerfile,
+        )
+        self.assertIsNotNone(source_builder, "Dockerfile source-builder stage is required")
+        copy_block = source_builder.group(1)
+        copied_modules = re.findall(
+            r"(?m)^COPY\s+(codecoachai-[^\s]+)\s+\./\1\s*$",
+            copy_block,
+        )
+
+        self.assertEqual(
+            reactor_modules,
+            set(copied_modules),
+            "source-builder COPY modules must match the current root POM modules",
+        )
+        self.assertEqual(
+            len(copied_modules),
+            len(set(copied_modules)),
+            "source-builder must not copy a top-level module more than once",
+        )
         self.assertIn("COPY codecoachai-core ./codecoachai-core", dockerfile)
         self.assertIn(
             "codecoachai-gateway|codecoachai-core|codecoachai-ai|codecoachai-search) ;;",
             dockerfile,
         )
-        self.assertNotIn("codecoachai-auth|codecoachai-user", dockerfile)
+        service_gate = re.search(
+            r'(?ms)^RUN case "\$\{SERVICE\}" in\s*\\?\s*$'
+            r"(.*?)^\s*esac\s*\\?\s*$",
+            dockerfile,
+        )
+        self.assertIsNotNone(service_gate, "Dockerfile service allowlist is required")
+        self.assertEqual(
+            {
+                "codecoachai-gateway",
+                "codecoachai-core",
+                "codecoachai-ai",
+                "codecoachai-search",
+            },
+            set(re.findall(r"\b(codecoachai-[a-z-]+)\|?", service_gate.group(1))),
+        )
 
     def test_compose_has_four_deployable_services_and_core_health_gate(self) -> None:
         compose = COMPOSE.read_text(encoding="utf-8")
@@ -604,15 +679,48 @@ class ReleaseDeploymentContractTest(unittest.TestCase):
             self.assertEqual("8MB", multipart["max-file-size"])
             self.assertEqual("9MB", multipart["max-request-size"])
 
+        for module in ("gateway", "core", "ai", "search"):
+            application = yaml.safe_load(
+                (
+                    REPO_ROOT
+                    / f"codecoachai-{module}"
+                    / "src"
+                    / "main"
+                    / "resources"
+                    / "application.yml"
+                ).read_text(encoding="utf-8")
+            )
+            imports = application["spring"]["config"]["import"]
+            self.assertTrue(
+                any("codecoachai-common-" in item for item in imports),
+                f"{module} must import the shared Nacos config",
+            )
+            self.assertTrue(
+                any("codecoachai-redis-" in item for item in imports),
+                f"{module} must import the shared Redis Nacos config",
+            )
+            self.assertTrue(
+                any(f"codecoachai-{module}-" in item for item in imports),
+                f"{module} must import its service-specific Nacos config",
+            )
+
 
 class WorkflowContractTest(unittest.TestCase):
     def test_ci_covers_real_branches_and_quality_commands(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        for branch in ("main", "dev-v3", "dev-260703", "dev-fb", "dev-fb-260803"):
+        for branch in (
+            "main",
+            "dev-v3",
+            "dev-260703",
+            "dev-fb",
+            "dev-fb-260803",
+            "dev-fb-260805",
+        ):
             self.assertIn(f"- {branch}", workflow)
         for command in (
             "clean test",
-            "-DskipTests package",
+            "-Pphase2-dependency-gates",
+            "-DskipTests verify",
             "npm run type-check",
             "npm run test:unit:run",
             "npm run build",

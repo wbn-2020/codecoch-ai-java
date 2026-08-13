@@ -93,6 +93,7 @@ codecoachai:
       allowed-hosts:
         - api.deepseek.com
         - dashscope.aliyuncs.com
+        - chatapi.weixin.qq.com
       allowed-ports:
         - 443
     crypto:

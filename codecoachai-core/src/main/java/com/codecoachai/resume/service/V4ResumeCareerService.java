@@ -1,0 +1,49 @@
+package com.codecoachai.resume.service;
+
+import com.codecoachai.resume.domain.dto.JobApplicationSaveDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationArchiveDTO;
+import com.codecoachai.resume.domain.dto.JobApplicationEventSaveDTO;
+import com.codecoachai.resume.domain.dto.ResumeApplyAiSuggestionDTO;
+import com.codecoachai.resume.domain.dto.ResumeVersionCopyDTO;
+import com.codecoachai.resume.domain.dto.ResumeVersionCreateDTO;
+import com.codecoachai.resume.domain.vo.ApplicationCareerInsightSummaryVO;
+import com.codecoachai.resume.domain.vo.JobApplicationAgentContextVO;
+import com.codecoachai.resume.domain.vo.ApplicationReminderCandidateVO;
+import com.codecoachai.resume.domain.vo.JobApplicationEventVO;
+import com.codecoachai.resume.domain.vo.JobApplicationStatsVO;
+import com.codecoachai.resume.domain.vo.JobApplicationSummaryVO;
+import com.codecoachai.resume.domain.vo.JobApplicationVO;
+import com.codecoachai.resume.domain.vo.ResumeSuggestionAdoptionVO;
+import com.codecoachai.resume.domain.vo.ResumeVersionDiffVO;
+import com.codecoachai.resume.domain.vo.ResumeVersionVO;
+import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.util.List;
+
+public interface V4ResumeCareerService {
+    ResumeVersionVO createVersion(Long resumeId, ResumeVersionCreateDTO dto);
+    ResumeVersionVO copyVersion(Long resumeId, Long versionId, ResumeVersionCopyDTO dto);
+    List<ResumeVersionVO> listVersions(Long resumeId);
+    ResumeVersionVO getVersion(Long versionId);
+    ResumeVersionDiffVO diffVersion(Long resumeId, Long versionId);
+    ResumeVersionDiffVO diffVersions(Long sourceVersionId, Long targetVersionId);
+    ResumeVersionVO rollbackVersion(Long resumeId, Long versionId);
+    ResumeSuggestionAdoptionVO applyAiSuggestion(Long versionId, ResumeApplyAiSuggestionDTO dto);
+    List<JobApplicationVO> listApplications(String status);
+    List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword);
+    List<JobApplicationVO> listApplications(String status, Integer page, Integer size, String keyword,
+                                            boolean includeArchived);
+    JobApplicationStatsVO getApplicationStats(LocalDateTime now);
+    JobApplicationVO createApplication(JobApplicationSaveDTO dto);
+    JobApplicationVO updateApplication(Long id, JobApplicationSaveDTO dto);
+    JobApplicationVO archiveApplication(Long id, JobApplicationArchiveDTO dto);
+    JobApplicationVO restoreApplication(Long id, JobApplicationArchiveDTO dto);
+    void deleteApplication(Long id, JobApplicationArchiveDTO dto);
+    List<JobApplicationEventVO> listApplicationEvents(Long applicationId);
+    JobApplicationEventVO createApplicationEvent(Long applicationId, JobApplicationEventSaveDTO dto);
+    JobApplicationEventVO createApplicationEventForUser(Long userId, Long applicationId, JobApplicationEventSaveDTO dto);
+    List<JobApplicationAgentContextVO> listAgentApplicationContextForUser(Long userId, Long targetJobId, LocalDateTime now);
+    List<ApplicationReminderCandidateVO> listApplicationReminderCandidates(Long userId, LocalDate date, LocalDateTime now);
+    JobApplicationSummaryVO getApplicationSummaryForUser(Long userId, Long applicationId);
+    ApplicationCareerInsightSummaryVO getApplicationCareerInsightSummaryForUser(Long userId, Integer days, LocalDateTime now);
+}

@@ -8,6 +8,7 @@ on:
       - dev-260703
       - dev-fb
       - dev-fb-260803
+      - dev-fb-260805
   pull_request:
     branches:
       - main
@@ -15,6 +16,7 @@ on:
       - dev-260703
       - dev-fb
       - dev-fb-260803
+      - dev-fb-260805
   workflow_dispatch:
 
 permissions:
@@ -106,8 +108,11 @@ jobs:
           CODECOACHAI_INTERNAL_SECRET: ci-internal-secret-placeholder-32
           DEEPSEEK_API_KEY: test-placeholder
 
-      - name: Package backend
-        run: mvn -B -ntp -Dstyle.color=never -DskipTests package
+      - name: Verify and package backend
+        run: >-
+          mvn -B -ntp -Dstyle.color=never
+          -Pphase2-dependency-gates
+          -DskipTests verify
 
       - name: Stage deployable backend JARs
         shell: bash

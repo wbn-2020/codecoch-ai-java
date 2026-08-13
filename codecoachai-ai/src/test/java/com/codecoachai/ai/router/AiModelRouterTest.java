@@ -1,16 +1,20 @@
 package com.codecoachai.ai.router;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
 import static org.mockito.Mockito.verify;
 
 import com.codecoachai.ai.client.AiProviderException;
 import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.client.ProviderAiCaller.CallResult;
+import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.config.AiRouterProperties;
+import com.codecoachai.ai.domain.entity.AiModelConfig;
 import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.guard.RetryGuard;
 import com.codecoachai.ai.guard.TokenAccountant;
@@ -29,6 +33,7 @@ class AiModelRouterTest {
     private TokenAccountant tokenAccountant;
 
     private AiModelRouter router;
+    private AiProperties aiProperties;
 
     @BeforeEach
     void setUp() {
@@ -37,7 +42,9 @@ class AiModelRouterTest {
         properties.getRouter().setFallbackProvider("dashscope");
         properties.getRouter().setFallbackEnabled(true);
         properties.getRetry().setMaxAttempts(1);
-        router = new AiModelRouter(properties, providerAiCaller, new RetryGuard(properties), tokenAccountant);
+        aiProperties = new AiProperties();
+        router = new AiModelRouter(
+                properties, aiProperties, providerAiCaller, new RetryGuard(properties), tokenAccountant);
     }
 
     @Test
@@ -65,6 +72,68 @@ class AiModelRouterTest {
         verify(tokenAccountant).accumulate(10L, 3, 5, 0.01D);
     }
 
+    @Test
+    void uniqueDatabaseDefaultOverridesRuntimePrimaryForRegularCalls() {
+        AiModelConfig databaseDefault = databaseDefault();
+        when(providerAiCaller.findUniqueEnabledGlobalDefaultModel()).thenReturn(databaseDefault);
+        when(providerAiCaller.chat(eq(databaseDefault), anyString(), eq("chat")))
+                .thenReturn(callResult("WEIXIN_OPENAI_COMPATIBLE", "Deepseek-v4-flash"));
+
+        AiModelRouter.RouteResult result = router.chat(context());
+
+        assertEquals("WEIXIN_OPENAI_COMPATIBLE", result.getProvider());
+        assertEquals("Deepseek-v4-flash", result.getModel());
+        assertEquals("database-default:WEIXIN_OPENAI_COMPATIBLE/Deepseek-v4-flash", result.getRouteTrace());
+        verify(providerAiCaller).chat(eq(databaseDefault), anyString(), eq("chat"));
+    }
+
+    @Test
+    void uniqueDatabaseDefaultOverridesRuntimePrimaryForStreamingCalls() {
+        AiModelConfig databaseDefault = databaseDefault();
+        when(providerAiCaller.findUniqueEnabledGlobalDefaultModel()).thenReturn(databaseDefault);
+        when(providerAiCaller.chatStream(eq(databaseDefault), anyString(), eq("chat"), any()))
+                .thenReturn(callResult("WEIXIN_OPENAI_COMPATIBLE", "Deepseek-v4-flash"));
+
+        AiModelRouter.RouteResult result = router.chatStream(context(), ignored -> { });
+
+        assertEquals("WEIXIN_OPENAI_COMPATIBLE", result.getProvider());
+        assertEquals("Deepseek-v4-flash", result.getModel());
+        assertEquals("database-default:WEIXIN_OPENAI_COMPATIBLE/Deepseek-v4-flash", result.getRouteTrace());
+    }
+
+    @Test
+    void forcedProviderBypassesDatabaseGlobalDefault() {
+        doAnswer(invocation -> callResult(invocation.getArgument(0), "qwen-plus"))
+                .when(providerAiCaller).chat(eq("dashscope"), anyString(), eq("chat"));
+        AiModelRouter.AiCallContext ctx = context();
+        ctx.setForceProvider("dashscope");
+
+        AiModelRouter.RouteResult result = router.chat(ctx);
+
+        assertEquals("dashscope", result.getProvider());
+        assertEquals("dashscope", result.getRouteTrace());
+    }
+
+    @Test
+    void mockModeCannotAccidentallyCallRealProvider() {
+        aiProperties.setMockEnabled(true);
+
+        AiProviderException exception = org.junit.jupiter.api.Assertions.assertThrows(
+                AiProviderException.class, () -> router.chat(context()));
+
+        assertEquals(AiFailureType.CONFIG_ERROR, exception.getFailureType());
+    }
+
+    @Test
+    void disabledServiceCannotAccidentallyCallRealProvider() {
+        aiProperties.setEnabled(false);
+
+        AiProviderException exception = org.junit.jupiter.api.Assertions.assertThrows(
+                AiProviderException.class, () -> router.chat(context()));
+
+        assertEquals(AiFailureType.CONFIG_ERROR, exception.getFailureType());
+    }
+
     private AiModelRouter.AiCallContext context() {
         AiModelRouter.AiCallContext ctx = new AiModelRouter.AiCallContext();
         ctx.setScene("PHASE2_TEST");
@@ -85,5 +154,15 @@ class AiModelRouterTest {
         result.setEstimatedCost(0.01D);
         result.setElapsedMs(100L);
         return result;
+    }
+
+    private AiModelConfig databaseDefault() {
+        AiModelConfig model = new AiModelConfig();
+        model.setId(99L);
+        model.setProvider("WEIXIN_OPENAI_COMPATIBLE");
+        model.setModelCode("Deepseek-v4-flash");
+        model.setEnabled(1);
+        model.setDefaultModel(1);
+        return model;
     }
 }

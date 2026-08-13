@@ -38,12 +38,12 @@ class InternalCallFilterTest {
 
     private static final String LEGACY_SECRET =
             "test-internal-legacy-secret-0123456789";
-    private static final String TASK_SECRET =
-            "test-internal-task-secret-012345678901";
+    private static final String CORE_SECRET =
+            "test-internal-core-secret-012345678901";
     private static final String AI_SECRET =
             "test-internal-ai-secret-01234567890123";
-    private static final String QUESTION_SECRET =
-            "test-internal-question-secret-012345678";
+    private static final String SEARCH_SECRET =
+            "test-internal-search-secret-012345678";
 
     @Mock
     private StringRedisTemplate stringRedisTemplate;
@@ -59,15 +59,15 @@ class InternalCallFilterTest {
         properties.setSecret(LEGACY_SECRET);
         properties.setLegacySharedSecretEnabled(false);
         properties.setCallerKeyRings(Map.of(
-                "codecoachai-task", keyRing(
-                        TASK_SECRET,
+                "codecoachai-core", keyRing(
+                        CORE_SECRET,
                         "POST /inner/agent/**",
                         "POST /inner/job/**"),
                 "codecoachai-ai", keyRing(
                         AI_SECRET,
                         "GET /inner/resume-job-match/reports"),
-                "codecoachai-question", keyRing(
-                        QUESTION_SECRET,
+                "codecoachai-search", keyRing(
+                        SEARCH_SECRET,
                         "GET /inner/questions")));
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
@@ -93,7 +93,7 @@ class InternalCallFilterTest {
     @Test
     void signedInternalRequestStoresNonceAndPasses() throws Exception {
         MockHttpServletRequest request = signedInternalRequest(
-                "POST", "/inner/agent/job-coach", "", "codecoachai-task", "nonce-signed-0001");
+                "POST", "/inner/agent/job-coach", "", "codecoachai-core", "nonce-signed-0001");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
@@ -112,7 +112,7 @@ class InternalCallFilterTest {
     void internalRequestWithMissingSignatureFailsClosed() throws Exception {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/inner/agent/job-coach");
         request.addHeader(HeaderConstants.INTERNAL_CALL, "true");
-        request.addHeader(HeaderConstants.SERVICE_NAME, "codecoachai-task");
+        request.addHeader(HeaderConstants.SERVICE_NAME, "codecoachai-core");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
 
@@ -147,7 +147,7 @@ class InternalCallFilterTest {
     @Test
     void canonicalizedInternalRequestWithContextPathPasses() throws Exception {
         MockHttpServletRequest request = signedInternalRequest(
-                "POST", "/inner/job/run", "", "codecoachai-task", "nonce-context-001");
+                "POST", "/inner/job/run", "", "codecoachai-core", "nonce-context-001");
         request.setContextPath("/api");
         request.setRequestURI("/api//inner/%2E/task/../job/run/");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -200,7 +200,7 @@ class InternalCallFilterTest {
                 "GET",
                 "/inner/questions",
                 "b=2&a=1",
-                "codecoachai-question",
+                "codecoachai-search",
                 "nonce-query-00001");
         request.setQueryString("b=3&a=1");
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -219,7 +219,7 @@ class InternalCallFilterTest {
                 "GET",
                 "/inner/questions",
                 "",
-                "codecoachai-question",
+                "codecoachai-search",
                 "nonce-redis-00001");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
@@ -239,7 +239,7 @@ class InternalCallFilterTest {
                 "GET",
                 "/inner/agent/job-coach",
                 "",
-                "codecoachai-task",
+                "codecoachai-core",
                 "nonce-forged-00001",
                 AI_SECRET);
         MockHttpServletResponse response = new MockHttpServletResponse();
@@ -258,7 +258,7 @@ class InternalCallFilterTest {
                 "GET",
                 "/inner/admin/users",
                 "",
-                "codecoachai-task",
+                "codecoachai-core",
                 "nonce-unauthorized-01");
         MockHttpServletResponse response = new MockHttpServletResponse();
         RecordingFilterChain chain = new RecordingFilterChain();
@@ -304,9 +304,9 @@ class InternalCallFilterTest {
 
     private String secretFor(String serviceName) {
         return switch (serviceName) {
-            case "codecoachai-task" -> TASK_SECRET;
+            case "codecoachai-core" -> CORE_SECRET;
             case "codecoachai-ai" -> AI_SECRET;
-            case "codecoachai-question" -> QUESTION_SECRET;
+            case "codecoachai-search" -> SEARCH_SECRET;
             default -> throw new IllegalArgumentException("Unexpected service: " + serviceName);
         };
     }
