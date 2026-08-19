@@ -17,8 +17,10 @@ import org.springframework.stereotype.Component;
 public class ResumeExportProperties {
 
     private static final long MAX_ARTIFACT_BYTES = 10L * 1024L * 1024L;
+    private static final long DEFAULT_MAX_SOURCE_UPLOAD_BYTES = 20L * 1024L * 1024L;
 
     private long maxSourceTextBytes = 512L * 1024L;
+    private long maxSourceUploadBytes = DEFAULT_MAX_SOURCE_UPLOAD_BYTES;
     private long maxArtifactBytes = MAX_ARTIFACT_BYTES;
     private int maxZipEntries = 12;
     private int maxConcurrentUploads = 2;
@@ -31,6 +33,12 @@ public class ResumeExportProperties {
 
     public long effectiveMaxArtifactBytes() {
         return maxArtifactBytes < 1 ? MAX_ARTIFACT_BYTES : Math.min(maxArtifactBytes, MAX_ARTIFACT_BYTES);
+    }
+
+    public long effectiveMaxSourceUploadBytes() {
+        return maxSourceUploadBytes < 1
+                ? DEFAULT_MAX_SOURCE_UPLOAD_BYTES
+                : maxSourceUploadBytes;
     }
 
     public int effectiveMaxZipEntries() {

@@ -22,4 +22,7 @@ public class ResumeDetailVO {
     private List<ResumeProjectVO> projects;
     private String contextEligibility;
     private String contextEligibilityReason;
+    private Boolean draft;
+    private Integer completionPercent;
+    private List<String> missingSections;
 }

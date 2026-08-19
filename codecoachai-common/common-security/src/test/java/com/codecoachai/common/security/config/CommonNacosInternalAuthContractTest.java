@@ -67,6 +67,8 @@ class CommonNacosInternalAuthContractTest {
         assertEquals(List.of("${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}"), aiGateway.get("secrets"));
         Map<String, Object> coreRing = callerRing(aiAuth, "codecoachai-core");
         assertTrue(((List<?>) coreRing.get("permissions")).contains("POST /inner/ai/embeddings"));
+        assertTrue(((List<?>) coreRing.get("permissions"))
+                .contains("POST /inner/ai/resume-job-match/outcome"));
 
         Map<String, Object> searchGateway = callerRing(
                 internalAuth(repositoryRoot, "codecoachai-search-dev.yml"),

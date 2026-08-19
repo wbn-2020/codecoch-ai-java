@@ -16,6 +16,9 @@ import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.service.FileContentService;
 import com.codecoachai.resume.service.ResumeAnalysisParseService;
 import com.codecoachai.resume.service.extractor.ResumeTextExtractorDispatcher;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer.NormalizationResult;
+import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +38,7 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
     private final FileContentService fileContentService;
     private final ResumeTextExtractorDispatcher textExtractorDispatcher;
     private final AiFeignClient aiFeignClient;
+    private final ResumeImportNormalizer resumeImportNormalizer;
 
     @Override
     public void parsePendingRecords(int batchSize) {
@@ -72,8 +76,10 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
             String rawText = textExtractorDispatcher.extract(file.getFileExt(), file.getContent());
             stage = "AI_PARSE";
             String structuredJson = parseByAi(record, file, rawText);
+            stage = "NORMALIZE_IMPORT";
+            NormalizationResult normalized = resumeImportNormalizer.normalize(structuredJson);
             stage = "UPDATE_WAIT_CONFIRM";
-            markWaitConfirm(record, rawText, structuredJson);
+            markWaitConfirm(record, rawText, normalized);
         } catch (RuntimeException ex) {
             markFailed(record, stage, ex);
             throw ex;
@@ -99,6 +105,14 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PARSING.getCode())
                 .set(ResumeAnalysisRecord::getErrorMessage, null)
+                .set(ResumeAnalysisRecord::getStructuredJson, null)
+                .set(ResumeAnalysisRecord::getSchemaVersion, null)
+                .set(ResumeAnalysisRecord::getPolicyVersion, null)
+                .set(ResumeAnalysisRecord::getSourceHash, null)
+                .set(ResumeAnalysisRecord::getValidationStatus, null)
+                .set(ResumeAnalysisRecord::getQualityReportJson, null)
+                .set(ResumeAnalysisRecord::getGeneratedAt, null)
+                .set(ResumeAnalysisRecord::getRepairBatchId, null)
                 .eq(ResumeAnalysisRecord::getId, analysisRecordId)
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PENDING.getCode())
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO));
@@ -119,10 +133,19 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
         return vo.getStructuredJson();
     }
 
-    private void markWaitConfirm(ResumeAnalysisRecord record, String rawText, String structuredJson) {
+    private void markWaitConfirm(
+            ResumeAnalysisRecord record, String rawText, NormalizationResult normalized) {
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getRawText, rawText)
-                .set(ResumeAnalysisRecord::getStructuredJson, structuredJson)
+                .set(ResumeAnalysisRecord::getStructuredJson, normalized.normalizedJson())
+                .set(ResumeAnalysisRecord::getSchemaVersion,
+                        normalized.structuredResume().getSchemaVersion())
+                .set(ResumeAnalysisRecord::getPolicyVersion, ResumeImportNormalizer.POLICY_VERSION)
+                .set(ResumeAnalysisRecord::getSourceHash, resumeImportNormalizer.sourceHash(rawText))
+                .set(ResumeAnalysisRecord::getValidationStatus,
+                        normalized.qualityReport().getValidationStatus())
+                .set(ResumeAnalysisRecord::getQualityReportJson, normalized.qualityReportJson())
+                .set(ResumeAnalysisRecord::getGeneratedAt, LocalDateTime.now())
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.WAIT_CONFIRM.getCode())
                 .set(ResumeAnalysisRecord::getErrorMessage, null)
                 .eq(ResumeAnalysisRecord::getId, record.getId())
@@ -138,6 +161,14 @@ public class ResumeAnalysisParseServiceImpl implements ResumeAnalysisParseServic
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.FAILED.getCode())
                 .set(ResumeAnalysisRecord::getErrorMessage, errorMessage)
+                .set(ResumeAnalysisRecord::getStructuredJson, null)
+                .set(ResumeAnalysisRecord::getSchemaVersion, null)
+                .set(ResumeAnalysisRecord::getPolicyVersion, null)
+                .set(ResumeAnalysisRecord::getSourceHash, null)
+                .set(ResumeAnalysisRecord::getValidationStatus, null)
+                .set(ResumeAnalysisRecord::getQualityReportJson, null)
+                .set(ResumeAnalysisRecord::getGeneratedAt, null)
+                .set(ResumeAnalysisRecord::getRepairBatchId, null)
                 .eq(ResumeAnalysisRecord::getId, record.getId())
                 .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PARSING.getCode())
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO));

@@ -25,6 +25,7 @@ class AiNacosDatasourceConfigContractTest {
                         + "&useSSL=false&allowPublicKeyRetrieval=true",
                 property(sources, "spring.datasource.url"));
         assertEquals("${MYSQL_USERNAME:root}", property(sources, "spring.datasource.username"));
+        assertEquals(false, property(sources, AiProperties.MOCK_ENABLED_PROPERTY));
     }
 
     private static Object property(List<PropertySource<?>> sources, String key) {

@@ -17,4 +17,5 @@ public class ResumeSaveDTO {
     private String educationExperience;
     private String summary;
     private Integer status;
+    private Boolean saveAsDraft;
 }

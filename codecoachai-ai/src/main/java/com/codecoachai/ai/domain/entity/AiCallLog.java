@@ -26,6 +26,15 @@ public class AiCallLog extends BaseEntity {
     private String requestPrompt;
     private String responseContent;
     private String businessId;
+    private String executionId;
+    private String parentExecutionId;
+    private Integer attemptNo;
+    private String idempotencyKey;
+    private String executionSource;
+    private String deliveryQuality;
+    private String fallbackReasonCode;
+    private String schemaVersion;
+    private String validationStatus;
     private String requestBody;
     private String responseBody;
     private Long elapsedMs;

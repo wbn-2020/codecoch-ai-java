@@ -29,6 +29,7 @@ import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.util.List;
@@ -243,7 +244,11 @@ class AiServiceImplFailureHandlingTest {
         assertEquals("JSON", contextCaptor.getValue().getResponseFormat());
         assertEquals("200", contextCaptor.getValue().getBusinessId());
         assertEquals("负责核心交易服务的接口设计与稳定性治理", json.path("responsibilities").get(0).asText());
-        assertEquals("Java", json.path("requiredSkills").get(0).asText());
+        JsonNode javaSkill = json.path("requiredSkills").get(0);
+        assertEquals("Java", javaSkill.path("name").asText());
+        assertEquals("熟悉", javaSkill.path("requiredLevel").asText());
+        assertEquals("HIGH", javaSkill.path("confidence").asText());
+        assertTrue(javaSkill.path("evidence").asText().contains("要求熟悉 Java"));
         assertEquals("面向高并发业务场景招聘 Java 后端工程师。", json.path("summary").asText());
         assertEquals(911L, result.getAiCallLogId());
     }
@@ -284,6 +289,96 @@ class AiServiceImplFailureHandlingTest {
 
         assertEquals(915L, result.getAiCallLogId());
         assertTrue(result.getResultJson().contains("K8s"));
+    }
+
+    @Test
+    void parseJobDescriptionPreservesFamiliarLevelInsteadOfModelUpgrade() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责核心交易服务研发"],
+                  "requiredSkills": [
+                    {
+                      "name": "Spring Boot",
+                      "category": "framework",
+                      "requiredLevel": "精通",
+                      "weight": 90,
+                      "evidence": "模型推断",
+                      "confidence": "HIGH"
+                    }
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(916L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责核心交易服务研发，要求熟悉 Spring Boot，并具备 MySQL 项目经验。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("熟悉", skill.path("requiredLevel").asText());
+        assertEquals("HIGH", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("要求熟悉 Spring Boot"));
+        assertFalse(result.getResultJson().contains("\"requiredLevel\":\"精通\""));
+    }
+
+    @Test
+    void parseJobDescriptionDoesNotMatchJavaInsideJavaScript() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责交易服务研发"],
+                  "requiredSkills": [
+                    {"name":"Java","category":"language","requiredLevel":"精通","weight":90}
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(917L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("前端要求精通 JavaScript；后端要求熟悉 Java 开发与排障。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("熟悉", skill.path("requiredLevel").asText());
+        assertEquals("HIGH", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("熟悉 Java"));
+    }
+
+    @Test
+    void parseJobDescriptionDowngradesUnstatedCapabilityLevelToUnknown() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["维护订单服务"],
+                  "requiredSkills": [
+                    {
+                      "name": "MySQL",
+                      "category": "database",
+                      "requiredLevel": "expert",
+                      "weight": 80,
+                      "evidence": "模型推断",
+                      "confidence": "HIGH"
+                    }
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(917L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责订单服务开发，使用 MySQL 完成数据持久化。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("未明确", skill.path("requiredLevel").asText());
+        assertEquals("LOW", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("使用 MySQL"));
     }
 
     @Test

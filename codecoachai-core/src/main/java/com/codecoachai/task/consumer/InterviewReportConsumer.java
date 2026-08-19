@@ -13,6 +13,7 @@ import com.codecoachai.task.feign.dto.GenerateReportDTO;
 import com.codecoachai.task.feign.vo.GenerateReportVO;
 import com.codecoachai.task.feign.vo.InterviewReportContextVO;
 import com.codecoachai.task.service.AsyncTaskService;
+import com.codecoachai.interview.support.InterviewReportPromptBudgeter;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -101,7 +102,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             aiDto.setDifficulty(ctx.getDifficulty());
             aiDto.setResumeContent(ctx.getResumeContent());
             aiDto.setProjectContent(ctx.getProjectContent());
-            aiDto.setMessages(ctx.getMessages());
+            aiDto.setMessages(InterviewReportPromptBudgeter.budget(ctx.getMessages()));
 
             Result<GenerateReportVO> aiResp = aiFeignClient.generateInterviewReport(aiDto);
             if (aiResp == null || aiResp.getCode() != 0 || aiResp.getData() == null) {

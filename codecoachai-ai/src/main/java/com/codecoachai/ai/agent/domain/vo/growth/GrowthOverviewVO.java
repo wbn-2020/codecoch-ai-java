@@ -1,6 +1,7 @@
 package com.codecoachai.ai.agent.domain.vo.growth;
 
 import com.codecoachai.ai.agent.domain.vo.analytics.MetricPointVO;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
 import java.util.ArrayList;
 import java.util.List;
 import lombok.Data;
@@ -9,6 +10,7 @@ import lombok.Data;
 public class GrowthOverviewVO {
     private Integer readinessScore;
     private Double taskCompletionRate;
+    private StudyProgressSnapshot studyProgress;
     private Double agentSuccessRate;
     private Long totalReviewCount;
     private Long totalMemoryCount;

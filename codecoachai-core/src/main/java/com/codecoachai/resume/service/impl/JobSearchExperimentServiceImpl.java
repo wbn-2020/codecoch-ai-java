@@ -59,6 +59,7 @@ import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -146,7 +147,60 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         fillExperiment(experiment, dto);
         experiment.setDemoFlag(CommonConstants.NO);
         experimentMapper.insert(experiment);
+        boolean related = false;
+        if (dto != null) {
+            LinkedHashSet<Long> targetJobIds = positiveIds(dto.getTargetJobIds());
+            if (dto.getTargetJobId() != null) {
+                targetJobIds.add(dto.getTargetJobId());
+            }
+            for (Long targetJobId : targetJobIds) {
+                addVerifiedRelation(experiment, "TARGET_JOB", targetJobId, null, Map.of());
+                related = true;
+            }
+
+            LinkedHashSet<Long> resumeVersionIds = new LinkedHashSet<>();
+            if (dto.getResumeVersionId() != null) {
+                resumeVersionIds.add(dto.getResumeVersionId());
+            }
+            for (Long resumeId : positiveIds(dto.getResumeIds())) {
+                resumeVersionIds.add(resolveResumeVersionId(userId, resumeId));
+            }
+            for (Long resumeVersionId : resumeVersionIds) {
+                addVerifiedRelation(experiment, "RESUME_VERSION", resumeVersionId, null, Map.of());
+                related = true;
+            }
+        }
+        if (related) {
+            refreshExperimentSnapshot(experiment.getId());
+        }
         return detail(experiment.getId());
+    }
+
+    private LinkedHashSet<Long> positiveIds(List<Long> ids) {
+        LinkedHashSet<Long> result = new LinkedHashSet<>();
+        if (ids == null) {
+            return result;
+        }
+        for (Long id : ids) {
+            if (id == null || id <= 0) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "Relation ids must be positive");
+            }
+            result.add(id);
+        }
+        return result;
+    }
+
+    private Long resolveResumeVersionId(Long userId, Long resumeId) {
+        ResumeVersion version = resumeVersionMapper.selectCurrentForUpdate(userId, resumeId);
+        if (version == null) {
+            version = resumeVersionMapper.selectLatestForUpdate(userId, resumeId);
+        }
+        if (version == null || !userId.equals(version.getUserId())) {
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_NOT_FOUND,
+                    "Selected resume has no owned version snapshot");
+        }
+        return version.getId();
     }
 
     @Override
@@ -189,27 +243,56 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
         JobSearchExperiment experiment = ownedExperiment(experimentId);
         assertMutableExperiment(experiment);
         String type = normalizeRelationType(dto == null ? null : dto.getRelationType());
-        RelationSummary summary = verifyRelation(experiment.getUserId(), type, dto.getRelationId());
+        JobSearchExperimentRelation relation = addVerifiedRelation(
+                experiment,
+                type,
+                dto == null ? null : dto.getRelationId(),
+                dto == null ? null : dto.getRelationSummary(),
+                dto == null ? Map.of() : dto.getMetadata());
+        refreshExperimentSnapshot(experimentId);
+        return toRelationVO(relation);
+    }
+
+    private JobSearchExperimentRelation addVerifiedRelation(
+            JobSearchExperiment experiment,
+            String type,
+            Long relationId,
+            String requestedSummary,
+            Map<String, Object> requestedMetadata) {
+        RelationSummary summary = verifyRelation(experiment.getUserId(), type, relationId);
         JobSearchExperimentRelation existing = relationMapper.selectOne(new LambdaQueryWrapper<JobSearchExperimentRelation>()
-                .eq(JobSearchExperimentRelation::getExperimentId, experimentId)
+                .eq(JobSearchExperimentRelation::getExperimentId, experiment.getId())
                 .eq(JobSearchExperimentRelation::getRelationType, type)
-                .eq(JobSearchExperimentRelation::getRelationId, dto.getRelationId())
+                .eq(JobSearchExperimentRelation::getRelationId, relationId)
                 .eq(JobSearchExperimentRelation::getDeleted, CommonConstants.NO)
                 .last("limit 1"));
         if (existing != null) {
-            return toRelationVO(existing);
+            return existing;
         }
         JobSearchExperimentRelation relation = new JobSearchExperimentRelation();
         relation.setUserId(experiment.getUserId());
-        relation.setExperimentId(experimentId);
+        relation.setExperimentId(experiment.getId());
         relation.setRelationType(type);
-        relation.setRelationId(dto.getRelationId());
-        relation.setRelationSummary(firstText(dto.getRelationSummary(), summary.summary()));
-        relation.setMetadataJson(writeJson(safeMetadata(dto.getMetadata(), summary)));
+        relation.setRelationId(relationId);
+        relation.setRelationSummary(firstText(requestedSummary, summary.summary()));
+        relation.setMetadataJson(writeJson(safeMetadata(requestedMetadata, summary)));
         relation.setDemoFlag(experiment.getDemoFlag());
-        relationMapper.insert(relation);
-        refreshExperimentSnapshot(experimentId);
-        return toRelationVO(relation);
+        try {
+            relationMapper.insert(relation);
+            return relation;
+        } catch (DuplicateKeyException ex) {
+            JobSearchExperimentRelation winner = relationMapper.selectOne(
+                    new LambdaQueryWrapper<JobSearchExperimentRelation>()
+                            .eq(JobSearchExperimentRelation::getExperimentId, experiment.getId())
+                            .eq(JobSearchExperimentRelation::getRelationType, type)
+                            .eq(JobSearchExperimentRelation::getRelationId, relationId)
+                            .eq(JobSearchExperimentRelation::getDeleted, CommonConstants.NO)
+                            .last("limit 1"));
+            if (winner == null) {
+                throw ex;
+            }
+            return winner;
+        }
     }
 
     @Override
@@ -1047,7 +1130,9 @@ public class JobSearchExperimentServiceImpl implements JobSearchExperimentServic
                 if (analysis == null) throw relationNotFound(type);
                 yield new RelationSummary(firstText(analysis.getSummary(),
                         firstText(analysis.getCompanyName(), "JD") + " / " + firstText(analysis.getJobTitle(), "分析")),
-                        Map.of("targetJobId", analysis.getTargetJobId()));
+                        analysis.getTargetJobId() == null
+                                ? Map.of()
+                                : Map.of("targetJobId", analysis.getTargetJobId()));
             }
             case "MATCH_REPORT" -> {
                 ResumeJobMatchReport report = matchReportMapper.selectOne(new LambdaQueryWrapper<ResumeJobMatchReport>()

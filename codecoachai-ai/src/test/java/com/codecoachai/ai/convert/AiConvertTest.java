@@ -127,12 +127,15 @@ class AiConvertTest {
         AiCallLog log = sampleLog("AGENT_DAILY_PLAN");
         log.setModelName("deepseek-chat");
         log.setRouteTrace("deepseek");
+        log.setSuccess(1);
 
         AiCallLogVO vo = AiConvert.toLogVO(log);
 
         assertEquals("LLM", vo.getResultSource());
         assertEquals("真实模型", vo.getResultSourceLabel());
         assertFalse(vo.getFallback());
+        assertEquals("PRIMARY_MODEL", vo.getExecutionSource());
+        assertEquals("COMPLETE", vo.getDeliveryQuality());
     }
 
     @Test
@@ -146,6 +149,8 @@ class AiConvertTest {
         assertEquals("FALLBACK", vo.getResultSource());
         assertEquals("降级兜底", vo.getResultSourceLabel());
         assertTrue(vo.getFallback());
+        assertEquals("FALLBACK_MODEL", vo.getExecutionSource());
+        assertEquals("COMPLETE", vo.getDeliveryQuality());
     }
 
     @Test
@@ -159,6 +164,8 @@ class AiConvertTest {
         assertEquals("MOCK", vo.getResultSource());
         assertEquals("模拟数据", vo.getResultSourceLabel());
         assertFalse(vo.getFallback());
+        assertEquals("MOCK", vo.getExecutionSource());
+        assertEquals("DEGRADED", vo.getDeliveryQuality());
     }
 
     @Test

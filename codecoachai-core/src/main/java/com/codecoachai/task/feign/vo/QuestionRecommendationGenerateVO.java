@@ -11,6 +11,8 @@ public class QuestionRecommendationGenerateVO {
     private Integer questionCount;
     private Long aiCallLogId;
     private String errorMessage;
+    private String trustStatus;
+    private Boolean fallback;
     private String asyncMessageId;
     private String asyncTraceId;
     private String asyncBizType;

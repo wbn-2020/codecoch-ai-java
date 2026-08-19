@@ -100,7 +100,9 @@ public class CareerImportServiceImpl implements CareerImportService {
             rows.add(previewCsvRow(
                     applyMapping(row, resolvedMapping), row.values(), defaultZone, existing));
         }
-        return toPreview("CSV", defaultZone.getId(), rows, table.headers(), suggestedMapping);
+        ImportPreview preview = toPreview("CSV", defaultZone.getId(), rows, table.headers(), suggestedMapping);
+        preview.setContentHash(CareerImportContentHash.sha256(content));
+        return preview;
     }
 
     @Override
@@ -143,7 +145,9 @@ public class CareerImportServiceImpl implements CareerImportService {
             }
             results.add(result);
         }
-        return finishBatch(batch, "CSV", results);
+        ImportResult result = finishBatch(batch, "CSV", results);
+        result.setContentHash(CareerImportContentHash.sha256(content));
+        return result;
     }
 
     @Override

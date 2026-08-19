@@ -13,6 +13,13 @@ public class ResumeAnalysisResultVO {
     private String parseStatus;
     private String errorMessage;
     private JsonNode structuredJson;
+    private String schemaVersion;
+    private String policyVersion;
+    private String sourceHash;
+    private String validationStatus;
+    private String repairBatchId;
+    private ResumeImportQualityReportVO qualityReport;
     private String rawTextSummary;
+    private LocalDateTime generatedAt;
     private LocalDateTime updatedAt;
 }

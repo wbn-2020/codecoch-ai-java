@@ -1,6 +1,7 @@
 package com.codecoachai.resume.export;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -12,6 +13,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -69,6 +71,40 @@ class ResumeDocumentRendererTest {
                 assertTrue(!stripper.getText(document).isBlank(), "PDF page " + page + " must not be blank");
             }
         }
+    }
+
+    @Test
+    void configuredTtfPreservesChineseTextWithoutReplacementCharacters() throws Exception {
+        assertChinesePdfRoundTrip(requiredChineseFont(".ttf"));
+    }
+
+    @Test
+    void configuredOtfPreservesChineseTextWithoutReplacementCharacters() throws Exception {
+        Path source = requiredChineseFont(".ttf");
+        Path configuredOtf = tempDir.resolve("configured-chinese-font.otf");
+        Files.copy(source, configuredOtf);
+
+        assertChinesePdfRoundTrip(configuredOtf);
+    }
+
+    @Test
+    void configuredTtcPreservesChineseTextWithoutReplacementCharacters() throws Exception {
+        assertChinesePdfRoundTrip(requiredChineseFont(".ttc"));
+    }
+
+    @Test
+    void configuredFontWithoutRequiredGlyphsFailsClosed() throws Exception {
+        ResumeExportProperties properties = new ResumeExportProperties();
+        properties.setPdfFontPath(requiredLatinOnlyFont().toString());
+
+        IOException error = assertThrows(IOException.class, () -> {
+            try (OutputStream output = Files.newOutputStream(tempDir.resolve("unsupported-glyph.pdf"))) {
+                new PdfResumeDocumentRenderer(properties).render(chineseDocument(), output);
+            }
+        });
+
+        assertTrue(error.getMessage().contains("No usable PDF font found for resume text"));
+        assertTrue(error.getMessage().contains("cannot encode all resume characters"));
     }
 
     @Test
@@ -145,5 +181,64 @@ class ResumeDocumentRendererTest {
                 .put("description", "Built an evidence-driven career coaching workflow.");
         String snapshot = objectMapper.writeValueAsString(snapshotNode);
         return new AtsResumeDocumentFactory(objectMapper).fromSnapshot(snapshot, templateDefinition);
+    }
+
+    private void assertChinesePdfRoundTrip(Path fontPath) throws Exception {
+        ResumeExportProperties properties = new ResumeExportProperties();
+        properties.setPdfFontPath(fontPath.toString());
+        Path output = tempDir.resolve("resume-" + fontPath.getFileName() + ".pdf");
+        try (OutputStream stream = Files.newOutputStream(output)) {
+            new PdfResumeDocumentRenderer(properties).render(chineseDocument(), stream);
+        }
+
+        try (PDDocument document = Loader.loadPDF(output.toFile())) {
+            String text = new PDFTextStripper().getText(document);
+            assertTrue(text.contains("张伟"));
+            assertTrue(text.contains("高级后端工程师"));
+            assertTrue(text.contains("负责核心交易链路稳定性建设"));
+            assertFalse(text.contains("?"), "Chinese resume text must never be replaced with '?'");
+        }
+    }
+
+    private AtsResumeDocument chineseDocument() {
+        AtsResumeDocument resume = new AtsResumeDocument();
+        resume.setName("张伟");
+        resume.setHeadline("高级后端工程师");
+        resume.setContact("zhangwei@example.com");
+        resume.getSections().add(new AtsResumeDocument.Section(
+                "工作经历",
+                List.of("负责核心交易链路稳定性建设，接口延迟降低百分之三十五。")));
+        return resume;
+    }
+
+    private Path requiredChineseFont(String extension) {
+        List<Path> candidates = ".ttc".equals(extension)
+                ? List.of(
+                        Path.of("C:/Windows/Fonts/msyh.ttc"),
+                        Path.of("C:/Windows/Fonts/simsun.ttc"),
+                        Path.of("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+                        Path.of("/System/Library/Fonts/PingFang.ttc"))
+                : List.of(
+                        Path.of("C:/Windows/Fonts/simhei.ttf"),
+                        Path.of("C:/Windows/Fonts/Deng.ttf"),
+                        Path.of("C:/Windows/Fonts/simsunb.ttf"),
+                        Path.of("/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"));
+        return candidates.stream()
+                .filter(Files::isRegularFile)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "A configured Chinese " + extension + " font is required for PDF export tests"));
+    }
+
+    private Path requiredLatinOnlyFont() {
+        return List.of(
+                        Path.of("C:/Windows/Fonts/arial.ttf"),
+                        Path.of("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                        Path.of("/System/Library/Fonts/Supplemental/Arial.ttf"))
+                .stream()
+                .filter(Files::isRegularFile)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "A Latin-only font is required for PDF fail-closed tests"));
     }
 }

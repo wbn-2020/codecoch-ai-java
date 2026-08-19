@@ -4,6 +4,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.interview.domain.entity.StudyCheckin;
 import com.codecoachai.interview.domain.entity.StudyPlan;
@@ -37,12 +39,13 @@ public class StudyCheckinController {
     private final StudyCheckinMapper checkinMapper;
     private final StudyTaskMapper studyTaskMapper;
     private final StudyPlanMapper studyPlanMapper;
+    private final StudyProgressStatisticsService progressStatisticsService;
 
     @Operation(summary = "今日打卡")
     @PostMapping
     public Result<StudyCheckin> checkin(@RequestBody(required = false) CheckinDTO dto) {
         Long userId = SecurityAssert.requireLoginUserId();
-        LocalDate today = LocalDate.now();
+        LocalDate today = progressStatisticsService.businessDate();
         Long planId = dto == null ? null : dto.getPlanId();
         validateOwnedPlan(userId, planId);
 
@@ -50,6 +53,7 @@ public class StudyCheckinController {
         StudyCheckin existing = checkinMapper.selectOne(
                 new LambdaQueryWrapper<StudyCheckin>()
                         .eq(StudyCheckin::getUserId, userId)
+                        .eq(StudyCheckin::getDeleted, 0)
                         .eq(StudyCheckin::getCheckinDate, today));
         if (existing != null) {
             return Result.success(existing);
@@ -59,8 +63,9 @@ public class StudyCheckinController {
         Long completedToday = studyTaskMapper.selectCount(
                 new LambdaQueryWrapper<StudyTask>()
                         .eq(StudyTask::getUserId, userId)
+                        .eq(StudyTask::getDeleted, 0)
                         .eq(StudyTask::getPlannedDate, today)
-                        .eq(StudyTask::getTaskStatus, "COMPLETED"));
+                        .in(StudyTask::getTaskStatus, "DONE", "COMPLETED"));
 
         StudyCheckin checkin = new StudyCheckin();
         checkin.setUserId(userId);
@@ -78,10 +83,11 @@ public class StudyCheckinController {
     public Result<List<StudyCheckin>> list(
             @RequestParam(defaultValue = "30") Integer days) {
         Long userId = SecurityAssert.requireLoginUserId();
-        LocalDate startDate = LocalDate.now().minusDays(days);
+        LocalDate startDate = progressStatisticsService.businessDate().minusDays(Math.max(0, days - 1L));
         List<StudyCheckin> records = checkinMapper.selectList(
                 new LambdaQueryWrapper<StudyCheckin>()
                         .eq(StudyCheckin::getUserId, userId)
+                        .eq(StudyCheckin::getDeleted, 0)
                         .ge(StudyCheckin::getCheckinDate, startDate)
                         .orderByDesc(StudyCheckin::getCheckinDate));
         return Result.success(records);
@@ -91,40 +97,13 @@ public class StudyCheckinController {
     @GetMapping("/streak")
     public Result<StreakVO> streak() {
         Long userId = SecurityAssert.requireLoginUserId();
-        List<StudyCheckin> records = checkinMapper.selectList(
-                new LambdaQueryWrapper<StudyCheckin>()
-                        .eq(StudyCheckin::getUserId, userId)
-                        .orderByDesc(StudyCheckin::getCheckinDate)
-                        .last("limit 365"));
-
-        int streak = 0;
-        LocalDate expected = LocalDate.now();
-        for (StudyCheckin record : records) {
-            if (record.getCheckinDate().equals(expected)) {
-                streak++;
-                expected = expected.minusDays(1);
-            } else if (record.getCheckinDate().equals(expected.minusDays(1)) && streak == 0) {
-                // 今天还没打卡，从昨天开始算
-                expected = expected.minusDays(1);
-                if (record.getCheckinDate().equals(expected)) {
-                    streak++;
-                    expected = expected.minusDays(1);
-                }
-            } else {
-                break;
-            }
-        }
-
-        // 总打卡天数
-        Long totalDays = checkinMapper.selectCount(
-                new LambdaQueryWrapper<StudyCheckin>()
-                        .eq(StudyCheckin::getUserId, userId));
-
+        StudyProgressSnapshot snapshot = progressStatisticsService.current(userId);
         StreakVO vo = new StreakVO();
-        vo.setCurrentStreak(streak);
-        vo.setTotalCheckinDays(totalDays.intValue());
-        vo.setCheckedInToday(records.stream()
-                .anyMatch(r -> r.getCheckinDate().equals(LocalDate.now())));
+        vo.setCurrentStreak(snapshot.getCurrentStreak());
+        vo.setTotalCheckinDays(snapshot.getTotalCheckinDays());
+        vo.setCheckedInToday(snapshot.isCheckedInToday());
+        vo.setBusinessDate(snapshot.getBusinessDate());
+        vo.setBusinessTimezone(snapshot.getBusinessTimezone());
         return Result.success(vo);
     }
 
@@ -133,25 +112,16 @@ public class StudyCheckinController {
     public Result<ProgressVO> progress(@RequestParam(required = false) Long planId) {
         Long userId = SecurityAssert.requireLoginUserId();
         validateOwnedPlan(userId, planId);
-
-        LambdaQueryWrapper<StudyTask> baseQuery = new LambdaQueryWrapper<StudyTask>()
-                .eq(StudyTask::getUserId, userId);
-        if (planId != null) {
-            baseQuery.eq(StudyTask::getPlanId, planId);
-        }
-
-        Long totalTasks = studyTaskMapper.selectCount(baseQuery);
-        Long completedTasks = studyTaskMapper.selectCount(
-                baseQuery.clone().eq(StudyTask::getTaskStatus, "COMPLETED"));
-        Long skippedTasks = studyTaskMapper.selectCount(
-                baseQuery.clone().eq(StudyTask::getTaskStatus, "SKIPPED"));
-
+        StudyProgressSnapshot snapshot = progressStatisticsService.forPlan(userId, planId);
         ProgressVO vo = new ProgressVO();
-        vo.setTotalTasks(totalTasks.intValue());
-        vo.setCompletedTasks(completedTasks.intValue());
-        vo.setSkippedTasks(skippedTasks.intValue());
-        vo.setPendingTasks((int) (totalTasks - completedTasks - skippedTasks));
-        vo.setCompletionRate(totalTasks > 0 ? Math.round(completedTasks * 100.0 / totalTasks) : 0);
+        vo.setPlanId(snapshot.getPlanId());
+        vo.setTotalTasks(snapshot.getTotalTasks());
+        vo.setCompletedTasks(snapshot.getCompletedTasks());
+        vo.setSkippedTasks(snapshot.getSkippedTasks());
+        vo.setPendingTasks(snapshot.getPendingTasks());
+        vo.setCompletionRate(snapshot.getCompletionRate());
+        vo.setBusinessDate(snapshot.getBusinessDate());
+        vo.setBusinessTimezone(snapshot.getBusinessTimezone());
         return Result.success(vo);
     }
 
@@ -180,14 +150,19 @@ public class StudyCheckinController {
         private int currentStreak;
         private int totalCheckinDays;
         private boolean checkedInToday;
+        private LocalDate businessDate;
+        private String businessTimezone;
     }
 
     @Data
     public static class ProgressVO {
+        private Long planId;
         private int totalTasks;
         private int completedTasks;
         private int skippedTasks;
         private int pendingTasks;
-        private long completionRate;
+        private int completionRate;
+        private LocalDate businessDate;
+        private String businessTimezone;
     }
 }

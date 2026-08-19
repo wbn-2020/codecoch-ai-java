@@ -44,6 +44,11 @@ public interface ResumeFeignClient {
     @PostMapping("/inner/resume-job-match/reports/{id}/execute")
     Result<ResumeJobMatchSubmitVO> executeJobMatchReport(@PathVariable("id") Long reportId);
 
+    @PostMapping("/inner/resume-job-match/reports/{id}/fail")
+    Result<ResumeJobMatchSubmitVO> failJobMatchReport(
+            @PathVariable("id") Long reportId,
+            @RequestParam(value = "reason", required = false) String reason);
+
     @PostMapping("/inner/resumes/optimize-records/{recordId}/execute")
     Result<ResumeOptimizeSubmitVO> executeResumeOptimize(@PathVariable("recordId") Long recordId);
 

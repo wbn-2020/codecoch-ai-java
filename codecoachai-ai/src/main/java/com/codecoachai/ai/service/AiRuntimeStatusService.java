@@ -16,6 +16,9 @@ import java.util.Map;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.PropertySource;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -30,6 +33,7 @@ public class AiRuntimeStatusService {
     private final AiRouterProperties routerProperties;
     private final AiModelConfigMapper modelConfigMapper;
     private final AesGcmTextEncryptor apiKeyEncryptor;
+    private final Environment environment;
 
     public AiRuntimeStatusVO currentStatus() {
         AiRuntimeStatusVO result = baseStatus();
@@ -49,9 +53,12 @@ public class AiRuntimeStatusService {
         AiRouterProperties.Router router = routerProperties.getRouter();
         AiRuntimeStatusVO result = new AiRuntimeStatusVO();
         result.setServiceEnabled(Boolean.TRUE.equals(aiProperties.getEnabled()));
-        result.setMockEnabled(Boolean.TRUE.equals(aiProperties.getMockEnabled()));
+        result.setMockEnabled(aiProperties.getMockEnabled());
+        result.setMockConfigurationConfigured(aiProperties.isMockModeConfigured());
+        result.setMockConfigurationSource(mockConfigurationSource());
         result.setRealRoutingAllowed(Boolean.TRUE.equals(aiProperties.getEnabled())
-                && !Boolean.TRUE.equals(aiProperties.getMockEnabled()));
+                && aiProperties.isMockModeConfigured()
+                && !aiProperties.isMockModeEnabled());
         result.setDefaultModelScope(DEFAULT_MODEL_SCOPE);
         result.setDefaultModelScopeLabel("全局仅一个启用默认模型");
         result.setConfiguredDefaultProvider(router.getDefaultProvider());
@@ -63,7 +70,41 @@ public class AiRuntimeStatusService {
                 && StringUtils.hasText(aiProperties.getApiKey())
                 && StringUtils.hasText(aiProperties.getModel()));
         result.setDatabaseStatus("AVAILABLE");
+        result.getOperatorMessages().add(
+                "Mock 开关仅由 " + AiProperties.MOCK_ENABLED_PROPERTY + " 的 Spring 运行时配置控制"
+                        + "（来源：" + result.getMockConfigurationSource()
+                        + "）；system_config.ai.mock.enabled 为已停用的历史记录，不参与运行时决策");
+        if (!aiProperties.isMockModeConfigured()) {
+            addRisk(result, "MOCK_MODE_NOT_EXPLICITLY_CONFIGURED",
+                    "未显式配置 " + AiProperties.MOCK_ENABLED_PROPERTY + "，真实模型路由已阻止");
+        }
         return result;
+    }
+
+    private String mockConfigurationSource() {
+        if (environment instanceof ConfigurableEnvironment configurableEnvironment) {
+            for (PropertySource<?> propertySource : configurableEnvironment.getPropertySources()) {
+                if ("configurationProperties".equals(propertySource.getName())
+                        || !propertySource.containsProperty(AiProperties.MOCK_ENABLED_PROPERTY)) {
+                    continue;
+                }
+                String sourceName = propertySource.getName().toLowerCase(java.util.Locale.ROOT);
+                if (sourceName.contains("nacos")) {
+                    return "NACOS";
+                }
+                if ("systemenvironment".equals(sourceName)) {
+                    return "ENVIRONMENT";
+                }
+                if ("systemproperties".equals(sourceName)) {
+                    return "JVM_SYSTEM_PROPERTY";
+                }
+                if (sourceName.contains("applicationconfig") || sourceName.contains("application")) {
+                    return "APPLICATION_YAML";
+                }
+                return "SPRING_PROPERTY_SOURCE";
+            }
+        }
+        return aiProperties.isMockModeConfigured() ? "BOUND_PROPERTY" : "UNCONFIGURED";
     }
 
     private List<AiModelConfig> loadDatabaseModels(AiRuntimeStatusVO result) {
@@ -105,13 +146,20 @@ public class AiRuntimeStatusService {
             result.setEffectivePrimaryModel(selected.getModelCode());
             return;
         }
-        result.setEffectivePrimaryProvider(routerProperties.getRouter().getDefaultProvider());
+        result.setEffectivePrimaryProvider(null);
+        result.setEffectivePrimaryModel(null);
+        result.setRealRoutingAllowed(false);
+        if ("UNAVAILABLE".equals(result.getDatabaseStatus())) {
+            addRisk(result, "GLOBAL_DEFAULT_UNVERIFIABLE",
+                    "模型配置库不可用，无法确认唯一全局默认模型，真实业务调用已阻止");
+            return;
+        }
         if (globalDefaults.isEmpty()) {
             addRisk(result, "GLOBAL_DEFAULT_MISSING",
-                    "未找到启用的全局默认模型，业务调用将回退到运行配置主供应商");
+                    "未找到启用的全局默认模型，真实业务调用已阻止");
         } else {
             addRisk(result, "MULTIPLE_GLOBAL_DEFAULTS",
-                    "存在多个启用默认模型，业务调用将回退到运行配置主供应商，需保留唯一全局默认模型");
+                    "存在多个启用默认模型，真实业务调用已阻止，需保留唯一全局默认模型");
         }
     }
 
@@ -187,7 +235,10 @@ public class AiRuntimeStatusService {
                 status.setReadyForCall(true);
                 return;
             }
-            status.getRiskCodes().add("DATABASE_MODEL_INCOMPLETE_USING_CONFIG_FALLBACK");
+            status.setEffectiveConfigSource("DATABASE_BLOCKED");
+            status.setReadyForCall(false);
+            status.getRiskCodes().add("DATABASE_MODEL_INCOMPLETE");
+            return;
         }
 
         boolean configEndpointReady = configCandidate != null && StringUtils.hasText(configCandidate.getBaseUrl());
@@ -284,10 +335,20 @@ public class AiRuntimeStatusService {
             result.getOperatorMessages().add("真实模型路由已被服务总开关阻止");
             return;
         }
+        if (!Boolean.TRUE.equals(result.getMockConfigurationConfigured())) {
+            result.setEffectiveMode("DEGRADED");
+            result.setEffectiveModeLabel("Mock 开关未显式配置");
+            return;
+        }
         if (Boolean.TRUE.equals(result.getMockEnabled())) {
             result.setEffectiveMode("MOCK");
             result.setEffectiveModeLabel("模拟数据模式");
             result.getOperatorMessages().add("真实模型路由已被 Mock 开关阻止，不会调用供应商");
+            return;
+        }
+        if (!Boolean.TRUE.equals(result.getRealRoutingAllowed())) {
+            result.setEffectiveMode("DEGRADED");
+            result.setEffectiveModeLabel("真实路由已阻止");
             return;
         }
         ProviderStatus primary = result.getProviders().stream()
@@ -328,8 +389,8 @@ public class AiRuntimeStatusService {
                     "供应商 " + provider + " 的数据库密钥无法解密，真实调用会被阻止";
             case "DATABASE_CREDENTIAL_NOT_ENCRYPTED" ->
                     "供应商 " + provider + " 的数据库密钥仍是明文格式，应通过管理端重新保存完成加密";
-            case "DATABASE_MODEL_INCOMPLETE_USING_CONFIG_FALLBACK" ->
-                    "供应商 " + provider + " 的数据库模型配置不完整，当前改用运行配置";
+            case "DATABASE_MODEL_INCOMPLETE" ->
+                    "供应商 " + provider + " 的数据库模型配置不完整，真实调用不会改用运行配置覆盖管理端选择";
             case "PROVIDER_CONFIG_INCOMPLETE" ->
                     "供应商 " + provider + " 缺少可用的地址、凭据或模型标识";
             default -> null;

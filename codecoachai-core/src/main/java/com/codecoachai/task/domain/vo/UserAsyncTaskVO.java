@@ -11,11 +11,15 @@ public class UserAsyncTaskVO {
     private String bizId;
     private Long userId;
     private String traceId;
+    private String executionId;
+    private String parentExecutionId;
+    private Integer attemptNo;
     private String status;
     private Integer retryCount;
     private Integer maxRetry;
     private Integer maxRetryCount;
     private String failureReason;
+    private String terminalReasonCode;
     private String payloadPreview;
     private String payloadHash;
     private String resultPreview;

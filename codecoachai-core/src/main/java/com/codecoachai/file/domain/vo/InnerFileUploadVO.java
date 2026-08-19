@@ -16,6 +16,7 @@ public class InnerFileUploadVO {
     private String mimeType;
     private String storagePath;
     private String storageProvider;
+    private String contentSha256;
     private String status;
     private LocalDateTime createdAt;
 }

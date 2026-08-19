@@ -7,6 +7,8 @@ import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.user.convert.UserConvert;
@@ -82,6 +84,7 @@ public class UserServiceImpl implements UserService {
     private final PasswordEncoder passwordEncoder;
     private final JdbcTemplate jdbcTemplate;
     private final AdminPermissionCache adminPermissionCache;
+    private final StudyProgressStatisticsService progressStatisticsService;
 
     @Override
     public UserProfileVO getCurrentUserProfile() {
@@ -149,7 +152,8 @@ public class UserServiceImpl implements UserService {
     @Override
     public UserDashboardOverviewVO getDashboardOverview() {
         Long userId = requireCurrentUserId();
-        LocalDate businessDate = LocalDate.now(BUSINESS_ZONE_ID);
+        StudyProgressSnapshot progress = progressStatisticsService.current(userId);
+        LocalDate businessDate = progress.getBusinessDate();
         UserDashboardOverviewVO vo = new UserDashboardOverviewVO();
         vo.setResumeCount(count("resume", "deleted = 0 AND user_id = ?", userId));
         vo.setRecentResumeParse(recentResumeParse(userId));
@@ -158,12 +162,15 @@ public class UserServiceImpl implements UserService {
         vo.setRecentInterview(recentInterview(userId));
         vo.setRecentReport(recentReport(userId));
         vo.setStudyPlanCount(count("study_plan", "deleted = 0 AND user_id = ?", userId));
-        UserDashboardOverviewVO.ActiveStudyPlanVO activePlan = activeStudyPlan(userId, businessDate);
+        UserDashboardOverviewVO.ActiveStudyPlanVO activePlan = activeStudyPlan(progress);
         vo.setActiveStudyPlan(activePlan);
         vo.setTodayTaskCount(activePlan == null ? 0L : activePlan.getTodayTaskCount().longValue());
         vo.setTodayCompletedTaskCount(activePlan == null ? 0L : activePlan.getTodayDoneTaskCount().longValue());
         vo.setBusinessDate(businessDate);
-        vo.setBusinessTimezone(BUSINESS_TIMEZONE);
+        vo.setBusinessTimezone(progress.getBusinessTimezone());
+        vo.setCurrentStreak(progress.getCurrentStreak());
+        vo.setTotalCheckinDays(progress.getTotalCheckinDays());
+        vo.setCheckedInToday(progress.isCheckedInToday());
         vo.setEntryStatuses(entryStatuses(vo));
         vo.setGeneratedAt(LocalDateTime.now(BUSINESS_ZONE_ID));
         return vo;
@@ -447,53 +454,27 @@ public class UserServiceImpl implements UserService {
         }, userId);
     }
 
-    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(Long userId, LocalDate businessDate) {
-        if (!tableExists("study_plan")) {
+    private UserDashboardOverviewVO.ActiveStudyPlanVO activeStudyPlan(StudyProgressSnapshot progress) {
+        if (progress.getPlanId() == null) {
             return null;
         }
-        String sql = """
-                SELECT id, plan_title, plan_summary, plan_status, updated_at
-                FROM study_plan
-                WHERE deleted = 0 AND user_id = ? AND plan_status = 'ACTIVE'
-                ORDER BY updated_at DESC, id DESC
-                LIMIT 1
-                """;
-        return jdbcTemplate.query(sql, rs -> {
-            if (!rs.next()) {
-                return null;
-            }
-            Long planId = rs.getLong("id");
-            long total = count("study_task", "deleted = 0 AND user_id = ? AND plan_id = ?", userId, planId);
-            long done = count("study_task",
-                    "deleted = 0 AND user_id = ? AND plan_id = ? AND task_status IN ('DONE','COMPLETED')",
-                    userId, planId);
-            long todayTotal = count("study_task",
-                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ?",
-                    userId, planId, businessDate);
-            long todayDone = count("study_task",
-                    "deleted = 0 AND user_id = ? AND plan_id = ? AND planned_date = ? "
-                            + "AND task_status IN ('DONE','COMPLETED')",
-                    userId, planId, businessDate);
-            int cumulativeProgress = total == 0 ? 0 : Math.toIntExact(done * 100 / total);
-            int todayProgress = todayTotal == 0 ? 0 : Math.toIntExact(todayDone * 100 / todayTotal);
-            UserDashboardOverviewVO.ActiveStudyPlanVO vo = new UserDashboardOverviewVO.ActiveStudyPlanVO();
-            vo.setPlanId(planId);
-            vo.setPlanTitle(rs.getString("plan_title"));
-            vo.setPlanSummary(rs.getString("plan_summary"));
-            vo.setPlanStatus(rs.getString("plan_status"));
-            vo.setTotalTaskCount(toInt(total));
-            vo.setDoneTaskCount(toInt(done));
-            vo.setProgressPercent(cumulativeProgress);
-            vo.setCumulativeTaskCount(toInt(total));
-            vo.setCumulativeDoneTaskCount(toInt(done));
-            vo.setCumulativeProgressPercent(cumulativeProgress);
-            vo.setTodayTaskCount(toInt(todayTotal));
-            vo.setTodayDoneTaskCount(toInt(todayDone));
-            vo.setTodayProgressPercent(todayProgress);
-            vo.setTodayStatus(todayPlanStatus(todayTotal, todayDone));
-            vo.setUpdatedAt(toLocalDateTime(rs.getTimestamp("updated_at")));
-            return vo;
-        }, userId);
+        UserDashboardOverviewVO.ActiveStudyPlanVO vo = new UserDashboardOverviewVO.ActiveStudyPlanVO();
+        vo.setPlanId(progress.getPlanId());
+        vo.setPlanTitle(progress.getPlanTitle());
+        vo.setPlanSummary(progress.getPlanSummary());
+        vo.setPlanStatus(progress.getPlanStatus());
+        vo.setTotalTaskCount(progress.getTotalTasks());
+        vo.setDoneTaskCount(progress.getCompletedTasks());
+        vo.setProgressPercent(progress.getCompletionRate());
+        vo.setCumulativeTaskCount(progress.getTotalTasks());
+        vo.setCumulativeDoneTaskCount(progress.getCompletedTasks());
+        vo.setCumulativeProgressPercent(progress.getCompletionRate());
+        vo.setTodayTaskCount(progress.getTodayTasks());
+        vo.setTodayDoneTaskCount(progress.getTodayCompletedTasks());
+        vo.setTodayProgressPercent(progress.getTodayCompletionRate());
+        vo.setTodayStatus(todayPlanStatus(progress.getTodayTasks(), progress.getTodayCompletedTasks()));
+        vo.setUpdatedAt(progress.getPlanUpdatedAt());
+        return vo;
     }
 
     private String todayPlanStatus(long total, long done) {

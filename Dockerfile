@@ -43,13 +43,17 @@ ENV TZ=Asia/Shanghai \
     HEALTH_MONITOR_INTERVAL_SECONDS=10 \
     HEALTH_MONITOR_FAILURE_THRESHOLD=6
 
-RUN apk add --no-cache tzdata \
+RUN apk add --no-cache tzdata fontconfig font-noto-cjk \
     && addgroup -S -g 10001 codecoachai \
     && adduser -S -D -H -u 10001 -G codecoachai codecoachai \
-    && mkdir -p /app /opt/codecoachai/health-probe \
+    && mkdir -p /app /opt/codecoachai/health-probe /opt/codecoachai/fonts \
+    && font_path="$(find /usr/share/fonts -type f \( -iname 'NotoSansCJK*Regular*.ttc' -o -iname 'NotoSansCJKsc-Regular.otf' \) | sort | head -n 1)" \
+    && test -n "$font_path" \
+    && ln -s "$font_path" /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc \
+    && fc-cache -f \
     && chown codecoachai:codecoachai /app \
     && chmod 0750 /app \
-    && chmod 0755 /opt/codecoachai/health-probe
+    && chmod 0755 /opt/codecoachai/health-probe /opt/codecoachai/fonts
 
 WORKDIR /app
 COPY --from=health-probe-builder /health-probe/classes/ /opt/codecoachai/health-probe/

@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -26,6 +27,9 @@ import com.codecoachai.resume.domain.entity.JobDescriptionAnalysis;
 import com.codecoachai.resume.domain.entity.JobSearchExperiment;
 import com.codecoachai.resume.domain.entity.JobSearchExperimentRelation;
 import com.codecoachai.resume.domain.entity.JobSearchExperimentReview;
+import com.codecoachai.resume.domain.entity.ResumeVersion;
+import com.codecoachai.resume.domain.entity.TargetJob;
+import com.codecoachai.resume.domain.vo.JobSearchExperimentDetailVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentRelationVO;
 import com.codecoachai.resume.domain.vo.JobExperimentAgentContextVO;
 import com.codecoachai.resume.domain.vo.JobSearchExperimentReviewVO;
@@ -57,6 +61,7 @@ import org.mockito.Mock;
 import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.RowMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -481,6 +486,169 @@ class JobSearchExperimentServiceImplTest {
     }
 
     @Test
+    void createPersistsTargetAndResumeVersionRelationsBeforeImmediateDetailReadback() {
+        JobSearchExperimentSaveDTO dto = new JobSearchExperimentSaveDTO();
+        dto.setTitle("Targeted resume experiment");
+        dto.setTargetJobId(100L);
+        dto.setResumeVersionId(200L);
+        JobSearchExperiment storedExperiment = experiment();
+        storedExperiment.setId(77L);
+        List<JobSearchExperimentRelation> storedRelations = new java.util.ArrayList<>();
+
+        when(experimentMapper.insert(any(JobSearchExperiment.class))).thenAnswer(invocation -> {
+            JobSearchExperiment inserted = invocation.getArgument(0);
+            inserted.setId(77L);
+            storedExperiment.setTitle(inserted.getTitle());
+            storedExperiment.setGoal(inserted.getGoal());
+            storedExperiment.setTargetDirection(inserted.getTargetDirection());
+            storedExperiment.setStartDate(inserted.getStartDate());
+            storedExperiment.setEndDate(inserted.getEndDate());
+            storedExperiment.setStatus(inserted.getStatus());
+            storedExperiment.setDemoFlag(inserted.getDemoFlag());
+            storedExperiment.setSampleCount(inserted.getSampleCount());
+            storedExperiment.setConfidenceLevel(inserted.getConfidenceLevel());
+            return 1;
+        });
+        when(experimentMapper.selectOne(any())).thenReturn(storedExperiment);
+        TargetJob targetJob = new TargetJob();
+        targetJob.setId(100L);
+        targetJob.setUserId(10L);
+        targetJob.setJobTitle("Java backend");
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob);
+        ResumeVersion version = new ResumeVersion();
+        version.setId(200L);
+        version.setUserId(10L);
+        version.setResumeId(300L);
+        version.setVersionName("Delivery V1");
+        when(resumeVersionMapper.selectOne(any())).thenReturn(version);
+        when(relationMapper.selectOne(any())).thenReturn(null);
+        when(relationMapper.insert(any(JobSearchExperimentRelation.class))).thenAnswer(invocation -> {
+            JobSearchExperimentRelation relation = invocation.getArgument(0);
+            relation.setId(800L + storedRelations.size());
+            storedRelations.add(relation);
+            return 1;
+        });
+        when(relationMapper.selectList(any())).thenAnswer(invocation -> List.copyOf(storedRelations));
+        when(reviewMapper.selectList(any())).thenReturn(List.of());
+
+        JobSearchExperimentDetailVO result = service.create(dto);
+
+        assertEquals(77L, result.getId());
+        assertEquals(List.of("TARGET_JOB", "RESUME_VERSION"),
+                result.getRelations().stream()
+                        .map(JobSearchExperimentRelationVO::getRelationType)
+                        .toList());
+        assertEquals(List.of(100L, 200L),
+                result.getRelations().stream()
+                        .map(JobSearchExperimentRelationVO::getRelationId)
+                        .toList());
+    }
+
+    @Test
+    void createResolvesMultipleBaseResumesToOwnedVersionEvidence() {
+        JobSearchExperimentSaveDTO dto = new JobSearchExperimentSaveDTO();
+        dto.setTitle("Multi evidence experiment");
+        dto.setTargetJobIds(List.of(100L, 101L));
+        dto.setResumeIds(List.of(300L, 301L));
+        JobSearchExperiment storedExperiment = experiment();
+        storedExperiment.setId(77L);
+        List<JobSearchExperimentRelation> storedRelations = new ArrayList<>();
+
+        when(experimentMapper.insert(any(JobSearchExperiment.class))).thenAnswer(invocation -> {
+            JobSearchExperiment inserted = invocation.getArgument(0);
+            inserted.setId(77L);
+            storedExperiment.setTitle(inserted.getTitle());
+            storedExperiment.setStatus(inserted.getStatus());
+            storedExperiment.setDemoFlag(inserted.getDemoFlag());
+            return 1;
+        });
+        when(experimentMapper.selectOne(any())).thenReturn(storedExperiment);
+        when(targetJobMapper.selectOne(any())).thenAnswer(invocation -> {
+            TargetJob target = new TargetJob();
+            target.setId(storedRelations.stream()
+                    .filter(item -> "TARGET_JOB".equals(item.getRelationType()))
+                    .count() == 0 ? 100L : 101L);
+            target.setUserId(10L);
+            target.setCompanyName("Company");
+            target.setJobTitle("Backend");
+            return target;
+        });
+        ResumeVersion firstVersion = new ResumeVersion();
+        firstVersion.setId(200L);
+        firstVersion.setUserId(10L);
+        firstVersion.setResumeId(300L);
+        firstVersion.setVersionName("Resume 300 current");
+        ResumeVersion secondVersion = new ResumeVersion();
+        secondVersion.setId(201L);
+        secondVersion.setUserId(10L);
+        secondVersion.setResumeId(301L);
+        secondVersion.setVersionName("Resume 301 current");
+        when(resumeVersionMapper.selectCurrentForUpdate(10L, 300L)).thenReturn(firstVersion);
+        when(resumeVersionMapper.selectCurrentForUpdate(10L, 301L)).thenReturn(secondVersion);
+        when(resumeVersionMapper.selectOne(any())).thenReturn(firstVersion, secondVersion);
+        when(relationMapper.selectOne(any())).thenReturn(null);
+        when(relationMapper.insert(any(JobSearchExperimentRelation.class))).thenAnswer(invocation -> {
+            JobSearchExperimentRelation relation = invocation.getArgument(0);
+            relation.setId(800L + storedRelations.size());
+            storedRelations.add(relation);
+            return 1;
+        });
+        when(relationMapper.selectList(any())).thenAnswer(invocation -> List.copyOf(storedRelations));
+        when(reviewMapper.selectList(any())).thenReturn(List.of());
+
+        JobSearchExperimentDetailVO result = service.create(dto);
+
+        assertEquals(4, result.getRelations().size());
+        assertEquals(List.of(100L, 101L),
+                result.getRelations().stream()
+                        .filter(item -> "TARGET_JOB".equals(item.getRelationType()))
+                        .map(JobSearchExperimentRelationVO::getRelationId)
+                        .toList());
+        assertEquals(List.of(200L, 201L),
+                result.getRelations().stream()
+                        .filter(item -> "RESUME_VERSION".equals(item.getRelationType()))
+                        .map(JobSearchExperimentRelationVO::getRelationId)
+                        .toList());
+        verify(resumeVersionMapper).selectCurrentForUpdate(10L, 300L);
+        verify(resumeVersionMapper).selectCurrentForUpdate(10L, 301L);
+    }
+
+    @Test
+    void createRejectsSelectedResumeWithoutOwnedVersionBeforeRelationEvidenceIsComplete() {
+        JobSearchExperimentSaveDTO dto = new JobSearchExperimentSaveDTO();
+        dto.setTitle("Missing resume version");
+        dto.setResumeIds(List.of(300L));
+        when(experimentMapper.insert(any(JobSearchExperiment.class))).thenAnswer(invocation -> {
+            JobSearchExperiment inserted = invocation.getArgument(0);
+            inserted.setId(77L);
+            return 1;
+        });
+        when(resumeVersionMapper.selectCurrentForUpdate(10L, 300L)).thenReturn(null);
+        when(resumeVersionMapper.selectLatestForUpdate(10L, 300L)).thenReturn(null);
+
+        assertThrows(BusinessException.class, () -> service.create(dto));
+
+        verify(relationMapper, never()).insert(any(JobSearchExperimentRelation.class));
+    }
+
+    @Test
+    void createRejectsForeignTargetBeforeAnyRelationIsPersisted() {
+        JobSearchExperimentSaveDTO dto = new JobSearchExperimentSaveDTO();
+        dto.setTitle("Invalid experiment");
+        dto.setTargetJobId(100L);
+        when(experimentMapper.insert(any(JobSearchExperiment.class))).thenAnswer(invocation -> {
+            JobSearchExperiment inserted = invocation.getArgument(0);
+            inserted.setId(77L);
+            return 1;
+        });
+        when(targetJobMapper.selectOne(any())).thenReturn(null);
+
+        assertThrows(BusinessException.class, () -> service.create(dto));
+
+        verify(relationMapper, never()).insert(any(JobSearchExperimentRelation.class));
+    }
+
+    @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
     void listReviewsRefreshesV9EvidenceProjectionWithoutChangingStrategyJson() throws Exception {
         JobSearchExperiment experiment = experiment();
@@ -592,6 +760,32 @@ class JobSearchExperimentServiceImplTest {
         assertEquals("JD_ANALYSIS", relation.getRelationType());
         assertEquals(55L, relation.getRelationId());
         assertTrue(relation.getRelationSummary().contains("Redis 高并发"));
+    }
+
+    @Test
+    void addRelationReturnsConcurrentDuplicateWinner() {
+        JobSearchExperiment experiment = experiment();
+        JobDescriptionAnalysis analysis = new JobDescriptionAnalysis();
+        analysis.setId(55L);
+        analysis.setUserId(10L);
+        analysis.setSummary("JD");
+        JobSearchExperimentRelation winner = relationWithType(55L, "JD_ANALYSIS");
+        winner.setId(88L);
+        winner.setExperimentId(7L);
+        JobSearchExperimentRelationSaveDTO dto = new JobSearchExperimentRelationSaveDTO();
+        dto.setRelationType("JD_ANALYSIS");
+        dto.setRelationId(55L);
+        when(experimentMapper.selectOne(any())).thenReturn(experiment);
+        when(jobDescriptionAnalysisMapper.selectOne(any())).thenReturn(analysis);
+        when(relationMapper.selectOne(any())).thenReturn(null, winner);
+        when(relationMapper.insert(any(JobSearchExperimentRelation.class)))
+                .thenThrow(new DuplicateKeyException("duplicate"));
+        when(relationMapper.selectList(any())).thenReturn(List.of(winner));
+
+        JobSearchExperimentRelationVO result = service.addRelation(7L, dto);
+
+        assertEquals(88L, result.getId());
+        assertEquals(55L, result.getRelationId());
     }
 
     @Test

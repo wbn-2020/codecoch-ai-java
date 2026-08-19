@@ -64,7 +64,14 @@ public class V3DashboardVO {
         private Long activePlanId;
         private Long totalTasks;
         private Long completedTasks;
+        private Long skippedTasks;
+        private Long pendingTasks;
         private Integer completionRate;
+        private Integer currentStreak;
+        private Integer totalCheckinDays;
+        private Boolean checkedInToday;
+        private LocalDate businessDate;
+        private String businessTimezone;
     }
 
     @Data

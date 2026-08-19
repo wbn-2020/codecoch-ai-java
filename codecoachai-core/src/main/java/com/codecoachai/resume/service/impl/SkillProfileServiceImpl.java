@@ -245,8 +245,6 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         created.setSourceBizId(targetJobId);
         created.setStatus(SkillProfileStatus.SUCCESS.getCode());
         created.setSummary("由证据使用结果反馈自动创建，用于承载实战反馈缺口。");
-        created.setOverallLevel(2);
-        created.setOverallScore(60);
         try {
             profileMapper.insert(created);
             return created;
@@ -396,8 +394,6 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         created.setSourceBizId(dto.getReportId());
         created.setStatus(SkillProfileStatus.SUCCESS.getCode());
         created.setSummary("Generated from interview report weak-point feedback.");
-        created.setOverallLevel(2);
-        created.setOverallScore(60);
         profileMapper.insert(created);
         return created;
     }
@@ -427,6 +423,17 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         JsonNode reportGaps = readJsonOrNull(report.getGapsJson());
         if (!hasEffectiveGaps(reportGaps)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Resume job match report has no effective gaps");
+        }
+        SkillProfile existing = profileMapper.selectOne(new LambdaQueryWrapper<SkillProfile>()
+                .eq(SkillProfile::getMatchReportId, report.getId())
+                .eq(SkillProfile::getUserId, userId)
+                .eq(SkillProfile::getSourceType, SOURCE_RESUME_JOB_MATCH)
+                .eq(SkillProfile::getStatus, SkillProfileStatus.SUCCESS.getCode())
+                .eq(SkillProfile::getDeleted, CommonConstants.NO)
+                .orderByDesc(SkillProfile::getUpdatedAt)
+                .last("limit 1"));
+        if (existing != null) {
+            return toGenerateVO(existing);
         }
 
         SkillProfile profile = transactionTemplate.execute(status -> createProcessingProfile(report));
@@ -705,41 +712,45 @@ public class SkillProfileServiceImpl implements SkillProfileService {
     }
 
     private SkillProfileDetailVO toDetailVO(SkillProfile profile) {
+        List<SkillGapItemVO> gaps = listGapItems(profile);
+        ProfileMetrics metrics = profileMetrics(profile, gaps);
         SkillProfileDetailVO vo = new SkillProfileDetailVO();
         vo.setProfileId(profile.getId());
         vo.setUserId(profile.getUserId());
         vo.setTargetJobId(profile.getTargetJobId());
         vo.setMatchReportId(profile.getMatchReportId());
         vo.setProfileName(profile.getProfileName());
-        vo.setOverallLevel(profile.getOverallLevel());
-        vo.setOverallScore(profile.getOverallScore());
+        vo.setOverallLevel(metrics.overallLevel());
+        vo.setOverallScore(metrics.overallScore());
         vo.setSummary(profile.getSummary());
         vo.setSourceType(profile.getSourceType());
         vo.setSourceBizId(profile.getSourceBizId());
         vo.setStatus(profile.getStatus());
         vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
         vo.setAiCallLogId(profile.getAiCallLogId());
-        vo.setGapItems(listGapItems(profile));
+        vo.setGapItems(gaps);
         vo.setCreatedAt(profile.getCreatedAt());
         vo.setUpdatedAt(profile.getUpdatedAt());
         return vo;
     }
 
     private SkillProfileListVO toListVO(SkillProfile profile) {
+        List<SkillGapItemVO> gaps = listGapItems(profile);
+        ProfileMetrics metrics = profileMetrics(profile, gaps);
         SkillProfileListVO vo = new SkillProfileListVO();
         vo.setProfileId(profile.getId());
         vo.setUserId(profile.getUserId());
         vo.setTargetJobId(profile.getTargetJobId());
         vo.setMatchReportId(profile.getMatchReportId());
         vo.setProfileName(profile.getProfileName());
-        vo.setOverallLevel(profile.getOverallLevel());
-        vo.setOverallScore(profile.getOverallScore());
+        vo.setOverallLevel(metrics.overallLevel());
+        vo.setOverallScore(metrics.overallScore());
         vo.setSummary(profile.getSummary());
         vo.setSourceType(profile.getSourceType());
         vo.setSourceBizId(profile.getSourceBizId());
         vo.setStatus(profile.getStatus());
         vo.setErrorMessage(safeSkillProfileErrorMessage(profile.getErrorMessage()));
-        vo.setGapCount(listGapItems(profile).size());
+        vo.setGapCount(gaps.size());
         vo.setAiCallLogId(profile.getAiCallLogId());
         vo.setCreatedAt(profile.getCreatedAt());
         vo.setUpdatedAt(profile.getUpdatedAt());
@@ -762,14 +773,15 @@ public class SkillProfileServiceImpl implements SkillProfileService {
 
     private SkillProfileOverviewVO toOverviewVO(SkillProfile profile) {
         List<SkillGapItemVO> gaps = listGapItems(profile);
+        ProfileMetrics metrics = profileMetrics(profile, gaps);
         JsonNode raw = readJsonOrNull(profile.getRawResultJson());
         SkillProfileOverviewVO vo = new SkillProfileOverviewVO();
         vo.setEmpty(false);
         vo.setProfileId(profile.getId());
         vo.setTargetJobId(profile.getTargetJobId());
         vo.setProfileName(profile.getProfileName());
-        vo.setOverallLevel(profile.getOverallLevel());
-        vo.setOverallScore(profile.getOverallScore());
+        vo.setOverallLevel(metrics.overallLevel());
+        vo.setOverallScore(metrics.overallScore());
         vo.setStatus(profile.getStatus());
         vo.setSummary(profile.getSummary());
         vo.setRadarData(gaps.stream().map(this::toRadarDataItem).toList());
@@ -808,14 +820,18 @@ public class SkillProfileServiceImpl implements SkillProfileService {
 
     private InnerSkillProfileVO toInnerProfileVO(SkillProfile profile) {
         TargetJob targetJob = targetJobMapper.selectById(profile.getTargetJobId());
+        List<SkillGapItem> gaps = mergedGapItems(profile);
+        ProfileMetrics metrics = profileMetrics(profile, gaps.stream()
+                .map(item -> toGapItemVO(item, profile.getId()))
+                .toList());
         InnerSkillProfileVO vo = new InnerSkillProfileVO();
         vo.setProfileId(profile.getId());
         vo.setUserId(profile.getUserId());
         vo.setTargetJobId(profile.getTargetJobId());
         vo.setMatchReportId(profile.getMatchReportId());
         vo.setProfileName(profile.getProfileName());
-        vo.setOverallLevel(profile.getOverallLevel());
-        vo.setOverallScore(profile.getOverallScore());
+        vo.setOverallLevel(metrics.overallLevel());
+        vo.setOverallScore(metrics.overallScore());
         vo.setSummary(profile.getSummary());
         vo.setSourceType(profile.getSourceType());
         vo.setSourceBizId(profile.getSourceBizId());
@@ -829,7 +845,9 @@ public class SkillProfileServiceImpl implements SkillProfileService {
             vo.setTargetJobLevel(targetJob.getJobLevel());
             vo.setTargetJdSource(targetJob.getJdSource());
         }
-        vo.setGapItems(innerGapItems(profile));
+        vo.setGapItems(gaps.stream()
+                .map(item -> toInnerGapItemVO(item, profile.getId()))
+                .toList());
         vo.setCreatedAt(profile.getCreatedAt());
         vo.setUpdatedAt(profile.getUpdatedAt());
         return vo;
@@ -839,6 +857,23 @@ public class SkillProfileServiceImpl implements SkillProfileService {
         return mergedGapItems(profile).stream()
                 .map(item -> toInnerGapItemVO(item, profile.getId()))
                 .toList();
+    }
+
+    private ProfileMetrics profileMetrics(
+            SkillProfile profile, List<SkillGapItemVO> gaps) {
+        boolean quantified = gaps != null && gaps.stream().anyMatch(this::isQuantifiedGap);
+        return quantified
+                ? new ProfileMetrics(profile.getOverallLevel(), profile.getOverallScore())
+                : new ProfileMetrics(null, null);
+    }
+
+    private boolean isQuantifiedGap(SkillGapItemVO gap) {
+        return gap != null
+                && gap.getCurrentLevel() != null
+                && gap.getTargetLevel() != null;
+    }
+
+    private record ProfileMetrics(Integer overallLevel, Integer overallScore) {
     }
 
     private InnerSkillGapItemVO toInnerGapItemVO(SkillGapItem item, Long effectiveProfileId) {

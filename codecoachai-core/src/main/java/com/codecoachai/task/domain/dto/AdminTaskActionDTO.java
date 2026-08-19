@@ -9,4 +9,7 @@ public class AdminTaskActionDTO {
     private Boolean dryRun;
     private String reason;
     private String idempotencyKey;
+    private String governanceStatus;
+    private String governanceOwner;
+    private String previewHash;
 }

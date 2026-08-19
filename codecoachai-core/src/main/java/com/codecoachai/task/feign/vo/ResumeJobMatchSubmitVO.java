@@ -10,6 +10,7 @@ public class ResumeJobMatchSubmitVO {
     private Long resumeId;
     private Long targetJobId;
     private Long aiCallLogId;
+    private String executionId;
     private String asyncMessageId;
     private String asyncTraceId;
     private String asyncBizType;

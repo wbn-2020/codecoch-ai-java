@@ -24,6 +24,7 @@ public class QuestionRecommendationItemVO {
     private String practiceStatus;
     private Boolean canPractice;
     private Long practiceQuestionId;
+    private String practiceKind;
     private String sourceType;
     private Long sourceId;
     private String trustStatus;

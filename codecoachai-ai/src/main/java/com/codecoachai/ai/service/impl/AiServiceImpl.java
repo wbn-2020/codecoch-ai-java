@@ -29,6 +29,7 @@ import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
 import com.codecoachai.ai.domain.dto.ResumeOptimizeAiRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.domain.support.AiDeliverySemantics;
 import com.codecoachai.ai.domain.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.ai.domain.vo.AnalyzeSkillGapVO;
 import com.codecoachai.ai.domain.vo.EvaluateAnswerVO;
@@ -104,6 +105,8 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_FOLLOW_UP = "INTERVIEW_FOLLOW_UP_GENERATE";
     private static final String SCENE_REPORT = "INTERVIEW_REPORT_GENERATE";
     private static final String SCENE_RESUME_PARSE = "RESUME_STRUCTURED_PARSE";
+    private static final String RESUME_IMPORT_SCHEMA_VERSION = "resume-import-v1";
+    private static final int MAX_RESUME_IMPORT_ITEMS = 100;
     private static final String SCENE_RESUME_OPTIMIZE = "RESUME_OPTIMIZE";
     private static final String SCENE_AI_QUESTION_GENERATE = "AI_QUESTION_GENERATE";
     private static final String SCENE_LEARNING_PLAN_GENERATE = "LEARNING_PLAN_GENERATE";
@@ -111,6 +114,9 @@ public class AiServiceImpl implements AiService {
     private static final String SCENE_JOB_DESCRIPTION_PARSE = "JOB_DESCRIPTION_PARSE";
     private static final Pattern KUBERNETES_OR_K8S_PATTERN =
             Pattern.compile("(?i)(?<![a-z0-9])(?:kubernetes|k8s)(?![a-z0-9])");
+    private static final Pattern JOB_REQUIREMENT_LEVEL_PATTERN =
+            Pattern.compile("精通|熟练掌握|熟练|掌握|熟悉|了解|expert|advanced|proficient|familiar|basic",
+                    Pattern.CASE_INSENSITIVE);
     private static final String SCENE_RESUME_JOB_MATCH = "RESUME_JOB_MATCH";
     private static final String TRUST_VERIFIED = "VERIFIED";
     private static final String TRUST_PARTIAL = "PARTIAL";
@@ -126,6 +132,7 @@ public class AiServiceImpl implements AiService {
     private static final int MAX_PREPARATION_REQUIREMENTS = 20;
     private static final int MAX_PREPARATION_ITEMS = 10;
     private static final int MAX_PREPARATION_WEAKNESSES = 8;
+    private static final int DEFAULT_DAILY_STUDY_MINUTES = 60;
     private static final int MAX_WEEKLY_FACTS = 60;
     private static final int MAX_WEEKLY_SIGNALS = 20;
     private static final int MAX_WEEKLY_SUGGESTIONS = 2;
@@ -662,7 +669,7 @@ public class AiServiceImpl implements AiService {
         try {
             String structuredJson;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
-                structuredJson = mockResumeStructuredJson();
+                structuredJson = parseResumeStructuredJson(mockResumeStructuredJson());
                 saveLog(promptResult, structuredJson,
                         businessId(dto.getAnalysisRecordId()), start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
@@ -796,7 +803,7 @@ public class AiServiceImpl implements AiService {
             Long logId;
             String resultJson;
             if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
-                resultJson = mockJobDescriptionParseJson(dto);
+                resultJson = parseJobDescriptionJson(mockJobDescriptionParseJson(dto), dto.getJdText());
                 logId = saveLog(promptResult, resultJson,
                         businessId(dto.getTargetJobId()), start, null, dto.getUserId(), AiFailureType.NONE);
             } else {
@@ -2351,6 +2358,8 @@ public class AiServiceImpl implements AiService {
         values.put("questionPerformanceSummary", dto.getQuestionPerformanceSummary());
         values.put("resumeWeaknessSummary", dto.getResumeWeaknessSummary());
         values.put("expectedDurationDays", dto.getExpectedDurationDays() == null ? "14" : String.valueOf(dto.getExpectedDurationDays()));
+        values.put("dailyMinutes", String.valueOf(dto.getDailyMinutes() == null
+                ? DEFAULT_DAILY_STUDY_MINUTES : dto.getDailyMinutes()));
         values.put("extraRequirements", dto.getExtraRequirements());
         return values;
     }
@@ -2724,7 +2733,9 @@ public class AiServiceImpl implements AiService {
     }
 
     private void validatePracticeReviewDTO(PracticeReviewDTO dto) {
-        if (dto == null || dto.getRecordId() == null || dto.getQuestionId() == null) {
+        if (dto == null || dto.getRecordId() == null
+                || !StringUtils.hasText(dto.getQuestionTitle())
+                || !StringUtils.hasText(dto.getQuestionContent())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "练习记录和题目信息不能为空");
         }
         if (!StringUtils.hasText(dto.getAnswerContent())) {
@@ -3430,9 +3441,175 @@ public class AiServiceImpl implements AiService {
 
     private String parseJobDescriptionJson(String raw, String jdText) {
         JsonNode json = normalizeJobDescriptionJson(parseJson(raw));
+        normalizeJobDescriptionSkillLevels(json, jdText);
         validateJobDescriptionJson(json);
         validateJobDescriptionKubernetesEvidence(json, jdText);
         return json.toString();
+    }
+
+    private void normalizeJobDescriptionSkillLevels(JsonNode json, String jdText) {
+        if (!(json instanceof ObjectNode root)) {
+            return;
+        }
+        normalizeJobDescriptionSkillArray(root, "requiredSkills", jdText);
+        normalizeJobDescriptionSkillArray(root, "bonusSkills", jdText);
+    }
+
+    private void normalizeJobDescriptionSkillArray(ObjectNode root, String fieldName, String jdText) {
+        JsonNode value = root.path(fieldName);
+        if (!value.isArray()) {
+            return;
+        }
+        ArrayNode normalized = objectMapper.createArrayNode();
+        for (JsonNode item : value) {
+            String skillName = jobDescriptionSkillName(item);
+            if (!StringUtils.hasText(skillName)) {
+                normalized.add(item);
+                continue;
+            }
+            ObjectNode skill = item != null && item.isObject()
+                    ? ((ObjectNode) item).deepCopy()
+                    : objectMapper.createObjectNode().put("name", skillName);
+            JobRequirementLevelEvidence evidence = findJobRequirementLevelEvidence(jdText, skillName);
+            skill.put("requiredLevel", evidence.level());
+            skill.put("evidence", evidence.evidence());
+            skill.put("confidence", evidence.explicit() ? "HIGH" : "LOW");
+            normalized.add(skill);
+        }
+        root.set(fieldName, normalized);
+    }
+
+    private String jobDescriptionSkillName(JsonNode item) {
+        if (item == null || item.isNull()) {
+            return null;
+        }
+        if (item.isTextual()) {
+            return item.asText().trim();
+        }
+        JsonNode name = firstNode(item, "name", "skill", "title", "label", "technology");
+        return name == null ? null : name.asText(null);
+    }
+
+    private JobRequirementLevelEvidence findJobRequirementLevelEvidence(String jdText, String skillName) {
+        if (!StringUtils.hasText(jdText) || !StringUtils.hasText(skillName)) {
+            return new JobRequirementLevelEvidence("未明确", "JD 原文未明确该技能的能力等级", false);
+        }
+        String source = jdText.trim();
+        List<Integer> skillIndexes = exactSkillIndexes(source, skillName.trim());
+        if (skillIndexes.isEmpty()) {
+            return new JobRequirementLevelEvidence(
+                    "未明确",
+                    "JD 原文中未定位到该技能名称，能力等级需人工复核",
+                    false);
+        }
+
+        JobRequirementLevelEvidence closestExplicitEvidence = null;
+        JobRequirementLevelEvidence closestUnstatedEvidence = null;
+        int closestExplicitDistance = Integer.MAX_VALUE;
+        for (int skillIndex : skillIndexes) {
+            int clauseStart = lastClauseBoundary(source, skillIndex) + 1;
+            int clauseEnd = nextClauseBoundary(source, skillIndex);
+            String clause = source.substring(clauseStart, clauseEnd).trim();
+            int relativeSkillIndex = Math.max(0, skillIndex - clauseStart);
+            Matcher matcher = JOB_REQUIREMENT_LEVEL_PATTERN.matcher(clause);
+            String nearestLevel = null;
+            int nearestDistance = Integer.MAX_VALUE;
+            while (matcher.find()) {
+                int distance = matcher.end() <= relativeSkillIndex
+                        ? relativeSkillIndex - matcher.end()
+                        : matcher.start() - relativeSkillIndex;
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestLevel = matcher.group();
+                }
+            }
+            if (!StringUtils.hasText(nearestLevel)) {
+                if (closestUnstatedEvidence == null) {
+                    closestUnstatedEvidence = new JobRequirementLevelEvidence(
+                            "未明确",
+                            truncateJobRequirementEvidence(clause),
+                            false);
+                }
+                continue;
+            }
+            if (nearestDistance < closestExplicitDistance) {
+                closestExplicitDistance = nearestDistance;
+                closestExplicitEvidence = new JobRequirementLevelEvidence(
+                        normalizeJobRequirementLevel(nearestLevel),
+                        truncateJobRequirementEvidence(clause),
+                        true);
+            }
+        }
+        return closestExplicitEvidence != null
+                ? closestExplicitEvidence
+                : closestUnstatedEvidence;
+    }
+
+    private List<Integer> exactSkillIndexes(String source, String skillName) {
+        if (!StringUtils.hasText(source) || !StringUtils.hasText(skillName)) {
+            return List.of();
+        }
+        boolean leftBoundaryRequired = isAsciiIdentifierChar(skillName.charAt(0));
+        boolean rightBoundaryRequired = isAsciiIdentifierChar(skillName.charAt(skillName.length() - 1));
+        String expression = (leftBoundaryRequired ? "(?<![A-Za-z0-9_])" : "")
+                + Pattern.quote(skillName)
+                + (rightBoundaryRequired ? "(?![A-Za-z0-9_])" : "");
+        Matcher matcher = Pattern.compile(expression, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE)
+                .matcher(source);
+        List<Integer> indexes = new ArrayList<>();
+        while (matcher.find()) {
+            indexes.add(matcher.start());
+        }
+        return indexes;
+    }
+
+    private boolean isAsciiIdentifierChar(char value) {
+        return (value >= 'A' && value <= 'Z')
+                || (value >= 'a' && value <= 'z')
+                || (value >= '0' && value <= '9')
+                || value == '_';
+    }
+
+    private int lastClauseBoundary(String source, int index) {
+        int boundary = -1;
+        for (char separator : new char[]{'。', '；', ';', '\n', '\r'}) {
+            boundary = Math.max(boundary, source.lastIndexOf(separator, Math.max(0, index - 1)));
+        }
+        return boundary;
+    }
+
+    private int nextClauseBoundary(String source, int index) {
+        int boundary = source.length();
+        for (char separator : new char[]{'。', '；', ';', '\n', '\r'}) {
+            int candidate = source.indexOf(separator, index);
+            if (candidate >= 0) {
+                boundary = Math.min(boundary, candidate);
+            }
+        }
+        return boundary;
+    }
+
+    private String normalizeJobRequirementLevel(String level) {
+        String normalized = level == null ? "" : level.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case "精通", "expert" -> "精通";
+            case "熟练掌握", "熟练", "advanced", "proficient" -> "熟练";
+            case "掌握" -> "掌握";
+            case "熟悉", "familiar" -> "熟悉";
+            case "了解", "basic" -> "了解";
+            default -> "未明确";
+        };
+    }
+
+    private String truncateJobRequirementEvidence(String evidence) {
+        if (!StringUtils.hasText(evidence)) {
+            return "JD 原文未明确该技能的能力等级";
+        }
+        String normalized = evidence.trim();
+        return normalized.length() <= 160 ? normalized : normalized.substring(0, 160) + "...";
+    }
+
+    private record JobRequirementLevelEvidence(String level, String evidence, boolean explicit) {
     }
 
     private void validateJobDescriptionKubernetesEvidence(JsonNode json, String jdText) {
@@ -4379,23 +4556,50 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.isObject()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR, "AI resume parse response must be a JSON object");
         }
-        requireJsonField(json, "basicInfo");
-        requireJsonField(json, "targetPosition");
-        requireJsonField(json, "skills");
-        requireJsonField(json, "workExperiences");
-        requireJsonField(json, "projectExperiences");
-        requireJsonField(json, "educationExperiences");
-        JsonNode projects = json.path("projectExperiences");
-        if (projects.isArray()) {
-            for (JsonNode project : projects) {
-                if (project != null && project.isObject()) {
-                    requireJsonField(project, "techStack");
-                    requireJsonField(project, "responsibilities");
-                    requireJsonField(project, "technicalDifficulties");
-                    requireJsonField(project, "achievements");
-                }
-            }
+        JsonNode schemaVersion = json.get("schemaVersion");
+        if (schemaVersion == null
+                || !schemaVersion.isTextual()
+                || !RESUME_IMPORT_SCHEMA_VERSION.equals(schemaVersion.asText())) {
+            throw new AiProviderException(
+                    AiFailureType.PARSE_ERROR,
+                    "AI resume parse response has unsupported schemaVersion");
         }
+        JsonNode basicInfo = requireResumeObject(json, "basicInfo");
+        requireResumeText(basicInfo, "name", 64);
+        requireResumeText(basicInfo, "phone", 32);
+        requireResumeText(basicInfo, "email", 128);
+        requireResumeText(basicInfo, "location", 128);
+        requireResumeText(json, "targetPosition", 128);
+        requireResumeText(json, "summary", 2_000);
+        requireResumeStringArray(json, "skills", 100);
+        validateResumeObjectArray(json, "workExperiences", work -> {
+            requireResumeText(work, "company", 128);
+            requireResumeText(work, "position", 128);
+            requireResumeText(work, "period", 128);
+            requireResumeText(work, "description", 2_000);
+            requireResumeStringArray(work, "responsibilities", 500);
+            requireResumeStringArray(work, "achievements", 500);
+        });
+        validateResumeObjectArray(json, "projectExperiences", project -> {
+            requireResumeText(project, "projectName", 128);
+            requireResumeText(project, "period", 128);
+            requireResumeText(project, "background", 2_000);
+            requireResumeText(project, "role", 64);
+            requireResumeText(project, "description", 2_000);
+            requireResumeStringArray(project, "techStack", 128);
+            requireResumeStringArray(project, "responsibilities", 500);
+            requireResumeStringArray(project, "coreFeatures", 500);
+            requireResumeStringArray(project, "technicalDifficulties", 500);
+            requireResumeStringArray(project, "optimizationResults", 500);
+            requireResumeStringArray(project, "achievements", 500);
+        });
+        validateResumeObjectArray(json, "educationExperiences", education -> {
+            requireResumeText(education, "school", 128);
+            requireResumeText(education, "degree", 64);
+            requireResumeText(education, "major", 128);
+            requireResumeText(education, "period", 128);
+            requireResumeText(education, "description", 1_000);
+        });
     }
 
     private void validateJobDescriptionJson(JsonNode json) {
@@ -4619,6 +4823,59 @@ public class AiServiceImpl implements AiService {
         if (json == null || !json.has(fieldName) || json.path(fieldName).isNull()) {
             throw new AiProviderException(AiFailureType.PARSE_ERROR,
                     "AI resume parse response missing field: " + fieldName);
+        }
+    }
+
+    private JsonNode requireResumeObject(JsonNode json, String fieldName) {
+        JsonNode value = json == null ? null : json.get(fieldName);
+        if (value == null || !value.isObject()) {
+            throw new AiProviderException(
+                    AiFailureType.PARSE_ERROR,
+                    "AI resume parse field must be an object: " + fieldName);
+        }
+        return value;
+    }
+
+    private void requireResumeText(JsonNode json, String fieldName, int maxLength) {
+        JsonNode value = json == null ? null : json.get(fieldName);
+        if (value == null || !value.isTextual() || value.asText().length() > maxLength) {
+            throw new AiProviderException(
+                    AiFailureType.PARSE_ERROR,
+                    "AI resume parse field must be a bounded string: " + fieldName);
+        }
+    }
+
+    private void requireResumeStringArray(JsonNode json, String fieldName, int maxItemLength) {
+        JsonNode value = json == null ? null : json.get(fieldName);
+        if (value == null || !value.isArray() || value.size() > MAX_RESUME_IMPORT_ITEMS) {
+            throw new AiProviderException(
+                    AiFailureType.PARSE_ERROR,
+                    "AI resume parse field must be a bounded array: " + fieldName);
+        }
+        for (JsonNode item : value) {
+            if (item == null || !item.isTextual() || item.asText().length() > maxItemLength) {
+                throw new AiProviderException(
+                        AiFailureType.PARSE_ERROR,
+                        "AI resume parse array must contain bounded strings: " + fieldName);
+            }
+        }
+    }
+
+    private void validateResumeObjectArray(
+            JsonNode json, String fieldName, java.util.function.Consumer<JsonNode> validator) {
+        JsonNode value = json == null ? null : json.get(fieldName);
+        if (value == null || !value.isArray() || value.size() > MAX_RESUME_IMPORT_ITEMS) {
+            throw new AiProviderException(
+                    AiFailureType.PARSE_ERROR,
+                    "AI resume parse field must be a bounded array: " + fieldName);
+        }
+        for (JsonNode item : value) {
+            if (item == null || !item.isObject()) {
+                throw new AiProviderException(
+                        AiFailureType.PARSE_ERROR,
+                        "AI resume parse array must contain objects: " + fieldName);
+            }
+            validator.accept(item);
         }
     }
 
@@ -5031,34 +5288,43 @@ public class AiServiceImpl implements AiService {
 
     private String mockResumeStructuredJson() {
         Map<String, Object> json = new LinkedHashMap<>();
+        json.put("schemaVersion", RESUME_IMPORT_SCHEMA_VERSION);
         json.put("basicInfo", Map.of(
                 "name", "张三",
-                "phone", "13800000000",
-                "email", "zhangsan@example.com",
+                "phone", "",
+                "email", "",
                 "location", "上海"
         ));
         json.put("targetPosition", "Java 后端开发工程师");
+        json.put("summary", "具备 Java 后端服务开发、接口设计和性能优化经验。");
         json.put("skills", List.of("Java", "Spring Boot", "MySQL", "Redis", "微服务"));
         json.put("workExperiences", List.of(Map.of(
                 "company", "示例科技有限公司",
                 "position", "Java 后端开发工程师",
                 "period", "2022.07-至今",
-                "description", "负责核心业务系统后端研发、接口设计和性能优化。"
+                "description", "负责核心业务系统后端研发、接口设计和性能优化。",
+                "responsibilities", List.of("负责后端服务设计与交付"),
+                "achievements", List.of("持续改善核心接口稳定性")
         )));
-        json.put("projectExperiences", List.of(Map.of(
-                "projectName", "在线面试训练平台",
-                "period", "2023.01-2024.12",
-                "description", "面向求职用户的刷题、模拟面试和报告生成平台。",
-                "techStack", List.of("Spring Cloud", "MyBatis-Plus", "MySQL", "Redis"),
-                "responsibilities", List.of("负责简历与面试核心服务设计", "实现 AI 面试报告生成链路"),
-                "technicalDifficulties", List.of("跨服务调用稳定性", "AI 返回 JSON 格式约束"),
-                "achievements", List.of("完成核心闭环交付", "提升面试报告生成稳定性")
+        json.put("projectExperiences", List.of(Map.ofEntries(
+                Map.entry("projectName", "在线面试训练平台"),
+                Map.entry("period", "2023.01-2024.12"),
+                Map.entry("background", "面向求职用户的刷题、模拟面试和报告生成平台。"),
+                Map.entry("role", "后端开发"),
+                Map.entry("description", "面向求职用户的刷题、模拟面试和报告生成平台。"),
+                Map.entry("techStack", List.of("Spring Cloud", "MyBatis-Plus", "MySQL", "Redis")),
+                Map.entry("responsibilities", List.of("负责简历与面试核心服务设计", "实现 AI 面试报告生成链路")),
+                Map.entry("coreFeatures", List.of("简历解析", "模拟面试", "报告生成")),
+                Map.entry("technicalDifficulties", List.of("跨服务调用稳定性", "AI 返回 JSON 格式约束")),
+                Map.entry("optimizationResults", List.of("完善失败重试和结构化结果校验")),
+                Map.entry("achievements", List.of("完成核心闭环交付", "提升面试报告生成稳定性"))
         )));
         json.put("educationExperiences", List.of(Map.of(
                 "school", "示例大学",
                 "degree", "本科",
                 "major", "计算机科学与技术",
-                "period", "2018.09-2022.06"
+                "period", "2018.09-2022.06",
+                "description", ""
         )));
         return toJson(json);
     }
@@ -5728,6 +5994,21 @@ public class AiServiceImpl implements AiService {
         log.setTotalTokens(null);
         log.setStatus(errorMessage == null ? CommonConstants.YES : CommonConstants.NO);
         log.setErrorMessage(safeAiErrorSummary(errorMessage, resolvedFailureType));
+        boolean mockExecution = Boolean.TRUE.equals(aiProperties.getMockEnabled());
+        boolean promptFallback = Boolean.TRUE.equals(promptResult.getFallbackUsed());
+        String executionSource = mockExecution
+                ? AiDeliverySemantics.MOCK
+                : promptFallback ? AiDeliverySemantics.FALLBACK_MODEL : AiDeliverySemantics.PRIMARY_MODEL;
+        String deliveryQuality = errorMessage != null
+                ? AiDeliverySemantics.FAILED
+                : (mockExecution || promptFallback
+                        ? AiDeliverySemantics.DEGRADED
+                        : AiDeliverySemantics.COMPLETE);
+        log.setExecutionSource(executionSource);
+        log.setDeliveryQuality(deliveryQuality);
+        if (promptFallback) {
+            log.setFallbackReasonCode("PROMPT_RENDER_FALLBACK");
+        }
         try {
             aiCallLogMapper.insert(log);
             return log.getId();
@@ -6223,6 +6504,7 @@ public class AiServiceImpl implements AiService {
                 industryDirection: {{industryDirection}}
                 experienceLevel: {{experienceLevel}}
                 expectedDurationDays: {{expectedDurationDays}}
+                dailyMinutes: {{dailyMinutes}}
                 interviewSummary:
                 {{interviewSummary}}
                 weaknessSummary:
@@ -6237,12 +6519,17 @@ public class AiServiceImpl implements AiService {
                 Output only one JSON object. Do not output Markdown. Do not output code fences. Do not add explanations.
                 Top-level fields must be planTitle, planSummary, durationDays, stages.
                 stages must be an array. Each stage must contain stageNo, stageTitle, items.
-                items must be an array. Each item must contain knowledgePoint, taskTitle, taskDescription, taskType, priority, estimatedHours, relatedTags, resources.
+                items must be an array. Each item must contain dayOffset, knowledgePoint, taskTitle, taskDescription,
+                taskType, priority, estimatedMinutes, relatedTags, resources.
                 taskType must be one of KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE, RESUME_IMPROVEMENT.
                 priority must be one of HIGH, MEDIUM, LOW.
-                Use 2 to 4 stages and 2 to 5 items per stage.
+                Use a practical number of stages to group the schedule.
+                dayOffset values must cover every integer day from 1 through expectedDurationDays without gaps.
+                Every day must contain at least one executable task; multiple tasks on the same day are allowed.
+                For every dayOffset, the sum of estimatedMinutes across all tasks must not exceed dailyMinutes.
+                Each individual task's estimatedMinutes must also not exceed dailyMinutes.
                 Example:
-                {"planTitle":"Java backend 14 day plan","planSummary":"Focus on weak points and interview practice.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Foundation repair","items":[{"knowledgePoint":"Java Collections","taskTitle":"Review HashMap resize mechanism","taskDescription":"Summarize core flow, edge cases, and interview expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedHours":2,"relatedTags":["Java"],"resources":[]}]}]}
+                {"planTitle":"Java backend 14 day plan","planSummary":"Focus on weak points and interview practice.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Foundation repair","items":[{"dayOffset":1,"knowledgePoint":"Java Collections","taskTitle":"Review HashMap resize mechanism","taskDescription":"Summarize core flow, edge cases, and interview expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedMinutes":60,"relatedTags":["Java"],"resources":[]}]}]}
                 """;
     }
 
@@ -6304,7 +6591,10 @@ public class AiServiceImpl implements AiService {
                 techStackKeywords, businessKeywords, experienceRequirement, projectExperienceRequirement,
                 interviewFocusPoints, skillWeights, summary.
                 responsibilities, requiredSkills, bonusSkills, techStackKeywords, businessKeywords, and interviewFocusPoints must be arrays.
-                requiredSkills and bonusSkills items should contain name, category, requiredLevel, weight, and evidence.
+                requiredSkills and bonusSkills items must contain name, category, requiredLevel, weight, evidence, and confidence.
+                requiredLevel must preserve the exact capability level stated in the JD using one of 了解, 熟悉, 掌握, 熟练, 精通, 未明确.
+                Never upgrade a requirement: for example, 熟悉 must remain 熟悉 and must not become 掌握, 熟练, or 精通.
+                evidence must quote or closely preserve the relevant JD wording. Use confidence=HIGH only when the level is explicit; otherwise use requiredLevel=未明确 and confidence=LOW.
                 interviewFocusPoints items should contain topic and reason.
                 skillWeights should be an object keyed by skill name.
                 Strict fact constraints:
@@ -6313,7 +6603,7 @@ public class AiServiceImpl implements AiService {
                 3. A concrete technology product may appear in any output field only when it is explicitly stated in the JD. If a fact is unavailable, keep the field generic or use an empty string, empty array, or empty object.
                 Do not invent company facts beyond the JD.
                 Example:
-                {"jobTitle":"Java Backend Engineer","companyName":"","jobLevel":"Mid-level","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"Framework","requiredLevel":4,"weight":90,"evidence":"JD requires Spring Boot experience"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
+                {"jobTitle":"Java 后端工程师","companyName":"","jobLevel":"中级","responsibilities":[],"requiredSkills":[{"name":"Spring Boot","category":"框架","requiredLevel":"熟悉","weight":90,"evidence":"要求熟悉 Spring Boot","confidence":"HIGH"}],"bonusSkills":[],"techStackKeywords":[],"businessKeywords":[],"experienceRequirement":"","projectExperienceRequirement":"","interviewFocusPoints":[],"skillWeights":{},"summary":""}
                 """;
     }
 
@@ -6651,18 +6941,28 @@ public class AiServiceImpl implements AiService {
                 要求：
                 1. 只输出 JSON object，不要 Markdown，不要代码块，不要解释文字。
                 2. 不要编造简历原文中没有的信息；无法识别的字段使用空字符串或空数组。
-                3. JSON 顶层字段固定为：
+                3. schemaVersion 必须固定为 "resume-import-v1"，不得省略或修改。
+                4. JSON 顶层字段固定为：
+                   - schemaVersion：固定字符串 "resume-import-v1"。
                    - basicInfo：基本信息，包含 name、phone、email、location。
                    - targetPosition：求职岗位。
+                   - summary：只填写原文中的个人摘要，不得混入 schema key、字段名或解析器说明。
                    - skills：技能栈数组。
                    - workExperiences：工作经历数组。
                    - projectExperiences：项目经历数组。
                    - educationExperiences：教育经历数组。
-                4. projectExperiences 中每个项目必须包含：
-                   projectName、period、description、techStack、responsibilities、technicalDifficulties、achievements。
-                5. techStack、responsibilities、technicalDifficulties、achievements 使用数组。
+                5. workExperiences 每项必须包含：
+                   company、position、period、description、responsibilities、achievements。
+                6. projectExperiences 每项必须包含：
+                   projectName、period、background、role、description、techStack、responsibilities、
+                   coreFeatures、technicalDifficulties、optimizationResults、achievements。
+                7. educationExperiences 每项必须包含：
+                   school、degree、major、period、description。
+                8. skills 以及所有复数内容字段必须是字符串数组，经历数组中的每一项必须是 JSON object。
+                9. phone 或 email 如果仅有脱敏值、星号、占位符或无法确认，必须输出空字符串，不得猜测。
+                10. 不得把数组或对象序列化成 JSON 字符串。
                 输出示例：
-                {"basicInfo":{"name":"","phone":"","email":"","location":""},"targetPosition":"","skills":[],"workExperiences":[],"projectExperiences":[{"projectName":"","period":"","description":"","techStack":[],"responsibilities":[],"technicalDifficulties":[],"achievements":[]}],"educationExperiences":[]}
+                {"schemaVersion":"resume-import-v1","basicInfo":{"name":"","phone":"","email":"","location":""},"targetPosition":"","summary":"","skills":[],"workExperiences":[{"company":"","position":"","period":"","description":"","responsibilities":[],"achievements":[]}],"projectExperiences":[{"projectName":"","period":"","background":"","role":"","description":"","techStack":[],"responsibilities":[],"coreFeatures":[],"technicalDifficulties":[],"optimizationResults":[],"achievements":[]}],"educationExperiences":[{"school":"","degree":"","major":"","period":"","description":""}]}
                 """;
     }
 
@@ -6741,6 +7041,10 @@ public class AiServiceImpl implements AiService {
                 taskType must be one of KNOWLEDGE_REVIEW, CODING_PRACTICE, PROJECT_REVIEW, INTERVIEW_PRACTICE, RESUME_IMPROVEMENT.
                 priority must be one of HIGH, MEDIUM, LOW.
                 sourceGapId must use the original selected skill gap id as a string.
+                dayOffset values must cover every integer day from 1 through availableDays without gaps.
+                Every day must contain at least one executable task; multiple tasks on the same day are allowed.
+                For every dayOffset, the sum of estimatedMinutes across all tasks must not exceed dailyMinutes.
+                Each individual task's estimatedMinutes must also not exceed dailyMinutes.
                 Example:
                 {"planTitle":"Java backend Redis gap repair plan","planSummary":"Repair Redis first, then consolidate MQ.","durationDays":14,"stages":[{"stageNo":1,"stageTitle":"Redis repair","items":[{"dayOffset":1,"skillName":"Redis","sourceGapId":"12","taskTitle":"Redis cache penetration, breakdown and avalanche","taskDescription":"Summarize causes, protections, and project expression.","taskType":"KNOWLEDGE_REVIEW","priority":"HIGH","estimatedMinutes":60,"acceptance":"Can explain at least two cache protection strategies with project examples.","relatedTags":["Redis"],"resources":[]}]}]}
                 """;

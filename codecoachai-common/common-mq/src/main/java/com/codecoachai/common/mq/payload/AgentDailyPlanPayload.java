@@ -17,6 +17,10 @@ public class AgentDailyPlanPayload {
 
     private Long runId;
     private Long userId;
+    private String executionId;
+    private String parentExecutionId;
+    private String idempotencyKey;
+    private Integer attemptNo;
     private String executionToken;
     private Long targetJobId;
     private LocalDate date;

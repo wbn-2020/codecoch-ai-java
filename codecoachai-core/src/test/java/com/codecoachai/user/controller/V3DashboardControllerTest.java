@@ -16,7 +16,7 @@ class V3DashboardControllerTest {
 
     @Test
     void nextActionsUseCurrentResumeMatchRouteWhenTargetJobExistsButNoMatchReport() throws Exception {
-        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper(), null);
         V3DashboardVO dashboard = new V3DashboardVO();
         V3DashboardVO.TargetJobCardVO targetJob = new V3DashboardVO.TargetJobCardVO();
         targetJob.setId(11L);
@@ -33,7 +33,7 @@ class V3DashboardControllerTest {
 
     @Test
     void nextActionsUseCanonicalSkillProfilePageRoute() throws Exception {
-        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper(), null);
         V3DashboardVO dashboard = new V3DashboardVO();
         V3DashboardVO.TargetJobCardVO targetJob = new V3DashboardVO.TargetJobCardVO();
         targetJob.setId(11L);
@@ -59,7 +59,7 @@ class V3DashboardControllerTest {
 
     @Test
     void skillRadarSkipsGapWithoutQuantifiedLevel() throws Exception {
-        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper(), null);
 
         List<Map<String, Object>> radar = invokeToRadar(controller, List.of(gap("JAVA", null)));
 
@@ -68,7 +68,7 @@ class V3DashboardControllerTest {
 
     @Test
     void skillRadarAveragesOnlyQuantifiedGapsWithinCategory() throws Exception {
-        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper());
+        V3DashboardController controller = new V3DashboardController(nullJdbcTemplate(), new ObjectMapper(), null);
 
         List<Map<String, Object>> radar = invokeToRadar(
                 controller,

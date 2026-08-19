@@ -18,6 +18,9 @@ public class UserDashboardOverviewVO {
     private ActiveStudyPlanVO activeStudyPlan;
     private Long todayTaskCount;
     private Long todayCompletedTaskCount;
+    private Integer currentStreak;
+    private Integer totalCheckinDays;
+    private Boolean checkedInToday;
     private LocalDate businessDate;
     private String businessTimezone;
     private List<EntryStatusVO> entryStatuses;

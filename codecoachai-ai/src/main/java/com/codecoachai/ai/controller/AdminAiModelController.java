@@ -23,6 +23,7 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
+import jakarta.validation.Valid;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -116,7 +117,7 @@ public class AdminAiModelController {
     @PostMapping("/admin/ai/models")
     @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logArgs = false, logResponse = false)
     @Transactional(rollbackFor = Exception.class)
-    public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
+    public Result<AiModelConfig> create(@Valid @RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
         return runConfirmedOperation("ai-model-create:" + modelOperationTarget(dto),
                 dto == null ? null : dto.getConfirm(),
@@ -127,6 +128,7 @@ public class AdminAiModelController {
                     AiModelConfig entity = new AiModelConfig();
                     apply(entity, dto);
                     ensureDefaultModelEnabled(entity);
+                    ensureModelReadyForDefault(entity);
                     ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), null);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
                         clearGlobalDefault(null);
@@ -140,7 +142,7 @@ public class AdminAiModelController {
     @PutMapping("/admin/ai/models/{id}")
     @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logArgs = false, logResponse = false)
     @Transactional(rollbackFor = Exception.class)
-    public Result<AiModelConfig> update(@PathVariable Long id, @RequestBody AiModelConfigSaveDTO dto) {
+    public Result<AiModelConfig> update(@PathVariable Long id, @Valid @RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
         return runConfirmedOperation("ai-model-update:" + id,
                 dto == null ? null : dto.getConfirm(),
@@ -153,6 +155,7 @@ public class AdminAiModelController {
                     apply(entity, dto);
                     ensureExistingDefaultIsNotCleared(originalDefaultModel, entity.getDefaultModel());
                     ensureDefaultModelEnabled(entity);
+                    ensureModelReadyForDefault(entity);
                     ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), id);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
                         clearGlobalDefault(id);
@@ -176,6 +179,7 @@ public class AdminAiModelController {
                 dto == null ? null : dto.getIdempotencyKey(),
                 () -> {
                     AiModelConfig entity = get(id);
+                    ensureModelConfigComplete(entity);
                     clearGlobalDefault(id);
                     entity.setDefaultModel(1);
                     entity.setEnabled(1);
@@ -287,8 +291,19 @@ public class AdminAiModelController {
 
     private void apply(AiModelConfig entity, AiModelConfigSaveDTO dto) {
         String modelCode = dto == null ? null : (StringUtils.hasText(dto.getModelCode()) ? dto.getModelCode() : dto.getModelName());
-        if (dto == null || !StringUtils.hasText(dto.getProvider()) || !StringUtils.hasText(modelCode)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "供应商和模型标识不能为空");
+        if (dto == null || !StringUtils.hasText(dto.getProvider())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "provider",
+                    "供应商标识不能为空",
+                    "填写供应商标识后重新提交");
+        }
+        if (!StringUtils.hasText(modelCode)) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "modelName",
+                    "模型标识不能为空",
+                    "填写供应商要求的模型 ID 后重新提交");
         }
         entity.setProvider(dto.getProvider().trim());
         entity.setModelCode(modelCode.trim());
@@ -330,15 +345,45 @@ public class AdminAiModelController {
     private void ensureDefaultModelEnabled(AiModelConfig entity) {
         if (Integer.valueOf(1).equals(entity.getDefaultModel())
                 && !Integer.valueOf(1).equals(entity.getEnabled())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "默认模型必须保持启用状态");
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "enabled",
+                    "默认模型必须保持启用状态",
+                    "先启用模型，或取消本次设为默认的请求");
+        }
+    }
+
+    private void ensureModelReadyForDefault(AiModelConfig entity) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
+            ensureModelConfigComplete(entity);
+        }
+    }
+
+    private void ensureModelConfigComplete(AiModelConfig entity) {
+        if (!StringUtils.hasText(entity.getApiBaseUrl())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    "设为默认模型前必须填写可用的接口地址",
+                    "补充允许访问的 HTTPS 接口地址后重试");
+        }
+        if (!StringUtils.hasText(entity.getApiKey())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiKey",
+                    "设为默认模型前必须配置 API Key",
+                    "编辑模型并配置 API Key 后再设为默认");
         }
     }
 
     private void ensureExistingDefaultIsNotCleared(Integer originalDefaultModel, Integer updatedDefaultModel) {
         if (Integer.valueOf(1).equals(originalDefaultModel)
                 && !Integer.valueOf(1).equals(updatedDefaultModel)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "当前默认模型不能通过编辑取消默认，请先将其它启用模型设为默认");
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "defaultModel",
+                    "系统要求始终保留一个已启用的全局默认模型，不能直接取消默认",
+                    "请将其它配置完整的模型设为默认，系统会原子切换默认模型");
         }
     }
 
@@ -347,11 +392,14 @@ public class AdminAiModelController {
             action.run();
         } catch (DuplicateKeyException ex) {
             if (isModelCodeDuplicate(ex)) {
-                throw new BusinessException(ErrorCode.PARAM_ERROR,
-                        "同一供应商下已存在相同的模型标识，请修改后重试");
+                throw duplicateModelCodeConflict();
             }
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "全局默认模型冲突，请刷新后重试");
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "全局默认模型发生并发冲突，本次修改未生效",
+                    true,
+                    "刷新模型列表，确认当前默认模型后重新操作",
+                    Map.of("defaultModel", "全局只能有一个已启用的默认模型"));
         }
     }
 
@@ -361,9 +409,19 @@ public class AdminAiModelController {
                 .eq(AiModelConfig::getModelCode, modelCode)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId));
         if (count != null && count > 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "同一供应商下已存在相同的模型标识，请修改后重试");
+            throw duplicateModelCodeConflict();
         }
+    }
+
+    private BusinessException duplicateModelCodeConflict() {
+        return new BusinessException(
+                ErrorCode.RESOURCE_RELATION_CONFLICT,
+                "同一供应商下已存在相同的模型标识",
+                false,
+                "修改供应商标识或模型标识，或返回列表编辑已有配置",
+                Map.of(
+                        "provider", "该供应商与模型标识组合已存在",
+                        "modelName", "该供应商与模型标识组合已存在"));
     }
 
     private boolean isModelCodeDuplicate(DuplicateKeyException ex) {
@@ -373,15 +431,21 @@ public class AdminAiModelController {
 
     private void ensureDefaultModelNotDisabled(AiModelConfig entity, Integer enabled) {
         if (Integer.valueOf(1).equals(entity.getDefaultModel()) && Integer.valueOf(0).equals(enabled)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Default AI model cannot be disabled. Set another default model first.");
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "enabled",
+                    "默认模型不能直接停用",
+                    "先将其它配置完整的模型设为默认，再停用当前模型");
         }
     }
 
     private void ensureDefaultModelNotDeleted(AiModelConfig entity) {
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Default AI model cannot be deleted. Set another default model first.");
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "defaultModel",
+                    "默认模型不能直接删除",
+                    "先将其它配置完整的模型设为默认，再删除当前模型");
         }
     }
 
@@ -568,13 +632,48 @@ public class AdminAiModelController {
 
     private String normalizeApiBaseUrl(String apiBaseUrl) {
         if (!StringUtils.hasText(apiBaseUrl)) {
-            return null;
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    "接口地址不能为空",
+                    "填写允许访问的 HTTPS 接口地址后重试");
         }
         try {
             return endpointPolicy.validateAndNormalizeBaseUrl(apiBaseUrl);
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, ex.getMessage());
+            String message = endpointValidationMessage(ex.getMessage());
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    message,
+                    "使用系统允许名单中的公网 HTTPS 主机；不要填写内网、回环、带查询参数或无法解析的地址");
         }
+    }
+
+    private String endpointValidationMessage(String rawMessage) {
+        String message = rawMessage == null ? "" : rawMessage;
+        if (message.contains("allowlist")) {
+            return "接口地址主机不在系统允许名单中";
+        }
+        if (message.contains("cannot be resolved")) {
+            return "接口地址主机无法解析";
+        }
+        if (message.contains("non-public")) {
+            return "接口地址不能解析到内网、回环或保留地址";
+        }
+        if (message.contains("must use HTTPS")) {
+            return "接口地址必须使用 HTTPS";
+        }
+        if (message.contains("port is not allowed")) {
+            return "接口地址端口不在系统允许范围内";
+        }
+        if (message.contains("user info, query, or fragment")) {
+            return "接口地址不能包含账号信息、查询参数或锚点";
+        }
+        if (message.contains("invalid")) {
+            return "接口地址格式不正确";
+        }
+        return "接口地址不符合供应商安全策略";
     }
 
     private void encryptPlainApiKeyBeforeSave(AiModelConfig entity) {

@@ -117,6 +117,20 @@ public class ResumeVersionSnapshotManager {
         return insertAndApplyLocked(resume, snapshot, sourceType, sourceId, versionName);
     }
 
+    public ResumeVersion ensureInitialVersion(
+            Resume resume, String sourceType, Long sourceId, String versionName) {
+        lockOwnedResume(resume);
+        ResumeVersion current = versionMapper.selectCurrentForUpdate(
+                resume.getUserId(), resume.getId());
+        if (current != null) {
+            return current;
+        }
+        List<ResumeProject> projects = projectMapper.selectActiveByResumeIdForUpdate(resume.getId());
+        ObjectNode snapshot = liveSnapshot(
+                resume, projects == null ? List.of() : projects);
+        return insertSnapshotOnlyLocked(resume, snapshot, sourceType, sourceId, versionName);
+    }
+
     public ResumeVersion insertAndApplyIfCurrent(Resume resume, Long expectedCurrentVersionId,
                                                  ObjectNode snapshot, String sourceType, Long sourceId,
                                                  String versionName) {
@@ -293,6 +307,43 @@ public class ResumeVersionSnapshotManager {
         }
         throw lastConflict == null
                 ? new BusinessException(ErrorCode.SYSTEM_ERROR, "Failed to allocate resume version")
+                : lastConflict;
+    }
+
+    private ResumeVersion insertSnapshotOnlyLocked(
+            Resume resume, ObjectNode snapshot, String sourceType, Long sourceId, String versionName) {
+        String snapshotJson = write(snapshot);
+        DuplicateKeyException lastConflict = null;
+        for (int attempt = 0; attempt < VERSION_INSERT_ATTEMPTS; attempt++) {
+            ResumeVersion existing = versionMapper.selectCurrentForUpdate(
+                    resume.getUserId(), resume.getId());
+            if (existing != null) {
+                return existing;
+            }
+            int nextNo = nextVersionNo(resume.getId(), resume.getUserId());
+            ResumeVersion version = new ResumeVersion();
+            version.setUserId(resume.getUserId());
+            version.setResumeId(resume.getId());
+            version.setVersionNo(nextNo);
+            version.setVersionName(StringUtils.hasText(versionName) ? versionName : "V" + nextNo);
+            version.setSnapshotJson(snapshotJson);
+            version.setSourceType(sourceType);
+            version.setSourceId(sourceId);
+            version.setCurrentFlag(CommonConstants.YES);
+            try {
+                versionMapper.insert(version);
+                return version;
+            } catch (DuplicateKeyException ex) {
+                lastConflict = ex;
+            }
+        }
+        ResumeVersion winner = versionMapper.selectCurrentForUpdate(
+                resume.getUserId(), resume.getId());
+        if (winner != null) {
+            return winner;
+        }
+        throw lastConflict == null
+                ? new BusinessException(ErrorCode.SYSTEM_ERROR, "Failed to allocate initial resume version")
                 : lastConflict;
     }
 

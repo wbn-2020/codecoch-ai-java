@@ -80,7 +80,9 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                         ? result.getErrorMessage()
                         : "agent daily plan failed";
                 String safeReason = safeFailureReason(reason, "agent daily plan failed");
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                if (!settleTerminalFailure(envelope.getMessageId(), safeReason)) {
+                    return;
+                }
                 notifyFailed(payload, safeReason);
                 log.warn("Agent daily plan failed runId={} reason={}", payload.getRunId(), safeReason);
                 return;
@@ -90,7 +92,9 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                         ? result.getErrorMessage()
                         : "agent daily plan canceled";
                 String safeReason = safeFailureReason(reason, "agent daily plan canceled");
-                asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
+                if (!settleTerminalFailure(envelope.getMessageId(), safeReason)) {
+                    return;
+                }
                 log.info("Agent daily plan canceled runId={} reason={}", payload.getRunId(), safeReason);
                 return;
             }
@@ -98,18 +102,26 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                 throw new RuntimeException("agent daily plan execute returned non-success status: "
                         + result.getStatus());
             }
+            if (!Boolean.TRUE.equals(result.getConsumable())) {
+                throw new TerminalTaskFailureException(
+                        "agent daily plan returned no consumable business result");
+            }
 
             asyncTaskService.markSuccess(envelope.getMessageId(), result);
             notificationService.notifyTaskDone(payload.getUserId(), NOTIFY_BIZ_TYPE,
                     String.valueOf(payload.getRunId()), "今日计划已生成", "智能教练已完成今日训练计划，请回到今日计划页查看");
             log.info("Agent daily plan completed runId={}", payload.getRunId());
+        } catch (AsyncTaskService.TaskLeaseLostException ex) {
+            log.info("Ignoring late or duplicate daily plan callback messageId={} reason={}",
+                    envelope.getMessageId(), ex.getMessage());
         } catch (TerminalTaskFailureException ex) {
             String safeReason = safeFailureReason(ex.getMessage(), "agent daily plan terminal failed");
             log.warn("Agent daily plan task terminal failed messageId={} failureType={} reason={}",
                     envelope.getMessageId(), ex.getClass().getSimpleName(), safeReason);
-            asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
-            failAgentRun(envelope.getPayload(), safeReason);
-            notifyFailed(envelope.getPayload(), safeReason);
+            if (settleTerminalFailure(envelope.getMessageId(), safeReason)) {
+                failAgentRun(envelope.getPayload(), safeReason);
+                notifyFailed(envelope.getPayload(), safeReason);
+            }
         } catch (NonRetryableMqException ex) {
             String safeReason = safeFailureReason(ex.getMessage(), "agent daily plan non-retryable failure");
             log.error("Agent daily plan task is not retryable messageId={} failureType={} reason={}",
@@ -131,6 +143,10 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
     private ExecuteAgentDailyPlanDTO toExecuteDto(AgentDailyPlanPayload payload) {
         ExecuteAgentDailyPlanDTO dto = new ExecuteAgentDailyPlanDTO();
         dto.setUserId(payload.getUserId());
+        dto.setExecutionId(payload.getExecutionId());
+        dto.setParentExecutionId(payload.getParentExecutionId());
+        dto.setIdempotencyKey(payload.getIdempotencyKey());
+        dto.setAttemptNo(payload.getAttemptNo());
         dto.setExecutionToken(payload.getExecutionToken());
         dto.setTargetJobId(payload.getTargetJobId());
         dto.setDate(payload.getDate());
@@ -154,6 +170,8 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
         }
         AgentRunFailureDTO dto = new AgentRunFailureDTO();
         dto.setUserId(payload.getUserId());
+        dto.setExecutionId(payload.getExecutionId());
+        dto.setTerminalReasonCode(AGENT_ASYNC_TASK_FAILED);
         dto.setExecutionToken(payload.getExecutionToken());
         dto.setErrorCode(AGENT_ASYNC_TASK_FAILED);
         dto.setErrorMessage(reason);
@@ -169,6 +187,17 @@ public class AgentDailyPlanConsumer implements RocketMQListener<MqMessage<AgentD
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private boolean settleTerminalFailure(String messageId, String reason) {
+        try {
+            asyncTaskService.markTerminalFailed(messageId, reason);
+            return true;
+        } catch (AsyncTaskService.TaskLeaseLostException ex) {
+            log.info("Daily plan terminal callback lost the lease messageId={} reason={}",
+                    messageId, ex.getMessage());
+            return false;
+        }
     }
 
     private String safeFailureReason(String reason, String fallback) {

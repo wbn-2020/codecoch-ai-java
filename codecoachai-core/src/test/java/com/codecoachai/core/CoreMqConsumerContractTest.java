@@ -17,8 +17,10 @@ import com.codecoachai.task.consumer.ResumeJobMatchConsumer;
 import com.codecoachai.task.consumer.ResumeOptimizeConsumer;
 import com.codecoachai.task.consumer.ResumeParseConsumer;
 import com.codecoachai.task.consumer.StudyPlanGenerateConsumer;
+import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.codecoachai.task.service.AsyncTaskService;
 import com.codecoachai.task.service.NotificationService;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -90,12 +92,15 @@ class CoreMqConsumerContractTest {
         return new ApplicationContextRunner()
                 .withUserConfiguration(ConsumerConfiguration.class)
                 .withBean(AsyncTaskService.class, () -> mock(AsyncTaskService.class))
+                .withBean(AsyncTaskMapper.class, () -> mock(AsyncTaskMapper.class))
                 .withBean(AiFeignClient.class, () -> mock(AiFeignClient.class))
                 .withBean(ResumeFeignClient.class, () -> mock(ResumeFeignClient.class))
                 .withBean(QuestionFeignClient.class, () -> mock(QuestionFeignClient.class))
                 .withBean(InterviewFeignClient.class, () -> mock(InterviewFeignClient.class))
                 .withBean(NotificationService.class, () -> mock(NotificationService.class))
-                .withBean(ObjectMapper.class, ObjectMapper::new);
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(ResumeImportNormalizer.class,
+                        () -> new ResumeImportNormalizer(new ObjectMapper()));
     }
 
     @Configuration(proxyBeanMethods = false)

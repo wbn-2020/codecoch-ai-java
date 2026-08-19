@@ -11,7 +11,7 @@ public class ResumeTextExtractProperties {
 
     private int maxExtractedTextChars = 30000;
 
-    private int maxSourceFileSizeMb = 10;
+    private int maxSourceFileSizeMb = 20;
 
     private int maxPdfPages = 10;
 
@@ -20,6 +20,6 @@ public class ResumeTextExtractProperties {
     }
 
     public int effectiveMaxSourceFileSizeMb() {
-        return maxSourceFileSizeMb <= 0 ? 10 : maxSourceFileSizeMb;
+        return maxSourceFileSizeMb <= 0 ? 20 : maxSourceFileSizeMb;
     }
 }

@@ -3,6 +3,7 @@ package com.codecoachai.interview.domain.dto;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
+import java.time.LocalDate;
 import lombok.Data;
 
 @Data
@@ -20,5 +21,6 @@ public class StudyPlanGenerateDTO {
     @Min(value = 15, message = "每天学习时长需在 15 到 480 分钟之间")
     @Max(value = 480, message = "每天学习时长需在 15 到 480 分钟之间")
     private Integer dailyMinutes;
+    private LocalDate startDate;
     private String extraRequirements;
 }

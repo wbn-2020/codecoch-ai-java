@@ -7,6 +7,10 @@ public class AgentRunFailureDTO {
 
     private Long userId;
 
+    private String executionId;
+
+    private String terminalReasonCode;
+
     private String executionToken;
 
     private String errorCode;

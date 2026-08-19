@@ -136,6 +136,8 @@ class SkillProfileServiceImplTest {
         assertEquals(USER_ID, created.getUserId());
         assertEquals("INTERVIEW_REPORT", created.getSourceType());
         assertEquals(REPORT_ID, created.getSourceBizId());
+        assertNull(created.getOverallLevel());
+        assertNull(created.getOverallScore());
 
         ArgumentCaptor<SkillGapItem> gapCaptor = ArgumentCaptor.forClass(SkillGapItem.class);
         verify(gapItemMapper).insert(gapCaptor.capture());
@@ -144,6 +146,60 @@ class SkillProfileServiceImplTest {
         assertEquals("INTERVIEW_FEEDBACK", gap.getCategory());
         assertEquals("INTERVIEW_REPORT", gap.getSourceType());
         assertEquals(REPORT_ID, gap.getSourceBizId());
+    }
+
+    @Test
+    void persistedOverallMetricsAreHiddenWhenEveryGapIsUnquantified() {
+        SkillProfile profile = displayProfile(78, 3);
+        SkillGapItem gap = new SkillGapItem();
+        gap.setProfileId(profile.getId());
+        gap.setUserId(USER_ID);
+        gap.setSkillName("Java");
+        when(profileMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(profile);
+        when(gapItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(gap));
+
+        var result = service.getById(profile.getId());
+
+        assertNull(result.getOverallLevel());
+        assertNull(result.getOverallScore());
+        assertEquals(1, result.getGapItems().size());
+        assertNull(result.getGapItems().get(0).getCurrentLevel());
+        assertNull(result.getGapItems().get(0).getTargetLevel());
+    }
+
+    @Test
+    void persistedOverallMetricsRemainVisibleWhenQuantifiedGapExists() {
+        SkillProfile profile = displayProfile(78, 3);
+        SkillGapItem gap = new SkillGapItem();
+        gap.setProfileId(profile.getId());
+        gap.setUserId(USER_ID);
+        gap.setSkillName("Java");
+        gap.setCurrentLevel(2);
+        gap.setTargetLevel(4);
+        when(profileMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(profile);
+        when(gapItemMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(gap));
+
+        var result = service.getById(profile.getId());
+
+        assertEquals(3, result.getOverallLevel());
+        assertEquals(78, result.getOverallScore());
+        assertEquals(2, result.getGapItems().get(0).getCurrentLevel());
+        assertEquals(4, result.getGapItems().get(0).getTargetLevel());
+    }
+
+    @Test
+    void evidenceFeedbackProfileDoesNotInventOverallMetrics() {
+        when(profileMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(null);
+        when(profileMapper.insert(any(SkillProfile.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, SkillProfile.class).setId(991L);
+            return 1;
+        });
+
+        SkillProfile result = service.resolveEvidenceFeedbackProfile(USER_ID, TARGET_JOB_ID);
+
+        assertEquals("EVIDENCE_USAGE", result.getSourceType());
+        assertNull(result.getOverallLevel());
+        assertNull(result.getOverallScore());
     }
 
     @Test
@@ -525,5 +581,18 @@ class SkillProfileServiceImplTest {
             TableInfoHelper.initTableInfo(
                     new MapperBuilderAssistant(new MybatisConfiguration(), ""), entityType);
         }
+    }
+
+    private SkillProfile displayProfile(int overallScore, int overallLevel) {
+        SkillProfile profile = new SkillProfile();
+        profile.setId(990L);
+        profile.setUserId(USER_ID);
+        profile.setTargetJobId(TARGET_JOB_ID);
+        profile.setProfileName("后端工程师能力画像");
+        profile.setStatus(SkillProfileStatus.SUCCESS.getCode());
+        profile.setSourceType("INTERVIEW_REPORT");
+        profile.setOverallScore(overallScore);
+        profile.setOverallLevel(overallLevel);
+        return profile;
     }
 }

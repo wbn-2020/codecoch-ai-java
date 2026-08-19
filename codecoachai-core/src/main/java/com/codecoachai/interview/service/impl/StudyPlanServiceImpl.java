@@ -89,6 +89,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     private static final String PLAN_ACTIVE = "ACTIVE";
     private static final String PLAN_FAILED = "FAILED";
     private static final String STUDY_PLAN_ASYNC_BIZ_TYPE = StudyPlanMqDispatcher.BIZ_TYPE_GENERATE;
+    private static final String SCHEDULE_NOT_STARTED = "NOT_STARTED";
+    private static final String SCHEDULE_EXPIRED = "EXPIRED";
+    private static final String SCHEDULE_UNSCHEDULED = "UNSCHEDULED";
     private static final String TASK_TODO = "TODO";
     private static final String TASK_COMPLETED = "COMPLETED";
     private static final String TASK_SKIPPED = "SKIPPED";
@@ -113,10 +116,19 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     public StudyPlanGenerateVO generate(StudyPlanGenerateDTO dto) {
         Long userId = requireCurrentUserId();
         InterviewReport report = getOwnedGeneratedReport(dto.getReportId(), userId);
+        int requestedDurationDays = normalizeDuration(dto.getExpectedDurationDays());
+        int requestedDailyMinutes = normalizeDailyMinutes(dto.getDailyMinutes());
+        LocalDate requestedStartDate = normalizeStartDate(dto.getStartDate());
         StudyPlan existing = latestPlan(userId, report.getId());
         if (existing != null && (PLAN_ACTIVE.equals(existing.getPlanStatus())
                 || PLAN_GENERATING.equals(existing.getPlanStatus()))) {
-            return toGenerateVO(existing);
+            if (matchesPlanParameters(existing, requestedDurationDays, requestedDailyMinutes, requestedStartDate)) {
+                return toGenerateVO(existing);
+            }
+            if (PLAN_GENERATING.equals(existing.getPlanStatus())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "已有学习计划正在按其他参数生成，请等待完成后重新提交");
+            }
         }
         StudyPlan plan = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, null));
         return submitForGeneration(plan, null);
@@ -187,8 +199,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     @Override
     public StudyPlanDetailVO detail(Long id) {
         StudyPlan plan = getOwnedPlan(id, requireCurrentUserId());
-        StudyPlanDetailVO vo = toDetailVO(plan);
-        vo.setTasks(taskEntities(plan.getId(), plan.getUserId()).stream().map(this::toTaskVO).toList());
+        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
+        StudyPlanDetailVO vo = toDetailVO(plan, tasks);
+        vo.setTasks(tasks.stream().map(this::toTaskVO).toList());
         return vo;
     }
 
@@ -264,7 +277,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlan plan = getOwnedPlan(planId, userId);
         LocalDate targetDate = parseDailyViewDate(date);
         int dayIndex = inferDayIndex(plan, targetDate);
-        List<StudyTask> tasks = taskEntities(plan.getId(), userId).stream()
+        List<StudyTask> allTasks = taskEntities(plan.getId(), userId);
+        List<StudyTask> tasks = allTasks.stream()
                 .filter(task -> matchesDailyViewDate(task, targetDate, dayIndex))
                 .toList();
 
@@ -278,6 +292,12 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         StudyPlanDailyViewVO vo = new StudyPlanDailyViewVO();
         vo.setPlanId(plan.getId());
         vo.setPlanTitle(plan.getPlanTitle());
+        vo.setPlanStatus(plan.getPlanStatus());
+        StudyPlanSchedule schedule = schedule(plan, allTasks, today());
+        vo.setScheduleStatus(schedule.status());
+        vo.setEndDate(schedule.endDate());
+        vo.setExpired(schedule.expired());
+        vo.setRenewable(schedule.renewable());
         vo.setDate(targetDate);
         vo.setDayIndex(dayIndex);
         vo.setTotalTaskCount(total);
@@ -340,8 +360,30 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         dto.setIndustryDirection(plan.getIndustryDirection());
         dto.setExpectedDurationDays(plan.getDurationDays());
         dto.setDailyMinutes(plan.getDailyMinutes());
+        LocalDate currentDate = today();
+        dto.setStartDate(plan.getStartDate() == null || plan.getStartDate().isBefore(currentDate)
+                ? currentDate
+                : plan.getStartDate());
         StudyPlan prepared = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, plan));
         return submitForGeneration(prepared, null);
+    }
+
+    @Override
+    public StudyPlanGenerateVO renew(Long id) {
+        Long userId = requireCurrentUserId();
+        StudyPlan existing = getOwnedPlan(id, userId);
+        List<StudyTask> existingTasks = taskEntities(existing.getId(), userId);
+        StudyPlanSchedule schedule = schedule(existing, existingTasks, today());
+        if (!schedule.expired()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "只有已过期的学习计划可以续期");
+        }
+        if (!schedule.renewable()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前学习计划缺少可续期的来源依据");
+        }
+        if (existing.getReportId() != null) {
+            return renewReportPlan(existing, userId);
+        }
+        return renewTargetedPlan(existing, userId);
     }
 
     @Override
@@ -552,19 +594,26 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setIndustryDirection(firstText(dto.getIndustryDirection(), session.getIndustryDirection()));
         plan.setDurationDays(normalizeDuration(dto.getExpectedDurationDays()));
         plan.setDailyMinutes(normalizeDailyMinutes(dto.getDailyMinutes()));
+        plan.setStartDate(normalizeStartDate(dto.getStartDate()));
         plan.setPlanStatus(PLAN_GENERATING);
         plan.setFailureReason(null);
         plan.setRequestJson(toJson(dto));
         if (plan.getId() == null) {
-            studyPlanMapper.insert(plan);
+            if (studyPlanMapper.insert(plan) != 1) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划保存失败");
+            }
         } else {
-            studyPlanMapper.updateById(plan);
+            if (studyPlanMapper.updateById(plan) != 1) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划保存失败");
+            }
             cleanupTasks(plan.getId(), userId);
         }
 
         GenerateLearningPlanDTO aiRequest = buildAiRequest(plan, session, report, dto, resume, optimizeRecord);
         plan.setRequestJson(toJson(aiRequest));
-        studyPlanMapper.updateById(plan);
+        if (studyPlanMapper.updateById(plan) != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成依据保存失败");
+        }
         return plan;
     }
 
@@ -574,13 +623,56 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         validateSkillProfile(profile, userId);
         int days = normalizeGapDays(dto.getDays());
         int dailyMinutes = normalizeDailyMinutes(dto.getDailyMinutes());
-        LocalDate startDate = dto.getStartDate() == null ? LocalDate.now(BUSINESS_ZONE_ID) : dto.getStartDate();
+        LocalDate startDate = normalizeStartDate(dto.getStartDate());
         List<InnerSkillGapItemVO> selectedGaps = resolveSelectedGaps(profile, dto.getGapItemIds());
 
         StudyPlan plan = transactionTemplate.execute(status ->
                 prepareTargetedPlan(dto, profile, profileSourceType(profile), profileSourceBizId(profile), selectedGaps,
                         days, dailyMinutes, startDate));
         return submitForGeneration(plan, selectedGaps.size());
+    }
+
+    private StudyPlanGenerateVO renewReportPlan(StudyPlan existing, Long userId) {
+        InterviewReport report = getOwnedGeneratedReport(existing.getReportId(), userId);
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+        dto.setResumeId(existing.getResumeId());
+        dto.setOptimizeRecordId(existing.getOptimizeRecordId());
+        dto.setTargetPosition(existing.getTargetPosition());
+        dto.setIndustryDirection(existing.getIndustryDirection());
+        dto.setExpectedDurationDays(normalizeDuration(existing.getDurationDays()));
+        dto.setDailyMinutes(normalizeDailyMinutes(existing.getDailyMinutes()));
+        dto.setStartDate(today());
+        StudyPlan renewed = transactionTemplate.execute(status -> prepareReportPlan(userId, report, dto, null));
+        return submitForGeneration(renewed, null);
+    }
+
+    private StudyPlanGenerateVO renewTargetedPlan(StudyPlan existing, Long userId) {
+        if (existing.getSkillProfileId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前学习计划缺少可续期的能力画像");
+        }
+        InnerSkillProfileVO profile = FeignResultUtils.unwrap(
+                resumeFeignClient.getSkillProfile(existing.getSkillProfileId()));
+        validateSkillProfile(profile, userId);
+        List<Long> gapItemIds = relationEntities(existing.getId(), userId).stream()
+                .map(StudyPlanSkillRelation::getSkillGapItemId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        List<InnerSkillGapItemVO> selectedGaps = resolveSelectedGaps(profile, gapItemIds);
+        int days = normalizeGapDays(existing.getDurationDays());
+        int dailyMinutes = normalizeDailyMinutes(existing.getDailyMinutes());
+        StudyPlanGenerateFromGapDTO dto = new StudyPlanGenerateFromGapDTO();
+        dto.setProfileId(profile.getProfileId());
+        dto.setGapItemIds(gapItemIds);
+        dto.setDays(days);
+        dto.setDailyMinutes(dailyMinutes);
+        dto.setStartDate(today());
+        dto.setPlanTitle(existing.getPlanTitle());
+        StudyPlan renewed = transactionTemplate.execute(status ->
+                prepareTargetedPlan(dto, profile, existing.getSourceType(), existing.getSourceId(),
+                        selectedGaps, days, dailyMinutes, dto.getStartDate()));
+        return submitForGeneration(renewed, selectedGaps.size());
     }
 
     private StudyPlan prepareTargetedPlan(StudyPlanGenerateFromGapDTO dto,
@@ -606,12 +698,16 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         plan.setDailyMinutes(dailyMinutes);
         plan.setStartDate(startDate);
         plan.setRequestJson(toJson(dto));
-        studyPlanMapper.insert(plan);
+        if (studyPlanMapper.insert(plan) != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划保存失败");
+        }
 
         GenerateTargetedStudyPlanDTO aiRequest = buildTargetedAiRequest(
                 plan, profile, selectedGaps, days, dailyMinutes, startDate);
         plan.setRequestJson(toJson(aiRequest));
-        studyPlanMapper.updateById(plan);
+        if (studyPlanMapper.updateById(plan) != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成依据保存失败");
+        }
         return plan;
     }
 
@@ -683,7 +779,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                         : item.getRelatedQuestionIds()));
                 task.setRelatedTagsJson(toJson(item.getRelatedTags() == null ? List.of() : item.getRelatedTags()));
                 task.setResourcesJson(toJson(item.getResources() == null ? List.of() : item.getResources()));
-                studyTaskMapper.insert(task);
+                if (studyTaskMapper.insert(task) != 1) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划任务保存失败");
+                }
                 if (gap != null) {
                     insertRelation(plan, task, gap, relationPriority++);
                 }
@@ -814,7 +912,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     private LocalDate targetedPlannedDate(StudyPlan plan, GenerateLearningPlanVO.ItemVO item, int stageNo) {
-        LocalDate start = plan.getStartDate() == null ? LocalDate.now(BUSINESS_ZONE_ID) : plan.getStartDate();
+        LocalDate start = plan.getStartDate() == null ? today() : plan.getStartDate();
         int dayOffset = firstInteger(item.getDayOffset(), stageNo);
         return start.plusDays(Math.max(0, dayOffset - 1));
     }
@@ -940,7 +1038,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 task.setPlanId(plan.getId());
                 task.setUserId(plan.getUserId());
                 task.setStageNo(stageNo);
-                task.setPlannedDate(plannedDate(plan, stageNo));
+                task.setPlannedDate(plannedDate(plan, taskDayIndex(item, stageNo)));
                 task.setStageTitle(stage.getStageTitle());
                 task.setTaskOrder(order++);
                 task.setKnowledgePoint(item.getKnowledgePoint());
@@ -956,7 +1054,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                         : item.getRelatedQuestionIds()));
                 task.setRelatedTagsJson(toJson(item.getRelatedTags() == null ? List.of() : item.getRelatedTags()));
                 task.setResourcesJson(toJson(item.getResources() == null ? List.of() : item.getResources()));
-                studyTaskMapper.insert(task);
+                if (studyTaskMapper.insert(task) != 1) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划任务保存失败");
+                }
             }
         }
     }
@@ -977,6 +1077,14 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .eq(StudyPlan::getDeleted, CommonConstants.NO)
                 .orderByDesc(StudyPlan::getUpdatedAt)
                 .last("limit 1"));
+    }
+
+    private boolean matchesPlanParameters(StudyPlan plan, int durationDays,
+                                          int dailyMinutes, LocalDate startDate) {
+        return plan != null
+                && Objects.equals(plan.getDurationDays(), durationDays)
+                && Objects.equals(plan.getDailyMinutes(), dailyMinutes)
+                && Objects.equals(plan.getStartDate(), startDate);
     }
 
     private InterviewReport getOwnedGeneratedReport(Long reportId, Long userId) {
@@ -1091,9 +1199,18 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 .orderByAsc(StudyTask::getId));
     }
 
+    private List<StudyPlanSkillRelation> relationEntities(Long planId, Long userId) {
+        return relationMapper.selectList(new LambdaQueryWrapper<StudyPlanSkillRelation>()
+                .eq(StudyPlanSkillRelation::getStudyPlanId, planId)
+                .eq(StudyPlanSkillRelation::getUserId, userId)
+                .eq(StudyPlanSkillRelation::getDeleted, CommonConstants.NO)
+                .orderByAsc(StudyPlanSkillRelation::getPriority)
+                .orderByAsc(StudyPlanSkillRelation::getId));
+    }
+
     private LocalDate parseDailyViewDate(String date) {
         if (!StringUtils.hasText(date)) {
-            return LocalDate.now(BUSINESS_ZONE_ID);
+            return today();
         }
         try {
             return LocalDate.parse(date.trim());
@@ -1103,13 +1220,12 @@ public class StudyPlanServiceImpl implements StudyPlanService {
     }
 
     private int inferDayIndex(StudyPlan plan, LocalDate targetDate) {
-        if (plan.getCreatedAt() == null) {
-            return 1;
+        if (plan.getStartDate() == null) {
+            return 0;
         }
-        LocalDate startDate = plan.getCreatedAt().toLocalDate();
-        long days = ChronoUnit.DAYS.between(startDate, targetDate);
+        long days = ChronoUnit.DAYS.between(plan.getStartDate(), targetDate);
         if (days < 0) {
-            return 1;
+            return 0;
         }
         if (days >= Integer.MAX_VALUE) {
             return Integer.MAX_VALUE;
@@ -1125,17 +1241,18 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (task.getPlannedDate() != null) {
             return task.getPlannedDate().equals(targetDate);
         }
-        return fallbackDayIndex == normalizeTaskDayIndex(task.getStageNo());
+        return fallbackDayIndex > 0 && fallbackDayIndex == normalizeTaskDayIndex(task.getStageNo());
     }
 
-    private LocalDate plannedDate(StudyPlan plan, Integer stageNo) {
-        LocalDate startDate = plan.getCreatedAt() == null
-                ? LocalDate.now(BUSINESS_ZONE_ID)
-                : plan.getCreatedAt().toLocalDate();
-        return startDate.plusDays(Math.max(0, normalizeTaskDayIndex(stageNo) - 1));
+    private LocalDate plannedDate(StudyPlan plan, Integer dayIndex) {
+        if (plan.getStartDate() == null) {
+            return null;
+        }
+        return plan.getStartDate().plusDays(Math.max(0, normalizeTaskDayIndex(dayIndex) - 1));
     }
 
     private StudyPlanListVO toListVO(StudyPlan plan) {
+        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
         StudyPlanListVO vo = new StudyPlanListVO();
         vo.setId(plan.getId());
         vo.setReportId(plan.getReportId());
@@ -1152,13 +1269,14 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setDurationDays(plan.getDurationDays());
         vo.setDailyMinutes(plan.getDailyMinutes());
         vo.setStartDate(plan.getStartDate());
-        fillProgress(vo, plan);
+        fillSchedule(vo, plan, tasks);
+        fillProgress(vo, tasks);
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
         return vo;
     }
 
-    private StudyPlanDetailVO toDetailVO(StudyPlan plan) {
+    private StudyPlanDetailVO toDetailVO(StudyPlan plan, List<StudyTask> tasks) {
         StudyPlanDetailVO vo = new StudyPlanDetailVO();
         vo.setId(plan.getId());
         vo.setReportId(plan.getReportId());
@@ -1180,7 +1298,8 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setStartDate(plan.getStartDate());
         vo.setAiCallLogId(plan.getAiCallLogId());
         vo.setFailureReason(plan.getFailureReason());
-        fillProgress(vo, plan);
+        fillSchedule(vo, plan, tasks);
+        fillProgress(vo, tasks);
         vo.setCreatedAt(plan.getCreatedAt());
         vo.setUpdatedAt(plan.getUpdatedAt());
         return vo;
@@ -1257,8 +1376,7 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         return vo;
     }
 
-    private void fillProgress(StudyPlanListVO vo, StudyPlan plan) {
-        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
+    private void fillProgress(StudyPlanListVO vo, List<StudyTask> tasks) {
         int total = tasks.size();
         int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
@@ -1266,13 +1384,30 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         vo.setProgressPercent(total == 0 ? 0 : done * 100 / total);
     }
 
-    private void fillProgress(StudyPlanDetailVO vo, StudyPlan plan) {
-        List<StudyTask> tasks = taskEntities(plan.getId(), plan.getUserId());
+    private void fillProgress(StudyPlanDetailVO vo, List<StudyTask> tasks) {
         int total = tasks.size();
         int done = (int) tasks.stream().filter(task -> isTaskDone(task.getTaskStatus())).count();
         vo.setTotalTaskCount(total);
         vo.setDoneTaskCount(done);
         vo.setProgressPercent(total == 0 ? 0 : done * 100 / total);
+    }
+
+    private void fillSchedule(StudyPlanListVO vo, StudyPlan plan, List<StudyTask> tasks) {
+        StudyPlanSchedule schedule = schedule(plan, tasks, today());
+        vo.setEffectiveStartDate(schedule.startDate());
+        vo.setEndDate(schedule.endDate());
+        vo.setScheduleStatus(schedule.status());
+        vo.setExpired(schedule.expired());
+        vo.setRenewable(schedule.renewable());
+    }
+
+    private void fillSchedule(StudyPlanDetailVO vo, StudyPlan plan, List<StudyTask> tasks) {
+        StudyPlanSchedule schedule = schedule(plan, tasks, today());
+        vo.setEffectiveStartDate(schedule.startDate());
+        vo.setEndDate(schedule.endDate());
+        vo.setScheduleStatus(schedule.status());
+        vo.setExpired(schedule.expired());
+        vo.setRenewable(schedule.renewable());
     }
 
     private StudyTaskVO toTaskVO(StudyTask task) {
@@ -1343,11 +1478,6 @@ public class StudyPlanServiceImpl implements StudyPlanService {
         if (aiPlan == null || aiPlan.getStages() == null || aiPlan.getStages().isEmpty()) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少阶段任务");
         }
-        boolean hasItem = aiPlan.getStages().stream()
-                .anyMatch(stage -> stage != null && stage.getItems() != null && !stage.getItems().isEmpty());
-        if (!hasItem) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少可执行任务");
-        }
         if (requestedDurationDays == null || requestedDurationDays < 1) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划请求天数无效");
         }
@@ -1356,10 +1486,9 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                     "AI 返回学习天数与请求不一致，期望 " + requestedDurationDays
                             + " 天，实际 " + aiPlan.getDurationDays() + " 天");
         }
-        if (dailyMinutes == null) {
-            return;
-        }
         Map<Integer, Integer> minutesByDay = new LinkedHashMap<>();
+        Set<Integer> coveredDays = new java.util.LinkedHashSet<>();
+        int taskCount = 0;
         for (GenerateLearningPlanVO.StageVO stage : aiPlan.getStages()) {
             if (stage == null || stage.getItems() == null) {
                 continue;
@@ -1369,16 +1498,29 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 if (item == null) {
                     continue;
                 }
+                if (!StringUtils.hasText(item.getTaskTitle())) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 返回任务缺少有效标题");
+                }
                 Integer estimatedMinutes = item.getEstimatedMinutes();
                 if (estimatedMinutes == null || estimatedMinutes < 1) {
                     throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI 返回任务缺少有效的预计分钟数");
+                }
+                int dayIndex = taskDayIndex(item, stageNo);
+                if (dayIndex < 1 || dayIndex > requestedDurationDays) {
+                    throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                            "AI 返回任务日期超出计划周期，第 " + dayIndex
+                                    + " 天不在 1 到 " + requestedDurationDays + " 天范围内");
+                }
+                coveredDays.add(dayIndex);
+                taskCount++;
+                if (dailyMinutes == null) {
+                    continue;
                 }
                 if (estimatedMinutes > dailyMinutes) {
                     throw new BusinessException(ErrorCode.SYSTEM_ERROR,
                             "AI 返回任务预计时长 " + estimatedMinutes + " 分钟超过每日预算 "
                                     + dailyMinutes + " 分钟");
                 }
-                int dayIndex = Math.max(1, firstInteger(item.getDayOffset(), stageNo));
                 int dailyTotal = minutesByDay.merge(dayIndex, estimatedMinutes, Integer::sum);
                 if (dailyTotal > dailyMinutes) {
                     throw new BusinessException(ErrorCode.SYSTEM_ERROR,
@@ -1387,6 +1529,26 @@ public class StudyPlanServiceImpl implements StudyPlanService {
                 }
             }
         }
+        if (taskCount == 0) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "学习计划生成结果缺少可执行任务");
+        }
+        List<Integer> missingDays = new ArrayList<>();
+        for (int day = 1; day <= requestedDurationDays; day++) {
+            if (!coveredDays.contains(day)) {
+                missingDays.add(day);
+            }
+        }
+        if (!missingDays.isEmpty()) {
+            String missingSummary = missingDays.size() <= 10
+                    ? missingDays.toString()
+                    : missingDays.subList(0, 10) + " 等 " + missingDays.size() + " 天";
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "AI 返回学习计划未覆盖完整周期，缺少第 " + missingSummary + " 天任务");
+        }
+    }
+
+    private int taskDayIndex(GenerateLearningPlanVO.ItemVO item, int stageNo) {
+        return firstInteger(item == null ? null : item.getDayOffset(), stageNo);
     }
 
     private String studyPlanFailureMessage(RuntimeException cause) {
@@ -1541,6 +1703,62 @@ public class StudyPlanServiceImpl implements StudyPlanService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "每日学习时长需要在 15 到 480 分钟之间");
         }
         return dailyMinutes;
+    }
+
+    private LocalDate normalizeStartDate(LocalDate startDate) {
+        LocalDate today = today();
+        LocalDate value = startDate == null ? today : startDate;
+        if (value.isBefore(today)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划开始日期不能早于今天");
+        }
+        return value;
+    }
+
+    private StudyPlanSchedule schedule(StudyPlan plan, List<StudyTask> tasks, LocalDate currentDate) {
+        LocalDate taskStartDate = tasks == null ? null : tasks.stream()
+                .map(StudyTask::getPlannedDate)
+                .filter(Objects::nonNull)
+                .min(LocalDate::compareTo)
+                .orElse(null);
+        LocalDate taskEndDate = tasks == null ? null : tasks.stream()
+                .map(StudyTask::getPlannedDate)
+                .filter(Objects::nonNull)
+                .max(LocalDate::compareTo)
+                .orElse(null);
+        LocalDate startDate = plan.getStartDate() == null ? taskStartDate : plan.getStartDate();
+        LocalDate endDate = taskEndDate;
+        if (endDate == null && startDate != null && plan.getDurationDays() != null
+                && plan.getDurationDays() > 0) {
+            endDate = startDate.plusDays(plan.getDurationDays() - 1L);
+        }
+        boolean renewableSource = plan.getReportId() != null || plan.getSkillProfileId() != null;
+        if (startDate == null || endDate == null) {
+            return new StudyPlanSchedule(
+                    startDate, endDate, SCHEDULE_UNSCHEDULED, false, false);
+        }
+        if (currentDate.isBefore(startDate)) {
+            return new StudyPlanSchedule(
+                    startDate, endDate, SCHEDULE_NOT_STARTED, false, false);
+        }
+        boolean expired = currentDate.isAfter(endDate);
+        return new StudyPlanSchedule(
+                startDate,
+                endDate,
+                expired ? SCHEDULE_EXPIRED : PLAN_ACTIVE,
+                expired,
+                expired && renewableSource);
+    }
+
+    private LocalDate today() {
+        return LocalDate.now(BUSINESS_ZONE_ID);
+    }
+
+    private record StudyPlanSchedule(
+            LocalDate startDate,
+            LocalDate endDate,
+            String status,
+            boolean expired,
+            boolean renewable) {
     }
 
     private String defaultTitle(StudyPlan plan) {

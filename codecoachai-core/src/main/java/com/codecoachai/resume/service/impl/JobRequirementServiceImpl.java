@@ -74,6 +74,21 @@ public class JobRequirementServiceImpl implements JobRequirementService {
         Long userId = SecurityAssert.requireLoginUserId();
         getOwnedTargetJob(targetJobId, userId);
         JobDescriptionAnalysis analysis = latestParsedAnalysis(targetJobId, userId);
+        return materializeForUser(targetJobId, userId, analysis);
+    }
+
+    @Override
+    public JobRequirementMaterializationVO materializeForUser(
+            Long targetJobId, Long userId, JobDescriptionAnalysis analysis) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "user is required");
+        }
+        if (analysis == null || analysis.getId() == null
+                || !Objects.equals(userId, analysis.getUserId())
+                || !Objects.equals(targetJobId, analysis.getTargetJobId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "parsed JD analysis does not belong to the target job");
+        }
         List<JobRequirement> parsed = parseRequirements(analysis);
         List<JobRequirement> existing = jobRequirementMapper.selectList(
                 new LambdaQueryWrapper<JobRequirement>()
@@ -222,18 +237,23 @@ public class JobRequirementServiceImpl implements JobRequirementService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public JobRequirementMatrixVO getMatrix(Long targetJobId) {
         Long userId = SecurityAssert.requireLoginUserId();
         return getMatrixForUser(userId, targetJobId);
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public JobRequirementMatrixVO getMatrixForUser(Long userId, Long targetJobId) {
         if (userId == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "user is required");
         }
         getOwnedTargetJob(targetJobId, userId);
         JobDescriptionAnalysis analysis = latestParsedAnalysis(targetJobId, userId);
+        if (activeRequirements(targetJobId, analysis.getId(), userId).isEmpty()) {
+            materializeForUser(targetJobId, userId, analysis);
+        }
         return buildMatrix(targetJobId, analysis.getId(), userId);
     }
 

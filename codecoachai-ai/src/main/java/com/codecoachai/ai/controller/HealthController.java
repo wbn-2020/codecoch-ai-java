@@ -18,6 +18,11 @@ public class HealthController {
 
     @GetMapping
     public Result<String> health() {
+        if (!aiProperties.isMockModeConfigured()) {
+            return Result.fail(ErrorCode.SYSTEM_ERROR.getCode(),
+                    AiProperties.MOCK_ENABLED_PROPERTY
+                            + " must be explicitly configured before AI routing is considered healthy");
+        }
         if (!Boolean.TRUE.equals(aiProperties.getMockEnabled())
                 && (!StringUtils.hasText(aiProperties.getBaseUrl())
                 || !StringUtils.hasText(aiProperties.getApiKey())

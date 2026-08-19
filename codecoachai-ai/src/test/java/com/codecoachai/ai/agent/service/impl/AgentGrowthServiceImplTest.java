@@ -48,6 +48,8 @@ import com.codecoachai.ai.agent.service.support.AgentBusinessTimeProvider;
 import com.codecoachai.ai.domain.dto.GenerateAgentReviewDTO;
 import com.codecoachai.ai.domain.vo.GenerateAgentReviewVO;
 import com.codecoachai.ai.service.AiService;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -81,6 +83,10 @@ class AgentGrowthServiceImplTest {
             MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
             TableInfoHelper.initTableInfo(assistant, AgentReview.class);
         }
+        if (TableInfoHelper.getTableInfo(AgentTask.class) == null) {
+            MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
+            TableInfoHelper.initTableInfo(assistant, AgentTask.class);
+        }
     }
 
     @Mock
@@ -99,6 +105,8 @@ class AgentGrowthServiceImplTest {
     private AiService aiService;
     @Mock
     private AgentReviewPlanService agentReviewPlanService;
+    @Mock
+    private StudyProgressStatisticsService progressStatisticsService;
 
     @Test
     void generateReviewIsDailyIdempotentAndSkipsAiAndSideEffectsOnRepeat() {
@@ -468,6 +476,33 @@ class AgentGrowthServiceImplTest {
     }
 
     @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void growthOverviewIncludesTheSharedStudyProgressSnapshotAndDeletedFilters() {
+        AgentGrowthServiceImpl service = service();
+        StudyProgressSnapshot progress = new StudyProgressSnapshot();
+        progress.setPlanId(88L);
+        progress.setTotalTasks(7);
+        progress.setCompletedTasks(4);
+        progress.setCompletionRate(57);
+        progress.setCurrentStreak(3);
+        progress.setBusinessDate(LocalDate.of(2026, 8, 18));
+        progress.setBusinessTimezone("Asia/Shanghai");
+        when(progressStatisticsService.current(10L)).thenReturn(progress);
+        when(agentTaskMapper.selectList(any())).thenReturn(List.of());
+        when(agentReviewMapper.selectCount(any())).thenReturn(0L);
+        when(agentMemoryMapper.selectCount(any())).thenReturn(0L);
+
+        GrowthOverviewVO vo = service.growthOverview(10L);
+
+        assertEquals(progress, vo.getStudyProgress());
+        verify(progressStatisticsService).current(10L);
+        ArgumentCaptor<Wrapper<AgentTask>> taskQuery = ArgumentCaptor.forClass(Wrapper.class);
+        verify(agentTaskMapper).selectList(taskQuery.capture());
+        String sqlSegment = ((AbstractWrapper<?, ?, ?>) taskQuery.getValue()).getSqlSegment();
+        assertTrue(sqlSegment.contains("deleted"));
+    }
+
+    @Test
     void growthReadModelsPropagateStorageFailuresInsteadOfReportingColdStart() {
         when(agentTaskMapper.selectList(any())).thenThrow(new RuntimeException("agent task table unavailable"));
         AgentGrowthServiceImpl target = service();
@@ -824,6 +859,7 @@ class AgentGrowthServiceImplTest {
                         anyList(),
                         anyList());
         lenient().when(agentReviewPlanService.suggestionVOs(any(), any())).thenReturn(List.of());
+        lenient().when(progressStatisticsService.current(any())).thenReturn(new StudyProgressSnapshot());
         return new AgentGrowthServiceImpl(
                 agentTaskMapper,
                 agentRunMapper,
@@ -834,7 +870,8 @@ class AgentGrowthServiceImplTest {
                 aiService,
                 agentReviewPlanService,
                 new ObjectMapper(),
-                fixedTimeProvider());
+                fixedTimeProvider(),
+                progressStatisticsService);
     }
 
     private AgentBusinessTimeProvider fixedTimeProvider() {

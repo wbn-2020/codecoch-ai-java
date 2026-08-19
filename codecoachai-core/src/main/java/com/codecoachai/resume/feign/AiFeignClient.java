@@ -15,6 +15,7 @@ import com.codecoachai.resume.feign.vo.GenerateInterviewPreparationAiVO;
 import com.codecoachai.resume.feign.vo.ParseJobDescriptionVO;
 import com.codecoachai.resume.feign.vo.ParseResumeVO;
 import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
+import java.util.Map;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -33,6 +34,9 @@ public interface AiFeignClient {
 
     @PostMapping("/inner/ai/resume-job-match/analyze")
     Result<AnalyzeResumeJobMatchVO> analyzeResumeJobMatch(@RequestBody AnalyzeResumeJobMatchDTO dto);
+
+    @PostMapping("/inner/ai/resume-job-match/outcome")
+    Result<Void> markResumeJobMatchOutcome(@RequestBody Map<String, Object> outcome);
 
     @PostMapping("/inner/ai/skill-gaps/analyze")
     Result<AnalyzeSkillGapVO> analyzeSkillGap(@RequestBody AnalyzeSkillGapDTO dto);

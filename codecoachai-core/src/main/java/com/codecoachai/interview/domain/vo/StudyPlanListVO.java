@@ -1,5 +1,6 @@
 package com.codecoachai.interview.domain.vo;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import lombok.Data;
 
@@ -20,7 +21,12 @@ public class StudyPlanListVO {
     private String planStatus;
     private Integer durationDays;
     private Integer dailyMinutes;
-    private java.time.LocalDate startDate;
+    private LocalDate startDate;
+    private LocalDate effectiveStartDate;
+    private LocalDate endDate;
+    private String scheduleStatus;
+    private Boolean expired;
+    private Boolean renewable;
     private Integer totalTaskCount;
     private Integer doneTaskCount;
     private Integer progressPercent;

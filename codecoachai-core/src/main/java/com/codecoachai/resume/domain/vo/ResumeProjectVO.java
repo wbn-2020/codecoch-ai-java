@@ -1,5 +1,6 @@
 package com.codecoachai.resume.domain.vo;
 
+import java.time.LocalDateTime;
 import lombok.Data;
 
 @Data
@@ -20,4 +21,6 @@ public class ResumeProjectVO {
     private String highlights;
     private Integer sort;
     private Integer sortOrder;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }

@@ -50,12 +50,15 @@ codecoachai:
             - POST /inner/ai/resume/optimize
             - POST /inner/ai/resume/parse
             - POST /inner/ai/resume-job-match/analyze
+            - POST /inner/ai/resume-job-match/outcome
             - POST /inner/ai/skill-gaps/analyze
             - POST /inner/ai/study-plans/generate-from-gap
           forward-user-context: true
   ai:
     enabled: true
-    # Dev acceptance uses real DeepSeek calls. Set DEEPSEEK_API_KEY in env/private Nacos before startup.
+    # Authoritative runtime Mock switch. The legacy system_config.ai.mock.enabled
+    # record is retired and cannot change AI routing. Dev acceptance uses real
+    # DeepSeek calls; set DEEPSEEK_API_KEY in env/private Nacos before startup.
     mock-enabled: false
     provider: openai-compatible
     model: ${AI_MODEL:deepseek-chat}

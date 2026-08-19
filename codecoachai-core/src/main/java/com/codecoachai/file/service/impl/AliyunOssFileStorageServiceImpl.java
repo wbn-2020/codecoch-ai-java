@@ -17,6 +17,8 @@ import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
 import com.codecoachai.file.util.FileBizTypes;
+import com.codecoachai.file.util.FileContentHashes;
+import com.codecoachai.file.util.FileDownloadValidator;
 import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.io.InputStream;
@@ -73,6 +75,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     private static final String PARSE_STATUS_SUCCESS = "SUCCESS";
     private static final String PARSE_STATUS_FAILED = "FAILED";
     private static final String PARSE_STATUS_WAIT_CONFIRM = "WAIT_CONFIRM";
+    private static final String PARSE_STATUS_CANCELLED = "CANCELLED";
     private static final String PROVIDER_OSS = "ALIYUN_OSS";
     private static final int NOT_DELETED = 0;
     private static final DateTimeFormatter DATE_PATH_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM");
@@ -105,14 +108,17 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         AtomicBoolean uploadedCleanupDone = new AtomicBoolean(false);
         try {
             MessageDigest md5Digest = MessageDigest.getInstance("MD5");
+            MessageDigest sha256Digest = FileContentHashes.digest();
             OssUploadResult uploaded;
-            try (InputStream inputStream = new DigestInputStream(file.getInputStream(), md5Digest)) {
+            try (InputStream shaInput = new DigestInputStream(file.getInputStream(), sha256Digest);
+                 InputStream inputStream = new DigestInputStream(shaInput, md5Digest)) {
                 uploaded = ossFileService.upload(ossKey, inputStream, file.getSize(),
                         StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
             }
             uploadedKey = uploaded.getOssKey();
             registerOssRollbackCleanup(uploadedKey, uploadedCleanupDone);
             String md5 = HexFormat.of().formatHex(md5Digest.digest());
+            String contentSha256 = HexFormat.of().formatHex(sha256Digest.digest());
 
             FileInfo fileInfo = new FileInfo();
             fileInfo.setUserId(userId);
@@ -127,6 +133,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
             fileInfo.setBucket(ossProperties.getBucket());
             fileInfo.setEtag(uploaded.getEtag());
             fileInfo.setMd5(md5);
+            fileInfo.setContentSha256(contentSha256);
             fileInfo.setStorageProvider(PROVIDER_OSS);
             fileInfo.setStatus(STATUS_AVAILABLE);
             fileInfoMapper.insert(fileInfo);
@@ -186,6 +193,11 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
         }
+        if (!ossFileService.exists(key)) {
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_NOT_FOUND,
+                    "文件对象不存在或已被移除，无法生成下载链接");
+        }
         return ossFileService.signUrl(key, null);
     }
 
@@ -197,17 +209,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     @Override
     public ResponseEntity<Resource> adminDownload(Long fileId) {
         FileInfo fileInfo = getAvailableAdminFile(fileId);
-        return redirectToSignedUrl(fileInfo, "OSS key is missing.");
-    }
-
-    private ResponseEntity<Resource> redirectToSignedUrl(FileInfo fileInfo, String missingMessage) {
-        String key = storageKey(fileInfo);
-        if (!StringUtils.hasText(key)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, missingMessage);
-        }
-        return ResponseEntity.status(302)
-                .location(URI.create(ossFileService.signUrl(key, null)))
-                .build();
+        return downloadResource(fileInfo);
     }
 
     private ResponseEntity<Resource> downloadResource(FileInfo fileInfo) {
@@ -215,9 +217,13 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         if (!StringUtils.hasText(key)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
         }
+        MediaType mediaType = FileDownloadValidator.validate(fileInfo, null);
+        if (!ossFileService.exists(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File is not available for download.");
+        }
         return ResponseEntity.ok()
-                .contentType(resolveMediaType(fileInfo.getMimeType()))
-                .contentLength(fileInfo.getFileSize() == null ? -1L : fileInfo.getFileSize())
+                .contentType(mediaType)
+                .contentLength(fileInfo.getFileSize())
                 .header("X-Original-Filename", encodeHeaderValue(fileInfo.getOriginalFilename()))
                 .header("X-File-Ext", fileInfo.getFileExt())
                 .header("X-File-Size", String.valueOf(fileInfo.getFileSize()))
@@ -347,9 +353,14 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     }
 
     private void validateSize(MultipartFile file, String bizType) {
-        long maxSizeMb = FileBizTypes.isInterviewVoice(bizType)
-                ? properties.getMaxInterviewVoiceSizeMb()
-                : properties.getMaxSizeMb();
+        long maxSizeMb;
+        if (BIZ_TYPE_RESUME.equals(bizType)) {
+            maxSizeMb = properties.getMaxResumeSizeMb();
+        } else if (FileBizTypes.isInterviewVoice(bizType)) {
+            maxSizeMb = properties.getMaxInterviewVoiceSizeMb();
+        } else {
+            maxSizeMb = properties.getMaxSizeMb();
+        }
         long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
@@ -394,6 +405,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         vo.setMimeType(fileInfo.getMimeType());
         vo.setStoragePath(fileInfo.getStoragePath());
         vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
         vo.setStatus(fileInfo.getStatus());
         vo.setCreatedAt(fileInfo.getCreatedAt());
         return vo;
@@ -411,6 +423,7 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         vo.setMimeType(fileInfo.getMimeType());
         vo.setFileSize(fileInfo.getFileSize());
         vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
         vo.setStatus(fileInfo.getStatus());
         vo.setCreatedAt(fileInfo.getCreatedAt());
         vo.setUpdatedAt(fileInfo.getUpdatedAt());
@@ -463,8 +476,16 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
         vo.setBusinessId(analysisStatus.getResumeId());
         vo.setResumeAnalysisRecordId(analysisStatus.getResumeAnalysisRecordId());
         vo.setParseStatus(analysisStatus.getParseStatus());
-        vo.setParseErrorMessage(analysisStatus.getParseErrorMessage());
-        vo.setAnalysisConfirmed(PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus()));
+        vo.setParseErrorMessage(PARSE_STATUS_FAILED.equals(analysisStatus.getParseStatus())
+                ? analysisStatus.getParseErrorMessage()
+                : null);
+        if (PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(true);
+        } else if (PARSE_STATUS_WAIT_CONFIRM.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(false);
+        } else {
+            vo.setAnalysisConfirmed(null);
+        }
         if (isTerminalParseStatus(analysisStatus.getParseStatus())) {
             vo.setParsedAt(analysisStatus.getUpdatedAt());
         }
@@ -476,7 +497,8 @@ public class AliyunOssFileStorageServiceImpl implements FileStorageService {
     private boolean isTerminalParseStatus(String parseStatus) {
         return PARSE_STATUS_SUCCESS.equals(parseStatus)
                 || PARSE_STATUS_FAILED.equals(parseStatus)
-                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
+                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus)
+                || PARSE_STATUS_CANCELLED.equals(parseStatus);
     }
 
     private void registerOssRollbackCleanup(String ossKey, AtomicBoolean cleaned) {

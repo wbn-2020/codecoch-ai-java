@@ -11,6 +11,9 @@ public class DailyPlanGenerateDTO {
     private Long userId;
     private String requestId;
     private String idempotencyKey;
+    private String executionId;
+    private String parentExecutionId;
+    private Integer attemptNo;
     private String executionToken;
     private Long targetJobId;
     private LocalDate date;

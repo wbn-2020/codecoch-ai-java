@@ -18,7 +18,9 @@ import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
 import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeSearchReindexVO;
-import com.codecoachai.resume.domain.vo.ResumeUploadVO;
+import com.codecoachai.file.domain.vo.ResumeParseOperationVO;
+import com.codecoachai.file.domain.vo.ResumeUploadDecisionVO;
+import com.codecoachai.common.core.domain.PageResult;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.multipart.MultipartFile;
@@ -27,15 +29,21 @@ public interface ResumeService {
 
     List<ResumeListVO> listResumes();
 
-    List<ResumeListVO> listResumes(Integer page, Integer size, String keyword);
+    PageResult<ResumeListVO> listResumes(Integer page, Integer size, String keyword);
 
     ResumeDetailVO createResume(ResumeSaveDTO dto);
 
-    ResumeUploadVO uploadResume(MultipartFile file);
+    default ResumeUploadDecisionVO uploadResume(MultipartFile file) {
+        return uploadResume(file, null);
+    }
 
-    ResumeParseStatusVO getParseStatus(Long analysisRecordId);
+    ResumeUploadDecisionVO uploadResume(MultipartFile file, String duplicateDecision);
 
-    ResumeParseStatusVO reparse(Long analysisRecordId);
+    ResumeParseOperationVO getParseStatus(Long analysisRecordId);
+
+    ResumeParseOperationVO reparse(Long analysisRecordId);
+
+    ResumeParseOperationVO cancelParse(Long analysisRecordId);
 
     ResumeAnalysisResultVO getAnalysisResult(Long analysisRecordId);
 
@@ -58,6 +66,8 @@ public interface ResumeService {
     void deleteResume(Long id);
 
     ResumeDetailVO setDefault(Long id);
+
+    ResumeDetailVO clearDefault(Long id);
 
     ResumeProjectVO createProject(Long resumeId, ResumeProjectSaveDTO dto);
 

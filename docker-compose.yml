@@ -245,6 +245,8 @@ services:
       OSS_STS_ENDPOINT: ${OSS_STS_ENDPOINT:-sts.cn-hangzhou.aliyuncs.com}
       OSS_STS_REGION_ID: ${OSS_STS_REGION_ID:-cn-hangzhou}
       OSS_STS_ROLE_ARN: ${OSS_STS_ROLE_ARN:-}
+      # Runtime image installs font-noto-cjk and exposes this stable symlink.
+      RESUME_EXPORT_PDF_FONT_PATH: /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc
       CODECOACHAI_TASK_CONSUMERS_ENABLED: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:-false}
       CODECOACHAI_INTERNAL_OUTBOUND_SECRET: "${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:-}"
       CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: "${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:-}"

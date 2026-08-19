@@ -27,6 +27,8 @@ public class FileInfo extends BaseEntity {
     private String etag;
     /** 文件指纹 MD5 */
     private String md5;
+    /** 文件内容 SHA-256，用于上传去重与完整性决策 */
+    private String contentSha256;
     /** 存储提供方：LOCAL / ALIYUN_OSS */
     private String storageProvider;
     private String status;

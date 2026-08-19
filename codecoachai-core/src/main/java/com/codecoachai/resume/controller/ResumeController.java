@@ -1,7 +1,10 @@
 package com.codecoachai.resume.controller;
 
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.web.log.OperationLog;
+import com.codecoachai.file.domain.vo.ResumeParseOperationVO;
+import com.codecoachai.file.domain.vo.ResumeUploadDecisionVO;
 import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
@@ -14,12 +17,9 @@ import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
-import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
-import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.service.ResumeService;
 import jakarta.validation.Valid;
-import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -34,6 +34,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
+
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/resumes")
@@ -42,9 +44,9 @@ public class ResumeController {
     private final ResumeService resumeService;
 
     @GetMapping
-    public Result<List<ResumeListVO>> listResumes(@RequestParam(required = false) Integer page,
-                                                  @RequestParam(required = false) Integer size,
-                                                  @RequestParam(required = false) String keyword) {
+    public Result<PageResult<ResumeListVO>> listResumes(@RequestParam(required = false) Integer page,
+                                                        @RequestParam(required = false) Integer size,
+                                                        @RequestParam(required = false) String keyword) {
         return Result.success(resumeService.listResumes(page, size, keyword));
     }
 
@@ -56,15 +58,17 @@ public class ResumeController {
 
     @OperationLog(module = "resume", action = "UPLOAD_RESUME", description = "Upload resume file", logArgs = false, logResponse = false)
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public Result<ResumeUploadVO> uploadResume(@RequestPart("file") MultipartFile file) {
-        return Result.success(resumeService.uploadResume(file));
+    public Result<ResumeUploadDecisionVO> uploadResume(
+            @RequestPart("file") MultipartFile file,
+            @RequestParam(required = false) String duplicateDecision) {
+        return Result.success(resumeService.uploadResume(file, duplicateDecision));
     }
 
     /**
      * A2 stage: path variable id is resume_analysis_record.id, not the confirmed resume.id.
      */
     @GetMapping("/{id}/parse-status")
-    public Result<ResumeParseStatusVO> getParseStatus(@PathVariable Long id) {
+    public Result<ResumeParseOperationVO> getParseStatus(@PathVariable Long id) {
         return Result.success(resumeService.getParseStatus(id));
     }
 
@@ -73,8 +77,14 @@ public class ResumeController {
      */
     @OperationLog(module = "resume", action = "REPARSE_RESUME", description = "Reparse resume", logResponse = false)
     @PostMapping("/{id}/reparse")
-    public Result<ResumeParseStatusVO> reparse(@PathVariable Long id) {
+    public Result<ResumeParseOperationVO> reparse(@PathVariable Long id) {
         return Result.success(resumeService.reparse(id));
+    }
+
+    @OperationLog(module = "resume", action = "CANCEL_RESUME_PARSE", description = "Cancel resume parsing")
+    @PostMapping("/{id}/cancel-parse")
+    public Result<ResumeParseOperationVO> cancelParse(@PathVariable Long id) {
+        return Result.success(resumeService.cancelParse(id));
     }
 
     /**
@@ -153,6 +163,12 @@ public class ResumeController {
     @PutMapping("/{id}/default")
     public Result<ResumeDetailVO> setDefault(@PathVariable Long id) {
         return Result.success(resumeService.setDefault(id));
+    }
+
+    @OperationLog(module = "resume", action = "CLEAR_DEFAULT_RESUME", description = "Clear default resume")
+    @DeleteMapping("/{id}/default")
+    public Result<ResumeDetailVO> clearDefault(@PathVariable Long id) {
+        return Result.success(resumeService.clearDefault(id));
     }
 
     @OperationLog(module = "resume", action = "CREATE_RESUME_PROJECT", description = "Create resume project", logResponse = false)

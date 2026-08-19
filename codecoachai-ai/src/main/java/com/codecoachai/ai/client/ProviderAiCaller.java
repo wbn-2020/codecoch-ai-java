@@ -403,8 +403,8 @@ public class ProviderAiCaller {
     }
 
     /**
-     * 返回唯一的启用全局默认模型；多个历史默认标记并存时返回 {@code null}，
-     * 由路由层回退到运行配置，避免静默把任意一个模型当作全局默认。
+     * 返回唯一的启用全局默认模型；配置库不可用、零默认或多默认时返回 {@code null}，
+     * 由业务路由层阻止调用，避免运行配置静默覆盖管理端选择。
      */
     public AiModelConfig findUniqueEnabledGlobalDefaultModel() {
         List<AiModelConfig> candidates;
@@ -416,7 +416,7 @@ public class ProviderAiCaller {
                     .orderByAsc(AiModelConfig::getSortOrder)
                     .last("LIMIT 2"));
         } catch (RuntimeException ex) {
-            log.warn("Unable to resolve database global default AI model; using runtime provider config", ex);
+            log.warn("Unable to resolve unique database global default AI model; business routing will be blocked", ex);
             return null;
         }
         if (candidates == null || candidates.size() != 1) {

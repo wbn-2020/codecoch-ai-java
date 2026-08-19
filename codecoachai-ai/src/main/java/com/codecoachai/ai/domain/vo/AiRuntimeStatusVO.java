@@ -9,6 +9,8 @@ public class AiRuntimeStatusVO {
 
     private Boolean serviceEnabled;
     private Boolean mockEnabled;
+    private Boolean mockConfigurationConfigured;
+    private String mockConfigurationSource;
     private Boolean realRoutingAllowed;
     private String effectiveMode;
     private String effectiveModeLabel;

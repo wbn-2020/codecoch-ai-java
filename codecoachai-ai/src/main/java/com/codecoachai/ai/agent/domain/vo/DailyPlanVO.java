@@ -11,6 +11,11 @@ import lombok.Data;
 public class DailyPlanVO {
 
     private Long runId;
+    private String executionId;
+    private String parentExecutionId;
+    private String idempotencyKey;
+    private Integer attemptNo;
+    private String executionStatus;
     private String schemaVersion;
     private String traceId;
     private Long aiCallLogId;
@@ -29,6 +34,10 @@ public class DailyPlanVO {
     private String requestId;
     private String errorCode;
     private String errorMessage;
+    private String terminalReasonCode;
+    private Boolean consumable;
+    private String executionSource;
+    private String deliveryQuality;
     private String failureAction;
     private String failureActionLabel;
     private String failureSuggestion;

@@ -65,6 +65,9 @@ class AdminAiModelControllerTest {
     void setUp() {
         initTableInfo(AiModelConfig.class);
         initTableInfo(AiCallLog.class);
+        org.mockito.Mockito.lenient()
+                .when(endpointPolicy.validateAndNormalizeBaseUrl(any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         controller = new AdminAiModelController(
                 mapper,
                 aiCallLogMapper,
@@ -252,7 +255,8 @@ class AdminAiModelControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
 
-        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertEquals(ErrorCode.VALIDATION_ERROR.getCode(), exception.getCode());
+        assertEquals("接口地址必须使用 HTTPS", exception.getFieldErrors().get("apiBaseUrl"));
         verify(mapper, never()).insert(any(AiModelConfig.class));
     }
 
@@ -275,8 +279,9 @@ class AdminAiModelControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
 
-        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
-        assertTrue(exception.getMessage().contains("全局默认模型冲突"));
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("全局默认模型发生并发冲突"));
+        assertEquals(Boolean.TRUE, exception.getRetryable());
     }
 
     @Test
@@ -294,7 +299,7 @@ class AdminAiModelControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.create(dto));
 
-        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertEquals(ErrorCode.VALIDATION_ERROR.getCode(), exception.getCode());
         assertTrue(exception.getMessage().contains("默认模型必须保持启用状态"));
         verify(operationConfirmationGuard).release("redis-lock-key");
         verify(mapper, never()).insert(any(AiModelConfig.class));
@@ -316,7 +321,7 @@ class AdminAiModelControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.update(7L, dto));
 
-        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
+        assertEquals(ErrorCode.VALIDATION_ERROR.getCode(), exception.getCode());
         assertTrue(exception.getMessage().contains("默认模型必须保持启用状态"));
         verify(operationConfirmationGuard).release("redis-lock-key");
         verify(mapper, never()).updateById(any(AiModelConfig.class));
@@ -344,8 +349,8 @@ class AdminAiModelControllerTest {
 
         BusinessException exception = assertThrows(BusinessException.class, () -> controller.update(7L, dto));
 
-        assertEquals(ErrorCode.PARAM_ERROR.getCode(), exception.getCode());
-        assertTrue(exception.getMessage().contains("不能通过编辑取消默认"));
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertTrue(exception.getMessage().contains("不能直接取消默认"));
         verify(mapper, never()).updateById(any(AiModelConfig.class));
     }
 
@@ -441,6 +446,7 @@ class AdminAiModelControllerTest {
         dto.setProvider("openai");
         dto.setModelName("gpt-test");
         dto.setDisplayName("GPT Test");
+        dto.setApiBaseUrl("https://api.example.com/v1");
         dto.setEnabled(1);
         dto.setConfirm(true);
         dto.setDryRun(dryRun);
@@ -486,6 +492,8 @@ class AdminAiModelControllerTest {
         model.setModelName("GPT Test");
         model.setDefaultModel(defaultModel);
         model.setEnabled(enabled);
+        model.setApiBaseUrl("https://api.example.com/v1");
+        model.setApiKey("encrypted-test-key");
         return model;
     }
 
