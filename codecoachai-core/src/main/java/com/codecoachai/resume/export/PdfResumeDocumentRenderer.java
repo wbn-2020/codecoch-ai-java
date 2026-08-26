@@ -55,12 +55,15 @@ public class PdfResumeDocumentRenderer implements ResumeDocumentRenderer {
                         ? new AtsResumeDocument.Style()
                         : resume.getStyle();
                 PageWriter writer = new PageWriter(document, font, style.getMarginPt());
-                writer.center(resume.getName(), style.getNameFontPt(), style.getNameFontPt() * 1.28f);
-                writer.center(resume.getHeadline(), style.getHeadlineFontPt(), style.getHeadlineFontPt() * 1.36f);
-                writer.center(resume.getContact(), style.getContactFontPt(), style.getContactFontPt() * 1.5f);
+                writer.identity(resume.getName(), style.getNameFontPt(),
+                        style.getNameFontPt() * 1.28f, style.getIdentityAlignment());
+                writer.identity(resume.getHeadline(), style.getHeadlineFontPt(),
+                        style.getHeadlineFontPt() * 1.36f, style.getIdentityAlignment());
+                writer.identity(resume.getContact(), style.getContactFontPt(),
+                        style.getContactFontPt() * 1.5f, style.getIdentityAlignment());
                 for (AtsResumeDocument.Section section : resume.getSections()) {
                     writer.line(section.getHeading().toUpperCase(Locale.ROOT), style.getHeadingFontPt(),
-                            style.getHeadingFontPt() * 1.55f, false);
+                            style.getHeadingFontPt() * 1.55f * style.getSectionSpacing(), false);
                     for (String line : section.getLines()) {
                         writer.wrapped("- " + line, style.getBodyFontPt(),
                                 style.getBodyFontPt() * style.getLineSpacing() * 1.2f);
@@ -214,14 +217,19 @@ public class PdfResumeDocumentRenderer implements ResumeDocumentRenderer {
             newPage();
         }
 
-        private void center(String text, float size, float leading) throws IOException {
+        private void identity(String text, float size, float leading, String alignment) throws IOException {
             String safe = safeText(text);
             if (safe.isBlank()) {
                 return;
             }
             ensureSpace(leading);
             float width = font.getStringWidth(safe) / 1000f * size;
-            write(safe, size, Math.max(margin, (PDRectangle.A4.getWidth() - width) / 2f));
+            float x = switch (alignment) {
+                case "LEFT" -> margin;
+                case "RIGHT" -> Math.max(margin, PDRectangle.A4.getWidth() - margin - width);
+                default -> Math.max(margin, (PDRectangle.A4.getWidth() - width) / 2f);
+            };
+            write(safe, size, x);
             y -= leading;
         }
 

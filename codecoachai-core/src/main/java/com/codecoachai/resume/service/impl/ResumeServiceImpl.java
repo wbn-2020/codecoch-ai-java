@@ -64,6 +64,7 @@ import com.codecoachai.resume.service.ResumeAggregateInitializationService;
 import com.codecoachai.resume.service.ResumeService;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.support.ResumeImportNormalizer;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.codecoachai.resume.service.support.ResumeImportNormalizer.NormalizationResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -1156,7 +1157,11 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private ResumeDetailVO toDetailVO(Resume resume) {
-        return ResumeConvert.toDetailVO(resume, projects(resume.getId()));
+        return ResumeConvert.toDetailVO(
+                resume,
+                projects(resume.getId()),
+                ResumePresentationConfigNormalizer.parseStored(
+                        objectMapper, resume.getPresentationConfigJson()));
     }
 
     private void applyListContextEligibility(ResumeListVO resume) {
@@ -1186,6 +1191,7 @@ public class ResumeServiceImpl implements ResumeService {
         draft.setWorkExperience(source.getWorkExperience());
         draft.setEducationExperience(source.getEducationExperience());
         draft.setSummary(source.getSummary());
+        draft.setPresentationConfigJson(source.getPresentationConfigJson());
         draft.setIsDefault(CommonConstants.NO);
         draft.setStatus(source.getStatus() == null ? CommonConstants.YES : source.getStatus());
         draft.setSourceResumeId(source.getId());
@@ -2118,6 +2124,10 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setWorkExperience(dto.getWorkExperience());
         resume.setEducationExperience(dto.getEducationExperience());
         resume.setSummary(dto.getSummary());
+        if (dto.getPresentationConfig() != null || resume.getPresentationConfigJson() == null) {
+            resume.setPresentationConfigJson(
+                    ResumePresentationConfigNormalizer.normalizeJson(objectMapper, dto.getPresentationConfig()));
+        }
         if (dto.getStatus() != null) {
             resume.setStatus(dto.getStatus());
         }

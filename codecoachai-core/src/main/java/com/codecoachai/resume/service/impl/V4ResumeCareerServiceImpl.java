@@ -57,6 +57,7 @@ import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.codecoachai.resume.service.support.JobApplicationLifecyclePolicy;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
@@ -1896,6 +1897,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("workExperience", resume.getWorkExperience());
         map.put("educationExperience", resume.getEducationExperience());
         map.put("summary", resume.getSummary());
+        map.put("presentationConfig", ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson()));
         map.put("projects", projectsForSnapshot(resume.getId()).stream()
                 .map(this::projectSnapshot)
                 .sorted(Comparator
@@ -1947,6 +1950,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         resume.setWorkExperience(text(map.get("workExperience")));
         resume.setEducationExperience(text(map.get("educationExperience")));
         resume.setSummary(text(map.get("summary")));
+        resume.setPresentationConfigJson(ResumePresentationConfigNormalizer.normalizeJson(
+                objectMapper, objectMapper.valueToTree(map.get("presentationConfig"))));
     }
 
     private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {

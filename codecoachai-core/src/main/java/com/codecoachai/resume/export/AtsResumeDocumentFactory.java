@@ -2,6 +2,7 @@ package com.codecoachai.resume.export;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -34,22 +35,28 @@ public class AtsResumeDocumentFactory {
             JsonNode template = StringUtils.hasText(templateDefinitionJson)
                     ? objectMapper.readTree(templateDefinitionJson)
                     : null;
+            JsonNode rawPresentation = root == null ? null : root.get("presentationConfig");
+            JsonNode presentation = rawPresentation != null && rawPresentation.isObject()
+                    ? ResumePresentationConfigNormalizer.normalize(objectMapper, rawPresentation)
+                    : null;
             AtsResumeDocument document = new AtsResumeDocument();
-            applyStyle(document, template);
-            document.setName(firstText(root, "realName", "name", "title"));
-            document.setHeadline(text(root, "targetPosition"));
-            document.setContact(join(" | ", text(root, "phone"), text(root, "email")));
-            addConfiguredSections(document, root, template);
+            applyStyle(document, template, presentation, rawPresentation);
+            document.setName(isVisible(presentation, rawPresentation, "realName")
+                    ? firstText(root, "realName", "name", "title")
+                    : "");
+            document.setHeadline(isVisible(presentation, rawPresentation, "targetPosition")
+                    ? text(root, "targetPosition")
+                    : "");
+            document.setContact(contactText(root, presentation, rawPresentation));
+            addConfiguredSections(document, root, template, presentation, rawPresentation);
             return document;
         } catch (Exception ex) {
             throw new IllegalArgumentException("Invalid resume version snapshot", ex);
         }
     }
 
-    private void applyStyle(AtsResumeDocument document, JsonNode template) {
-        if (template == null || !template.isObject()) {
-            return;
-        }
+    private void applyStyle(
+            AtsResumeDocument document, JsonNode template, JsonNode presentation, JsonNode rawPresentation) {
         AtsResumeDocument.Style style = document.getStyle();
         style.setMarginPt(floatValue(template, "marginPt", style.getMarginPt(), 24f, 72f));
         style.setNameFontPt(floatValue(template, "nameFontPt", style.getNameFontPt(), 14f, 24f));
@@ -61,17 +68,71 @@ public class AtsResumeDocumentFactory {
         if (StringUtils.hasText(text(template, "fontFamily"))) {
             style.setFontFamily(text(template, "fontFamily").trim());
         }
+        if (presentation != null && presentation.isObject()) {
+            if (hasPresentationOverride(rawPresentation, "pageMarginPt")) {
+                style.setMarginPt(floatValue(presentation, "pageMarginPt", style.getMarginPt(), 24f, 72f));
+            }
+            float scale = floatValue(presentation, "fontScale", 1f, 0.86f, 1.18f);
+            if (hasPresentationOverride(rawPresentation, "fontScale")) {
+                style.setNameFontPt(style.getNameFontPt() * scale);
+                style.setHeadlineFontPt(style.getHeadlineFontPt() * scale);
+                style.setContactFontPt(style.getContactFontPt() * scale);
+                style.setHeadingFontPt(style.getHeadingFontPt() * scale);
+                style.setBodyFontPt(style.getBodyFontPt() * scale);
+            }
+            if (hasPresentationOverride(rawPresentation, "lineHeight")) {
+                style.setLineSpacing(floatValue(presentation, "lineHeight", style.getLineSpacing(), 1f, 1.6f));
+            }
+            if (hasPresentationOverride(rawPresentation, "sectionSpacing")) {
+                style.setSectionSpacing(floatValue(
+                        presentation, "sectionSpacing", style.getSectionSpacing(), 0.7f, 1.6f));
+            }
+            if (hasPresentationOverride(rawPresentation, "autoOnePage")
+                    && presentation.path("autoOnePage").asBoolean(false)) {
+                style.setAutoOnePage(true);
+                style.setLineSpacing(Math.max(1f, style.getLineSpacing() * 0.9f));
+                style.setSectionSpacing(Math.max(0.7f, style.getSectionSpacing() * 0.82f));
+                style.setNameFontPt(style.getNameFontPt() * 0.92f);
+                style.setHeadlineFontPt(style.getHeadlineFontPt() * 0.92f);
+                style.setContactFontPt(style.getContactFontPt() * 0.92f);
+                style.setHeadingFontPt(style.getHeadingFontPt() * 0.92f);
+                style.setBodyFontPt(style.getBodyFontPt() * 0.92f);
+            }
+            if (hasPresentationOverride(rawPresentation, "basicLayout")) {
+                style.setIdentityAlignment(enumValue(
+                        presentation, "basicLayout", Set.of("LEFT", "CENTER", "RIGHT"), "CENTER"));
+            }
+            if (hasPresentationOverride(rawPresentation, "fontFamily")
+                    && StringUtils.hasText(text(presentation, "fontFamily"))) {
+                style.setFontFamily(text(presentation, "fontFamily").trim());
+            }
+        }
     }
 
-    private void addConfiguredSections(AtsResumeDocument document, JsonNode root, JsonNode template) {
-        List<String> order = stringArray(template == null ? null : template.get("sectionOrder"));
+    private void addConfiguredSections(
+            AtsResumeDocument document,
+            JsonNode root,
+            JsonNode template,
+            JsonNode presentation,
+            JsonNode rawPresentation) {
+        List<String> order = hasPresentationOverride(rawPresentation, "sectionOrder")
+                ? stringArray(presentation == null ? null : presentation.get("sectionOrder"))
+                : List.of();
+        if (order.isEmpty()) {
+            order = stringArray(template == null ? null : template.get("sectionOrder"));
+        }
         if (order.isEmpty()) {
             order = List.of("SUMMARY", "SKILLS", "EXPERIENCE", "PROJECTS", "EDUCATION");
         }
-        Set<String> hidden = new LinkedHashSet<>(stringArray(template == null ? null : template.get("hiddenSections")));
+        Set<String> hidden = new LinkedHashSet<>();
+        if (hasPresentationOverride(rawPresentation, "hiddenSections")) {
+            hidden.addAll(stringArray(presentation == null ? null : presentation.get("hiddenSections")));
+        } else {
+            hidden.addAll(stringArray(template == null ? null : template.get("hiddenSections")));
+        }
         for (String section : order) {
             String normalized = section.toUpperCase(java.util.Locale.ROOT);
-            if (hidden.contains(normalized)) {
+            if (hidden.contains(normalized) || !sectionVisible(presentation, rawPresentation, normalized)) {
                 continue;
             }
             switch (normalized) {
@@ -85,6 +146,79 @@ public class AtsResumeDocumentFactory {
                 }
             }
         }
+    }
+
+    private boolean sectionVisible(JsonNode presentation, JsonNode rawPresentation, String section) {
+        return switch (section) {
+            case "SUMMARY" -> isVisible(presentation, rawPresentation, "summary");
+            case "SKILLS" -> isVisible(presentation, rawPresentation, "skills");
+            case "EXPERIENCE" -> isVisible(presentation, rawPresentation, "workExperience");
+            case "PROJECTS" -> isVisible(presentation, rawPresentation, "projects");
+            case "EDUCATION" -> isVisible(presentation, rawPresentation, "educationExperience");
+            default -> false;
+        };
+    }
+
+    private boolean isVisible(JsonNode presentation, JsonNode rawPresentation, String field) {
+        if (presentation != null
+                && Set.of("realName", "targetPosition", "email", "phone").contains(field)
+                && hasPresentationOverride(rawPresentation, "basicFieldVisibility")
+                && presentation.path("basicFieldVisibility").has(field)) {
+            return presentation.path("basicFieldVisibility").path(field).asBoolean(true);
+        }
+        return presentation == null
+                || !hasPresentationOverride(rawPresentation, "fieldVisibility")
+                || !presentation.has("fieldVisibility")
+                || presentation.path("fieldVisibility").path(field).asBoolean(true);
+    }
+
+    private String contactText(JsonNode root, JsonNode presentation, JsonNode rawPresentation) {
+        if (presentation == null) {
+            return join(" | ", text(root, "phone"), text(root, "email"));
+        }
+        List<String> fields = new ArrayList<>();
+        JsonNode order = presentation.get("basicFieldOrder");
+        if (order != null && order.isArray()) {
+            order.forEach(item -> {
+                if (!item.isTextual()) return;
+                String field = item.asText();
+                if (("phone".equals(field) || "email".equals(field))
+                        && isVisible(presentation, rawPresentation, field)
+                        && !fields.contains(field)) {
+                    fields.add(field);
+                }
+            });
+        }
+        if (fields.isEmpty()) {
+            fields.add("phone");
+            fields.add("email");
+        }
+        String mode = enumValue(presentation, "iconMode", Set.of("ICON", "TEXT", "HIDDEN"), "ICON");
+        return fields.stream()
+                .map(field -> contactValue(root, field, mode))
+                .filter(StringUtils::hasText)
+                .collect(java.util.stream.Collectors.joining(" | "));
+    }
+
+    private String contactValue(JsonNode root, String field, String mode) {
+        String value = text(root, field);
+        if (!StringUtils.hasText(value)) return null;
+        if ("TEXT".equals(mode)) {
+            return ("phone".equals(field) ? "电话: " : "邮箱: ") + value;
+        }
+        return value;
+    }
+
+    private boolean hasPresentationOverride(JsonNode rawPresentation, String field) {
+        if (rawPresentation == null || !rawPresentation.isObject()) {
+            return false;
+        }
+        JsonNode overrides = rawPresentation.get("overrides");
+        if (overrides != null && overrides.isObject()) {
+            return overrides.path(field).asBoolean(false);
+        }
+        // Pre-schema snapshots may contain only the fields the user explicitly changed.
+        return !rawPresentation.has("schemaVersion") && rawPresentation.has(field);
     }
 
     private List<String> stringArray(JsonNode value) {
@@ -204,6 +338,12 @@ public class AtsResumeDocumentFactory {
     private String text(JsonNode root, String field) {
         JsonNode value = root == null ? null : root.get(field);
         return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private String enumValue(JsonNode source, String field, Set<String> allowed, String fallback) {
+        JsonNode value = source == null ? null : source.get(field);
+        String candidate = value == null || !value.isTextual() ? fallback : value.asText().trim();
+        return allowed.contains(candidate) ? candidate : fallback;
     }
 
     private String join(String delimiter, String... values) {

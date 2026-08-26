@@ -161,6 +161,116 @@ class ResumeDocumentRendererTest {
         assertEquals(1.6f, resume.getStyle().getLineSpacing());
     }
 
+    @Test
+    void snapshotPresentationConfigOverridesTemplateWithoutChangingFacts() throws Exception {
+        ObjectNode snapshotNode = objectMapper.createObjectNode()
+                .put("realName", "Alex Chen")
+                .put("targetPosition", "Backend Engineer")
+                .put("phone", "13800000000")
+                .put("email", "alex@example.com")
+                .put("summary", "Reliable Java engineer.")
+                .put("skillStack", "Java, Spring Boot")
+                .put("workExperience", "Built stable services.")
+                .put("educationExperience", "B.Sc. Computer Science");
+        snapshotNode.putArray("projects")
+                .addObject()
+                .put("projectName", "CodeCoachAI")
+                .put("description", "Built a career coaching workflow.");
+        ObjectNode presentation = snapshotNode.putObject("presentationConfig");
+        presentation.put("fontFamily", "Microsoft YaHei");
+        presentation.put("fontScale", 1.1);
+        presentation.put("lineHeight", 1.4);
+        presentation.put("pageMarginPt", 50);
+        presentation.putArray("sectionOrder")
+                .add("projects")
+                .add("summary")
+                .add("skills")
+                .add("experience")
+                .add("education");
+        presentation.putArray("hiddenSections").add("skills");
+        presentation.putObject("fieldVisibility").put("email", false);
+
+        AtsResumeDocument resume = new AtsResumeDocumentFactory(objectMapper).fromSnapshot(
+                objectMapper.writeValueAsString(snapshotNode),
+                "{\"marginPt\":32,\"fontFamily\":\"Arial\",\"bodyFontPt\":10}");
+
+        assertEquals("Microsoft YaHei", resume.getStyle().getFontFamily());
+        assertEquals(50f, resume.getStyle().getMarginPt());
+        assertEquals(11f, resume.getStyle().getBodyFontPt());
+        assertEquals(1.4f, resume.getStyle().getLineSpacing());
+        assertEquals("13800000000", resume.getContact());
+        assertEquals(
+                List.of("Projects", "Professional Summary", "Experience", "Education"),
+                resume.getSections().stream().map(AtsResumeDocument.Section::getHeading).toList());
+    }
+    @Test
+    void normalizedDefaultPresentationKeepsTemplateDefinitionDefaults() throws Exception {
+        ObjectNode snapshotNode = objectMapper.createObjectNode()
+                .put("realName", "Alex Chen")
+                .put("summary", "Reliable Java engineer.")
+                .put("skillStack", "Java, Spring Boot")
+                .put("workExperience", "Built stable services.")
+                .put("educationExperience", "B.Sc. Computer Science");
+        snapshotNode.putObject("presentationConfig")
+                .put("schemaVersion", 1)
+                .put("templateCode", "ATS_COMPACT")
+                .put("templateVersion", 1)
+                .put("fontFamily", "Arial")
+                .put("lineHeight", 1.2)
+                .put("pageMarginPt", 42)
+                .putObject("overrides");
+
+        AtsResumeDocument resume = new AtsResumeDocumentFactory(objectMapper).fromSnapshot(
+                objectMapper.writeValueAsString(snapshotNode),
+                "{\"marginPt\":32,\"fontFamily\":\"Arial\",\"lineSpacing\":1.0,\"sectionOrder\":[\"SUMMARY\",\"SKILLS\",\"EXPERIENCE\",\"PROJECTS\",\"EDUCATION\"]}");
+
+        assertEquals(32f, resume.getStyle().getMarginPt());
+        assertEquals(1f, resume.getStyle().getLineSpacing());
+        assertEquals(
+                List.of("Professional Summary", "Skills", "Experience", "Education"),
+                resume.getSections().stream().map(AtsResumeDocument.Section::getHeading).toList());
+    }
+
+    @Test
+    void basicPresentationSettingsReachFormalDocumentModel() throws Exception {
+        ObjectNode snapshotNode = objectMapper.createObjectNode()
+                .put("realName", "Alex Chen")
+                .put("targetPosition", "Backend Engineer")
+                .put("phone", "13800000000")
+                .put("email", "alex@example.com")
+                .put("summary", "Reliable Java engineer.")
+                .put("workExperience", "Built stable services.");
+        ObjectNode presentation = snapshotNode.putObject("presentationConfig");
+        presentation.put("schemaVersion", 1)
+                .put("basicLayout", "LEFT")
+                .put("sectionSpacing", 0.8)
+                .put("autoOnePage", true);
+        presentation.putObject("basicFieldVisibility")
+                .put("phone", false)
+                .put("email", true);
+        presentation.putArray("basicFieldOrder").add("email").add("phone");
+        presentation.put("iconMode", "TEXT");
+        presentation.putObject("overrides")
+                .put("basicLayout", true)
+                .put("basicFieldVisibility", true)
+                .put("basicFieldOrder", true)
+                .put("iconMode", true)
+                .put("sectionSpacing", true)
+                .put("autoOnePage", true);
+
+        AtsResumeDocument resume = new AtsResumeDocumentFactory(objectMapper).fromSnapshot(
+                objectMapper.writeValueAsString(snapshotNode),
+                "{\"marginPt\":42,\"lineSpacing\":1.2}");
+
+        assertEquals("Alex Chen", resume.getName());
+        assertEquals("Backend Engineer", resume.getHeadline());
+        assertEquals("邮箱: alex@example.com", resume.getContact());
+        assertEquals("LEFT", resume.getStyle().getIdentityAlignment());
+        assertEquals(0.7f, resume.getStyle().getSectionSpacing());
+        assertTrue(resume.getStyle().isAutoOnePage());
+        assertTrue(resume.getStyle().getBodyFontPt() < 10f);
+    }
+
     private AtsResumeDocument document() throws Exception {
         return document(null);
     }

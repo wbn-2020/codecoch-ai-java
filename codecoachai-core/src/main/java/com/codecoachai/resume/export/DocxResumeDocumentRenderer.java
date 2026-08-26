@@ -26,12 +26,17 @@ public class DocxResumeDocumentRenderer implements ResumeDocumentRenderer {
                     ? new AtsResumeDocument.Style()
                     : resume.getStyle();
             configurePage(document, style);
+            ParagraphAlignment identityAlignment = switch (style.getIdentityAlignment()) {
+                case "LEFT" -> ParagraphAlignment.LEFT;
+                case "RIGHT" -> ParagraphAlignment.RIGHT;
+                default -> ParagraphAlignment.CENTER;
+            };
             paragraph(document, resume.getName(), style.getNameFontPt(), true,
-                    ParagraphAlignment.CENTER, false, style);
+                    identityAlignment, false, style);
             paragraph(document, resume.getHeadline(), style.getHeadlineFontPt(), false,
-                    ParagraphAlignment.CENTER, false, style);
+                    identityAlignment, false, style);
             paragraph(document, resume.getContact(), style.getContactFontPt(), false,
-                    ParagraphAlignment.CENTER, false, style);
+                    identityAlignment, false, style);
             for (AtsResumeDocument.Section section : resume.getSections()) {
                 paragraph(document, section.getHeading().toUpperCase(), style.getHeadingFontPt(), true,
                         ParagraphAlignment.LEFT, false, style);
@@ -63,7 +68,7 @@ public class DocxResumeDocumentRenderer implements ResumeDocumentRenderer {
         }
         XWPFParagraph paragraph = document.createParagraph();
         paragraph.setAlignment(alignment);
-        paragraph.setSpacingAfter(bold ? 80 : 40);
+            paragraph.setSpacingAfter(Math.round((bold ? 80 : 40) * style.getSectionSpacing()));
         paragraph.setSpacingBetween(style.getLineSpacing());
         XWPFRun run = paragraph.createRun();
         run.setFontFamily(style.getFontFamily());

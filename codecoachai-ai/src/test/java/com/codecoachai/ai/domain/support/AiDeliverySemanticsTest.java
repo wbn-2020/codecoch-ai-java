@@ -27,6 +27,22 @@ class AiDeliverySemanticsTest {
     }
 
     @Test
+    void disabledMockMetadataDoesNotDowngradeRealProviderDelivery() {
+        AiDeliverySemantics.Outcome outcome = AiDeliverySemantics.fromLegacy(
+                AiResultSourceEnum.LLM.name(),
+                "Deepseek-v4-flash",
+                "database-default:WEIXIN_OPENAI_COMPATIBLE/Deepseek-v4-flash",
+                "{\"provider\":\"WEIXIN_OPENAI_COMPATIBLE\",\"mockMode\":false}",
+                null,
+                1);
+
+        assertEquals(AiDeliverySemantics.PRIMARY_MODEL, outcome.executionSource());
+        assertEquals(AiDeliverySemantics.COMPLETE, outcome.deliveryQuality());
+        assertEquals(AiResultSourceEnum.LLM, outcome.legacyResultSource());
+        assertFalse(outcome.fallback());
+    }
+
+    @Test
     void legacyFallbackAndRuleFieldsMapToTheCanonicalAxes() {
         AiDeliverySemantics.Outcome fallback = AiDeliverySemantics.fromLegacy(
                 AiResultSourceEnum.FALLBACK.name(),

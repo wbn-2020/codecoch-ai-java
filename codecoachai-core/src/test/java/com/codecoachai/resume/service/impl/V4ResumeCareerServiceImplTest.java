@@ -1487,6 +1487,53 @@ class V4ResumeCareerServiceImplTest {
     }
 
     @Test
+    void createVersionStoresNormalizedPresentationConfigInSnapshot() throws Exception {
+        Resume current = resume(1L, USER_ID);
+        current.setPresentationConfigJson(
+                "{\"templateCode\":\"INVALID_TEMPLATE\",\"fontScale\":9,\"html\":\"<script>bad</script>\"}");
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectOne(
+                org.mockito.ArgumentMatchers.<LambdaQueryWrapper<ResumeVersion>>any())).thenReturn(null);
+        when(resumeProjectMapper.selectList(any())).thenReturn(List.of());
+
+        service.createVersion(1L, null);
+
+        ArgumentCaptor<ResumeVersion> versionCaptor = ArgumentCaptor.forClass(ResumeVersion.class);
+        verify(resumeVersionMapper).insert(versionCaptor.capture());
+        var presentationConfig = new ObjectMapper()
+                .readTree(versionCaptor.getValue().getSnapshotJson())
+                .path("presentationConfig");
+        assertEquals(1, presentationConfig.path("schemaVersion").asInt());
+        assertEquals("ATS_SINGLE_COLUMN", presentationConfig.path("templateCode").asText());
+        assertEquals(1.18d, presentationConfig.path("fontScale").asDouble());
+        assertFalse(presentationConfig.has("html"));
+    }
+
+    @Test
+    void rollbackRestoresNormalizedPresentationConfigFromSnapshot() throws Exception {
+        Resume current = resume(1L, USER_ID);
+        ResumeVersion version = resumeVersion(2L, USER_ID, 1L);
+        version.setSnapshotJson(
+                "{\"title\":\"Restored resume\","
+                        + "\"presentationConfig\":{\"templateCode\":\"ATS_COMPACT\","
+                        + "\"fontScale\":9,\"html\":\"<script>bad</script>\"}}");
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectById(2L)).thenReturn(version);
+
+        service.rollbackVersion(1L, 2L);
+
+        ArgumentCaptor<Resume> resumeCaptor = ArgumentCaptor.forClass(Resume.class);
+        verify(resumeMapper).updateById(resumeCaptor.capture());
+        assertEquals("Restored resume", resumeCaptor.getValue().getTitle());
+        var presentationConfig = new ObjectMapper()
+                .readTree(resumeCaptor.getValue().getPresentationConfigJson());
+        assertEquals(1, presentationConfig.path("schemaVersion").asInt());
+        assertEquals("ATS_COMPACT", presentationConfig.path("templateCode").asText());
+        assertEquals(1.18d, presentationConfig.path("fontScale").asDouble());
+        assertFalse(presentationConfig.has("html"));
+    }
+
+    @Test
     void createVersionCanonicalizesSameSortProjectsIndependentOfDatabaseOrder() throws Exception {
         ResumeProject alpha = project(11L);
         alpha.setProjectName("Alpha project");

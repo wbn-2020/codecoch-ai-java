@@ -12,6 +12,7 @@ import com.codecoachai.resume.export.ResumeArtifactHashes;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -179,6 +180,8 @@ public class ResumeVersionSnapshotManager {
         putText(snapshot, "workExperience", resume.getWorkExperience());
         putText(snapshot, "educationExperience", resume.getEducationExperience());
         putText(snapshot, "summary", resume.getSummary());
+        snapshot.set("presentationConfig", ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson()));
         List<ObjectNode> projectSnapshots = new ArrayList<>();
         for (ResumeProject project : projects) {
             ObjectNode projectSnapshot = objectMapper.createObjectNode();
@@ -213,6 +216,8 @@ public class ResumeVersionSnapshotManager {
         copyText(snapshot, source, "workExperience");
         copyText(snapshot, source, "educationExperience");
         copyText(snapshot, source, "summary");
+        snapshot.set("presentationConfig", ResumePresentationConfigNormalizer.normalize(
+                objectMapper, source == null ? null : source.get("presentationConfig")));
         List<ObjectNode> projectSnapshots = new ArrayList<>();
         JsonNode projects = source == null ? null : source.get("projects");
         if (projects != null && projects.isArray()) {
@@ -278,7 +283,8 @@ public class ResumeVersionSnapshotManager {
 
     private ResumeVersion insertAndApplyLocked(Resume resume, ObjectNode snapshot, String sourceType, Long sourceId,
                                                String versionName) {
-        String snapshotJson = write(snapshot);
+        ObjectNode normalizedSnapshot = canonicalSnapshot(snapshot);
+        String snapshotJson = write(normalizedSnapshot);
         DuplicateKeyException lastConflict = null;
         for (int attempt = 0; attempt < VERSION_INSERT_ATTEMPTS; attempt++) {
             int nextNo = nextVersionNo(resume.getId(), resume.getUserId());
@@ -297,9 +303,9 @@ public class ResumeVersionSnapshotManager {
                         .eq(ResumeVersion::getResumeId, resume.getId())
                         .set(ResumeVersion::getCurrentFlag, 0));
                 versionMapper.insert(version);
-                applySnapshot(resume, snapshot);
+                applySnapshot(resume, normalizedSnapshot);
                 resumeMapper.updateById(resume);
-                restoreProjects(resume.getId(), snapshot);
+                restoreProjects(resume.getId(), normalizedSnapshot);
                 return version;
             } catch (DuplicateKeyException ex) {
                 lastConflict = ex;
@@ -402,6 +408,8 @@ public class ResumeVersionSnapshotManager {
         resume.setWorkExperience(text(snapshot, "workExperience"));
         resume.setEducationExperience(text(snapshot, "educationExperience"));
         resume.setSummary(text(snapshot, "summary"));
+        resume.setPresentationConfigJson(ResumePresentationConfigNormalizer.normalizeJson(
+                objectMapper, snapshot.get("presentationConfig")));
     }
 
     private void restoreProjects(Long resumeId, ObjectNode snapshot) {

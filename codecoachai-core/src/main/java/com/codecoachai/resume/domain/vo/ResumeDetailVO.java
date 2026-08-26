@@ -1,5 +1,6 @@
 package com.codecoachai.resume.domain.vo;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
 import lombok.Data;
 
@@ -17,6 +18,7 @@ public class ResumeDetailVO {
     private String workExperience;
     private String educationExperience;
     private String summary;
+    private JsonNode presentationConfig;
     private Integer isDefault;
     private Integer status;
     private List<ResumeProjectVO> projects;

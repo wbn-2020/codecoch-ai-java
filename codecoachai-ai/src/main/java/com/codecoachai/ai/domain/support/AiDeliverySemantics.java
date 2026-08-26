@@ -145,7 +145,7 @@ public final class AiDeliverySemantics {
     private static String sourceFromEvidence(String requestBody, String responseBody) {
         String request = upper(requestBody);
         String response = upper(responseBody);
-        if (request.contains("MOCK") || response.contains("MOCK")) {
+        if (containsMock(requestBody) || containsMock(responseBody)) {
             return MOCK;
         }
         if (request.contains("\"RESULTSOURCE\":\"RULE\"")
@@ -193,7 +193,22 @@ public final class AiDeliverySemantics {
     }
 
     private static boolean containsMock(String value) {
-        return upper(value).contains("MOCK") || (value != null && value.contains("模拟"));
+        String normalized = upper(value);
+        if (!hasText(normalized)) {
+            return false;
+        }
+        String compact = normalized.replaceAll("\\s+", "");
+        return MOCK.equals(normalized)
+                || normalized.contains("(MOCK)")
+                || normalized.contains("LOCAL_MOCK")
+                || compact.contains("\"MOCKMODE\":TRUE")
+                || compact.contains("\"MOCK_MODE\":TRUE")
+                || compact.contains("\"RESULTSOURCE\":\"MOCK\"")
+                || compact.contains("\"RESULT_SOURCE\":\"MOCK\"")
+                || compact.contains("\"EXECUTIONSOURCE\":\"MOCK\"")
+                || compact.contains("\"EXECUTION_SOURCE\":\"MOCK\"")
+                || compact.contains("\"SOURCE\":\"MOCK\"")
+                || (value != null && (value.contains("本地模拟") || value.contains("模拟模式")));
     }
 
     private static String firstText(String... values) {

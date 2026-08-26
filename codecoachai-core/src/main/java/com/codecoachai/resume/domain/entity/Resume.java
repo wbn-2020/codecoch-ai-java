@@ -21,6 +21,7 @@ public class Resume extends BaseEntity {
     private String workExperience;
     private String educationExperience;
     private String summary;
+    private String presentationConfigJson;
     private Integer isDefault;
     private Integer status;
     private Long sourceResumeId;

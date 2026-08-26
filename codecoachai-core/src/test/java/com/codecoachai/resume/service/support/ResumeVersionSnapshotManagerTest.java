@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Answers;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -307,6 +309,43 @@ class ResumeVersionSnapshotManagerTest {
                 "Suggestion #9");
 
         assertTrue(calls.contains("version.insert"), calls.toString());
+    }
+
+    @Test
+    void insertAndApplyNormalizesPresentationConfigBeforePersistingStableVersion() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        Resume callerResume = resume("Stable summary");
+        ObjectNode snapshot = snapshot(mapper, "Suggested rewrite", List.of());
+        snapshot.putObject("presentationConfig")
+                .put("templateCode", "UNTRUSTED")
+                .putObject("fieldOrder")
+                .putArray("realName")
+                .add("email")
+                .add("<script>");
+        when(resumeMapper.lockOwnedResume(callerResume.getId(), callerResume.getUserId()))
+                .thenReturn(callerResume.getId());
+        when(versionMapper.selectLatestForUpdate(callerResume.getUserId(), callerResume.getId()))
+                .thenReturn(null);
+
+        snapshotManager.insertAndApply(
+                callerResume,
+                snapshot,
+                "MANUAL_SAVE",
+                null,
+                "Stable version");
+
+        ArgumentCaptor<ResumeVersion> versionCaptor = forClass(ResumeVersion.class);
+        verify(versionMapper).insert(versionCaptor.capture());
+        ObjectNode persisted = (ObjectNode) mapper.readTree(versionCaptor.getValue().getSnapshotJson());
+        assertEquals("ATS_SINGLE_COLUMN", persisted.path("presentationConfig").path("templateCode").asText());
+        assertEquals(
+                List.of("email"),
+                mapper.convertValue(
+                        persisted.path("presentationConfig").path("fieldOrder").path("realName"),
+                        List.class));
+        assertEquals(
+                "ATS_SINGLE_COLUMN",
+                mapper.readTree(callerResume.getPresentationConfigJson()).path("templateCode").asText());
     }
 
     private ResumeVersionSnapshotManager guardedManager(
