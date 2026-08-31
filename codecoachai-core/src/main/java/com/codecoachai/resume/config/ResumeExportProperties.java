@@ -19,7 +19,7 @@ public class ResumeExportProperties {
     private static final long MAX_ARTIFACT_BYTES = 10L * 1024L * 1024L;
     private static final long DEFAULT_MAX_SOURCE_UPLOAD_BYTES = 20L * 1024L * 1024L;
 
-    private long maxSourceTextBytes = 512L * 1024L;
+    private long maxSourceTextBytes = 1024L * 1024L;
     private long maxSourceUploadBytes = DEFAULT_MAX_SOURCE_UPLOAD_BYTES;
     private long maxArtifactBytes = MAX_ARTIFACT_BYTES;
     private int maxZipEntries = 12;
@@ -28,7 +28,7 @@ public class ResumeExportProperties {
     private String pdfFontPath;
 
     public long effectiveMaxSourceTextBytes() {
-        return maxSourceTextBytes < 1 ? 512L * 1024L : maxSourceTextBytes;
+        return maxSourceTextBytes < 1 ? 1024L * 1024L : maxSourceTextBytes;
     }
 
     public long effectiveMaxArtifactBytes() {

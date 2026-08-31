@@ -12,6 +12,10 @@ import com.codecoachai.resume.export.ResumeArtifactHashes;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
+import com.codecoachai.resume.support.ResumeAnchorResolver;
+import com.codecoachai.resume.support.ResumeDocumentNormalizer;
+import com.codecoachai.resume.support.ResumeDocumentProjector;
+import com.codecoachai.resume.support.ResumeDocumentStore;
 import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +39,19 @@ public class ResumeVersionSnapshotManager {
     private static final int VERSION_INSERT_ATTEMPTS = 5;
     private static final String PROJECT_SNAPSHOT_SOURCE = "RESUME_VERSION";
     private static final Pattern PROJECT_SECTION = Pattern.compile("projects\\[(\\d+)]\\.([A-Za-z][A-Za-z0-9]*)");
+
+    private static final String IDENTITY_ANCHOR_PREFIX = "section:";
+    private static final List<String> MIRROR_FIELDS = List.of("realName", "targetPosition", "email", "phone",
+            "summary", "skillStack", "workExperience", "educationExperience");
+    private static final Map<String, String> MIRROR_PROJECT_FIELDS = Map.of(
+            "projectName", "projectName",
+            "projectPeriod", "projectTime",
+            "role", "role",
+            "techStack", "techStack",
+            "projectBackground", "projectBackground",
+            "coreFeatures", "coreFeatures",
+            "technicalDifficulties", "technicalChallenges",
+            "optimizationResults", "optimizationResult");
 
     private final ResumeMapper resumeMapper;
     private final ResumeProjectMapper projectMapper;
@@ -93,6 +110,14 @@ public class ResumeVersionSnapshotManager {
     }
 
     public String sectionText(ObjectNode snapshot, String sectionKey) {
+        if (isIdentityAnchor(sectionKey)) {
+            String anchored = ResumeAnchorResolver.resolveText(requireDocument(snapshot), sectionKey);
+            if (anchored == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Suggestion anchor no longer matches its source text");
+            }
+            return anchored;
+        }
         JsonNode node = sectionNode(snapshot, sectionKey);
         if (node == null || node.isNull() || !node.isValueNode()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Suggestion section is not a text field");
@@ -109,7 +134,57 @@ public class ResumeVersionSnapshotManager {
         if (!Objects.equals(current.substring(start, end), expected)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Suggestion anchor no longer matches its source text");
         }
-        setSectionNode(snapshot, sectionKey, current.substring(0, start) + replacement + current.substring(end));
+        String updated = current.substring(0, start) + replacement + current.substring(end);
+        if (isIdentityAnchor(sectionKey)) {
+            snapshot.set("document", ResumeAnchorResolver.applyReplacement(
+                    objectMapper, requireDocument(snapshot), sectionKey, updated));
+            syncMirrorFromDocument(snapshot);
+            return;
+        }
+        setSectionNode(snapshot, sectionKey, updated);
+    }
+
+    private ObjectNode requireDocument(ObjectNode snapshot) {
+        JsonNode document = snapshot.get("document");
+        if (document == null || !document.isObject()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Suggestion anchor needs a structured resume document");
+        }
+        return (ObjectNode) document;
+    }
+
+    private static boolean isIdentityAnchor(String sectionKey) {
+        return sectionKey != null && sectionKey.startsWith(IDENTITY_ANCHOR_PREFIX);
+    }
+
+    /**
+     * Once an anchored suggestion lands, the document is canonical, so the snapshot's flat mirror is
+     * rebuilt from it and older readers plus the ATS export keep seeing current text.
+     */
+    private void syncMirrorFromDocument(ObjectNode snapshot) {
+        ObjectNode projected = ResumeDocumentProjector.project(objectMapper, snapshot.path("document"));
+        MIRROR_FIELDS.forEach(field -> snapshot.put(field, projected.path(field).asText("")));
+
+        if (snapshot.get("presentationConfig") instanceof ObjectNode config) {
+            config.set("sectionOrder", projected.path("sectionOrder").deepCopy());
+            config.set("hiddenSections", projected.path("hiddenSections").deepCopy());
+            snapshot.set("presentationConfig",
+                    ResumePresentationConfigNormalizer.normalize(objectMapper, config));
+        }
+
+        JsonNode rows = snapshot.path("projects");
+        JsonNode projectedProjects = projected.path("projects");
+        if (rows.isArray() && projectedProjects.isArray()) {
+            int shared = Math.min(rows.size(), projectedProjects.size());
+            for (int index = 0; index < shared; index++) {
+                if (!(rows.get(index) instanceof ObjectNode row)) {
+                    continue;
+                }
+                JsonNode source = projectedProjects.get(index);
+                MIRROR_PROJECT_FIELDS.forEach((column, field) ->
+                        row.put(column, source.path(field).asText("")));
+            }
+        }
     }
 
     public ResumeVersion insertAndApply(Resume resume, ObjectNode snapshot, String sourceType, Long sourceId,
@@ -182,6 +257,7 @@ public class ResumeVersionSnapshotManager {
         putText(snapshot, "summary", resume.getSummary());
         snapshot.set("presentationConfig", ResumePresentationConfigNormalizer.parseStored(
                 objectMapper, resume.getPresentationConfigJson()));
+        putDocument(snapshot, ResumeDocumentStore.readStored(objectMapper, resume.getDocumentJson()));
         List<ObjectNode> projectSnapshots = new ArrayList<>();
         for (ResumeProject project : projects) {
             ObjectNode projectSnapshot = objectMapper.createObjectNode();
@@ -218,6 +294,8 @@ public class ResumeVersionSnapshotManager {
         copyText(snapshot, source, "summary");
         snapshot.set("presentationConfig", ResumePresentationConfigNormalizer.normalize(
                 objectMapper, source == null ? null : source.get("presentationConfig")));
+        putDocument(snapshot, ResumeDocumentNormalizer.normalize(
+                objectMapper, source == null ? null : source.get("document")));
         List<ObjectNode> projectSnapshots = new ArrayList<>();
         JsonNode projects = source == null ? null : source.get("projects");
         if (projects != null && projects.isArray()) {
@@ -245,6 +323,12 @@ public class ResumeVersionSnapshotManager {
                 ? projectSnapshotSource
                 : PROJECT_SNAPSHOT_SOURCE);
         return snapshot;
+    }
+
+    private void putDocument(ObjectNode snapshot, JsonNode document) {
+        if (document != null && document.isObject()) {
+            snapshot.set("document", document);
+        }
     }
 
     private void appendCanonicalProjects(ObjectNode snapshot, List<ObjectNode> projects) {
@@ -304,6 +388,7 @@ public class ResumeVersionSnapshotManager {
                         .set(ResumeVersion::getCurrentFlag, 0));
                 versionMapper.insert(version);
                 applySnapshot(resume, normalizedSnapshot);
+                persistDocument(resume, normalizedSnapshot);
                 resumeMapper.updateById(resume);
                 restoreProjects(resume.getId(), normalizedSnapshot);
                 return version;
@@ -410,6 +495,21 @@ public class ResumeVersionSnapshotManager {
         resume.setSummary(text(snapshot, "summary"));
         resume.setPresentationConfigJson(ResumePresentationConfigNormalizer.normalizeJson(
                 objectMapper, snapshot.get("presentationConfig")));
+    }
+
+    /**
+     * A snapshot without a document hands authority back to the flat mirror, and clearing the column
+     * takes an explicit update because null-valued fields are skipped otherwise.
+     */
+    private void persistDocument(Resume resume, ObjectNode snapshot) {
+        JsonNode document = snapshot.get("document");
+        String json = document != null && document.isObject() ? write(document) : null;
+        resume.setDocumentJson(json);
+        if (json == null) {
+            resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                    .eq(Resume::getId, resume.getId())
+                    .set(Resume::getDocumentJson, null));
+        }
     }
 
     private void restoreProjects(Long resumeId, ObjectNode snapshot) {

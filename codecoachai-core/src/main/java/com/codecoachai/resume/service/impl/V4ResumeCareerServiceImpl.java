@@ -57,8 +57,12 @@ import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.codecoachai.resume.service.support.JobApplicationLifecyclePolicy;
+import com.codecoachai.resume.support.ResumeDocumentNormalizer;
+import com.codecoachai.resume.support.ResumeDocumentStore;
 import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -225,6 +229,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        syncDocumentColumn(resume, versionSnapshot);
         restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
@@ -243,6 +248,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
+        syncDocumentColumn(resume, versionSnapshot);
         restoreProjects(resume.getId(), versionSnapshot);
         clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
@@ -1899,6 +1905,10 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("summary", resume.getSummary());
         map.put("presentationConfig", ResumePresentationConfigNormalizer.parseStored(
                 objectMapper, resume.getPresentationConfigJson()));
+        JsonNode document = ResumeDocumentStore.readStored(objectMapper, resume.getDocumentJson());
+        if (document != null) {
+            map.put("document", document);
+        }
         map.put("projects", projectsForSnapshot(resume.getId()).stream()
                 .map(this::projectSnapshot)
                 .sorted(Comparator
@@ -1952,6 +1962,22 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         resume.setSummary(text(map.get("summary")));
         resume.setPresentationConfigJson(ResumePresentationConfigNormalizer.normalizeJson(
                 objectMapper, objectMapper.valueToTree(map.get("presentationConfig"))));
+        ObjectNode normalizedDocument = ResumeDocumentNormalizer.normalize(
+                objectMapper, objectMapper.valueToTree(map.get("document")));
+        resume.setDocumentJson(normalizedDocument == null ? null : writeJson(normalizedDocument));
+    }
+
+    /**
+     * A snapshot without a document hands authority back to the flat mirror, and clearing the column
+     * needs an explicit update because null-valued fields are skipped by the entity update.
+     */
+    private void syncDocumentColumn(Resume resume, Map<String, Object> snapshot) {
+        if (snapshot != null && snapshot.get("document") != null) {
+            return;
+        }
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .eq(Resume::getId, resume.getId())
+                .set(Resume::getDocumentJson, null));
     }
 
     private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {
