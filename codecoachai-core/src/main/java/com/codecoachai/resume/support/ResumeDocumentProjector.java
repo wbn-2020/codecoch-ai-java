@@ -96,23 +96,30 @@ public final class ResumeDocumentProjector {
         if (!"entry".equals(section.path("kind").asText(""))) {
             return "";
         }
+        return itemsToText(section.path("content").path("items"));
+    }
+
+    /** Flattens entry items to flat-column text: heading+period line, subheading, meta, bullet blocks. */
+    public static String itemsToText(JsonNode items) {
         List<String> entries = new ArrayList<>();
-        for (JsonNode item : section.path("content").path("items")) {
-            String heading = item.path("heading").asText("");
-            String period = item.path("period").asText("");
-            List<String> lines = new ArrayList<>();
-            addIfPresent(lines, !heading.isEmpty() && !period.isEmpty()
-                    ? heading + "    " + period
-                    : (heading.isEmpty() ? period : heading));
-            addIfPresent(lines, item.path("subheading").asText(""));
-            addIfPresent(lines, item.path("meta").asText(""));
-            for (JsonNode block : item.path("blocks")) {
-                String line = blockLine(block);
-                if (!line.isEmpty()) {
-                    lines.add(line);
+        if (items != null && items.isArray()) {
+            for (JsonNode item : items) {
+                String heading = item.path("heading").asText("");
+                String period = item.path("period").asText("");
+                List<String> lines = new ArrayList<>();
+                addIfPresent(lines, !heading.isEmpty() && !period.isEmpty()
+                        ? heading + "    " + period
+                        : (heading.isEmpty() ? period : heading));
+                addIfPresent(lines, item.path("subheading").asText(""));
+                addIfPresent(lines, item.path("meta").asText(""));
+                for (JsonNode block : item.path("blocks")) {
+                    String line = blockLine(block);
+                    if (!line.isEmpty()) {
+                        lines.add(line);
+                    }
                 }
+                entries.add(String.join("\n", lines));
             }
-            entries.add(String.join("\n", lines));
         }
         return String.join("\n\n", entries);
     }

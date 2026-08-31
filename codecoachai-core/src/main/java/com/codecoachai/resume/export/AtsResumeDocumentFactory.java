@@ -2,6 +2,8 @@ package com.codecoachai.resume.export;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.codecoachai.resume.support.MarkdownLite;
+import com.codecoachai.resume.support.ResumeDocumentProjector;
 import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -48,7 +50,15 @@ public class AtsResumeDocumentFactory {
                     ? text(root, "targetPosition")
                     : "");
             document.setContact(contactText(root, presentation, rawPresentation));
-            addConfiguredSections(document, root, template, presentation, rawPresentation);
+            JsonNode resumeDocument = root == null ? null : root.get("document");
+            if (resumeDocument != null && resumeDocument.isObject()
+                    && resumeDocument.path("schemaVersion").asInt(1) >= 2
+                    && resumeDocument.path("sections").isArray()
+                    && resumeDocument.path("sections").size() > 0) {
+                addDocumentSections(document, root, resumeDocument, presentation, rawPresentation);
+            } else {
+                addConfiguredSections(document, root, template, presentation, rawPresentation);
+            }
             return document;
         } catch (Exception ex) {
             throw new IllegalArgumentException("Invalid resume version snapshot", ex);
@@ -148,6 +158,63 @@ public class AtsResumeDocumentFactory {
         }
     }
 
+    /**
+     * A v2 snapshot is authoritative for order, visibility and custom content: builtin keys read
+     * their projected flat columns, custom sections carry their own blocks or entry items.
+     */
+    private void addDocumentSections(
+            AtsResumeDocument document,
+            JsonNode root,
+            JsonNode resumeDocument,
+            JsonNode presentation,
+            JsonNode rawPresentation) {
+        for (JsonNode section : resumeDocument.path("sections")) {
+            if (!section.path("visible").asBoolean(true)) {
+                continue;
+            }
+            String builtinKey = section.path("builtinKey").asText("");
+            if (!builtinKey.isEmpty()) {
+                String normalized = builtinKey.toUpperCase(java.util.Locale.ROOT);
+                if (!sectionVisible(presentation, rawPresentation, normalized)) {
+                    continue;
+                }
+                switch (normalized) {
+                    case "SUMMARY" -> addSection(document,
+                            heading(section, "Professional Summary"), values(root.get("summary")));
+                    case "SKILLS" -> addSection(document,
+                            heading(section, "Skills"), values(root.get("skillStack")));
+                    case "EXPERIENCE" -> addSection(document,
+                            heading(section, "Experience"), values(root.get("workExperience")));
+                    case "PROJECTS" -> addProjects(document,
+                            root.get("projects"), heading(section, "Projects"));
+                    case "EDUCATION" -> addSection(document,
+                            heading(section, "Education"), values(root.get("educationExperience")));
+                    default -> {
+                        // A builtin key the exporter no longer knows must not invent content.
+                    }
+                }
+                continue;
+            }
+            if ("custom".equals(section.path("kind").asText(""))) {
+                addSection(document, heading(section, "Additional"), customSectionValues(section));
+            }
+        }
+    }
+
+    private String heading(JsonNode section, String fallback) {
+        String title = section.path("title").asText("").trim();
+        return StringUtils.hasText(title) ? title : fallback;
+    }
+
+    private List<String> customSectionValues(JsonNode section) {
+        JsonNode content = section.path("content");
+        JsonNode items = content.path("items");
+        if (items.isArray() && !items.isEmpty()) {
+            return values(ResumeDocumentProjector.itemsToText(items));
+        }
+        return values(ResumeDocumentProjector.blocksToText(content.path("blocks")));
+    }
+
     private boolean sectionVisible(JsonNode presentation, JsonNode rawPresentation, String section) {
         return switch (section) {
             case "SUMMARY" -> isVisible(presentation, rawPresentation, "summary");
@@ -243,9 +310,13 @@ public class AtsResumeDocumentFactory {
     }
 
     private void addProjects(AtsResumeDocument document, JsonNode projects) {
+        addProjects(document, projects, "Projects");
+    }
+
+    private void addProjects(AtsResumeDocument document, JsonNode projects, String heading) {
         JsonNode normalized = normalize(projects);
         if (normalized == null || !normalized.isArray()) {
-            addSection(document, "Projects", values(normalized));
+            addSection(document, heading, values(normalized));
             return;
         }
         List<String> lines = new ArrayList<>();
@@ -261,18 +332,26 @@ public class AtsResumeDocumentFactory {
                 lines.add(String.join(" - ", values));
             }
         }
-        addSection(document, "Projects", lines);
+        addSection(document, heading, lines);
     }
 
     private void addSection(AtsResumeDocument document, String heading, List<String> lines) {
         List<String> clean = lines.stream()
                 .filter(StringUtils::hasText)
-                .map(String::trim)
+                .map(line -> MarkdownLite.stripInline(line, true).trim())
+                .filter(StringUtils::hasText)
                 .distinct()
                 .toList();
         if (!clean.isEmpty()) {
             document.getSections().add(new AtsResumeDocument.Section(heading, clean));
         }
+    }
+
+    private List<String> values(String text) {
+        if (!StringUtils.hasText(text)) {
+            return List.of();
+        }
+        return values(objectMapper.getNodeFactory().textNode(text));
     }
 
     private List<String> values(JsonNode value) {
@@ -290,9 +369,9 @@ public class AtsResumeDocumentFactory {
             return;
         }
         if (node.isValueNode()) {
-            String value = node.asText();
+            String value = MarkdownLite.stripInline(node.asText(""), true);
             if (StringUtils.hasText(value)) {
-                for (String line : value.split("\\r?\\n|(?<=[。.!?；;])\\s*")) {
+                for (String line : value.split("\\r?\\n|(?<=[。！？；;])\\s*|(?<=\\.)\\s+")) {
                     if (StringUtils.hasText(line)) {
                         output.add(line.trim());
                     }
