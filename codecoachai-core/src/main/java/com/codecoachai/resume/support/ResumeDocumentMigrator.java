@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Synthesizes a resume document v2 from the legacy flat resume columns.
@@ -33,6 +35,9 @@ public final class ResumeDocumentMigrator {
 
     private static final String WORK_FALLBACK_TITLE = "工作经历";
     private static final String EDUCATION_FALLBACK_TITLE = "教育经历";
+
+    private static final Pattern LINE_RUN = Pattern.compile("\\n+");
+    private static final Pattern BULLET_MARKER = Pattern.compile("^\\s*[-*•·]\\s+");
 
     private ResumeDocumentMigrator() {
     }
@@ -122,9 +127,8 @@ public final class ResumeDocumentMigrator {
             byKey.put(key, newSection(mapper, key));
         }
 
-        writeBlocks(byKey.get("summary").putObject("content").putArray("blocks"),
-                ResumeTextHeuristics.splitSentences(ResumeTextHeuristics.normalizeText(text(legacy, "summary"))),
-                "sec-summary-b", "line");
+        writeSummaryBlocks(byKey.get("summary").putObject("content").putArray("blocks"),
+                text(legacy, "summary"), "sec-summary-b");
 
         ArrayNode groups = byKey.get("skills").putObject("content").putArray("groups");
         writeSkillGroups(groups, firstText(legacy, "skillStack", "skills"), "sec-skills");
@@ -230,6 +234,30 @@ public final class ResumeDocumentMigrator {
             block.put("id", idPrefix + index);
             block.put("kind", kind);
             block.put("text", values.get(index));
+        }
+    }
+
+    /**
+     * Mirrors the client's summary builder. A flat summary expresses bullets as a leading "- ", and
+     * the projection writes them back, so migration has to read them as bullet blocks; otherwise the
+     * first document write would silently eat the markers the user typed.
+     */
+    private static void writeSummaryBlocks(ArrayNode blocks, String value, String idPrefix) {
+        for (String raw : LINE_RUN.split(ResumeTextHeuristics.normalizeText(value))) {
+            String line = raw.trim();
+            if (line.isEmpty()) {
+                continue;
+            }
+            Matcher marker = BULLET_MARKER.matcher(line);
+            boolean bullet = marker.find();
+            String body = bullet ? line.substring(marker.end()).trim() : line;
+            for (String sentence : ResumeTextHeuristics.splitSentences(body)) {
+                int index = blocks.size();
+                ObjectNode block = blocks.addObject();
+                block.put("id", idPrefix + index);
+                block.put("kind", bullet ? "bullet" : "line");
+                block.put("text", sentence);
+            }
         }
     }
 
