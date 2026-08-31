@@ -4,6 +4,7 @@ import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
 import com.codecoachai.resume.domain.dto.ResumeOptimizeRequestDTO;
 import com.codecoachai.resume.domain.dto.ResumeProjectSaveDTO;
 import com.codecoachai.resume.domain.dto.ResumeSaveDTO;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
@@ -32,6 +33,9 @@ public interface ResumeService {
     PageResult<ResumeListVO> listResumes(Integer page, Integer size, String keyword);
 
     ResumeDetailVO createResume(ResumeSaveDTO dto);
+
+    /** Document v2 for a resume: the stored one when present, otherwise synthesized. */
+    JsonNode getResumeDocument(Long id);
 
     default ResumeUploadDecisionVO uploadResume(MultipartFile file) {
         return uploadResume(file, null);

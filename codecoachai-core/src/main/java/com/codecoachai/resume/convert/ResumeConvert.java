@@ -37,11 +37,11 @@ public final class ResumeConvert {
     }
 
     public static ResumeDetailVO toDetailVO(Resume resume, List<ResumeProjectVO> projects) {
-        return toDetailVO(resume, projects, null);
+        return toDetailVO(resume, projects, null, null);
     }
 
-    public static ResumeDetailVO toDetailVO(
-            Resume resume, List<ResumeProjectVO> projects, JsonNode presentationConfig) {
+    public static ResumeDetailVO toDetailVO(Resume resume, List<ResumeProjectVO> projects,
+                                            JsonNode presentationConfig, JsonNode document) {
         ResumeDetailVO vo = new ResumeDetailVO();
         vo.setId(resume.getId());
         vo.setUserId(resume.getUserId());
@@ -55,6 +55,7 @@ public final class ResumeConvert {
         vo.setEducationExperience(resume.getEducationExperience());
         vo.setSummary(resume.getSummary());
         vo.setPresentationConfig(presentationConfig);
+        vo.setDocument(document);
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setProjects(projects);

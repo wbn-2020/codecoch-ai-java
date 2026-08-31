@@ -19,6 +19,7 @@ public class ResumeDetailVO {
     private String educationExperience;
     private String summary;
     private JsonNode presentationConfig;
+    private JsonNode document;
     private Integer isDefault;
     private Integer status;
     private List<ResumeProjectVO> projects;

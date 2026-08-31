@@ -13,6 +13,7 @@ import com.codecoachai.resume.domain.vo.ApplyResumeOptimizeResultVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
@@ -144,6 +145,11 @@ public class ResumeController {
     @GetMapping("/{id}")
     public Result<ResumeDetailVO> getResume(@PathVariable Long id) {
         return Result.success(resumeService.getResume(id));
+    }
+
+    @GetMapping("/{id}/document")
+    public Result<JsonNode> getResumeDocument(@PathVariable Long id) {
+        return Result.success(resumeService.getResumeDocument(id));
     }
 
     @OperationLog(module = "resume", action = "UPDATE_RESUME", description = "Update resume", logResponse = false)

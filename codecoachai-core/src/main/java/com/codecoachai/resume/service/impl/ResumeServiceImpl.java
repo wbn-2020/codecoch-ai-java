@@ -64,6 +64,7 @@ import com.codecoachai.resume.service.ResumeAggregateInitializationService;
 import com.codecoachai.resume.service.ResumeService;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.support.ResumeImportNormalizer;
+import com.codecoachai.resume.support.ResumeDocumentStore;
 import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.codecoachai.resume.service.support.ResumeImportNormalizer.NormalizationResult;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -879,6 +880,7 @@ public class ResumeServiceImpl implements ResumeService {
         LocalDateTime appliedAt = LocalDateTime.now();
         Resume draft = copyResumeDraft(sourceResume, record.getId(), appliedAt);
         StructuredApplyResult applyResult = applyStructuredPatches(draft, sourceResume, resultJson, dto);
+        syncDraftDocument(draft, sourceResume);
         resumeMapper.insert(draft);
         copyProjects(sourceResume.getId(), draft.getId());
         syncResumeSearchAfterCommit(draft.getId(), userId, true);
@@ -903,6 +905,13 @@ public class ResumeServiceImpl implements ResumeService {
     @Override
     public ResumeDetailVO getResume(Long id) {
         return toDetailVO(getOwnedResumeForRead(id));
+    }
+
+    @Override
+    public JsonNode getResumeDocument(Long id) {
+        Resume resume = getOwnedResumeForRead(id);
+        return ResumeDocumentStore.read(objectMapper, resume, projects(resume.getId()),
+                storedPresentationConfig(resume));
     }
 
     @Override
@@ -1157,11 +1166,18 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private ResumeDetailVO toDetailVO(Resume resume) {
+        List<ResumeProjectVO> projects = projects(resume.getId());
+        JsonNode presentationConfig = storedPresentationConfig(resume);
         return ResumeConvert.toDetailVO(
                 resume,
-                projects(resume.getId()),
-                ResumePresentationConfigNormalizer.parseStored(
-                        objectMapper, resume.getPresentationConfigJson()));
+                projects,
+                presentationConfig,
+                ResumeDocumentStore.read(objectMapper, resume, projects, presentationConfig));
+    }
+
+    private JsonNode storedPresentationConfig(Resume resume) {
+        return ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson());
     }
 
     private void applyListContextEligibility(ResumeListVO resume) {
@@ -1179,6 +1195,12 @@ public class ResumeServiceImpl implements ResumeService {
         }
     }
 
+    /** An AI patch replaces whole flat fields, so a copied document must be rebuilt from them. */
+    private void syncDraftDocument(Resume draft, Resume source) {
+        ResumeDocumentStore.writeLegacyEdit(objectMapper, draft, projects(source.getId()),
+                storedPresentationConfig(draft));
+    }
+
     private Resume copyResumeDraft(Resume source, Long optimizeRecordId, LocalDateTime appliedAt) {
         Resume draft = new Resume();
         draft.setUserId(source.getUserId());
@@ -1192,6 +1214,7 @@ public class ResumeServiceImpl implements ResumeService {
         draft.setEducationExperience(source.getEducationExperience());
         draft.setSummary(source.getSummary());
         draft.setPresentationConfigJson(source.getPresentationConfigJson());
+        draft.setDocumentJson(source.getDocumentJson());
         draft.setIsDefault(CommonConstants.NO);
         draft.setStatus(source.getStatus() == null ? CommonConstants.YES : source.getStatus());
         draft.setSourceResumeId(source.getId());
@@ -2128,9 +2151,24 @@ public class ResumeServiceImpl implements ResumeService {
             resume.setPresentationConfigJson(
                     ResumePresentationConfigNormalizer.normalizeJson(objectMapper, dto.getPresentationConfig()));
         }
+        applyDocument(resume, dto);
         if (dto.getStatus() != null) {
             resume.setStatus(dto.getStatus());
         }
+    }
+
+    private void applyDocument(Resume resume, ResumeSaveDTO dto) {
+        JsonNode presentationConfig = ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson());
+        if (dto.getDocument() != null) {
+            if (ResumeDocumentStore.writeDocument(objectMapper, resume, dto.getDocument()) == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Resume document must be a schema version 2 document");
+            }
+            return;
+        }
+        ResumeDocumentStore.writeLegacyEdit(objectMapper, resume,
+                resume.getId() == null ? List.of() : projects(resume.getId()), presentationConfig);
     }
 
     private void validateUploadFile(MultipartFile file) {
