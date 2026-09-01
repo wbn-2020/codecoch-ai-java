@@ -108,6 +108,7 @@ class V4ResumeCareerServiceImplTest {
 
     @BeforeAll
     static void initMybatisPlusTableInfo() {
+        initTableInfo(Resume.class);
         initTableInfo(ResumeVersion.class);
         initTableInfo(ResumeProject.class);
         initTableInfo(ResumeJobMatchReport.class);
@@ -1531,6 +1532,34 @@ class V4ResumeCareerServiceImplTest {
         assertEquals("ATS_COMPACT", presentationConfig.path("templateCode").asText());
         assertEquals(1.18d, presentationConfig.path("fontScale").asDouble());
         assertFalse(presentationConfig.has("html"));
+    }
+
+    @Test
+    void rollbackRestoresProjectUsingSnapshotProjectId() {
+        Resume current = resume(1L, USER_ID);
+        ResumeVersion version = resumeVersion(2L, USER_ID, 1L);
+        version.setSnapshotJson("""
+                {
+                  "title": "Restored resume",
+                  "projects": [{
+                    "projectId": 11,
+                    "projectName": "Stable project",
+                    "sort": 0,
+                    "sortOrder": 0
+                  }]
+                }
+                """);
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectById(2L)).thenReturn(version);
+        when(resumeProjectMapper.restoreSnapshotById(any(ResumeProject.class))).thenReturn(1);
+
+        service.rollbackVersion(1L, 2L);
+
+        ArgumentCaptor<ResumeProject> projectCaptor = ArgumentCaptor.forClass(ResumeProject.class);
+        verify(resumeProjectMapper).restoreSnapshotById(projectCaptor.capture());
+        assertEquals(11L, projectCaptor.getValue().getId());
+        assertEquals(1L, projectCaptor.getValue().getResumeId());
+        verify(resumeProjectMapper, never()).insert(any(ResumeProject.class));
     }
 
     @Test

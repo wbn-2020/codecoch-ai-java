@@ -4,6 +4,7 @@ import com.codecoachai.resume.domain.entity.Resume;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -107,6 +108,44 @@ public final class ResumeDocumentStore {
         return merged;
     }
 
+    /**
+     * Replaces only the builtin project section from persisted project rows. All other document
+     * content, including custom contacts and custom sections, remains untouched.
+     */
+    public static ObjectNode writeProjects(ObjectMapper mapper, Resume resume, List<?> projects) {
+        JsonNode existing = readStored(mapper, resume.getDocumentJson());
+        if (!(existing instanceof ObjectNode stored)) {
+            return null;
+        }
+        ObjectNode migrated = ResumeDocumentMigrator.toDocument(
+                mapper, mapper.createObjectNode(), projectNodes(mapper, projects), null);
+        JsonNode freshProjects = findBuiltin(migrated, "projects");
+        if (!freshProjects.isObject()) {
+            return null;
+        }
+
+        ObjectNode result = stored.deepCopy();
+        ArrayNode sections = result.withArray("sections");
+        boolean replaced = false;
+        for (int index = 0; index < sections.size(); index++) {
+            JsonNode section = sections.get(index);
+            if ("projects".equals(section.path("builtinKey").asText("")) && section.isObject()) {
+                ObjectNode replacement = ((ObjectNode) section).deepCopy();
+                replacement.set("content", freshProjects.path("content").deepCopy());
+                sections.set(index, replacement);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            sections.add(freshProjects.deepCopy());
+        }
+
+        ObjectNode normalized = ResumeDocumentNormalizer.normalize(mapper, result);
+        resume.setDocumentJson(write(mapper, normalized));
+        return normalized;
+    }
+
     /** Rewrites the flat columns from a document; used after a version rollback restores one. */
     public static void applyProjection(ObjectMapper mapper, Resume resume, JsonNode document) {
         ObjectNode projected = ResumeDocumentProjector.project(mapper, document);
@@ -168,6 +207,15 @@ public final class ResumeDocumentStore {
         if (!value.isEmpty()) {
             target.put(field, value);
         }
+    }
+
+    private static JsonNode findBuiltin(JsonNode document, String builtinKey) {
+        for (JsonNode section : document.path("sections")) {
+            if (builtinKey.equals(section.path("builtinKey").asText(""))) {
+                return section;
+            }
+        }
+        return MissingNode.getInstance();
     }
 
     private static String write(ObjectMapper mapper, JsonNode document) {

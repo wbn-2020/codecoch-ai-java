@@ -5,6 +5,7 @@ import com.codecoachai.resume.domain.entity.ResumeProject;
 import java.util.List;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 public interface ResumeProjectMapper extends BaseMapper<ResumeProject> {
 
@@ -34,4 +35,25 @@ public interface ResumeProjectMapper extends BaseMapper<ResumeProject> {
              FOR UPDATE
             """)
     List<ResumeProject> selectActiveByResumeIdForUpdate(@Param("resumeId") Long resumeId);
+
+    @Update("""
+            UPDATE resume_project
+               SET project_name = #{project.projectName},
+                   project_period = #{project.projectPeriod},
+                   project_background = #{project.projectBackground},
+                   role = #{project.role},
+                   tech_stack = #{project.techStack},
+                   responsibility = #{project.responsibility},
+                   core_features = #{project.coreFeatures},
+                   technical_difficulties = #{project.technicalDifficulties},
+                   optimization_results = #{project.optimizationResults},
+                   description = #{project.description},
+                   highlights = #{project.highlights},
+                   sort = #{project.sort},
+                   sort_order = #{project.sortOrder},
+                   deleted = 0
+             WHERE id = #{project.id}
+               AND resume_id = #{project.resumeId}
+            """)
+    int restoreSnapshotById(@Param("project") ResumeProject project);
 }

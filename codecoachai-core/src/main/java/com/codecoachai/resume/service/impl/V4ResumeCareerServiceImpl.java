@@ -230,7 +230,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
         syncDocumentColumn(resume, versionSnapshot);
-        restoreProjects(resume.getId(), versionSnapshot);
+        syncRestoredProjects(resume, restoreProjects(resume.getId(), versionSnapshot));
         clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -249,7 +249,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
         syncDocumentColumn(resume, versionSnapshot);
-        restoreProjects(resume.getId(), versionSnapshot);
+        syncRestoredProjects(resume, restoreProjects(resume.getId(), versionSnapshot));
         clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -1934,6 +1934,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private Map<String, Object> projectSnapshot(ResumeProject project) {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("projectId", project.getId());
         map.put("projectName", project.getProjectName());
         map.put("projectPeriod", project.getProjectPeriod());
         map.put("projectBackground", project.getProjectBackground());
@@ -1980,21 +1981,23 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
                 .set(Resume::getDocumentJson, null));
     }
 
-    private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {
+    private List<ResumeProject> restoreProjects(Long resumeId, Map<String, Object> snapshot) {
         if (resumeId == null || snapshot == null || !snapshot.containsKey("projects")) {
-            return;
+            return List.of();
         }
         resumeProjectMapper.delete(new LambdaQueryWrapper<ResumeProject>()
                 .eq(ResumeProject::getResumeId, resumeId));
         Object rawProjects = snapshot.get("projects");
         if (!(rawProjects instanceof List<?> projects)) {
-            return;
+            return List.of();
         }
+        List<ResumeProject> restored = new ArrayList<>();
         for (Object rawProject : projects) {
             if (!(rawProject instanceof Map<?, ?> projectSnapshot)) {
                 continue;
             }
             ResumeProject project = new ResumeProject();
+            project.setId(positiveLong(projectSnapshot.get("projectId")));
             project.setResumeId(resumeId);
             project.setProjectName(text(projectSnapshot.get("projectName")));
             project.setProjectPeriod(text(projectSnapshot.get("projectPeriod")));
@@ -2009,7 +2012,29 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             project.setHighlights(text(projectSnapshot.get("highlights")));
             project.setSort(integer(projectSnapshot.get("sort"), 0));
             project.setSortOrder(integer(projectSnapshot.get("sortOrder"), project.getSort()));
-            resumeProjectMapper.insert(project);
+            if (project.getId() == null || resumeProjectMapper.restoreSnapshotById(project) == 0) {
+                resumeProjectMapper.insert(project);
+            }
+            restored.add(project);
+        }
+        return restored;
+    }
+
+    private void syncRestoredProjects(Resume resume, List<ResumeProject> projects) {
+        if (ResumeDocumentStore.writeProjects(objectMapper, resume, projects) != null) {
+            resumeMapper.updateById(resume);
+        }
+    }
+
+    private Long positiveLong(Object value) {
+        if (value instanceof Number number && number.longValue() > 0) {
+            return number.longValue();
+        }
+        try {
+            long parsed = Long.parseLong(text(value));
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 

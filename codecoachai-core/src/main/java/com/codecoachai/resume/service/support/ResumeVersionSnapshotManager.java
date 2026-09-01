@@ -231,8 +231,8 @@ public class ResumeVersionSnapshotManager {
         ObjectNode expectedSnapshot = canonicalSnapshot(readSnapshot(current));
         ObjectNode liveSnapshot = liveSnapshot(lockedResume, liveProjects);
         if (!Objects.equals(
-                ResumeArtifactHashes.sha256(write(expectedSnapshot)),
-                ResumeArtifactHashes.sha256(write(liveSnapshot)))) {
+                ResumeArtifactHashes.sha256(write(contentSnapshot(expectedSnapshot))),
+                ResumeArtifactHashes.sha256(write(contentSnapshot(liveSnapshot))))) {
             throw staleSourceVersion();
         }
         return insertAndApplyLocked(lockedResume, snapshot, sourceType, sourceId, versionName);
@@ -261,6 +261,7 @@ public class ResumeVersionSnapshotManager {
         List<ObjectNode> projectSnapshots = new ArrayList<>();
         for (ResumeProject project : projects) {
             ObjectNode projectSnapshot = objectMapper.createObjectNode();
+            projectSnapshot.put("projectId", project.getId());
             putText(projectSnapshot, "projectName", project.getProjectName());
             putText(projectSnapshot, "projectPeriod", project.getProjectPeriod());
             putText(projectSnapshot, "projectBackground", project.getProjectBackground());
@@ -301,6 +302,7 @@ public class ResumeVersionSnapshotManager {
         if (projects != null && projects.isArray()) {
             for (JsonNode project : projects) {
                 ObjectNode projectSnapshot = objectMapper.createObjectNode();
+                copyLong(projectSnapshot, project, "projectId");
                 copyText(projectSnapshot, project, "projectName");
                 copyText(projectSnapshot, project, "projectPeriod");
                 copyText(projectSnapshot, project, "projectBackground");
@@ -349,6 +351,13 @@ public class ResumeVersionSnapshotManager {
         putInteger(target, field, value == null || value.isNull() || !value.canConvertToInt() ? 0 : value.asInt());
     }
 
+    private void copyLong(ObjectNode target, JsonNode source, String field) {
+        JsonNode value = source == null ? null : source.get(field);
+        if (value != null && value.canConvertToLong() && value.asLong() > 0) {
+            target.put(field, value.asLong());
+        }
+    }
+
     private void putText(ObjectNode target, String field, String value) {
         if (value == null) {
             target.putNull(field);
@@ -390,7 +399,10 @@ public class ResumeVersionSnapshotManager {
                 applySnapshot(resume, normalizedSnapshot);
                 persistDocument(resume, normalizedSnapshot);
                 resumeMapper.updateById(resume);
-                restoreProjects(resume.getId(), normalizedSnapshot);
+                List<ResumeProject> restoredProjects = restoreProjects(resume.getId(), normalizedSnapshot);
+                if (ResumeDocumentStore.writeProjects(objectMapper, resume, restoredProjects) != null) {
+                    resumeMapper.updateById(resume);
+                }
                 return version;
             } catch (DuplicateKeyException ex) {
                 lastConflict = ex;
@@ -512,20 +524,22 @@ public class ResumeVersionSnapshotManager {
         }
     }
 
-    private void restoreProjects(Long resumeId, ObjectNode snapshot) {
+    private List<ResumeProject> restoreProjects(Long resumeId, ObjectNode snapshot) {
         if (!snapshot.has("projects")) {
-            return;
+            return List.of();
         }
         projectMapper.delete(new LambdaQueryWrapper<ResumeProject>().eq(ResumeProject::getResumeId, resumeId));
         JsonNode projects = snapshot.path("projects");
         if (!projects.isArray()) {
-            return;
+            return List.of();
         }
+        List<ResumeProject> restored = new ArrayList<>();
         for (JsonNode value : projects) {
             if (!value.isObject()) {
                 continue;
             }
             ResumeProject project = new ResumeProject();
+            project.setId(positiveLong(value, "projectId"));
             project.setResumeId(resumeId);
             project.setProjectName(text(value, "projectName"));
             project.setProjectPeriod(text(value, "projectPeriod"));
@@ -540,8 +554,27 @@ public class ResumeVersionSnapshotManager {
             project.setHighlights(text(value, "highlights"));
             project.setSort(integer(value, "sort", 0));
             project.setSortOrder(integer(value, "sortOrder", project.getSort()));
-            projectMapper.insert(project);
+            if (project.getId() == null || projectMapper.restoreSnapshotById(project) == 0) {
+                projectMapper.insert(project);
+            }
+            restored.add(project);
         }
+        return restored;
+    }
+
+    private ObjectNode contentSnapshot(ObjectNode snapshot) {
+        ObjectNode content = snapshot.deepCopy();
+        for (JsonNode project : content.path("projects")) {
+            if (project instanceof ObjectNode object) {
+                object.remove("projectId");
+            }
+        }
+        return content;
+    }
+
+    private Long positiveLong(JsonNode node, String field) {
+        JsonNode value = node == null ? null : node.get(field);
+        return value != null && value.canConvertToLong() && value.asLong() > 0 ? value.asLong() : null;
     }
 
     private String text(JsonNode node, String field) {

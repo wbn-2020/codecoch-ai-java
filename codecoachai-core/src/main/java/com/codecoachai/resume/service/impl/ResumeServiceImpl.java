@@ -880,9 +880,10 @@ public class ResumeServiceImpl implements ResumeService {
         LocalDateTime appliedAt = LocalDateTime.now();
         Resume draft = copyResumeDraft(sourceResume, record.getId(), appliedAt);
         StructuredApplyResult applyResult = applyStructuredPatches(draft, sourceResume, resultJson, dto);
-        syncDraftDocument(draft, sourceResume);
         resumeMapper.insert(draft);
-        copyProjects(sourceResume.getId(), draft.getId());
+        List<ResumeProject> draftProjects = copyProjects(sourceResume.getId(), draft.getId());
+        syncDraftDocument(draft, draftProjects);
+        resumeMapper.updateById(draft);
         syncResumeSearchAfterCommit(draft.getId(), userId, true);
 
         ApplyResumeOptimizeResultVO vo = new ApplyResumeOptimizeResultVO();
@@ -987,6 +988,7 @@ public class ResumeServiceImpl implements ResumeService {
         project.setResumeId(resumeId);
         applyProject(project, dto);
         projectMapper.insert(project);
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, userId, true);
         return ResumeConvert.toProjectVO(getProject(resumeId, project.getId()));
     }
@@ -1000,6 +1002,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, userId, true);
         return ResumeConvert.toProjectVO(getProject(resumeId, projectId));
     }
@@ -1010,6 +1013,7 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getOwnedProject(projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncStoredDocumentProjects(getOwnedResume(project.getResumeId()));
         syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
         return ResumeConvert.toProjectVO(getProject(project.getResumeId(), projectId));
     }
@@ -1021,6 +1025,7 @@ public class ResumeServiceImpl implements ResumeService {
         lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         projectMapper.deleteById(project.getId());
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
     }
 
@@ -1029,6 +1034,7 @@ public class ResumeServiceImpl implements ResumeService {
     public void deleteProject(Long projectId) {
         ResumeProject project = getOwnedProject(projectId);
         projectMapper.deleteById(project.getId());
+        syncStoredDocumentProjects(getOwnedResume(project.getResumeId()));
         syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
     }
 
@@ -1196,8 +1202,8 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     /** An AI patch replaces whole flat fields, so a copied document must be rebuilt from them. */
-    private void syncDraftDocument(Resume draft, Resume source) {
-        ResumeDocumentStore.writeLegacyEdit(objectMapper, draft, projects(source.getId()),
+    private void syncDraftDocument(Resume draft, List<ResumeProject> draftProjects) {
+        ResumeDocumentStore.writeLegacyEdit(objectMapper, draft, draftProjects,
                 storedPresentationConfig(draft));
     }
 
@@ -1237,13 +1243,14 @@ public class ResumeServiceImpl implements ResumeService {
         return title + suffix;
     }
 
-    private void copyProjects(Long sourceResumeId, Long draftResumeId) {
+    private List<ResumeProject> copyProjects(Long sourceResumeId, Long draftResumeId) {
         List<ResumeProject> projects = projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                 .eq(ResumeProject::getResumeId, sourceResumeId)
                 .eq(ResumeProject::getDeleted, CommonConstants.NO)
                 .orderByAsc(ResumeProject::getSortOrder)
                 .orderByAsc(ResumeProject::getSort)
                 .orderByDesc(ResumeProject::getUpdatedAt));
+        List<ResumeProject> copied = new ArrayList<>();
         for (ResumeProject source : projects) {
             ResumeProject draft = new ResumeProject();
             draft.setResumeId(draftResumeId);
@@ -1261,6 +1268,14 @@ public class ResumeServiceImpl implements ResumeService {
             draft.setSort(source.getSort());
             draft.setSortOrder(source.getSortOrder());
             projectMapper.insert(draft);
+            copied.add(draft);
+        }
+        return copied;
+    }
+
+    private void syncStoredDocumentProjects(Resume resume) {
+        if (ResumeDocumentStore.writeProjects(objectMapper, resume, projects(resume.getId())) != null) {
+            resumeMapper.updateById(resume);
         }
     }
 
