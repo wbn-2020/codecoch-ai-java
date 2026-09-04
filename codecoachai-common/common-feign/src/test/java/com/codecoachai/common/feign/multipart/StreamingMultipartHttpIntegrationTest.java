@@ -5,18 +5,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import feign.Client;
 import feign.Feign;
 import feign.codec.StringDecoder;
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -28,6 +30,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -368,47 +371,131 @@ class StreamingMultipartHttpIntegrationTest {
     private static final class UploadServer implements AutoCloseable {
 
         private final Path directory;
-        private final HttpServer server;
+        private final ServerSocket server;
+        private final ExecutorService acceptor = Executors.newSingleThreadExecutor();
         private final ExecutorService executor = Executors.newFixedThreadPool(10);
         private final Map<String, ReceivedRequest> requests = new ConcurrentHashMap<>();
 
         private UploadServer(Path directory) throws IOException {
             this.directory = Files.createDirectories(directory);
-            server = HttpServer.create(
-                    new InetSocketAddress(InetAddress.getLoopbackAddress(), 0),
-                    0);
-            server.createContext("/upload", this::handle);
-            server.setExecutor(executor);
-            server.start();
+            server = new ServerSocket();
+            server.bind(new InetSocketAddress("127.0.0.1", 0));
+            acceptor.submit(this::acceptConnections);
         }
 
         private String baseUrl() {
-            return "http://" + server.getAddress().getAddress().getHostAddress()
-                    + ":" + server.getAddress().getPort();
+            return "http://" + server.getInetAddress().getHostAddress()
+                    + ":" + server.getLocalPort();
         }
 
         private ReceivedRequest request(String requestId) {
             return requests.get(requestId);
         }
 
-        private void handle(HttpExchange exchange) throws IOException {
-            String requestId = query(exchange.getRequestURI().getRawQuery(), "requestId");
-            Path body = Files.createTempFile(directory, "request-", ".multipart");
-            try (InputStream input = exchange.getRequestBody();
-                 OutputStream output = Files.newOutputStream(body)) {
-                input.transferTo(output);
+        private void acceptConnections() {
+            try {
+                while (!server.isClosed()) {
+                    Socket socket = server.accept();
+                    executor.submit(() -> handle(socket));
+                }
+            } catch (SocketException ex) {
+                if (!server.isClosed()) {
+                    throw new IllegalStateException("upload test server accept loop failed", ex);
+                }
+            } catch (IOException ex) {
+                if (!server.isClosed()) {
+                    throw new IllegalStateException("upload test server accept loop failed", ex);
+                }
             }
-            String contentType = exchange.getRequestHeaders().getFirst("Content-Type");
-            long contentLength = Long.parseLong(
-                    exchange.getRequestHeaders().getFirst("Content-Length"));
-            requests.put(requestId, new ReceivedRequest(body, contentType, contentLength));
-            byte[] response = "ok".getBytes(StandardCharsets.UTF_8);
-            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
-            exchange.sendResponseHeaders(200, response.length);
-            try (OutputStream output = exchange.getResponseBody()) {
+        }
+
+        private void handle(Socket socket) {
+            try (Socket connection = socket;
+                    InputStream input = new BufferedInputStream(connection.getInputStream());
+                    OutputStream output = connection.getOutputStream()) {
+                String requestLine = readLine(input);
+                if (requestLine == null || requestLine.isBlank()) {
+                    throw new IOException("HTTP request line is missing");
+                }
+                String[] requestParts = requestLine.split(" ", 3);
+                if (requestParts.length != 3 || !"POST".equals(requestParts[0])) {
+                    throw new IOException("unexpected HTTP request line: " + requestLine);
+                }
+                String requestTarget = requestParts[1];
+                int queryStart = requestTarget.indexOf('?');
+                String rawQuery = queryStart >= 0
+                        ? requestTarget.substring(queryStart + 1)
+                        : null;
+                String requestId = query(rawQuery, "requestId");
+
+                Map<String, String> headers = new ConcurrentHashMap<>();
+                String headerLine;
+                while ((headerLine = readLine(input)) != null && !headerLine.isEmpty()) {
+                    int separator = headerLine.indexOf(':');
+                    if (separator <= 0) {
+                        throw new IOException("malformed HTTP header: " + headerLine);
+                    }
+                    headers.put(
+                            headerLine.substring(0, separator).trim().toLowerCase(Locale.ROOT),
+                            headerLine.substring(separator + 1).trim());
+                }
+                if (headerLine == null) {
+                    throw new IOException("HTTP headers are incomplete");
+                }
+
+                String contentType = headers.get("content-type");
+                String contentLengthHeader = headers.get("content-length");
+                if (contentType == null || contentLengthHeader == null) {
+                    throw new IOException("multipart content headers are missing");
+                }
+                long contentLength = Long.parseLong(contentLengthHeader);
+
+            Path body = Files.createTempFile(directory, "request-", ".multipart");
+                try (OutputStream bodyOutput = Files.newOutputStream(body)) {
+                    transferExactly(input, bodyOutput, contentLength);
+                }
+                requests.put(requestId, new ReceivedRequest(body, contentType, contentLength));
+
+                byte[] response = "ok".getBytes(StandardCharsets.UTF_8);
+                output.write(("HTTP/1.1 200 OK\r\n"
+                        + "Content-Type: text/plain; charset=UTF-8\r\n"
+                        + "Content-Length: " + response.length + "\r\n"
+                        + "Connection: close\r\n"
+                        + "\r\n").getBytes(StandardCharsets.US_ASCII));
                 output.write(response);
-            } finally {
-                exchange.close();
+                output.flush();
+            } catch (IOException ex) {
+                throw new IllegalStateException("upload test server request failed", ex);
+            }
+        }
+
+        private String readLine(InputStream input) throws IOException {
+            ByteArrayOutputStream line = new ByteArrayOutputStream();
+            int current;
+            while ((current = input.read()) >= 0) {
+                if (current == '\n') {
+                    byte[] bytes = line.toByteArray();
+                    int length = bytes.length > 0 && bytes[bytes.length - 1] == '\r'
+                            ? bytes.length - 1
+                            : bytes.length;
+                    return new String(bytes, 0, length, StandardCharsets.US_ASCII);
+                }
+                line.write(current);
+            }
+            return line.size() == 0 ? null : new String(line.toByteArray(), StandardCharsets.US_ASCII);
+        }
+
+        private void transferExactly(InputStream input, OutputStream output, long length)
+                throws IOException {
+            byte[] buffer = new byte[8192];
+            long remaining = length;
+            while (remaining > 0) {
+                int read = input.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (read < 0) {
+                    throw new IOException("HTTP request body ended before Content-Length");
+                }
+                output.write(buffer, 0, read);
+                remaining -= read;
             }
         }
 
@@ -430,8 +517,10 @@ class StreamingMultipartHttpIntegrationTest {
 
         @Override
         public void close() throws Exception {
-            server.stop(0);
+            server.close();
+            acceptor.shutdownNow();
             executor.shutdownNow();
+            assertTrue(acceptor.awaitTermination(5, TimeUnit.SECONDS));
             assertTrue(executor.awaitTermination(5, TimeUnit.SECONDS));
         }
     }
