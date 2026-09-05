@@ -1,6 +1,8 @@
 package com.codecoachai.user.controller;
 
 import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.user.domain.vo.V3DashboardVO;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -9,6 +11,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,9 +32,11 @@ public class V3DashboardController {
     private static final String TRUST_VERIFIED = "VERIFIED";
     private static final String TRUST_PARTIAL = "PARTIAL";
     private static final String TRUST_FALLBACK = "FALLBACK";
+    private static final ZoneId BUSINESS_ZONE_ID = ZoneId.of("Asia/Shanghai");
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final StudyProgressStatisticsService progressStatisticsService;
     private final ThreadLocal<List<String>> governanceTips = ThreadLocal.withInitial(ArrayList::new);
 
     @GetMapping({"", "/"})
@@ -58,7 +63,7 @@ public class V3DashboardController {
             vo.setNextActions(nextActions(vo));
             vo.setDegraded(!governanceTips.get().isEmpty());
             vo.setGovernanceTips(List.copyOf(governanceTips.get()));
-            vo.setGeneratedAt(LocalDateTime.now());
+            vo.setGeneratedAt(LocalDateTime.now(BUSINESS_ZONE_ID));
             return Result.success(vo);
         } finally {
             governanceTips.remove();
@@ -216,34 +221,19 @@ public class V3DashboardController {
     }
 
     private V3DashboardVO.StudyProgressVO studyProgress(Long userId, Long targetJobId) {
+        StudyProgressSnapshot snapshot = progressStatisticsService.current(userId, targetJobId);
         V3DashboardVO.StudyProgressVO vo = new V3DashboardVO.StudyProgressVO();
-        if (!tableExists("study_plan")) {
-            vo.setTotalTasks(0L);
-            vo.setCompletedTasks(0L);
-            vo.setCompletionRate(0);
-            return vo;
-        }
-        Long planId = queryLong("""
-                SELECT id FROM study_plan
-                WHERE deleted = 0 AND user_id = ? AND (? IS NULL OR target_job_id = ?)
-                ORDER BY updated_at DESC, id DESC LIMIT 1
-                """, userId, targetJobId, targetJobId);
-        vo.setActivePlanId(planId);
-        if (planId == null || !tableExists("study_task")) {
-            vo.setTotalTasks(0L);
-            vo.setCompletedTasks(0L);
-            vo.setCompletionRate(0);
-            return vo;
-        }
-        String planColumn = columnExists("study_task", "study_plan_id") ? "study_plan_id" : "plan_id";
-        Long total = queryLong("SELECT COUNT(1) FROM study_task WHERE deleted = 0 AND " + planColumn + " = ? AND user_id = ?", planId, userId);
-        Long completed = queryLong("""
-                SELECT COUNT(1) FROM study_task
-                WHERE deleted = 0 AND %s = ? AND user_id = ? AND task_status IN ('DONE','COMPLETED')
-                """.formatted(planColumn), planId, userId);
-        vo.setTotalTasks(total == null ? 0L : total);
-        vo.setCompletedTasks(completed == null ? 0L : completed);
-        vo.setCompletionRate(vo.getTotalTasks() == 0 ? 0 : (int) (vo.getCompletedTasks() * 100 / vo.getTotalTasks()));
+        vo.setActivePlanId(snapshot.getPlanId());
+        vo.setTotalTasks((long) snapshot.getTotalTasks());
+        vo.setCompletedTasks((long) snapshot.getCompletedTasks());
+        vo.setSkippedTasks((long) snapshot.getSkippedTasks());
+        vo.setPendingTasks((long) snapshot.getPendingTasks());
+        vo.setCompletionRate(snapshot.getCompletionRate());
+        vo.setCurrentStreak(snapshot.getCurrentStreak());
+        vo.setTotalCheckinDays(snapshot.getTotalCheckinDays());
+        vo.setCheckedInToday(snapshot.isCheckedInToday());
+        vo.setBusinessDate(snapshot.getBusinessDate());
+        vo.setBusinessTimezone(snapshot.getBusinessTimezone());
         return vo;
     }
 

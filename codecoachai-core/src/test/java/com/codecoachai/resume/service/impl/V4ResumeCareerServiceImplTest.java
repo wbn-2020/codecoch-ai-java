@@ -108,6 +108,7 @@ class V4ResumeCareerServiceImplTest {
 
     @BeforeAll
     static void initMybatisPlusTableInfo() {
+        initTableInfo(Resume.class);
         initTableInfo(ResumeVersion.class);
         initTableInfo(ResumeProject.class);
         initTableInfo(ResumeJobMatchReport.class);
@@ -1484,6 +1485,81 @@ class V4ResumeCareerServiceImplTest {
         assertTrue(version.getSnapshotJson().contains("\"projects\""));
         assertTrue(version.getSnapshotJson().contains("智能求职项目"));
         assertTrue(version.getSnapshotJson().contains("\"projectSnapshotSource\":\"RESUME_VERSION\""));
+    }
+
+    @Test
+    void createVersionStoresNormalizedPresentationConfigInSnapshot() throws Exception {
+        Resume current = resume(1L, USER_ID);
+        current.setPresentationConfigJson(
+                "{\"templateCode\":\"INVALID_TEMPLATE\",\"fontScale\":9,\"html\":\"<script>bad</script>\"}");
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectOne(
+                org.mockito.ArgumentMatchers.<LambdaQueryWrapper<ResumeVersion>>any())).thenReturn(null);
+        when(resumeProjectMapper.selectList(any())).thenReturn(List.of());
+
+        service.createVersion(1L, null);
+
+        ArgumentCaptor<ResumeVersion> versionCaptor = ArgumentCaptor.forClass(ResumeVersion.class);
+        verify(resumeVersionMapper).insert(versionCaptor.capture());
+        var presentationConfig = new ObjectMapper()
+                .readTree(versionCaptor.getValue().getSnapshotJson())
+                .path("presentationConfig");
+        assertEquals(1, presentationConfig.path("schemaVersion").asInt());
+        assertEquals("ATS_SINGLE_COLUMN", presentationConfig.path("templateCode").asText());
+        assertEquals(1.18d, presentationConfig.path("fontScale").asDouble());
+        assertFalse(presentationConfig.has("html"));
+    }
+
+    @Test
+    void rollbackRestoresNormalizedPresentationConfigFromSnapshot() throws Exception {
+        Resume current = resume(1L, USER_ID);
+        ResumeVersion version = resumeVersion(2L, USER_ID, 1L);
+        version.setSnapshotJson(
+                "{\"title\":\"Restored resume\","
+                        + "\"presentationConfig\":{\"templateCode\":\"ATS_COMPACT\","
+                        + "\"fontScale\":9,\"html\":\"<script>bad</script>\"}}");
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectById(2L)).thenReturn(version);
+
+        service.rollbackVersion(1L, 2L);
+
+        ArgumentCaptor<Resume> resumeCaptor = ArgumentCaptor.forClass(Resume.class);
+        verify(resumeMapper).updateById(resumeCaptor.capture());
+        assertEquals("Restored resume", resumeCaptor.getValue().getTitle());
+        var presentationConfig = new ObjectMapper()
+                .readTree(resumeCaptor.getValue().getPresentationConfigJson());
+        assertEquals(1, presentationConfig.path("schemaVersion").asInt());
+        assertEquals("ATS_COMPACT", presentationConfig.path("templateCode").asText());
+        assertEquals(1.18d, presentationConfig.path("fontScale").asDouble());
+        assertFalse(presentationConfig.has("html"));
+    }
+
+    @Test
+    void rollbackRestoresProjectUsingSnapshotProjectId() {
+        Resume current = resume(1L, USER_ID);
+        ResumeVersion version = resumeVersion(2L, USER_ID, 1L);
+        version.setSnapshotJson("""
+                {
+                  "title": "Restored resume",
+                  "projects": [{
+                    "projectId": 11,
+                    "projectName": "Stable project",
+                    "sort": 0,
+                    "sortOrder": 0
+                  }]
+                }
+                """);
+        when(resumeMapper.selectById(1L)).thenReturn(current);
+        when(resumeVersionMapper.selectById(2L)).thenReturn(version);
+        when(resumeProjectMapper.restoreSnapshotById(any(ResumeProject.class))).thenReturn(1);
+
+        service.rollbackVersion(1L, 2L);
+
+        ArgumentCaptor<ResumeProject> projectCaptor = ArgumentCaptor.forClass(ResumeProject.class);
+        verify(resumeProjectMapper).restoreSnapshotById(projectCaptor.capture());
+        assertEquals(11L, projectCaptor.getValue().getId());
+        assertEquals(1L, projectCaptor.getValue().getResumeId());
+        verify(resumeProjectMapper, never()).insert(any(ResumeProject.class));
     }
 
     @Test

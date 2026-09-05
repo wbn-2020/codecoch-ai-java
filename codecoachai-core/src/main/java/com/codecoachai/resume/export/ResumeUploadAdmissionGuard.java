@@ -29,11 +29,13 @@ public class ResumeUploadAdmissionGuard {
 
     private final Semaphore uploadPermits;
     private final long maxArtifactBytes;
+    private final long maxSourceUploadBytes;
     private final long acquireTimeoutMillis;
 
     public ResumeUploadAdmissionGuard(ResumeExportProperties properties) {
         this.uploadPermits = new Semaphore(properties.effectiveMaxConcurrentUploads(), true);
         this.maxArtifactBytes = properties.effectiveMaxArtifactBytes();
+        this.maxSourceUploadBytes = properties.effectiveMaxSourceUploadBytes();
         this.acquireTimeoutMillis = properties.effectiveUploadAcquireTimeoutMillis();
     }
 
@@ -54,7 +56,17 @@ public class ResumeUploadAdmissionGuard {
     }
 
     public <T> T execute(long size, Supplier<T> supplier) {
-        validateSize(size);
+        validateSize(size, maxArtifactBytes);
+        acquirePermit();
+        try {
+            return supplier.get();
+        } finally {
+            uploadPermits.release();
+        }
+    }
+
+    public <T> T executeSourceUpload(long size, Supplier<T> supplier) {
+        validateSize(size, maxSourceUploadBytes);
         acquirePermit();
         try {
             return supplier.get();
@@ -88,15 +100,15 @@ public class ResumeUploadAdmissionGuard {
             if (!attributes.isRegularFile()) {
                 throw invalidArtifact();
             }
-            validateSize(attributes.size());
+            validateSize(attributes.size(), maxArtifactBytes);
             return new ValidatedPath(attributes.size(), attributes.fileKey(), maxArtifactBytes);
         } catch (IOException | SecurityException ex) {
             throw invalidArtifact();
         }
     }
 
-    private void validateSize(long size) {
-        if (size < 0 || size > maxArtifactBytes) {
+    private void validateSize(long size, long maxBytes) {
+        if (size < 0 || size > maxBytes) {
             throw invalidArtifact();
         }
     }

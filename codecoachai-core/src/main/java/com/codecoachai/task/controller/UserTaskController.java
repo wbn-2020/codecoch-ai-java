@@ -49,6 +49,7 @@ public class UserTaskController {
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String executionId,
             @RequestParam(required = false) String messageId,
             @RequestParam(required = false) String traceId,
             @RequestParam(required = false) String bizId,
@@ -64,10 +65,12 @@ public class UserTaskController {
                         .and(StringUtils.hasText(keyword), wrapper -> wrapper
                                 .like(AsyncTask::getMessageId, trim(keyword))
                                 .or().like(AsyncTask::getTraceId, trim(keyword))
+                                .or().like(AsyncTask::getExecutionId, trim(keyword))
                                 .or().like(AsyncTask::getBizId, trim(keyword))
                                 .or().like(AsyncTask::getBizType, trim(keyword)))
                         .eq(StringUtils.hasText(resolvedBizType), AsyncTask::getBizType, resolvedBizType)
                         .eq(StringUtils.hasText(status), AsyncTask::getStatus, status)
+                        .eq(StringUtils.hasText(executionId), AsyncTask::getExecutionId, trim(executionId))
                         .eq(StringUtils.hasText(messageId), AsyncTask::getMessageId, trim(messageId))
                         .eq(StringUtils.hasText(traceId), AsyncTask::getTraceId, trim(traceId))
                         .eq(StringUtils.hasText(bizId), AsyncTask::getBizId, trim(bizId))
@@ -98,11 +101,15 @@ public class UserTaskController {
         vo.setBizId(task.getBizId());
         vo.setUserId(task.getUserId());
         vo.setTraceId(task.getTraceId());
+        vo.setExecutionId(task.getExecutionId());
+        vo.setParentExecutionId(task.getParentExecutionId());
+        vo.setAttemptNo(task.getAttemptNo());
         vo.setStatus(task.getStatus());
         vo.setRetryCount(task.getRetryCount());
         vo.setMaxRetry(task.getMaxRetry());
         vo.setMaxRetryCount(task.getMaxRetry());
         vo.setFailureReason(safeFailureReason(task.getFailureReason()));
+        vo.setTerminalReasonCode(task.getTerminalReasonCode());
         vo.setPayloadPreview(payloadPreview(task));
         vo.setPayloadHash(sha256Prefix(task.getPayload()));
         vo.setResultPreview(resultPreview(task));

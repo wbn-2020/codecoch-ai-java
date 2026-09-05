@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -21,6 +22,7 @@ import com.codecoachai.system.domain.dto.SystemConfigSaveDTO;
 import com.codecoachai.system.domain.entity.SystemConfig;
 import com.codecoachai.system.domain.vo.AdminDashboardOverviewVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
+import com.codecoachai.task.mapper.AsyncTaskMapper;
 import java.lang.reflect.Field;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -51,6 +53,8 @@ class SystemConfigServiceImplTest {
     private ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider;
     @Mock
     private HttpClient healthHttpClient;
+    @Mock
+    private AsyncTaskMapper asyncTaskMapper;
 
     private SystemConfigServiceImpl systemConfigService;
 
@@ -60,6 +64,7 @@ class SystemConfigServiceImplTest {
                 systemConfigMapper,
                 jdbcTemplate,
                 redisConnectionFactoryProvider,
+                asyncTaskMapper,
                 healthHttpClient);
     }
 
@@ -153,6 +158,52 @@ class SystemConfigServiceImplTest {
                 .queryForObject(tableExistsSql, Long.class, "ai_call_log");
         verify(jdbcTemplate, times(2))
                 .queryForObject(columnExistsSql, Long.class, "ai_call_log", "status");
+    }
+
+    @Test
+    void failedTaskMetricUsesTaskCenterContractAndReturnsReproducibleSnapshotMetadata() {
+        String tableExistsSql =
+                "SELECT COUNT(1) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?";
+        String columnExistsSql = "SELECT COUNT(1) FROM information_schema.columns "
+                + "WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?";
+        lenient().when(jdbcTemplate.queryForObject(eq(tableExistsSql), eq(Long.class), any()))
+                .thenReturn(1L);
+        lenient().when(jdbcTemplate.queryForObject(eq(columnExistsSql), eq(Long.class), any(), any()))
+                .thenReturn(1L);
+        when(asyncTaskMapper.countAdminTasks(
+                eq(AsyncTaskMapper.ADMIN_FAILURE_STATUSES),
+                isNull(),
+                any()))
+                .thenReturn(305L);
+
+        AdminDashboardOverviewVO dashboard = systemConfigService.dashboardOverview();
+
+        AdminDashboardOverviewVO.SummaryCardVO card = dashboard.getSummaryCards().stream()
+                .filter(item -> "failedAsyncTasks".equals(item.getKey()))
+                .findFirst()
+                .orElseThrow();
+        AdminDashboardOverviewVO.PendingItemVO pending = dashboard.getPendingItems().stream()
+                .filter(item -> "failedAsyncTasks".equals(item.getKey()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(305L, card.getValue());
+        assertEquals(305L, pending.getCount());
+        assertEquals("SUPPORTED", card.getStatus());
+        assertNull(card.getReason());
+        assertEquals("SUPPORTED", pending.getStatus());
+        assertEquals("ALL_TIME_TO_SNAPSHOT", card.getWindowType());
+        assertEquals("Asia/Shanghai", card.getBusinessTimezone());
+        assertEquals("/admin/async-tasks", card.getNavigationPath());
+        assertEquals(AsyncTaskMapper.ADMIN_FAILURE_STATUS_FILTER, card.getNavigationQuery().get("status"));
+        assertEquals(card.getWindowEnd().toString(), card.getNavigationQuery().get("createdBefore"));
+        assertEquals(card.getWindowEnd(), card.getUpdatedAt());
+        assertEquals(card.getWindowEnd(), pending.getWindowEnd());
+        assertEquals(card.getNavigationQuery(), pending.getNavigationQuery());
+        assertEquals(dashboard.getGeneratedAt(), card.getWindowEnd());
+        verify(asyncTaskMapper).countAdminTasks(
+                eq(AsyncTaskMapper.ADMIN_FAILURE_STATUSES),
+                isNull(),
+                eq(card.getWindowEnd()));
     }
 
     @Test

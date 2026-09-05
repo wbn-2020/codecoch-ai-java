@@ -41,6 +41,9 @@ public class FileInfoVO {
     @Schema(description = "Storage provider")
     private String storageProvider;
 
+    @Schema(description = "Lowercase SHA-256 of the stored file content")
+    private String contentSha256;
+
     @Schema(description = "File status")
     private String status;
 

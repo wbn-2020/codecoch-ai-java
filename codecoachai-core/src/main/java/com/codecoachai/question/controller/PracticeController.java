@@ -5,6 +5,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.question.domain.dto.PracticeRecordQueryDTO;
 import com.codecoachai.question.domain.dto.PracticeSubmitDTO;
 import com.codecoachai.question.domain.vo.PracticeRecordVO;
+import com.codecoachai.question.domain.vo.QuestionRecommendationItemVO;
 import com.codecoachai.question.service.PracticeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -29,6 +30,22 @@ public class PracticeController {
     public Result<PracticeRecordVO> submit(@PathVariable Long questionId,
                                            @Valid @RequestBody PracticeSubmitDTO dto) {
         return Result.success(practiceService.submit(questionId, dto));
+    }
+
+    @Operation(summary = "Load a current user's private recommendation practice question")
+    @GetMapping("/practice/recommendations/{recommendationItemId}")
+    public Result<QuestionRecommendationItemVO> recommendationQuestion(
+            @PathVariable Long recommendationItemId) {
+        return Result.success(practiceService.recommendationQuestion(recommendationItemId));
+    }
+
+    @Operation(summary = "Submit a private recommendation practice answer for AI review",
+            description = "The recommendation item is read again on the server. Private AI drafts are never inserted into the public question bank.")
+    @PostMapping("/practice/recommendations/{recommendationItemId}/answers")
+    public Result<PracticeRecordVO> submitRecommendation(
+            @PathVariable Long recommendationItemId,
+            @Valid @RequestBody PracticeSubmitDTO dto) {
+        return Result.success(practiceService.submitRecommendation(recommendationItemId, dto));
     }
 
     @Operation(summary = "Page current user's answer review records")

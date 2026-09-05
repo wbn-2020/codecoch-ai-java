@@ -13,6 +13,7 @@ import com.codecoachai.task.feign.dto.ParseResumeDTO;
 import com.codecoachai.task.feign.vo.ParseResumeVO;
 import com.codecoachai.task.feign.vo.ResumeAnalysisRawVO;
 import com.codecoachai.task.service.AsyncTaskService;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.ConsumeMode;
@@ -62,6 +63,7 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
     private final AiFeignClient aiFeignClient;
     private final ResumeFeignClient resumeFeignClient;
     private final com.codecoachai.task.service.NotificationService notificationService;
+    private final ResumeImportNormalizer resumeImportNormalizer;
 
     // ==================== 对 Feign 调用的本地重试 ====================
 
@@ -167,7 +169,9 @@ public class ResumeParseConsumer implements RocketMQListener<MqMessage<ResumePar
                 }
                 throw new RuntimeException("AI 解析返回异常: " + (aiResp == null ? "null" : aiResp.getMessage()));
             }
-            String structured = aiResp.getData().getStructuredJson();
+            String structured = resumeImportNormalizer
+                    .normalize(aiResp.getData().getStructuredJson())
+                    .normalizedJson();
 
             // 3. 回写（带本地重试）
             CompleteResumeParseDTO complete = new CompleteResumeParseDTO();

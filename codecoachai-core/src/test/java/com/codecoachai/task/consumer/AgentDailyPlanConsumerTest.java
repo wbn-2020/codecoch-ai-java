@@ -62,6 +62,48 @@ class AgentDailyPlanConsumerTest {
     }
 
     @Test
+    void consumableSuccessMarksAsyncTaskSuccessAndPropagatesExecutionCorrelation() {
+        MqMessage<AgentDailyPlanPayload> envelope = envelope();
+        when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
+        AgentDailyPlanVO plan = new AgentDailyPlanVO();
+        plan.setRunId(77L);
+        plan.setStatus("SUCCESS");
+        plan.setConsumable(true);
+        when(aiFeignClient.executeAgentDailyPlan(eq(77L), any())).thenReturn(Result.success(plan));
+
+        consumer.onMessage(envelope);
+
+        ArgumentCaptor<ExecuteAgentDailyPlanDTO> executeCaptor = ArgumentCaptor.forClass(ExecuteAgentDailyPlanDTO.class);
+        verify(aiFeignClient).executeAgentDailyPlan(eq(77L), executeCaptor.capture());
+        ExecuteAgentDailyPlanDTO execute = executeCaptor.getValue();
+        assertEquals("execution-1", execute.getExecutionId());
+        assertEquals("parent-execution-1", execute.getParentExecutionId());
+        assertEquals("daily-plan-idem-1", execute.getIdempotencyKey());
+        assertEquals(2, execute.getAttemptNo());
+        verify(asyncTaskService).markSuccess("msg-agent-daily-1", plan);
+        verify(notificationService).notifyTaskDone(eq(10L), eq("AGENT_DAILY_PLAN"), eq("77"), any(), any());
+    }
+
+    @Test
+    void successWithoutConsumableBusinessResultBecomesTerminalFailure() {
+        MqMessage<AgentDailyPlanPayload> envelope = envelope();
+        when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
+        AgentDailyPlanVO plan = new AgentDailyPlanVO();
+        plan.setRunId(77L);
+        plan.setStatus("SUCCESS");
+        plan.setConsumable(false);
+        when(aiFeignClient.executeAgentDailyPlan(eq(77L), any())).thenReturn(Result.success(plan));
+
+        consumer.onMessage(envelope);
+
+        verify(asyncTaskService).markTerminalFailed(eq("msg-agent-daily-1"), any());
+        verify(asyncTaskService, never()).markSuccess(eq("msg-agent-daily-1"), any());
+        verify(aiFeignClient).failAgentDailyPlan(eq(77L), any());
+        verify(notificationService).notifyTaskFailed(eq(10L), eq("AGENT_DAILY_PLAN"), eq("77"), any(), any());
+        verify(notificationService, never()).notifyTaskDone(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void terminalBusinessFailureMarksAgentRunFailed() {
         MqMessage<AgentDailyPlanPayload> envelope = envelope();
         when(asyncTaskService.acquireRegistered(envelope, 3)).thenReturn(true);
@@ -111,6 +153,10 @@ class AgentDailyPlanConsumerTest {
         AgentDailyPlanPayload payload = AgentDailyPlanPayload.builder()
                 .runId(77L)
                 .userId(10L)
+                .executionId("execution-1")
+                .parentExecutionId("parent-execution-1")
+                .idempotencyKey("daily-plan-idem-1")
+                .attemptNo(2)
                 .executionToken("run-token-1")
                 .targetJobId(501L)
                 .date(LocalDate.of(2026, 6, 18))

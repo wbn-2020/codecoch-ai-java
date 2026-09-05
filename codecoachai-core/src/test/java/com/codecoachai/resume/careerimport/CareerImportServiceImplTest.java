@@ -178,6 +178,28 @@ class CareerImportServiceImplTest {
     }
 
     @Test
+    void sameFilenameWithDifferentContentProducesFreshPreviewAndContentHash() {
+        when(applicationMapper.selectList(any())).thenReturn(List.of());
+        byte[] first = """
+                company_name,job_title
+                Old Co,Backend Engineer
+                """.getBytes(StandardCharsets.UTF_8);
+        byte[] second = """
+                company_name,job_title
+                New Co,Platform Engineer
+                """.getBytes(StandardCharsets.UTF_8);
+
+        ImportPreview firstPreview = service.previewCsv("applications.csv", first, "Asia/Shanghai");
+        ImportPreview secondPreview = service.previewCsv("applications.csv", second, "Asia/Shanghai");
+
+        assertEquals("Old Co", firstPreview.getRows().get(0).getRaw().get("company_name"));
+        assertEquals("New Co", secondPreview.getRows().get(0).getRaw().get("company_name"));
+        assertTrue(firstPreview.getContentHash().matches("[0-9a-f]{64}"));
+        assertTrue(secondPreview.getContentHash().matches("[0-9a-f]{64}"));
+        assertTrue(!firstPreview.getContentHash().equals(secondPreview.getContentHash()));
+    }
+
+    @Test
     void csvImportAppliesExplicitCanonicalToSourceMapping() {
         when(applicationMapper.selectList(any())).thenReturn(List.of());
         when(batchMapper.insert(any(CareerImportBatch.class))).thenAnswer(invocation -> {

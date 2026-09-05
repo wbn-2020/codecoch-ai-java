@@ -30,8 +30,8 @@ public final class PromptTemplateVariableValidator {
         Set<String> undeclared = difference(placeholders, declaration.declared());
         Set<String> unused = difference(declaration.declared(), placeholders);
         if (!undeclared.isEmpty() || !unused.isEmpty()) {
-            throw parameterError("Prompt variables do not match placeholders. undeclared="
-                    + undeclared + ", unused=" + unused);
+            throw parameterError("提示词变量声明与正文占位符不一致：未声明变量="
+                    + undeclared + "，未使用变量=" + unused);
         }
     }
 
@@ -44,7 +44,7 @@ public final class PromptTemplateVariableValidator {
             String name = matcher.group(1);
             boolean optional = declaration.optional().contains(name);
             if (!safeVariables.containsKey(name) && !optional) {
-                throw parameterError("Missing required prompt variable: " + name);
+                throw parameterError("缺少必填提示词变量：" + name);
             }
             String value = safeVariables.get(name);
             matcher.appendReplacement(rendered, Matcher.quoteReplacement(value == null ? "" : value));
@@ -86,13 +86,13 @@ public final class PromptTemplateVariableValidator {
                     addObjectFields(root, declared, optional);
                 }
             } else {
-                throw parameterError("Prompt variables declaration must be a CSV list, JSON array, or JSON object.");
+                throw parameterError("提示词变量声明必须是逗号分隔列表、JSON 数组或 JSON 对象");
             }
             return new VariableDeclaration(declared, optional);
         } catch (BusinessException ex) {
             throw ex;
         } catch (Exception ex) {
-            throw parameterError("Invalid prompt variables declaration.");
+            throw parameterError("提示词变量声明格式不正确");
         }
     }
 
@@ -112,7 +112,7 @@ public final class PromptTemplateVariableValidator {
             addVariable(node.asText(), optionalByDefault, declared, optional);
             return;
         }
-        throw parameterError("Invalid prompt variable declaration entry.");
+        throw parameterError("提示词变量声明中存在无法识别的条目");
     }
 
     private static void addArray(JsonNode array, Set<String> declared, Set<String> optional,
@@ -126,7 +126,7 @@ public final class PromptTemplateVariableValidator {
                         : optionalByDefault;
                 addVariable(item.path("name").asText(), isOptional, declared, optional);
             } else {
-                throw parameterError("Invalid prompt variable declaration entry.");
+                throw parameterError("提示词变量声明中存在无法识别的条目");
             }
         }
     }
@@ -157,7 +157,7 @@ public final class PromptTemplateVariableValidator {
     private static void addVariable(String value, boolean isOptional, Set<String> declared, Set<String> optional) {
         String name = value == null ? "" : value.trim();
         if (!VARIABLE_NAME_PATTERN.matcher(name).matches()) {
-            throw parameterError("Invalid prompt variable name: " + name);
+            throw parameterError("提示词变量名不合法：" + name);
         }
         declared.add(name);
         if (isOptional) {

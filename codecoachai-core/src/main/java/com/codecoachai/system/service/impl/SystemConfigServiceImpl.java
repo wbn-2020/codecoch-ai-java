@@ -16,6 +16,7 @@ import com.codecoachai.system.domain.vo.AdminSystemOverviewVO;
 import com.codecoachai.system.domain.vo.SystemConfigVO;
 import com.codecoachai.system.mapper.SystemConfigMapper;
 import com.codecoachai.system.service.SystemConfigService;
+import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.sql.Date;
@@ -28,6 +29,7 @@ import java.lang.management.ManagementFactory;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -80,10 +82,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     );
     private static final String SAFE_IDENTIFIER_PATTERN = "[A-Za-z0-9_]+";
     private static final ObjectMapper HEALTH_RESPONSE_OBJECT_MAPPER = new ObjectMapper();
+    private static final ZoneId ADMIN_STATS_ZONE_ID = ZoneId.of(AsyncTaskMapper.ADMIN_STATS_TIMEZONE);
+    private static final String ASYNC_TASK_NAVIGATION_PATH = "/admin/async-tasks";
+    private static final String ALL_TIME_TO_SNAPSHOT = "ALL_TIME_TO_SNAPSHOT";
 
     private final SystemConfigMapper systemConfigMapper;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider;
+    private final AsyncTaskMapper asyncTaskMapper;
     private final HttpClient healthHttpClient;
     private final ThreadLocal<MetadataLookupCache> metadataLookupCache = new ThreadLocal<>();
 
@@ -93,11 +99,13 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     @Autowired
     public SystemConfigServiceImpl(SystemConfigMapper systemConfigMapper,
                                    JdbcTemplate jdbcTemplate,
-                                   ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider) {
+                                   ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider,
+                                   AsyncTaskMapper asyncTaskMapper) {
         this(
                 systemConfigMapper,
                 jdbcTemplate,
                 redisConnectionFactoryProvider,
+                asyncTaskMapper,
                 HttpClient.newBuilder().connectTimeout(HEALTH_CONNECT_TIMEOUT).build()
         );
     }
@@ -106,9 +114,18 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                             JdbcTemplate jdbcTemplate,
                             ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider,
                             HttpClient healthHttpClient) {
+        this(systemConfigMapper, jdbcTemplate, redisConnectionFactoryProvider, null, healthHttpClient);
+    }
+
+    SystemConfigServiceImpl(SystemConfigMapper systemConfigMapper,
+                            JdbcTemplate jdbcTemplate,
+                            ObjectProvider<RedisConnectionFactory> redisConnectionFactoryProvider,
+                            AsyncTaskMapper asyncTaskMapper,
+                            HttpClient healthHttpClient) {
         this.systemConfigMapper = systemConfigMapper;
         this.jdbcTemplate = jdbcTemplate;
         this.redisConnectionFactoryProvider = redisConnectionFactoryProvider;
+        this.asyncTaskMapper = asyncTaskMapper;
         this.healthHttpClient = healthHttpClient;
     }
 
@@ -217,13 +234,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
     public AdminDashboardOverviewVO dashboardOverview() {
         return withMetadataLookupCache(() -> {
             AdminDashboardOverviewVO vo = new AdminDashboardOverviewVO();
-            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime now = LocalDateTime.now(ADMIN_STATS_ZONE_ID);
+            AsyncTaskMetricSnapshot failedTaskMetric = failedAsyncTaskMetric(now);
             // 管理首页只展示运行库实时聚合结果，不使用 mock 或兜底假数据，避免上线验收误判。
-            vo.setSummaryCards(summaryCards());
+            vo.setSummaryCards(summaryCards(failedTaskMetric));
             vo.setTrendStats(trendStats());
-            vo.setPendingItems(pendingItems());
+            vo.setPendingItems(pendingItems(failedTaskMetric));
             vo.setSystemStatus(systemStatus(now));
-            vo.setDataSourceDesc("管理首页数据来自运行库实时聚合。");
+            vo.setDataSourceDesc("管理首页数据来自运行库实时聚合；失败任务按 Asia/Shanghai 时区统计全部未删除终态失败任务。");
             vo.setGeneratedAt(now);
             return vo;
         });
@@ -304,7 +322,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         return value != null && value.matches("\\d+");
     }
 
-    private List<AdminDashboardOverviewVO.SummaryCardVO> summaryCards() {
+    private List<AdminDashboardOverviewVO.SummaryCardVO> summaryCards(AsyncTaskMetricSnapshot failedTaskMetric) {
         List<AdminDashboardOverviewVO.SummaryCardVO> cards = new ArrayList<>();
         cards.add(summaryCard("users", "用户总数", count("sys_user", "deleted = 0"), "sys_user"));
         cards.add(summaryCard("resumes", "简历总数", count("resume", "deleted = 0"), "resume"));
@@ -318,7 +336,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
                 count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review"));
         cards.add(summaryCard("failedResumeParses", "简历解析失败",
                 failedResumeParseCount(), "resume_analysis_record"));
-        cards.add(summaryCard("failedAsyncTasks", "异步任务失败", failedAsyncTaskCount(), "async_task"));
+        cards.add(failedAsyncTaskSummaryCard(failedTaskMetric));
         cards.add(summaryCard("agentSuccessRate", "计划生成成功率", agentSuccessRatePercent(), "agent_run"));
         cards.add(summaryCard("slowSqlWarnings", "慢 SQL 告警", slowSqlWarningCount(), "slow_sql_log"));
         cards.add(summaryCard("notificationFailures", "通知发送失败", notificationFailureCount(), "notification"));
@@ -331,6 +349,14 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         vo.setLabel(label);
         vo.setValue(value);
         vo.setSourceTable(sourceTable);
+        return vo;
+    }
+
+    private AdminDashboardOverviewVO.SummaryCardVO failedAsyncTaskSummaryCard(
+            AsyncTaskMetricSnapshot snapshot) {
+        AdminDashboardOverviewVO.SummaryCardVO vo =
+                summaryCard("failedAsyncTasks", "异步任务失败", snapshot.count(), "async_task");
+        applyAsyncTaskMetricMetadata(vo, snapshot);
         return vo;
     }
 
@@ -383,7 +409,8 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         }
     }
 
-    private List<AdminDashboardOverviewVO.PendingItemVO> pendingItems() {
+    private List<AdminDashboardOverviewVO.PendingItemVO> pendingItems(
+            AsyncTaskMetricSnapshot failedTaskMetric) {
         List<AdminDashboardOverviewVO.PendingItemVO> items = new ArrayList<>();
         items.add(pendingItem("pendingQuestionReviews", "待审核 AI 生成题目",
                 count("question_review", "deleted = 0 AND review_status = 'PENDING'"), "question_review", null));
@@ -396,7 +423,7 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         items.add(pendingItem("failedAiCalls", "智能生成失败", failedAiCallCount(), "ai_call_log", null));
         items.add(pendingItem("failedResumeParses", "简历解析失败",
                 failedResumeParseCount(), "resume_analysis_record", null));
-        items.add(pendingItem("failedAsyncTasks", "异步任务失败", failedAsyncTaskCount(), "async_task", null));
+        items.add(failedAsyncTaskPendingItem(failedTaskMetric));
         items.add(pendingItem("failedAgentRuns", "近 7 日计划生成失败", failedAgentRunCount(), "agent_run", null));
         items.add(pendingItem("slowSqlWarnings", "近 7 日慢 SQL 告警", slowSqlWarningCount(), "slow_sql_log", null));
         items.add(notificationFailurePendingItem());
@@ -415,11 +442,82 @@ public class SystemConfigServiceImpl implements SystemConfigService {
         return vo;
     }
 
-    private long failedAsyncTaskCount() {
-        if (!tableExists("async_task") || !columnExists("async_task", "status")) {
-            return 0L;
+    private AdminDashboardOverviewVO.PendingItemVO failedAsyncTaskPendingItem(
+            AsyncTaskMetricSnapshot snapshot) {
+        AdminDashboardOverviewVO.PendingItemVO vo = pendingItem(
+                "failedAsyncTasks",
+                "异步任务失败",
+                snapshot.count(),
+                "async_task",
+                snapshot.available() ? null : snapshot.reason());
+        applyAsyncTaskMetricMetadata(vo, snapshot);
+        return vo;
+    }
+
+    private AsyncTaskMetricSnapshot failedAsyncTaskMetric(LocalDateTime snapshotAt) {
+        if (!tableExists("async_task")
+                || !columnExists("async_task", "status")
+                || !columnExists("async_task", "created_at")
+                || !columnExists("async_task", "deleted")) {
+            return AsyncTaskMetricSnapshot.unavailable(snapshotAt, "异步任务统计字段尚未就绪。");
         }
-        return count("async_task", "deleted = 0 AND status IN ('FAILED','DEAD','ERROR','DEAD_LETTER')");
+        try {
+            long count;
+            if (asyncTaskMapper == null) {
+                Long fallbackCount = jdbcTemplate.queryForObject(
+                        """
+                        SELECT COUNT(1)
+                          FROM async_task
+                         WHERE deleted = 0
+                           AND status IN ('FAILED','DEAD','ERROR','DEAD_LETTER')
+                           AND created_at < ?
+                        """,
+                        Long.class,
+                        snapshotAt);
+                count = fallbackCount == null ? 0L : fallbackCount;
+            } else {
+                count = asyncTaskMapper.countAdminTasks(
+                        AsyncTaskMapper.ADMIN_FAILURE_STATUSES,
+                        null,
+                        snapshotAt);
+            }
+            return AsyncTaskMetricSnapshot.available(count, snapshotAt);
+        } catch (RuntimeException ex) {
+            log.warn("Admin dashboard async-task failure count skipped", ex);
+            return AsyncTaskMetricSnapshot.unavailable(snapshotAt, "异步任务统计查询失败。");
+        }
+    }
+
+    private void applyAsyncTaskMetricMetadata(AdminDashboardOverviewVO.SummaryCardVO vo,
+                                              AsyncTaskMetricSnapshot snapshot) {
+        vo.setStatus(snapshot.available() ? "SUPPORTED" : "UNKNOWN");
+        vo.setReason(snapshot.reason());
+        vo.setScopeDescription(snapshot.scopeDescription());
+        vo.setWindowType(ALL_TIME_TO_SNAPSHOT);
+        vo.setWindowStart(null);
+        vo.setWindowEnd(snapshot.snapshotAt());
+        vo.setUpdatedAt(snapshot.snapshotAt());
+        vo.setBusinessTimezone(AsyncTaskMapper.ADMIN_STATS_TIMEZONE);
+        vo.setNavigationPath(ASYNC_TASK_NAVIGATION_PATH);
+        vo.setNavigationQuery(asyncTaskNavigationQuery(snapshot.snapshotAt()));
+    }
+
+    private void applyAsyncTaskMetricMetadata(AdminDashboardOverviewVO.PendingItemVO vo,
+                                              AsyncTaskMetricSnapshot snapshot) {
+        vo.setScopeDescription(snapshot.scopeDescription());
+        vo.setWindowType(ALL_TIME_TO_SNAPSHOT);
+        vo.setWindowStart(null);
+        vo.setWindowEnd(snapshot.snapshotAt());
+        vo.setUpdatedAt(snapshot.snapshotAt());
+        vo.setBusinessTimezone(AsyncTaskMapper.ADMIN_STATS_TIMEZONE);
+        vo.setNavigationPath(ASYNC_TASK_NAVIGATION_PATH);
+        vo.setNavigationQuery(asyncTaskNavigationQuery(snapshot.snapshotAt()));
+    }
+
+    private Map<String, String> asyncTaskNavigationQuery(LocalDateTime snapshotAt) {
+        return Map.of(
+                "status", AsyncTaskMapper.ADMIN_FAILURE_STATUS_FILTER,
+                "createdBefore", snapshotAt.toString());
     }
 
     private long failedAiCallCount() {
@@ -1107,6 +1205,24 @@ public class SystemConfigServiceImpl implements SystemConfigService {
 
     private record MetadataLookupCache(Map<String, Boolean> tableExists,
                                        Map<ColumnRef, Boolean> columnExists) {
+    }
+
+    private record AsyncTaskMetricSnapshot(long count,
+                                           LocalDateTime snapshotAt,
+                                           boolean available,
+                                           String reason) {
+
+        private static AsyncTaskMetricSnapshot available(long count, LocalDateTime snapshotAt) {
+            return new AsyncTaskMetricSnapshot(count, snapshotAt, true, null);
+        }
+
+        private static AsyncTaskMetricSnapshot unavailable(LocalDateTime snapshotAt, String reason) {
+            return new AsyncTaskMetricSnapshot(0L, snapshotAt, false, reason);
+        }
+
+        private String scopeDescription() {
+            return "全部未删除任务；状态为 FAILED、DEAD、ERROR 或 DEAD_LETTER；统计截止时间不含之后新建任务。";
+        }
     }
 
     private String quoteIdentifier(String identifier) {

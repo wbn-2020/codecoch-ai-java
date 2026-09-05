@@ -2,12 +2,15 @@ package com.codecoachai.resume.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
@@ -37,6 +40,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -48,7 +52,6 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -87,6 +90,8 @@ class ResumeJobMatchPersistenceRegressionTest {
     private AiFeignClient aiFeignClient;
     @Mock
     private TransactionTemplate transactionTemplate;
+    @Mock
+    private AsyncTaskService asyncTaskService;
 
     private ResumeJobMatchServiceImpl service;
 
@@ -124,13 +129,14 @@ class ResumeJobMatchPersistenceRegressionTest {
                 JSON,
                 transactionTemplate,
                 Optional.empty(),
-                new ResumeJobMatchTrustPolicy(JSON));
+                new ResumeJobMatchTrustPolicy(JSON),
+                asyncTaskService);
         stubTransactions();
         stubMatchContext();
     }
 
     @Test
-    void executeReportPersistsExpandedDetailFieldsWithoutTruncation() throws Exception {
+    void executeReportFailsWhenNormalizedResultRetainsTrustWarnings() throws Exception {
         String dimension = "D".repeat(100);
         String skillName = "S".repeat(300);
         String evidence = "E".repeat(70_000);
@@ -145,32 +151,19 @@ class ResumeJobMatchPersistenceRegressionTest {
         warning.put("message", "unsupported evidence removed");
         partialResult.set("schemaWarnings", JSON.createArrayNode().add(warning));
         String resultJson = partialResult.toString();
-        ResumeJobMatchReport persisted = report(ResumeJobMatchStatus.SUCCESS);
-        persisted.setOverallScore(82);
-        persisted.setAiCallLogId(AI_CALL_LOG_ID);
-        persisted.setGapsJson("[{\"skillName\":\"expanded\"}]");
-        persisted.setRawResultJson(resultJson);
-        stubSuccessfulReportLifecycle(persisted);
+        ResumeJobMatchReport failed = report(ResumeJobMatchStatus.FAILED);
+        failed.setRawResultJson(resultJson);
+        failed.setErrorMessage("匹配报告未通过可信校验，请检查简历与岗位内容后重新生成。");
+        stubUntrustedReportLifecycle(failed);
         stubAiResult(resultJson);
-        when(detailMapper.insert(any(ResumeJobMatchDetail.class))).thenReturn(1);
 
         ResumeJobMatchSubmitVO result = service.executeReport(REPORT_ID);
 
-        assertEquals(ResumeJobMatchStatus.SUCCESS.getCode(), result.getStatus());
-        assertEquals("PARTIAL", result.getTrustStatus());
-        assertFalse(result.getFallback());
-        assertEquals(1, result.getSchemaWarningCount());
-        ArgumentCaptor<ResumeJobMatchDetail> captor =
-                ArgumentCaptor.forClass(ResumeJobMatchDetail.class);
-        verify(detailMapper).insert(captor.capture());
-        ResumeJobMatchDetail inserted = captor.getValue();
-        assertEquals(dimension, inserted.getDimension());
-        assertEquals(skillName, inserted.getSkillName());
-        assertEquals(evidence, inserted.getEvidence());
-        assertEquals(gapDescription, inserted.getGapDescription());
-        assertEquals(JSON.createArrayNode().add(action).toString(), inserted.getSuggestion());
-        assertTrue(inserted.getSkillName().length() > 128);
-        assertTrue(inserted.getEvidence().length() > 65_535);
+        assertEquals(ResumeJobMatchStatus.FAILED.getCode(), result.getStatus());
+        assertEquals("FALLBACK", result.getTrustStatus());
+        assertTrue(result.getFallback());
+        assertTrue(result.getErrorMessage().contains("可信校验"));
+        verify(detailMapper, never()).insert(any(ResumeJobMatchDetail.class));
     }
 
     @Test
@@ -226,12 +219,56 @@ class ResumeJobMatchPersistenceRegressionTest {
         assertTrue(diagnostic.path("message").asText().contains("skill_name"));
     }
 
+    @Test
+    void executeReportReleasesReportForRetryWhenAiFeignCallFails() {
+        stubRetryableReportLifecycle();
+        when(aiFeignClient.analyzeResumeJobMatch(any()))
+                .thenThrow(new IllegalStateException("AI service timed out"));
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class, () -> service.executeReport(REPORT_ID));
+
+        assertTrue(failure.getMessage().contains("AI match analysis invocation failed"));
+        verify(reportMapper, times(2)).update(
+                nullable(ResumeJobMatchReport.class), any(Wrapper.class));
+        verify(reportMapper, never()).update(
+                any(ResumeJobMatchReport.class), any(Wrapper.class));
+        verify(detailMapper, never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    void executeReportReleasesReportForRetryWhenAiResultJsonCannotBeParsed() {
+        stubRetryableReportLifecycle();
+        stubAiResult("{not-json");
+
+        RuntimeException failure = assertThrows(
+                RuntimeException.class, () -> service.executeReport(REPORT_ID));
+
+        assertTrue(failure.getMessage().contains("AI match analysis response could not be parsed"));
+        verify(reportMapper, times(2)).update(
+                nullable(ResumeJobMatchReport.class), any(Wrapper.class));
+        verify(reportMapper, never()).update(
+                any(ResumeJobMatchReport.class), any(Wrapper.class));
+        verify(detailMapper, never()).delete(any(Wrapper.class));
+    }
+
     private void stubSuccessfulReportLifecycle(ResumeJobMatchReport persisted) {
         when(reportMapper.selectById(REPORT_ID)).thenReturn(
                 report(ResumeJobMatchStatus.PROCESSING),
                 report(ResumeJobMatchStatus.RUNNING),
                 report(ResumeJobMatchStatus.RUNNING),
                 persisted);
+        when(reportMapper.update(
+                nullable(ResumeJobMatchReport.class),
+                any(Wrapper.class))).thenReturn(1);
+    }
+
+    private void stubUntrustedReportLifecycle(ResumeJobMatchReport failed) {
+        when(reportMapper.selectById(REPORT_ID)).thenReturn(
+                report(ResumeJobMatchStatus.PROCESSING),
+                report(ResumeJobMatchStatus.RUNNING),
+                report(ResumeJobMatchStatus.RUNNING),
+                failed);
         when(reportMapper.update(
                 nullable(ResumeJobMatchReport.class),
                 any(Wrapper.class))).thenReturn(1);
@@ -251,6 +288,15 @@ class ResumeJobMatchPersistenceRegressionTest {
         return failed;
     }
 
+    private void stubRetryableReportLifecycle() {
+        when(reportMapper.selectById(REPORT_ID)).thenReturn(
+                report(ResumeJobMatchStatus.PROCESSING),
+                report(ResumeJobMatchStatus.RUNNING));
+        when(reportMapper.update(
+                nullable(ResumeJobMatchReport.class),
+                any(Wrapper.class))).thenReturn(1);
+    }
+
     private void stubAiResult(String resultJson) {
         AnalyzeResumeJobMatchVO response = new AnalyzeResumeJobMatchVO();
         response.setResultJson(resultJson);
@@ -260,7 +306,7 @@ class ResumeJobMatchPersistenceRegressionTest {
 
     @SuppressWarnings("unchecked")
     private void stubTransactions() {
-        when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
+        lenient().when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
             return callback.doInTransaction(null);
         });

@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -27,6 +28,12 @@ public class InnerResumeJobMatchController {
     @PostMapping("/reports/{reportId}/execute")
     public Result<ResumeJobMatchSubmitVO> executeReport(@PathVariable Long reportId) {
         return Result.success(resumeJobMatchService.executeReport(reportId));
+    }
+
+    @PostMapping("/reports/{reportId}/fail")
+    public Result<ResumeJobMatchSubmitVO> failExecution(@PathVariable Long reportId,
+                                                         @RequestParam(required = false) String reason) {
+        return Result.success(resumeJobMatchService.failExecution(reportId, reason));
     }
 
     @GetMapping("/reports/users/{userId}/{reportId}/agent-evidence")

@@ -10,6 +10,7 @@ public class AdminTaskImpactPreviewVO {
     private String bizId;
     private Long userId;
     private String currentStatus;
+    private String previewHash;
     private Boolean executable;
     private String impact;
     private String riskLevel;

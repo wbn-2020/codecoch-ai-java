@@ -10,6 +10,7 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpMethod;
@@ -67,6 +68,28 @@ class GlobalExceptionHandlerTest {
     void keepsLegacyBusinessParameterErrorsInTheResponseEnvelope() {
         assertNull(ErrorCode.PARAM_ERROR.getHttpStatus());
         assertBusinessResponse(ErrorCode.PARAM_ERROR, HttpStatus.OK);
+    }
+
+    @Test
+    void preservesStructuredBusinessDiagnosticsAndTraceId() {
+        org.slf4j.MDC.put("traceId", "trace-structured-error");
+        try {
+            BusinessException exception = new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "provider is invalid",
+                    false,
+                    "Use a configured provider code",
+                    Map.of("provider", "unsupported provider"));
+
+            Result<Void> body = handler.handleBusinessException(exception).getBody();
+
+            assertEquals("trace-structured-error", body.getTraceId());
+            assertFalse(body.getRetryable());
+            assertEquals("Use a configured provider code", body.getNextStep());
+            assertEquals("unsupported provider", body.getFieldErrors().get("provider"));
+        } finally {
+            org.slf4j.MDC.clear();
+        }
     }
 
     @Test

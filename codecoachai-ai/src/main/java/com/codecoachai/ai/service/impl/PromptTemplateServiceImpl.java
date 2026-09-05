@@ -45,6 +45,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -93,13 +94,19 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public PromptTemplateVO createPrompt(PromptTemplateSaveDTO dto) {
         PromptTemplate template = new PromptTemplate();
         apply(template, dto);
+        assertSceneUnique(template.getScene());
         template.setActiveVersionId(null);
         template.setEnabled(CommonConstants.NO);
         template.setStatus(CommonConstants.NO);
-        promptTemplateMapper.insert(template);
+        try {
+            promptTemplateMapper.insert(template);
+        } catch (DuplicateKeyException ex) {
+            throw duplicateSceneConflict(template.getScene());
+        }
         return AiConvert.toPromptVO(template);
     }
 
@@ -221,10 +228,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public PromptTemplateVersionVO createVersion(Long templateId, PromptTemplateVersionCreateDTO dto) {
         PromptTemplate template = getTemplate(templateId);
         assertVersionCodeUnique(templateId, dto.getVersionCode());
-        PromptTemplateVariableValidator.validateDefinition(dto.getContent(), dto.getVariablesJson());
+        validatePromptVariables(dto.getContent(), dto.getVariablesJson());
         PromptTemplateVersion version = new PromptTemplateVersion();
         version.setTemplateId(template.getId());
         version.setScene(template.getScene());
@@ -237,7 +245,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         version.setIsActive(CommonConstants.NO);
         version.setCreatedBy(LoginUserContext.getUserId());
         version.setChangeLog(dto.getChangeLog());
-        promptTemplateVersionMapper.insert(version);
+        try {
+            promptTemplateVersionMapper.insert(version);
+        } catch (DuplicateKeyException ex) {
+            throw duplicateVersionCodeConflict(dto.getVersionCode());
+        }
         return AiConvert.toVersionVO(version);
     }
 
@@ -283,7 +295,11 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         version.setActivatedBy(LoginUserContext.getUserId());
         version.setActivatedAt(LocalDateTime.now());
         version.setChangeLog(dto == null ? version.getChangeLog() : firstText(dto.getChangeLog(), version.getChangeLog()));
-        promptTemplateVersionMapper.updateById(version);
+        try {
+            promptTemplateVersionMapper.updateById(version);
+        } catch (DuplicateKeyException ex) {
+            throw duplicateActiveSceneConflict(scene);
+        }
 
         disableOtherTemplatesForScene(template);
         int updated = updateTemplateForActivation(template, version, expectedActiveVersion(dto));
@@ -515,15 +531,21 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
 
     private void apply(PromptTemplate template, PromptTemplateSaveDTO dto) {
         if (!StringUtils.hasText(dto.getName()) && !StringUtils.hasText(dto.getTemplateName())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template content must be changed through version management.");
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "name",
+                    "模板名称不能为空",
+                    "填写便于识别的模板名称后重新提交");
         }
         if (!StringUtils.hasText(dto.getContent()) && !StringUtils.hasText(dto.getTemplateContent())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template content must be changed through version management.");
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "content",
+                    "提示词正文不能为空",
+                    "填写提示词正文；如正文包含 {{变量名}}，还需同步声明变量");
         }
         String content = StringUtils.hasText(dto.getContent()) ? dto.getContent() : dto.getTemplateContent();
-        PromptTemplateVariableValidator.validateDefinition(content, dto.getVariables());
+        validatePromptVariables(content, dto.getVariables());
         template.setScene(dto.getScene());
         template.setName(StringUtils.hasText(dto.getName()) ? dto.getName() : dto.getTemplateName());
         template.setTemplateName(StringUtils.hasText(dto.getTemplateName()) ? dto.getTemplateName() : dto.getName());
@@ -561,12 +583,18 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
         try {
             versionStatus = PromptVersionStatus.valueOf(status.trim().toUpperCase());
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template content must be changed through version management.");
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "status",
+                    "新版本状态只能为草稿或停用",
+                    "选择 DRAFT、INACTIVE 或 DISABLED 后重新提交");
         }
         if (PromptVersionStatus.ACTIVE.equals(versionStatus)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template content must be changed through version management.");
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "status",
+                    "新版本不能直接创建为已激活状态",
+                    "先创建草稿并完成测试，再通过版本操作激活");
         }
         return versionStatus.name();
     }
@@ -576,8 +604,55 @@ public class PromptTemplateServiceImpl implements PromptTemplateService {
                 .eq(PromptTemplateVersion::getTemplateId, templateId)
                 .eq(PromptTemplateVersion::getVersionCode, versionCode));
         if (count != null && count > 0) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Prompt template content must be changed through version management.");
+            throw duplicateVersionCodeConflict(versionCode);
+        }
+    }
+
+    private void assertSceneUnique(String scene) {
+        Long count = promptTemplateMapper.selectCount(new LambdaQueryWrapper<PromptTemplate>()
+                .eq(PromptTemplate::getScene, scene));
+        if (count != null && count > 0) {
+            throw duplicateSceneConflict(scene);
+        }
+    }
+
+    private BusinessException duplicateSceneConflict(String scene) {
+        return new BusinessException(
+                ErrorCode.RESOURCE_RELATION_CONFLICT,
+                "模板场景已存在：" + scene,
+                false,
+                "返回列表编辑已有模板，或选择尚未配置的场景",
+                Map.of("scene", "该模板场景已存在"));
+    }
+
+    private BusinessException duplicateVersionCodeConflict(String versionCode) {
+        return new BusinessException(
+                ErrorCode.RESOURCE_RELATION_CONFLICT,
+                "当前模板已存在版本号：" + versionCode,
+                false,
+                "修改版本号后重新创建；已存在版本可直接测试、激活或保留",
+                Map.of("versionCode", "当前模板下该版本号已存在"));
+    }
+
+    private BusinessException duplicateActiveSceneConflict(String scene) {
+        return new BusinessException(
+                ErrorCode.RESOURCE_RELATION_CONFLICT,
+                "当前场景已有激活版本：" + scene,
+                true,
+                "刷新版本列表后重试；如需切换版本，请基于最新激活版本再次确认",
+                Map.of("scene", "该场景已由另一项并发操作激活版本"));
+    }
+
+    private void validatePromptVariables(String content, String variables) {
+        try {
+            PromptTemplateVariableValidator.validateDefinition(content, variables);
+        } catch (BusinessException ex) {
+            throw new BusinessException(
+                    ErrorCode.VALIDATION_ERROR,
+                    ex.getMessage(),
+                    false,
+                    "让变量声明与正文中的 {{变量名}} 完全一致；没有变量时保持两处都为空",
+                    Map.of("variables", ex.getMessage()));
         }
     }
 

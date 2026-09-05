@@ -15,8 +15,11 @@ import com.codecoachai.ai.domain.vo.AiRuntimeStatusVO.ProviderStatus;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.env.MapPropertySource;
+import org.springframework.core.env.StandardEnvironment;
 
 class AiRuntimeStatusServiceTest {
 
@@ -24,10 +27,12 @@ class AiRuntimeStatusServiceTest {
     private AiRouterProperties routerProperties;
     private AiModelConfigMapper mapper;
     private AesGcmTextEncryptor encryptor;
+    private StandardEnvironment environment;
 
     @BeforeEach
     void setUp() {
         aiProperties = new AiProperties();
+        aiProperties.setMockEnabled(false);
         routerProperties = new AiRouterProperties();
         routerProperties.getRouter().setDefaultProvider("deepseek");
         routerProperties.getRouter().setFallbackProvider("dashscope");
@@ -35,6 +40,7 @@ class AiRuntimeStatusServiceTest {
         routerProperties.getRouter().setEmbeddingProvider("dashscope");
         mapper = mock(AiModelConfigMapper.class);
         encryptor = mock(AesGcmTextEncryptor.class);
+        environment = new StandardEnvironment();
     }
 
     @Test
@@ -55,6 +61,40 @@ class AiRuntimeStatusServiceTest {
         assertTrue(status.getRiskCodes().contains("PLACEHOLDER_MODEL_SELECTED"));
         assertTrue(status.getOperatorMessages().stream()
                 .anyMatch(message -> message.contains("不会调用供应商")));
+    }
+
+    @Test
+    void nacosIsReportedAsTheAuthoritativeMockConfigurationSource() {
+        environment.getPropertySources().addFirst(new MapPropertySource(
+                "nacos-codecoachai-ai-dev.yml",
+                Map.of(AiProperties.MOCK_ENABLED_PROPERTY, "false")));
+        when(mapper.selectList(any())).thenReturn(List.of(
+                model(1L, "deepseek", "deepseek-chat", 1, 1, "ACTIVE")));
+
+        AiRuntimeStatusVO status = service().currentStatus();
+
+        assertTrue(status.getMockConfigurationConfigured());
+        assertEquals("NACOS", status.getMockConfigurationSource());
+        assertFalse(status.getMockEnabled());
+        assertTrue(status.getRealRoutingAllowed());
+        assertTrue(status.getOperatorMessages().stream()
+                .anyMatch(message -> message.contains("system_config.ai.mock.enabled")));
+    }
+
+    @Test
+    void missingMockConfigurationFailsClosedInsteadOfTreatingDefaultFalseAsConfigured() {
+        aiProperties.setMockEnabled(null);
+        when(mapper.selectList(any())).thenReturn(List.of(
+                model(1L, "deepseek", "deepseek-chat", 1, 1, "ACTIVE")));
+
+        AiRuntimeStatusVO status = service().currentStatus();
+
+        assertFalse(status.getMockConfigurationConfigured());
+        assertEquals("UNCONFIGURED", status.getMockConfigurationSource());
+        assertEquals(null, status.getMockEnabled());
+        assertFalse(status.getRealRoutingAllowed());
+        assertEquals("DEGRADED", status.getEffectiveMode());
+        assertTrue(status.getRiskCodes().contains("MOCK_MODE_NOT_EXPLICITLY_CONFIGURED"));
     }
 
     @Test
@@ -91,7 +131,7 @@ class AiRuntimeStatusServiceTest {
     }
 
     @Test
-    void completeConfigProviderIsUsedWhenDatabaseHasNoModel() {
+    void completeRuntimeConfigRemainsVisibleButCannotReplaceMissingDatabaseDefault() {
         AiRouterProperties.ProviderConfig config = new AiRouterProperties.ProviderConfig();
         config.setBaseUrl("https://api.example.com/v1");
         config.setApiKey("secret");
@@ -102,7 +142,9 @@ class AiRuntimeStatusServiceTest {
         AiRuntimeStatusVO status = service().currentStatus();
         ProviderStatus deepseek = provider(status, "deepseek");
 
-        assertEquals("REAL", status.getEffectiveMode());
+        assertEquals("DEGRADED", status.getEffectiveMode());
+        assertFalse(status.getRealRoutingAllowed());
+        assertEquals(null, status.getEffectivePrimaryProvider());
         assertEquals("CONFIG", deepseek.getEffectiveConfigSource());
         assertTrue(deepseek.getReadyForCall());
         assertFalse(status.toString().contains("secret"));
@@ -159,10 +201,11 @@ class AiRuntimeStatusServiceTest {
         ProviderStatus deepseek = provider(status, "deepseek");
 
         assertEquals("deepseek-chat", deepseek.getSelectedModelCode());
-        assertEquals("deepseek", status.getEffectivePrimaryProvider());
+        assertEquals(null, status.getEffectivePrimaryProvider());
+        assertFalse(status.getRealRoutingAllowed());
         assertTrue(status.getRiskCodes().contains("GLOBAL_DEFAULT_MISSING"));
         assertTrue(status.getOperatorMessages().stream()
-                .anyMatch(message -> message.contains("回退到运行配置主供应商")));
+                .anyMatch(message -> message.contains("真实业务调用已阻止")));
     }
 
     @Test
@@ -183,7 +226,7 @@ class AiRuntimeStatusServiceTest {
     }
 
     private AiRuntimeStatusService service() {
-        return new AiRuntimeStatusService(aiProperties, routerProperties, mapper, encryptor);
+        return new AiRuntimeStatusService(aiProperties, routerProperties, mapper, encryptor, environment);
     }
 
     private ProviderStatus provider(AiRuntimeStatusVO status, String provider) {

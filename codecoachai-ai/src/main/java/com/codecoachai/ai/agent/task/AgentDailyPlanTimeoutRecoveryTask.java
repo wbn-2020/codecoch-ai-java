@@ -1,6 +1,5 @@
 package com.codecoachai.ai.agent.task;
 
-import com.codecoachai.ai.agent.domain.enums.AgentErrorCode;
 import com.codecoachai.ai.agent.mq.AgentMqDispatcher;
 import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
@@ -32,7 +31,8 @@ public class AgentDailyPlanTimeoutRecoveryTask {
                 run.id AS runId,
                 run.user_id AS userId,
                 run.started_at AS startedAt,
-                run.execution_token AS executionToken
+                run.execution_token AS executionToken,
+                run.execution_id AS executionId
             FROM agent_run run
             WHERE run.deleted = 0
               AND run.agent_type = ?
@@ -47,6 +47,8 @@ public class AgentDailyPlanTimeoutRecoveryTask {
                   WHERE task.deleted = 0
                     AND task.biz_type = ?
                     AND task.biz_id = CAST(run.id AS CHAR)
+                    AND task.status IN ('PENDING', 'RUNNING')
+                    AND (task.execution_id = run.execution_id OR task.execution_id IS NULL)
               )
             ORDER BY run.started_at ASC
             LIMIT ?
@@ -54,8 +56,9 @@ public class AgentDailyPlanTimeoutRecoveryTask {
     private static final String RECOVERY_UPDATE = """
             UPDATE agent_run
             SET status = 'FAILED',
-                error_code = '%s',
+                error_code = 'AGENT_RUN_TIMEOUT',
                 error_message = ?,
+                terminal_reason_code = 'AGENT_RUN_TIMEOUT',
                 duration_ms = ?,
                 finished_at = ?,
                 updated_at = ?
@@ -64,17 +67,20 @@ public class AgentDailyPlanTimeoutRecoveryTask {
               AND deleted = 0
               AND status = 'RUNNING'
               AND execution_token = ?
-            """.formatted(AgentErrorCode.RUN_TIMEOUT);
+            """;
     private static final String RECOVERY_ASYNC_TASK_UPDATE = """
             UPDATE async_task
             SET status = 'FAILED',
+                lease_token = NULL,
                 failure_reason = ?,
+                terminal_reason_code = 'AGENT_ASYNC_TASK_TIMEOUT',
                 completed_at = ?,
                 updated_at = ?
             WHERE deleted = 0
               AND biz_type = ?
               AND biz_id = ?
-              AND status = 'RUNNING'
+              AND status IN ('PENDING', 'RUNNING')
+              AND (execution_id = ? OR execution_id IS NULL)
             """;
     private static final String TIMEOUT_MESSAGE = "计划生成超时，请重新生成今日计划。";
 
@@ -146,6 +152,7 @@ public class AgentDailyPlanTimeoutRecoveryTask {
         Long userId = toLong(row.get("userId"));
         LocalDateTime startedAt = toLocalDateTime(row.get("startedAt"));
         String executionToken = trimToNull(row.get("executionToken"));
+        String executionId = trimToNull(row.get("executionId"));
         if (runId == null || userId == null || startedAt == null || !StringUtils.hasText(executionToken)) {
             log.warn("Skip agent daily plan timeout recovery row because required fields are missing: {}",
                     safeRowSummary(row));
@@ -173,26 +180,28 @@ public class AgentDailyPlanTimeoutRecoveryTask {
         };
         int updated = jdbcTemplate.update(RECOVERY_UPDATE, args, argTypes);
         if (updated > 0) {
-            int asyncTaskUpdated = markAsyncTasksFailed(runId, finishedAt);
-            log.info("Recovered timed out agent daily plan runId={} userId={} asyncTaskRows={}",
-                    runId, userId, asyncTaskUpdated);
+            int asyncTaskUpdated = markAsyncTasksFailed(runId, executionId, finishedAt);
+            log.info("Recovered timed out agent daily plan runId={} executionId={} userId={} asyncTaskRows={}",
+                    runId, executionId, userId, asyncTaskUpdated);
             return;
         }
         log.debug("Skip agent daily plan timeout recovery because run changed runId={} userId={}", runId, userId);
     }
 
-    private int markAsyncTasksFailed(Long runId, LocalDateTime finishedAt) {
+    private int markAsyncTasksFailed(Long runId, String executionId, LocalDateTime finishedAt) {
         Object[] args = {
                 TIMEOUT_MESSAGE,
                 Timestamp.valueOf(finishedAt),
                 Timestamp.valueOf(finishedAt),
                 AgentMqDispatcher.BIZ_TYPE_DAILY_PLAN_GENERATE,
-                String.valueOf(runId)
+                String.valueOf(runId),
+                executionId
         };
         int[] argTypes = {
                 Types.VARCHAR,
                 Types.TIMESTAMP,
                 Types.TIMESTAMP,
+                Types.VARCHAR,
                 Types.VARCHAR,
                 Types.VARCHAR
         };

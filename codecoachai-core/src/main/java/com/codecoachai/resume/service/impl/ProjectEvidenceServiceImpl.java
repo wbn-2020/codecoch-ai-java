@@ -116,8 +116,9 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProject(project, dto);
         recalculate(project, 0L);
         projectEvidenceMapper.insert(project);
-        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
-        return toDetailVO(project, List.of());
+        ProjectEvidence persisted = requirePersistedProject(project.getId(), userId);
+        projectEvidenceVersionManager.capture(persisted, SOURCE_MANUAL, persisted.getId());
+        return toDetailVO(persisted, List.of());
     }
 
     @Override
@@ -150,8 +151,9 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProjectPeriod(project, resumeProject.getProjectPeriod());
         recalculate(project, 0L);
         projectEvidenceMapper.insert(project);
-        projectEvidenceVersionManager.capture(project, SOURCE_RESUME_PROJECT, resumeProject.getId());
-        return toDetailVO(project, List.of());
+        ProjectEvidence persisted = requirePersistedProject(project.getId(), userId);
+        projectEvidenceVersionManager.capture(persisted, SOURCE_RESUME_PROJECT, resumeProject.getId());
+        return toDetailVO(persisted, List.of());
     }
 
     @Override
@@ -171,9 +173,10 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         applyProject(project, dto);
         recalculate(project, skillCount(project.getId(), userId));
         projectEvidenceMapper.updateById(project);
-        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
-        agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project evidence updated");
-        return toDetailVO(project, listSkillEvidences(userId, id));
+        ProjectEvidence persisted = requirePersistedProject(project.getId(), userId);
+        projectEvidenceVersionManager.capture(persisted, SOURCE_MANUAL, persisted.getId());
+        agentBusinessActionNotifier.completeProjectEvidence(userId, persisted.getId(), "Project evidence updated");
+        return toDetailVO(persisted, listSkillEvidences(userId, id));
     }
 
     @Override
@@ -198,9 +201,12 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         skillEvidenceMapper.insert(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
         profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
-        projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
+        ProjectEvidence persistedProject = requirePersistedProject(project.getId(), userId);
+        ProjectSkillEvidence persistedEvidence = requirePersistedSkillEvidence(evidence.getId(), userId);
+        projectEvidenceVersionManager.capture(
+                persistedProject, persistedEvidence.getSourceType(), persistedEvidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence added");
-        return toSkillVO(evidence);
+        return toSkillVO(persistedEvidence);
     }
 
     @Override
@@ -215,9 +221,12 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
         profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
-        projectEvidenceVersionManager.capture(project, evidence.getSourceType(), evidence.getId());
+        ProjectEvidence persistedProject = requirePersistedProject(project.getId(), userId);
+        ProjectSkillEvidence persistedEvidence = requirePersistedSkillEvidence(evidence.getId(), userId);
+        projectEvidenceVersionManager.capture(
+                persistedProject, persistedEvidence.getSourceType(), persistedEvidence.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence updated");
-        return toSkillVO(evidence);
+        return toSkillVO(persistedEvidence);
     }
 
     @Override
@@ -231,7 +240,8 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         skillEvidenceMapper.updateById(evidence);
         recalculateAndUpdate(project, skillCount(project.getId(), userId));
         profileFeedbackOutboxService.requeueAbilityProjectionForProject(userId, project.getId());
-        projectEvidenceVersionManager.capture(project, SOURCE_MANUAL, project.getId());
+        ProjectEvidence persistedProject = requirePersistedProject(project.getId(), userId);
+        projectEvidenceVersionManager.capture(persistedProject, SOURCE_MANUAL, persistedProject.getId());
         agentBusinessActionNotifier.completeProjectEvidence(userId, project.getId(), "Project skill evidence deleted");
     }
 
@@ -350,35 +360,34 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
     }
 
     private ProjectEvidence getOwnedProject(Long id, Long userId) {
-        ProjectEvidence project = projectEvidenceMapper.selectOne(baseProjectWrapper(userId)
-                .eq(ProjectEvidence::getId, id)
-                .last("limit 1"));
-        if (project == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "project evidence is unavailable");
+        ProjectEvidence project = projectEvidenceMapper.selectById(id);
+        if (project == null || CommonConstants.YES.equals(project.getDeleted())) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "project evidence does not exist");
+        }
+        if (!Objects.equals(userId, project.getUserId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "project evidence belongs to another user");
         }
         return project;
     }
 
     private ProjectSkillEvidence getOwnedSkillEvidence(Long id, Long userId) {
-        ProjectSkillEvidence evidence = skillEvidenceMapper.selectOne(new LambdaQueryWrapper<ProjectSkillEvidence>()
-                .eq(ProjectSkillEvidence::getId, id)
-                .eq(ProjectSkillEvidence::getUserId, userId)
-                .eq(ProjectSkillEvidence::getDeleted, CommonConstants.NO)
-                .last("limit 1"));
-        if (evidence == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "skill evidence is unavailable");
+        ProjectSkillEvidence evidence = skillEvidenceMapper.selectById(id);
+        if (evidence == null || CommonConstants.YES.equals(evidence.getDeleted())) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "skill evidence does not exist");
+        }
+        if (!Objects.equals(userId, evidence.getUserId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "skill evidence belongs to another user");
         }
         return evidence;
     }
 
     private Resume getOwnedResume(Long id, Long userId) {
-        Resume resume = resumeMapper.selectOne(new LambdaQueryWrapper<Resume>()
-                .eq(Resume::getId, id)
-                .eq(Resume::getUserId, userId)
-                .eq(Resume::getDeleted, CommonConstants.NO)
-                .last("limit 1"));
-        if (resume == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "resume is unavailable");
+        Resume resume = resumeMapper.selectById(id);
+        if (resume == null || CommonConstants.YES.equals(resume.getDeleted())) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "resume does not exist");
+        }
+        if (!Objects.equals(userId, resume.getUserId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "resume belongs to another user");
         }
         return resume;
     }
@@ -387,14 +396,31 @@ public class ProjectEvidenceServiceImpl implements ProjectEvidenceService {
         if (targetJobId == null) {
             return;
         }
-        TargetJob targetJob = targetJobMapper.selectOne(new LambdaQueryWrapper<TargetJob>()
-                .eq(TargetJob::getId, targetJobId)
-                .eq(TargetJob::getUserId, userId)
-                .eq(TargetJob::getDeleted, CommonConstants.NO)
-                .last("limit 1"));
-        if (targetJob == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "target job is unavailable");
+        TargetJob targetJob = targetJobMapper.selectById(targetJobId);
+        if (targetJob == null || CommonConstants.YES.equals(targetJob.getDeleted())) {
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "target job does not exist");
         }
+        if (!Objects.equals(userId, targetJob.getUserId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "target job belongs to another user");
+        }
+    }
+
+    private ProjectEvidence requirePersistedProject(Long id, Long userId) {
+        ProjectEvidence persisted = projectEvidenceMapper.selectById(id);
+        if (persisted == null || CommonConstants.YES.equals(persisted.getDeleted())
+                || !Objects.equals(userId, persisted.getUserId())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "project evidence write could not be read back");
+        }
+        return persisted;
+    }
+
+    private ProjectSkillEvidence requirePersistedSkillEvidence(Long id, Long userId) {
+        ProjectSkillEvidence persisted = skillEvidenceMapper.selectById(id);
+        if (persisted == null || CommonConstants.YES.equals(persisted.getDeleted())
+                || !Objects.equals(userId, persisted.getUserId())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "skill evidence write could not be read back");
+        }
+        return persisted;
     }
 
     private void requireSameProject(Long projectEvidenceId, ProjectSkillEvidence evidence) {

@@ -21,6 +21,9 @@ public class AtsResumeDocument {
         private float headingFontPt = 11f;
         private float bodyFontPt = 10f;
         private float lineSpacing = 1.08f;
+        private float sectionSpacing = 1f;
+        private boolean autoOnePage;
+        private String identityAlignment = "CENTER";
         private String fontFamily = "Arial";
     }
 

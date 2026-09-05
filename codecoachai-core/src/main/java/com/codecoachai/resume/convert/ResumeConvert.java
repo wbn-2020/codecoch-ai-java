@@ -7,6 +7,8 @@ import com.codecoachai.resume.domain.vo.InnerResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
+import com.codecoachai.resume.support.ResumeCompleteness;
+import com.fasterxml.jackson.databind.JsonNode;
 import java.util.List;
 
 public final class ResumeConvert {
@@ -35,6 +37,11 @@ public final class ResumeConvert {
     }
 
     public static ResumeDetailVO toDetailVO(Resume resume, List<ResumeProjectVO> projects) {
+        return toDetailVO(resume, projects, null, null);
+    }
+
+    public static ResumeDetailVO toDetailVO(Resume resume, List<ResumeProjectVO> projects,
+                                            JsonNode presentationConfig, JsonNode document) {
         ResumeDetailVO vo = new ResumeDetailVO();
         vo.setId(resume.getId());
         vo.setUserId(resume.getUserId());
@@ -47,10 +54,16 @@ public final class ResumeConvert {
         vo.setWorkExperience(resume.getWorkExperience());
         vo.setEducationExperience(resume.getEducationExperience());
         vo.setSummary(resume.getSummary());
+        vo.setPresentationConfig(presentationConfig);
+        vo.setDocument(document);
         vo.setIsDefault(resume.getIsDefault());
         vo.setStatus(resume.getStatus());
         vo.setProjects(projects);
         applyContextEligibility(vo, ResumeContextEligibility.assess(resume));
+        ResumeCompleteness.Assessment completeness = ResumeCompleteness.assess(resume, projects);
+        vo.setDraft(completeness.isDraft());
+        vo.setCompletionPercent(completeness.completionPercent());
+        vo.setMissingSections(completeness.missingSections());
         return vo;
     }
 
@@ -102,6 +115,8 @@ public final class ResumeConvert {
         vo.setHighlights(project.getHighlights());
         vo.setSort(project.getSort());
         vo.setSortOrder(project.getSortOrder());
+        vo.setCreatedAt(project.getCreatedAt());
+        vo.setUpdatedAt(project.getUpdatedAt());
         return vo;
     }
 }

@@ -13,6 +13,7 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -24,6 +25,8 @@ import com.codecoachai.resume.domain.enums.JobDescriptionParseStatus;
 import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
+import com.codecoachai.resume.mq.JobTargetParseMqDispatcher;
+import com.codecoachai.resume.service.JobRequirementService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.List;
 import java.util.Optional;
@@ -51,6 +54,10 @@ class TargetJobServiceImplTest {
     private AiFeignClient aiFeignClient;
     @Mock
     private DistributedLockHelper distributedLockHelper;
+    @Mock
+    private JobTargetParseMqDispatcher jobTargetParseMqDispatcher;
+    @Mock
+    private JobRequirementService jobRequirementService;
 
     private TargetJobServiceImpl targetJobService;
 
@@ -65,7 +72,8 @@ class TargetJobServiceImplTest {
                 new ObjectMapper(),
                 new TransactionTemplate(new NoopTransactionManager()),
                 distributedLockHelper,
-                Optional.empty());
+                Optional.empty(),
+                jobRequirementService);
         LoginUser loginUser = new LoginUser();
         loginUser.setUserId(1001L);
         LoginUserContext.setLoginUser(loginUser);
@@ -135,6 +143,40 @@ class TargetJobServiceImplTest {
                 () -> targetJobService.parseJobDescriptionForUser(11L, 1001L, new JobDescriptionParseDTO()));
 
         verify(analysisMapper, never()).insert(any(JobDescriptionAnalysis.class));
+        verify(aiFeignClient, never()).parseJobDescription(any());
+    }
+
+    @Test
+    void submitJobDescriptionParseReturnsRegisteredExecutionId() {
+        targetJobService = new TargetJobServiceImpl(
+                targetJobMapper,
+                analysisMapper,
+                aiFeignClient,
+                new ObjectMapper(),
+                new TransactionTemplate(new NoopTransactionManager()),
+                distributedLockHelper,
+                Optional.of(jobTargetParseMqDispatcher),
+                jobRequirementService);
+        TargetJob job = targetJob(11L);
+        job.setJdText("Build production Java services");
+        job.setParseStatus(JobDescriptionParseStatus.NOT_PARSED.getCode());
+        when(targetJobMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(job);
+        when(analysisMapper.selectOne(any())).thenReturn(null);
+        when(targetJobMapper.update(any(), any())).thenReturn(1);
+        when(jobTargetParseMqDispatcher.dispatchParseWithReceipt(11L, 1001L, null, null))
+                .thenReturn(MqDispatchReceipt.builder()
+                        .messageId("execution-jd-11")
+                        .traceId("trace-jd-11")
+                        .bizType(JobTargetParseMqDispatcher.BIZ_TYPE)
+                        .bizId("11")
+                        .sendStatus("SEND_OK")
+                        .build());
+
+        var result = targetJobService.submitJobDescriptionParse(11L, new JobDescriptionParseDTO());
+
+        assertEquals("execution-jd-11", result.getExecutionId());
+        assertEquals("execution-jd-11", result.getAsyncMessageId());
+        assertEquals("trace-jd-11", result.getAsyncTraceId());
         verify(aiFeignClient, never()).parseJobDescription(any());
     }
 

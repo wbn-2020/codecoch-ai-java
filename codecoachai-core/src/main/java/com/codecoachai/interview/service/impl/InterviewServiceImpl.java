@@ -84,6 +84,8 @@ import com.codecoachai.interview.voicedelivery.VoiceDeliverySummaryVO;
 import com.codecoachai.task.service.AsyncTaskService;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.codecoachai.interview.support.InterviewReportComparabilityPolicy;
+import com.codecoachai.interview.support.InterviewReportConsumabilityContract;
+import com.codecoachai.interview.support.InterviewReportPromptBudgeter;
 import com.codecoachai.interview.support.InterviewReportScoringContract;
 import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -858,9 +860,12 @@ public class InterviewServiceImpl implements InterviewService {
             InterviewListVO vo = InterviewConvert.toListVO(session, report);
             vo.setVoiceDeliverySummary(deliverySummaries.get(session.getId()));
             InterviewReportComparabilityPolicy.Result evaluation = comparabilityPolicy.evaluate(report, session);
-            vo.setTotalScore(evaluation.totalScore());
-            vo.setComparisonAvailable(evaluation.comparable());
-            vo.setComparisonUnavailableReason(evaluation.reasonCode());
+            boolean consumableReport = InterviewReportTrustPolicy.isTrustedForFormalAction(report);
+            vo.setTotalScore(consumableReport ? evaluation.totalScore() : null);
+            vo.setComparisonAvailable(consumableReport && evaluation.comparable());
+            vo.setComparisonUnavailableReason(consumableReport
+                    ? evaluation.reasonCode()
+                    : report == null ? "REPORT_NOT_FOUND" : "REPORT_UNTRUSTED");
             vo.setComparisonRubricVersion(evaluation.rubricVersion());
             vo.setComparisonNormalizationSource(evaluation.normalizationSource());
             vo.setComparisonWarnings(comparisonWarnings(evaluation));
@@ -1039,16 +1044,17 @@ public class InterviewServiceImpl implements InterviewService {
             }
 
             if (isCurrentReportAttempt(session.getId(), report.getId(), generationToken)) {
-                session.setStatus(InterviewStatusEnum.COMPLETED.name());
-                if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
-                    session.setReportStatus(ReportStatusEnum.GENERATED.name());
-                    session.setTotalScore(report.getTotalScore());
-                    session.setFailureReason(isFallbackReport(report) ? report.getFailureReason() : null);
-                } else {
-                    session.setReportStatus(ReportStatusEnum.FAILED.name());
-                    session.setTotalScore(null);
-                    session.setFailureReason(report.getFailureReason());
-                }
+                boolean completedWithEvidence = ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                        || ReportStatusEnum.UNSCORABLE.name().equals(report.getStatus());
+                session.setStatus(completedWithEvidence
+                        ? InterviewStatusEnum.COMPLETED.name()
+                        : InterviewStatusEnum.FAILED.name());
+                session.setReportStatus(report.getStatus());
+                session.setTotalScore(ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                        ? report.getTotalScore()
+                        : null);
+                session.setFailureReason(ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                        && !isFallbackReport(report) ? null : report.getFailureReason());
                 session.setEndTime(LocalDateTime.now());
                 sessionMapper.updateById(session);
             }
@@ -1104,10 +1110,10 @@ public class InterviewServiceImpl implements InterviewService {
         reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
         reportDTO.setProjectContent(buildProjectContent(resume));
         Map<Long, InterviewMessage> messagesById = messageById(messages);
-        reportDTO.setMessages(messages.stream()
+        reportDTO.setMessages(InterviewReportPromptBudgeter.budget(messages.stream()
                 .map(message -> reportMessageText(message, messagesById))
                 .filter(StringUtils::hasText)
-                .toList());
+                .toList()));
         reportDTO.setTrainingScene(session.getTrainingScene());
         reportDTO.setTargetSkillDomain(session.getTargetSkillDomain());
         reportDTO.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
@@ -1701,17 +1707,6 @@ public class InterviewServiceImpl implements InterviewService {
         report.setStatus(ReportStatusEnum.GENERATING.name());
         saveReport(report);
         try {
-            InnerResumeDetailVO resume = loadResume(session);
-            GenerateReportDTO reportDTO = new GenerateReportDTO();
-            reportDTO.setInterviewId(session.getId());
-            reportDTO.setMode(session.getMode());
-            reportDTO.setTargetPosition(session.getTargetPosition());
-            reportDTO.setExperienceLevel(session.getExperienceLevel());
-            reportDTO.setIndustryDirection(session.getIndustryDirection());
-            reportDTO.setIndustryContext(session.getIndustryContext());
-            reportDTO.setDifficulty(session.getDifficulty());
-            reportDTO.setResumeContent(resume == null ? null : resume.getSummary());
-            reportDTO.setProjectContent(buildProjectContent(resume));
             List<InterviewMessage> messages = messageEntities(session.getId());
             if (!hasScorableAnswers(messages)) {
                 markReportSampleInsufficient(session, report);
@@ -1724,20 +1719,21 @@ public class InterviewServiceImpl implements InterviewService {
                 vo.setReport(toReportVO(report, session));
                 return vo;
             }
-            reportDTO.setMessages(messages.stream().map(InterviewMessage::getContent).toList());
+            GenerateReportDTO reportDTO = buildReportDTO(session, messages);
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(reportDTO));
             report.setStatus(ReportStatusEnum.GENERATED.name());
             applyReportContent(report, aiReport, messages);
-            session.setStatus(InterviewStatusEnum.COMPLETED.name());
-            if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
-                session.setReportStatus(ReportStatusEnum.GENERATED.name());
-                session.setTotalScore(report.getTotalScore());
-                session.setFailureReason(isFallbackReport(report) ? report.getFailureReason() : null);
-            } else {
-                session.setReportStatus(ReportStatusEnum.FAILED.name());
-                session.setTotalScore(null);
-                session.setFailureReason(report.getFailureReason());
-            }
+            boolean completedWithEvidence = ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                    || ReportStatusEnum.UNSCORABLE.name().equals(report.getStatus());
+            session.setStatus(completedWithEvidence
+                    ? InterviewStatusEnum.COMPLETED.name()
+                    : InterviewStatusEnum.FAILED.name());
+            session.setReportStatus(report.getStatus());
+            session.setTotalScore(ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                    ? report.getTotalScore()
+                    : null);
+            session.setFailureReason(ReportStatusEnum.GENERATED.name().equals(report.getStatus())
+                    && !isFallbackReport(report) ? null : report.getFailureReason());
             session.setEndTime(LocalDateTime.now());
         } catch (RuntimeException ex) {
             log.warn("Interview finish report generation failed, sessionId={}", session.getId(), ex);
@@ -2413,7 +2409,7 @@ public class InterviewServiceImpl implements InterviewService {
                         aiReport == null ? null : aiReport.getRubricScores(),
                         reportRubricDimensions(report.getSessionId()));
         if (!scoringContract.valid()) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + scoringContract.reasonCode() + "]");
             return;
@@ -2446,12 +2442,13 @@ public class InterviewServiceImpl implements InterviewService {
         report.setSuggestions(StringUtils.hasText(aiReport.getSuggestions()) ? aiReport.getSuggestions() : DEFAULT_REPORT_SUGGESTIONS);
         report.setFailureReason(null);
         normalizeReportContent(report);
+        enforceMinimumConsumability(report, messages);
     }
 
     private void applyFallbackReportContent(InterviewReport report, GenerateReportVO aiReport,
                                             List<InterviewMessage> messages, int answerCount) {
         if (answerCount <= 0) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             return;
         }
         Integer totalScore = firstValidTotalScore(
@@ -2463,7 +2460,7 @@ public class InterviewServiceImpl implements InterviewService {
                 InterviewReportScoringContract.validate(
                         objectMapper, totalScore, rubricVersion, rubricScores);
         if (!scoringContract.valid()) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + scoringContract.reasonCode() + "]");
             return;
@@ -2495,6 +2492,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setGeneratedAt(LocalDateTime.now());
         report.setSuggestions(firstText(aiReport == null ? null : aiReport.getSuggestions(), DEFAULT_REPORT_SUGGESTIONS));
         report.setFailureReason(REPORT_AI_INCOMPLETE_FALLBACK_REASON);
+        enforceMinimumConsumability(report, messages);
     }
 
     private String buildFallbackQaReview(List<InterviewMessage> messages) {
@@ -2616,11 +2614,6 @@ public class InterviewServiceImpl implements InterviewService {
 
     private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
         return aiReport == null
-                || !InterviewReportScoringContract.validate(
-                        objectMapper,
-                        aiReport.getTotalScore(),
-                        InterviewRubricVersion.CURRENT,
-                        aiReport.getRubricScores()).valid()
                 || !StringUtils.hasText(aiReport.getSummary())
                 || !StringUtils.hasText(aiReport.getReportContent());
     }
@@ -2705,7 +2698,25 @@ public class InterviewServiceImpl implements InterviewService {
         session.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE);
     }
 
+    private void enforceMinimumConsumability(InterviewReport report, List<InterviewMessage> messages) {
+        InterviewReportConsumabilityContract.Validation validation =
+                InterviewReportConsumabilityContract.validate(
+                        objectMapper,
+                        report,
+                        countScorableAnswers(messages),
+                        reportRubricDimensions(report == null ? null : report.getSessionId()));
+        if (validation.valid()) {
+            return;
+        }
+        markReportAiIncomplete(report, messages);
+        report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE + " [" + validation.reasonCode() + "]");
+    }
+
     private void markReportAiIncomplete(InterviewReport report) {
+        markReportAiIncomplete(report, null);
+    }
+
+    private void markReportAiIncomplete(InterviewReport report, List<InterviewMessage> messages) {
         report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
@@ -2717,7 +2728,7 @@ public class InterviewServiceImpl implements InterviewService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview(firstText(report.getQaReview(), "[]"));
+        report.setQaReview(firstText(report.getQaReview(), buildFallbackQaReview(messages), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");

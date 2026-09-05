@@ -3,6 +3,7 @@ package com.codecoachai.resume.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.codecoachai.common.core.constant.CommonConstants;
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
@@ -10,6 +11,15 @@ import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.mq.payload.ResumeOptimizePayload;
 import com.codecoachai.common.mq.payload.ResumeParsePayload;
 import com.codecoachai.common.security.context.LoginUserContext;
+import com.codecoachai.file.domain.entity.FileInfo;
+import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
+import com.codecoachai.file.domain.vo.InnerFileUploadVO;
+import com.codecoachai.file.domain.vo.ResumeParseOperationVO;
+import com.codecoachai.file.domain.vo.ResumeUploadDecisionVO;
+import com.codecoachai.file.mapper.FileInfoMapper;
+import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileContentHashes;
+import com.codecoachai.file.util.ResumeParseOperationContract;
 import com.codecoachai.resume.config.ResumeTextExtractProperties;
 import com.codecoachai.resume.convert.ResumeConvert;
 import com.codecoachai.resume.domain.dto.ApplyResumeOptimizeResultDTO;
@@ -31,20 +41,18 @@ import com.codecoachai.resume.domain.vo.InnerResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeAnalysisResultVO;
 import com.codecoachai.resume.domain.vo.ResumeConfirmAnalysisVO;
 import com.codecoachai.resume.domain.vo.ResumeDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeImportQualityReportVO;
 import com.codecoachai.resume.domain.vo.ResumeListVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeDetailVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeRecordAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeOptimizeSubmitVO;
-import com.codecoachai.resume.domain.vo.ResumeParseStatusVO;
 import com.codecoachai.resume.domain.vo.ResumeProjectVO;
 import com.codecoachai.resume.domain.vo.ResumeSearchReindexVO;
-import com.codecoachai.resume.domain.vo.ResumeUploadVO;
 import com.codecoachai.resume.export.ResumeUploadAdmissionGuard;
 import com.codecoachai.resume.feign.AiFeignClient;
 import com.codecoachai.resume.feign.FileFeignClient;
 import com.codecoachai.resume.feign.dto.ResumeOptimizeAiRequestDTO;
-import com.codecoachai.resume.feign.vo.InnerFileUploadVO;
 import com.codecoachai.resume.feign.vo.ResumeOptimizeAiResponseVO;
 import com.codecoachai.resume.mapper.ResumeMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
@@ -52,8 +60,13 @@ import com.codecoachai.resume.mapper.ResumeOptimizeRecordMapper;
 import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeMqDispatcher;
+import com.codecoachai.resume.service.ResumeAggregateInitializationService;
 import com.codecoachai.resume.service.ResumeService;
 import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer;
+import com.codecoachai.resume.support.ResumeDocumentStore;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer.NormalizationResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -91,6 +104,10 @@ public class ResumeServiceImpl implements ResumeService {
     private static final String BIZ_TYPE_RESUME = "RESUME";
     private static final String SOURCE_TYPE_FILE_UPLOAD = "FILE_UPLOAD";
     private static final String DEFAULT_AI_RESUME_TITLE = "AI 解析简历";
+    private static final String PARSE_STATUS_CANCELLED = "CANCELLED";
+    private static final String DUPLICATE_DECISION_REUSE = "REUSE";
+    private static final String DUPLICATE_DECISION_REPARSE = "REPARSE";
+    private static final String DUPLICATE_DECISION_CANCEL = "CANCEL";
     private static final String APPLY_MODE_CREATE_DRAFT = "CREATE_DRAFT";
     private static final String APPLY_MODE_STRUCTURED_PATCH = "STRUCTURED_PATCH";
     private static final int RAW_TEXT_SUMMARY_LENGTH = 500;
@@ -105,6 +122,8 @@ public class ResumeServiceImpl implements ResumeService {
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final ResumeOptimizeRecordMapper optimizeRecordMapper;
     private final TargetJobMapper targetJobMapper;
+    private final FileInfoMapper fileInfoMapper;
+    private final FileStorageService fileStorageService;
     private final FileFeignClient fileFeignClient;
     private final AiFeignClient aiFeignClient;
     private final ObjectMapper objectMapper;
@@ -114,25 +133,32 @@ public class ResumeServiceImpl implements ResumeService {
     private final ResumeTextExtractProperties textExtractProperties;
     private final ResumeSearchSyncOutboxService resumeSearchSyncOutboxService;
     private final ResumeUploadAdmissionGuard uploadAdmissionGuard;
+    private final ResumeImportNormalizer resumeImportNormalizer;
+    private final ResumeAggregateInitializationService aggregateInitializationService;
 
     @Override
     public List<ResumeListVO> listResumes() {
-        return listResumes(null, null, null);
+        Long userId = requireCurrentUserId();
+        List<ResumeListVO> resumes = resumeMapper.selectResumeList(userId, null, null, null);
+        resumes.forEach(this::applyListContextEligibility);
+        return resumes;
     }
 
     @Override
-    public List<ResumeListVO> listResumes(Integer page, Integer size, String keyword) {
+    public PageResult<ResumeListVO> listResumes(Integer page, Integer size, String keyword) {
         Long userId = requireCurrentUserId();
-        Integer limit = null;
-        Long offset = null;
-        if (page != null || size != null) {
-            int effectivePage = page == null || page < 1 ? 1 : page;
-            limit = size == null || size < 1 ? 20 : Math.min(size, 100);
-            offset = (long) (effectivePage - 1) * limit;
-        }
-        List<ResumeListVO> resumes = resumeMapper.selectResumeList(userId, likePattern(keyword), offset, limit);
+        int effectivePage = page == null || page < 1 ? 1 : page;
+        int effectiveSize = size == null || size < 1 ? 20 : Math.min(size, 100);
+        List<ResumeListVO> resumes = resumeMapper.selectResumeList(userId, likePattern(keyword), null, null);
         resumes.forEach(this::applyListContextEligibility);
-        return resumes;
+        long requestedOffset = (long) (effectivePage - 1) * effectiveSize;
+        int fromIndex = (int) Math.min(requestedOffset, resumes.size());
+        int toIndex = Math.min(fromIndex + effectiveSize, resumes.size());
+        return PageResult.of(
+                List.copyOf(resumes.subList(fromIndex, toIndex)),
+                (long) resumes.size(),
+                (long) effectivePage,
+                (long) effectiveSize);
     }
 
     @Override
@@ -144,28 +170,67 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setUserId(userId);
         applyResume(resume, dto);
         ResumeContextEligibility.Assessment eligibility = ResumeContextEligibility.assess(resume);
-        resume.setIsDefault((count == null || count == 0) && eligibility.isEligible()
+        resume.setIsDefault(!Boolean.TRUE.equals(dto.getSaveAsDraft())
+                && (count == null || count == 0) && eligibility.isEligible()
                 ? CommonConstants.YES : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         resumeMapper.insert(resume);
         if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
             selectDefaultResumeForUser(userId, resume.getId());
         }
-        syncResumeSearchAfterCommit(resume.getId(), userId, true);
+        aggregateInitializationService.initializeCreatedResume(
+                resume.getId(), userId, null, resume.getId());
         return toDetailVO(resume);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ResumeUploadVO uploadResume(MultipartFile file) {
+    public ResumeUploadDecisionVO uploadResume(MultipartFile file, String duplicateDecision) {
         Long userId = requireCurrentUserId();
         validateUploadFile(file);
         long size = file.getSize();
+        String contentSha256 = FileContentHashes.sha256(file);
+        String requestedDecision = normalizeDuplicateDecision(duplicateDecision);
+        boolean guardAcquired = acquireResumeUploadGuard(userId, contentSha256);
+        FileInfo duplicate = fileInfoMapper.selectLatestAvailableByContentSha256(
+                userId, BIZ_TYPE_RESUME, contentSha256);
+        if (duplicate != null) {
+            bindResumeUploadGuard(userId, contentSha256, duplicate.getId());
+            return resolveDuplicateUpload(
+                    duplicate, requestedDecision, contentSha256, userId);
+        }
+        if (!guardAcquired) {
+            guardAcquired = reclaimStaleResumeUploadGuard(userId, contentSha256);
+            if (!guardAcquired) {
+                FileInfo concurrentWinner = fileInfoMapper.selectLatestAvailableByContentSha256(
+                        userId, BIZ_TYPE_RESUME, contentSha256);
+                if (concurrentWinner != null) {
+                    bindResumeUploadGuard(userId, contentSha256, concurrentWinner.getId());
+                    return resolveDuplicateUpload(
+                            concurrentWinner, requestedDecision, contentSha256, userId);
+                }
+                throw BusinessException.retryable(
+                        ErrorCode.RESUME_UPLOAD_BUSY,
+                        "相同简历正在上传，请稍后重试以选择复用或重新解析",
+                        "稍后重新选择该文件，系统会显示重复文件处理选项");
+            }
+        }
+        if (DUPLICATE_DECISION_CANCEL.equals(requestedDecision)) {
+            releaseUnboundResumeUploadGuard(userId, contentSha256);
+            return cancelledUploadDecision(contentSha256, false, requestedDecision);
+        }
+        if (requestedDecision != null) {
+            releaseUnboundResumeUploadGuard(userId, contentSha256);
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "REUSE and REPARSE decisions require an existing duplicate resume file");
+        }
+
         long startedAt = System.nanoTime();
         InnerFileUploadVO uploadedFile;
         try {
-            uploadedFile = uploadAdmissionGuard.execute(size,
-                    () -> FeignResultUtils.unwrap(fileFeignClient.upload(file, BIZ_TYPE_RESUME, userId)));
+            uploadedFile = uploadAdmissionGuard.executeSourceUpload(size,
+                    () -> fileStorageService.upload(file, BIZ_TYPE_RESUME, userId));
             log.debug("Resume upload completed userId={} fileSize={} durationMs={}",
                     userId, size, elapsedMillis(startedAt));
         } catch (RuntimeException ex) {
@@ -175,20 +240,144 @@ public class ResumeServiceImpl implements ResumeService {
         if (uploadedFile == null || uploadedFile.getFileId() == null) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历文件上传失败，请稍后重试");
         }
+        if (!Objects.equals(contentSha256, uploadedFile.getContentSha256())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume file integrity validation failed");
+        }
+        bindResumeUploadGuard(userId, contentSha256, uploadedFile.getFileId());
 
-        registerUploadedFileRollbackCleanup(uploadedFile, userId);
-
-        ResumeAnalysisRecord record = new ResumeAnalysisRecord();
-        record.setUserId(userId);
-        record.setFileId(uploadedFile.getFileId());
-        record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
-        record.setParseStatus(ResumeParseStatus.PENDING.getCode());
-        analysisRecordMapper.insert(record);
+        ResumeAnalysisRecord record = createPendingAnalysisRecord(userId, uploadedFile.getFileId());
         dispatchResumeParseAfterCommit(record, uploadedFile);
-        MqDispatchReceipt receipt = null;
-        boolean dispatched = true;
+        return newUploadDecision(
+                uploadedFile,
+                record,
+                contentSha256,
+                false,
+                null,
+                "UPLOAD_NEW",
+                "上传成功，已提交解析");
+    }
 
-        ResumeUploadVO vo = new ResumeUploadVO();
+    private boolean acquireResumeUploadGuard(Long userId, String contentSha256) {
+        return fileInfoMapper.acquireResumeUploadGuard(userId, contentSha256) == 1;
+    }
+
+    private boolean reclaimStaleResumeUploadGuard(Long userId, String contentSha256) {
+        if (fileInfoMapper.deleteStaleResumeUploadGuard(userId, contentSha256) != 1) {
+            return false;
+        }
+        return acquireResumeUploadGuard(userId, contentSha256);
+    }
+
+    private void bindResumeUploadGuard(Long userId, String contentSha256, Long fileId) {
+        if (fileId == null) {
+            throw new BusinessException(
+                    ErrorCode.SYSTEM_ERROR,
+                    "简历上传去重状态保存失败，请稍后重试");
+        }
+        fileInfoMapper.bindResumeUploadGuard(userId, contentSha256, fileId);
+    }
+
+    private void releaseUnboundResumeUploadGuard(Long userId, String contentSha256) {
+        fileInfoMapper.releaseUnboundResumeUploadGuard(userId, contentSha256);
+    }
+
+    @Override
+    public ResumeParseOperationVO getParseStatus(Long analysisRecordId) {
+        return toParseStatusVO(getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId()));
+    }
+
+    private ResumeUploadDecisionVO resolveDuplicateUpload(
+            FileInfo duplicate,
+            String requestedDecision,
+            String contentSha256,
+            Long userId) {
+        FileResumeAnalysisStatusVO analysis =
+                fileInfoMapper.selectLatestResumeAnalysisByFileId(duplicate.getId());
+        String recommendedDecision = recommendedDuplicateDecision(analysis);
+        if (requestedDecision == null) {
+            ResumeUploadDecisionVO decision = duplicateUploadDecision(
+                    duplicate, analysis, contentSha256, null, null);
+            decision.setDecisionRequired(true);
+            decision.setRecommendedDecision(recommendedDecision);
+            decision.setMessage("检测到内容相同的简历，请明确选择复用、重新解析或取消");
+            return decision;
+        }
+        if (DUPLICATE_DECISION_CANCEL.equals(requestedDecision)) {
+            return cancelledUploadDecision(contentSha256, true, requestedDecision);
+        }
+        if (DUPLICATE_DECISION_REUSE.equals(requestedDecision)) {
+            ResumeUploadDecisionVO decision = duplicateUploadDecision(
+                    duplicate, analysis, contentSha256, requestedDecision, requestedDecision);
+            decision.setMessage("已复用内容相同的简历文件及其最新解析操作");
+            return decision;
+        }
+        if (DUPLICATE_DECISION_REPARSE.equals(requestedDecision)) {
+            InnerFileUploadVO storedFile = toStoredFile(duplicate);
+            ResumeAnalysisRecord record = createPendingAnalysisRecord(userId, duplicate.getId());
+            dispatchResumeParseAfterCommit(record, storedFile);
+            ResumeUploadDecisionVO decision = newUploadDecision(
+                    storedFile,
+                    record,
+                    contentSha256,
+                    true,
+                    requestedDecision,
+                    requestedDecision,
+                    "已复用原文件并创建新的解析操作");
+            decision.setRecommendedDecision(recommendedDecision);
+            return decision;
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported duplicate resume decision");
+    }
+
+    private ResumeUploadDecisionVO duplicateUploadDecision(
+            FileInfo duplicate,
+            FileResumeAnalysisStatusVO analysis,
+            String contentSha256,
+            String requestedDecision,
+            String appliedDecision) {
+        ResumeUploadDecisionVO vo = new ResumeUploadDecisionVO();
+        vo.setFileId(duplicate.getId());
+        vo.setAnalysisRecordId(analysis == null ? null : analysis.getResumeAnalysisRecordId());
+        vo.setResumeId(analysis == null ? null : analysis.getResumeId());
+        vo.setParseStatus(analysis == null ? null : analysis.getParseStatus());
+        vo.setOriginalFilename(duplicate.getOriginalFilename());
+        vo.setFileSize(duplicate.getFileSize());
+        vo.setFileExt(duplicate.getFileExt());
+        vo.setContentSha256(contentSha256);
+        vo.setDuplicate(true);
+        vo.setDecisionRequired(false);
+        vo.setRequestedDecision(requestedDecision);
+        vo.setAppliedDecision(appliedDecision);
+        vo.setAllowedDecisions(duplicateDecisions());
+        applyOperationState(vo, analysis == null ? null : analysis.getParseStatus());
+        return vo;
+    }
+
+    private ResumeUploadDecisionVO cancelledUploadDecision(
+            String contentSha256, boolean duplicate, String requestedDecision) {
+        ResumeUploadDecisionVO vo = new ResumeUploadDecisionVO();
+        vo.setContentSha256(contentSha256);
+        vo.setDuplicate(duplicate);
+        vo.setDecisionRequired(false);
+        vo.setRequestedDecision(requestedDecision);
+        vo.setAppliedDecision(DUPLICATE_DECISION_CANCEL);
+        vo.setAllowedDecisions(duplicate ? duplicateDecisions() : List.of(DUPLICATE_DECISION_CANCEL));
+        vo.setOperationStatus("CANCELLED");
+        vo.setCancellable(false);
+        vo.setRetryable(false);
+        vo.setMessage("已取消本次简历上传，不会创建文件或解析记录");
+        return vo;
+    }
+
+    private ResumeUploadDecisionVO newUploadDecision(
+            InnerFileUploadVO uploadedFile,
+            ResumeAnalysisRecord record,
+            String contentSha256,
+            boolean duplicate,
+            String requestedDecision,
+            String appliedDecision,
+            String message) {
+        ResumeUploadDecisionVO vo = new ResumeUploadDecisionVO();
         vo.setFileId(uploadedFile.getFileId());
         vo.setAnalysisRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
@@ -196,14 +385,99 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setOriginalFilename(uploadedFile.getOriginalFilename());
         vo.setFileSize(uploadedFile.getFileSize());
         vo.setFileExt(uploadedFile.getFileExt());
-        vo.setMessage(dispatched ? "上传成功，已提交解析" : "上传成功，等待解析补偿");
-        applyAsyncReceipt(vo, receipt);
+        vo.setContentSha256(contentSha256);
+        vo.setDuplicate(duplicate);
+        vo.setDecisionRequired(false);
+        vo.setRequestedDecision(requestedDecision);
+        vo.setAppliedDecision(appliedDecision);
+        vo.setAllowedDecisions(duplicate ? duplicateDecisions() : List.of());
+        vo.setMessage(message);
+        applyOperationState(vo, record.getParseStatus());
         return vo;
     }
 
-    @Override
-    public ResumeParseStatusVO getParseStatus(Long analysisRecordId) {
-        return toParseStatusVO(getOwnedAnalysisRecord(analysisRecordId, requireCurrentUserId()));
+    private void applyOperationState(ResumeUploadDecisionVO vo, String parseStatus) {
+        ResumeParseOperationContract.State state = ResumeParseOperationContract.from(parseStatus);
+        vo.setOperationStatus(state.operationStatus());
+        vo.setCancellable(state.cancellable());
+        vo.setRetryable(state.retryable());
+    }
+
+    private String recommendedDuplicateDecision(FileResumeAnalysisStatusVO analysis) {
+        if (analysis == null
+                || ResumeParseStatus.FAILED.getCode().equals(analysis.getParseStatus())
+                || PARSE_STATUS_CANCELLED.equals(analysis.getParseStatus())) {
+            return DUPLICATE_DECISION_REPARSE;
+        }
+        return DUPLICATE_DECISION_REUSE;
+    }
+
+    private List<String> duplicateDecisions() {
+        return List.of(
+                DUPLICATE_DECISION_REUSE,
+                DUPLICATE_DECISION_REPARSE,
+                DUPLICATE_DECISION_CANCEL);
+    }
+
+    private String normalizeDuplicateDecision(String decision) {
+        if (!StringUtils.hasText(decision)) {
+            return null;
+        }
+        String normalized = decision.trim().toUpperCase(Locale.ROOT);
+        if (!duplicateDecisions().contains(normalized)) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "duplicateDecision must be REUSE, REPARSE, or CANCEL");
+        }
+        return normalized;
+    }
+
+    private ResumeAnalysisRecord createPendingAnalysisRecord(Long userId, Long fileId) {
+        ResumeAnalysisRecord record = new ResumeAnalysisRecord();
+        record.setUserId(userId);
+        record.setFileId(fileId);
+        record.setSourceType(SOURCE_TYPE_FILE_UPLOAD);
+        record.setParseStatus(ResumeParseStatus.PENDING.getCode());
+        record.setErrorMessage(null);
+        int inserted = analysisRecordMapper.insert(record);
+        if (inserted != 1 || record.getId() == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历解析操作创建失败，请稍后重试");
+        }
+        return record;
+    }
+
+    private InnerFileUploadVO uploadedFileFromRecord(ResumeAnalysisRecord record, Long userId) {
+        FileInfo fileInfo = record == null || record.getFileId() == null
+                ? null
+                : fileInfoMapper.selectById(record.getFileId());
+        if (fileInfo == null
+                || !Objects.equals(fileInfo.getUserId(), userId)
+                || !BIZ_TYPE_RESUME.equals(fileInfo.getBizType())
+                || !Objects.equals(fileInfo.getDeleted(), CommonConstants.NO)
+                || !"AVAILABLE".equals(fileInfo.getStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "原简历文件不存在或已不可用");
+        }
+        return toStoredFile(fileInfo);
+    }
+
+    private InnerFileUploadVO toStoredFile(FileInfo fileInfo) {
+        InnerFileUploadVO vo = new InnerFileUploadVO();
+        vo.setFileId(fileInfo.getId());
+        vo.setUserId(fileInfo.getUserId());
+        vo.setBizType(fileInfo.getBizType());
+        vo.setOriginalFilename(fileInfo.getOriginalFilename());
+        vo.setStoredFilename(fileInfo.getStoredFilename());
+        vo.setFileSize(fileInfo.getFileSize());
+        vo.setFileExt(fileInfo.getFileExt());
+        vo.setMimeType(fileInfo.getMimeType());
+        vo.setStoragePath(StringUtils.hasText(fileInfo.getOssKey())
+                ? fileInfo.getOssKey()
+                : fileInfo.getStoragePath());
+        vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
+        vo.setStatus(fileInfo.getStatus());
+        vo.setCreatedAt(fileInfo.getCreatedAt());
+        return vo;
     }
 
     private MqDispatchReceipt dispatchResumeParse(ResumeAnalysisRecord record, InnerFileUploadVO uploadedFile) {
@@ -218,10 +492,6 @@ public class ResumeServiceImpl implements ResumeService {
         MqDispatchReceipt receipt = resumeMqDispatcher
                 .map(dispatcher -> dispatcher.dispatchParseWithReceipt(payload))
                 .orElse(null);
-        if (receipt == null) {
-            record.setErrorMessage("异步解析任务暂时不可用，系统将通过补偿任务重试");
-            analysisRecordMapper.updateById(record);
-        }
         return receipt;
     }
 
@@ -248,10 +518,6 @@ public class ResumeServiceImpl implements ResumeService {
                         uploadedFile == null ? null : uploadedFile.getFileId());
             }
         } catch (RuntimeException ex) {
-            if (record != null && record.getId() != null) {
-                record.setErrorMessage("Resume parse dispatch failed after commit; waiting for compensation retry");
-                analysisRecordMapper.updateById(record);
-            }
             log.error("Resume parse after-commit dispatch failed recordId={} fileId={} failureType={}",
                     record == null ? null : record.getId(),
                     uploadedFile == null ? null : uploadedFile.getFileId(),
@@ -320,13 +586,34 @@ public class ResumeServiceImpl implements ResumeService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public ResumeParseStatusVO reparse(Long analysisRecordId) {
+    public ResumeParseOperationVO reparse(Long analysisRecordId) {
+        return retryParse(analysisRecordId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeParseOperationVO cancelParse(Long analysisRecordId) {
+        Long userId = requireCurrentUserId();
+        ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
+        int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
+                .set(ResumeAnalysisRecord::getParseStatus, PARSE_STATUS_CANCELLED)
+                .set(ResumeAnalysisRecord::getErrorMessage, null)
+                .eq(ResumeAnalysisRecord::getId, analysisRecordId)
+                .eq(ResumeAnalysisRecord::getUserId, userId)
+                .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                .in(ResumeAnalysisRecord::getParseStatus,
+                        List.of(ResumeParseStatus.PENDING.getCode(), ResumeParseStatus.PARSING.getCode())));
+        ResumeAnalysisRecord latestRecord = getOwnedAnalysisRecord(analysisRecordId, userId);
+        if (affectedRows == 1 || PARSE_STATUS_CANCELLED.equals(latestRecord.getParseStatus())) {
+            return toParseStatusVO(latestRecord);
+        }
+        throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态不可取消");
+    }
+
+    private ResumeParseOperationVO retryParse(Long analysisRecordId) {
         Long userId = requireCurrentUserId();
         ResumeAnalysisRecord record = getOwnedAnalysisRecord(analysisRecordId, userId);
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
-        if (status == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态不支持重新解析");
-        }
         if (status == ResumeParseStatus.PENDING) {
             return toParseStatusVO(record);
         }
@@ -339,19 +626,33 @@ public class ResumeServiceImpl implements ResumeService {
         if (status == ResumeParseStatus.WAIT_CONFIRM) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结果待确认，请先确认或处理当前结果");
         }
+        if (!ResumeParseStatus.FAILED.getCode().equals(record.getParseStatus())
+                && !PARSE_STATUS_CANCELLED.equals(record.getParseStatus())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态不支持重新解析");
+        }
 
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.PENDING.getCode())
                 .set(ResumeAnalysisRecord::getErrorMessage, null)
+                .set(ResumeAnalysisRecord::getStructuredJson, null)
+                .set(ResumeAnalysisRecord::getSchemaVersion, null)
+                .set(ResumeAnalysisRecord::getPolicyVersion, null)
+                .set(ResumeAnalysisRecord::getSourceHash, null)
+                .set(ResumeAnalysisRecord::getValidationStatus, null)
+                .set(ResumeAnalysisRecord::getQualityReportJson, null)
+                .set(ResumeAnalysisRecord::getGeneratedAt, null)
+                .set(ResumeAnalysisRecord::getRepairBatchId, null)
                 .eq(ResumeAnalysisRecord::getId, analysisRecordId)
                 .eq(ResumeAnalysisRecord::getUserId, userId)
                 .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
-                .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.FAILED.getCode()));
+                .in(ResumeAnalysisRecord::getParseStatus,
+                        List.of(ResumeParseStatus.FAILED.getCode(), PARSE_STATUS_CANCELLED)));
         ResumeAnalysisRecord latestRecord = getOwnedAnalysisRecord(analysisRecordId, userId);
         if (affectedRows > 0) {
+            InnerFileUploadVO file = uploadedFileFromRecord(latestRecord, userId);
+            dispatchResumeParseAfterCommit(latestRecord, file);
             return toParseStatusVO(latestRecord);
         }
-
         ResumeParseStatus latestStatus = ResumeParseStatus.of(latestRecord.getParseStatus());
         if (latestStatus == ResumeParseStatus.PENDING) {
             return toParseStatusVO(latestRecord);
@@ -365,6 +666,9 @@ public class ResumeServiceImpl implements ResumeService {
         if (latestStatus == ResumeParseStatus.WAIT_CONFIRM) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结果待确认，请先确认或处理当前结果");
         }
+        if (PARSE_STATUS_CANCELLED.equals(latestRecord.getParseStatus())) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "重新解析状态更新失败，请稍后重试");
+        }
         throw new BusinessException(ErrorCode.SYSTEM_ERROR, "重新解析状态更新失败，请稍后重试");
     }
 
@@ -376,12 +680,34 @@ public class ResumeServiceImpl implements ResumeService {
         vo.setFileId(record.getFileId());
         vo.setResumeId(record.getResumeId());
         vo.setParseStatus(record.getParseStatus());
-        vo.setErrorMessage(safeResumeParseErrorMessage(record.getErrorMessage()));
+        vo.setErrorMessage(ResumeParseStatus.FAILED.getCode().equals(record.getParseStatus())
+                ? safeResumeParseErrorMessage(record.getErrorMessage())
+                : null);
+        vo.setSchemaVersion(record.getSchemaVersion());
+        vo.setPolicyVersion(record.getPolicyVersion());
+        vo.setSourceHash(record.getSourceHash());
+        vo.setValidationStatus(record.getValidationStatus());
+        vo.setRepairBatchId(record.getRepairBatchId());
+        vo.setGeneratedAt(record.getGeneratedAt());
         vo.setUpdatedAt(record.getUpdatedAt());
 
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
         if (status == ResumeParseStatus.WAIT_CONFIRM || status == ResumeParseStatus.SUCCESS) {
-            vo.setStructuredJson(parseStructuredJsonObject(record.getStructuredJson()));
+            try {
+                NormalizationResult normalized = resumeImportNormalizer.normalize(record.getStructuredJson());
+                vo.setStructuredJson(parseStructuredJsonObject(normalized.normalizedJson()));
+                vo.setQualityReport(normalized.qualityReport());
+                vo.setSchemaVersion(normalized.structuredResume().getSchemaVersion());
+                vo.setPolicyVersion(ResumeImportNormalizer.POLICY_VERSION);
+                vo.setValidationStatus(normalized.qualityReport().getValidationStatus());
+            } catch (BusinessException ex) {
+                if (status == ResumeParseStatus.WAIT_CONFIRM) {
+                    throw ex;
+                }
+                vo.setStructuredJson(parseStructuredJsonObject(record.getStructuredJson()));
+                vo.setQualityReport(invalidHistoricalImportReport());
+                vo.setValidationStatus("INVALID_HISTORICAL");
+            }
             vo.setRawTextSummary(summarizeRawText(record.getRawText()));
         }
         return vo;
@@ -409,17 +735,45 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "当前简历解析状态无法确认");
         }
 
-        ParsedResumeStructuredDTO structuredResume = parseStructuredResume(record.getStructuredJson());
-        Resume resume = buildResumeFromStructured(record, structuredResume);
+        NormalizationResult normalized = resumeImportNormalizer.normalize(record.getStructuredJson());
+        if (!normalized.qualityReport().isConfirmable()) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "简历解析结果存在阻断项：" + String.join("；", normalized.qualityReport().getBlockers()));
+        }
+        ResumeConfirmAnalysisVO duplicateResult =
+                confirmDuplicateImportIfPresent(record, userId, normalized);
+        if (duplicateResult != null) {
+            return duplicateResult;
+        }
+        ParsedResumeStructuredDTO structuredResume = normalized.structuredResume();
+        Resume resume = buildResumeFromStructured(record, normalized);
         resumeMapper.insert(resume);
         if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
             selectDefaultResumeForUser(userId, resume.getId());
         }
         insertProjects(resume.getId(), structuredResume.getProjectExperiences());
+        aggregateInitializationService.initializeCreatedResume(
+                resume.getId(), userId, "RESUME_IMPORT", record.getId());
+        Resume persistedResume = getOwnedResume(resume.getId(), userId);
+        ResumeContextEligibility.Assessment persistedEligibility =
+                ResumeContextEligibility.assess(persistedResume);
+        if (persistedEligibility.status() == ResumeContextEligibility.BLOCKED) {
+            throw new BusinessException(
+                    ErrorCode.PARAM_ERROR,
+                    "简历生成后回读校验失败：" + persistedEligibility.message());
+        }
 
         int affectedRows = analysisRecordMapper.update(null, new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .set(ResumeAnalysisRecord::getResumeId, resume.getId())
                 .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.SUCCESS.getCode())
+                .set(ResumeAnalysisRecord::getSchemaVersion, structuredResume.getSchemaVersion())
+                .set(ResumeAnalysisRecord::getPolicyVersion, ResumeImportNormalizer.POLICY_VERSION)
+                .set(ResumeAnalysisRecord::getSourceHash,
+                        resumeImportNormalizer.sourceHash(record.getRawText()))
+                .set(ResumeAnalysisRecord::getValidationStatus,
+                        normalized.qualityReport().getValidationStatus())
+                .set(ResumeAnalysisRecord::getQualityReportJson, normalized.qualityReportJson())
                 .set(ResumeAnalysisRecord::getErrorMessage, null)
                 .eq(ResumeAnalysisRecord::getId, analysisRecordId)
                 .eq(ResumeAnalysisRecord::getUserId, userId)
@@ -428,8 +782,11 @@ public class ResumeServiceImpl implements ResumeService {
         if (affectedRows != 1) {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "简历解析确认失败，请稍后重试");
         }
-        syncResumeSearchAfterCommit(resume.getId(), userId, true);
-        return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
+        return toConfirmAnalysisVO(
+                record.getId(),
+                persistedResume.getId(),
+                ResumeParseStatus.SUCCESS.getCode(),
+                toDetailVO(persistedResume));
     }
 
     @Override
@@ -524,7 +881,9 @@ public class ResumeServiceImpl implements ResumeService {
         Resume draft = copyResumeDraft(sourceResume, record.getId(), appliedAt);
         StructuredApplyResult applyResult = applyStructuredPatches(draft, sourceResume, resultJson, dto);
         resumeMapper.insert(draft);
-        copyProjects(sourceResume.getId(), draft.getId());
+        List<ResumeProject> draftProjects = copyProjects(sourceResume.getId(), draft.getId());
+        syncDraftDocument(draft, draftProjects);
+        resumeMapper.updateById(draft);
         syncResumeSearchAfterCommit(draft.getId(), userId, true);
 
         ApplyResumeOptimizeResultVO vo = new ApplyResumeOptimizeResultVO();
@@ -550,10 +909,21 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     @Override
+    public JsonNode getResumeDocument(Long id) {
+        Resume resume = getOwnedResumeForRead(id);
+        return ResumeDocumentStore.read(objectMapper, resume, projects(resume.getId()),
+                storedPresentationConfig(resume));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public ResumeDetailVO updateResume(Long id, ResumeSaveDTO dto) {
         Resume resume = getOwnedResume(id);
         applyResume(resume, dto);
+        if (Boolean.TRUE.equals(dto.getSaveAsDraft())
+                || !ResumeContextEligibility.assess(resume).isEligible()) {
+            resume.setIsDefault(CommonConstants.NO);
+        }
         resumeMapper.updateById(resume);
         syncResumeSearchAfterCommit(resume.getId(), resume.getUserId(), true);
         return toDetailVO(resume);
@@ -576,6 +946,17 @@ public class ResumeServiceImpl implements ResumeService {
         assertEligibleForContext(resume, "设为默认简历");
         Long userId = requireCurrentUserId();
         return toDetailVO(selectDefaultResumeForUser(userId, resume.getId()));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ResumeDetailVO clearDefault(Long id) {
+        Resume resume = getOwnedResume(id);
+        if (Objects.equals(resume.getIsDefault(), CommonConstants.YES)) {
+            resume.setIsDefault(CommonConstants.NO);
+            resumeMapper.updateById(resume);
+        }
+        return toDetailVO(resume);
     }
 
     private Resume selectDefaultResumeForUser(Long userId, Long resumeId) {
@@ -607,8 +988,9 @@ public class ResumeServiceImpl implements ResumeService {
         project.setResumeId(resumeId);
         applyProject(project, dto);
         projectMapper.insert(project);
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, userId, true);
-        return ResumeConvert.toProjectVO(project);
+        return ResumeConvert.toProjectVO(getProject(resumeId, project.getId()));
     }
 
     @Override
@@ -620,8 +1002,9 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getProject(resumeId, projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, userId, true);
-        return ResumeConvert.toProjectVO(project);
+        return ResumeConvert.toProjectVO(getProject(resumeId, projectId));
     }
 
     @Override
@@ -630,8 +1013,9 @@ public class ResumeServiceImpl implements ResumeService {
         ResumeProject project = getOwnedProject(projectId);
         applyProject(project, dto);
         projectMapper.updateById(project);
+        syncStoredDocumentProjects(getOwnedResume(project.getResumeId()));
         syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
-        return ResumeConvert.toProjectVO(project);
+        return ResumeConvert.toProjectVO(getProject(project.getResumeId(), projectId));
     }
 
     @Override
@@ -641,6 +1025,7 @@ public class ResumeServiceImpl implements ResumeService {
         lockOwnedResume(resume);
         ResumeProject project = getProject(resumeId, projectId);
         projectMapper.deleteById(project.getId());
+        syncStoredDocumentProjects(resume);
         syncResumeSearchAfterCommit(resumeId, LoginUserContext.getUserId(), true);
     }
 
@@ -649,6 +1034,7 @@ public class ResumeServiceImpl implements ResumeService {
     public void deleteProject(Long projectId) {
         ResumeProject project = getOwnedProject(projectId);
         projectMapper.deleteById(project.getId());
+        syncStoredDocumentProjects(getOwnedResume(project.getResumeId()));
         syncResumeSearchAfterCommit(project.getResumeId(), LoginUserContext.getUserId(), true);
     }
 
@@ -786,7 +1172,18 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private ResumeDetailVO toDetailVO(Resume resume) {
-        return ResumeConvert.toDetailVO(resume, projects(resume.getId()));
+        List<ResumeProjectVO> projects = projects(resume.getId());
+        JsonNode presentationConfig = storedPresentationConfig(resume);
+        return ResumeConvert.toDetailVO(
+                resume,
+                projects,
+                presentationConfig,
+                ResumeDocumentStore.read(objectMapper, resume, projects, presentationConfig));
+    }
+
+    private JsonNode storedPresentationConfig(Resume resume) {
+        return ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson());
     }
 
     private void applyListContextEligibility(ResumeListVO resume) {
@@ -804,6 +1201,12 @@ public class ResumeServiceImpl implements ResumeService {
         }
     }
 
+    /** An AI patch replaces whole flat fields, so a copied document must be rebuilt from them. */
+    private void syncDraftDocument(Resume draft, List<ResumeProject> draftProjects) {
+        ResumeDocumentStore.writeLegacyEdit(objectMapper, draft, draftProjects,
+                storedPresentationConfig(draft));
+    }
+
     private Resume copyResumeDraft(Resume source, Long optimizeRecordId, LocalDateTime appliedAt) {
         Resume draft = new Resume();
         draft.setUserId(source.getUserId());
@@ -816,6 +1219,8 @@ public class ResumeServiceImpl implements ResumeService {
         draft.setWorkExperience(source.getWorkExperience());
         draft.setEducationExperience(source.getEducationExperience());
         draft.setSummary(source.getSummary());
+        draft.setPresentationConfigJson(source.getPresentationConfigJson());
+        draft.setDocumentJson(source.getDocumentJson());
         draft.setIsDefault(CommonConstants.NO);
         draft.setStatus(source.getStatus() == null ? CommonConstants.YES : source.getStatus());
         draft.setSourceResumeId(source.getId());
@@ -838,13 +1243,14 @@ public class ResumeServiceImpl implements ResumeService {
         return title + suffix;
     }
 
-    private void copyProjects(Long sourceResumeId, Long draftResumeId) {
+    private List<ResumeProject> copyProjects(Long sourceResumeId, Long draftResumeId) {
         List<ResumeProject> projects = projectMapper.selectList(new LambdaQueryWrapper<ResumeProject>()
                 .eq(ResumeProject::getResumeId, sourceResumeId)
                 .eq(ResumeProject::getDeleted, CommonConstants.NO)
                 .orderByAsc(ResumeProject::getSortOrder)
                 .orderByAsc(ResumeProject::getSort)
                 .orderByDesc(ResumeProject::getUpdatedAt));
+        List<ResumeProject> copied = new ArrayList<>();
         for (ResumeProject source : projects) {
             ResumeProject draft = new ResumeProject();
             draft.setResumeId(draftResumeId);
@@ -862,31 +1268,37 @@ public class ResumeServiceImpl implements ResumeService {
             draft.setSort(source.getSort());
             draft.setSortOrder(source.getSortOrder());
             projectMapper.insert(draft);
+            copied.add(draft);
+        }
+        return copied;
+    }
+
+    private void syncStoredDocumentProjects(Resume resume) {
+        if (ResumeDocumentStore.writeProjects(objectMapper, resume, projects(resume.getId())) != null) {
+            resumeMapper.updateById(resume);
         }
     }
 
-    private ResumeParseStatusVO toParseStatusVO(ResumeAnalysisRecord record) {
+    private ResumeParseOperationVO toParseStatusVO(ResumeAnalysisRecord record) {
         ResumeParseStatus status = ResumeParseStatus.of(record.getParseStatus());
-        ResumeParseStatusVO vo = new ResumeParseStatusVO();
+        ResumeParseOperationContract.State operation =
+                ResumeParseOperationContract.from(record.getParseStatus());
+        ResumeParseOperationVO vo = new ResumeParseOperationVO();
         vo.setAnalysisRecordId(record.getId());
         vo.setResumeId(record.getResumeId());
         vo.setFileId(record.getFileId());
         vo.setParseStatus(record.getParseStatus());
-        vo.setErrorMessage(safeResumeParseErrorMessage(record.getErrorMessage()));
-        vo.setMessage(status == null ? "简历解析状态异常" : status.getMessage());
+        vo.setErrorMessage(operation.exposesError()
+                ? safeResumeParseErrorMessage(record.getErrorMessage())
+                : null);
+        vo.setMessage(PARSE_STATUS_CANCELLED.equals(record.getParseStatus())
+                ? "简历解析已取消"
+                : status == null ? "简历解析状态异常" : status.getMessage());
+        vo.setOperationStatus(operation.operationStatus());
+        vo.setCancellable(operation.cancellable());
+        vo.setRetryable(operation.retryable());
         vo.setUpdatedAt(record.getUpdatedAt());
         return vo;
-    }
-
-    private void applyAsyncReceipt(ResumeUploadVO vo, MqDispatchReceipt receipt) {
-        if (vo == null || receipt == null) {
-            return;
-        }
-        vo.setAsyncMessageId(receipt.getMessageId());
-        vo.setAsyncTraceId(receipt.getTraceId());
-        vo.setAsyncBizType(receipt.getBizType());
-        vo.setAsyncBizId(receipt.getBizId());
-        vo.setAsyncSendStatus(receipt.getSendStatus());
     }
 
     private void applyAsyncReceipt(ResumeOptimizeSubmitVO vo, MqDispatchReceipt receipt) {
@@ -905,6 +1317,8 @@ public class ResumeServiceImpl implements ResumeService {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Confirmed resume id is missing");
         }
         Resume resume = getOwnedResume(record.getResumeId());
+        aggregateInitializationService.initializeCreatedResume(
+                resume.getId(), resume.getUserId(), "RESUME_IMPORT", record.getId());
         return toConfirmAnalysisVO(record.getId(), resume.getId(), ResumeParseStatus.SUCCESS.getCode(), toDetailVO(resume));
     }
 
@@ -918,35 +1332,65 @@ public class ResumeServiceImpl implements ResumeService {
         return vo;
     }
 
+    private ResumeConfirmAnalysisVO confirmDuplicateImportIfPresent(
+            ResumeAnalysisRecord record, Long userId, NormalizationResult normalized) {
+        String sourceHash = resumeImportNormalizer.sourceHash(record.getRawText());
+        if (!StringUtils.hasText(sourceHash)) {
+            return null;
+        }
+        ResumeAnalysisRecord duplicate = analysisRecordMapper.selectOne(
+                new LambdaQueryWrapper<ResumeAnalysisRecord>()
+                        .eq(ResumeAnalysisRecord::getUserId, userId)
+                        .eq(ResumeAnalysisRecord::getSourceHash, sourceHash)
+                        .eq(ResumeAnalysisRecord::getSchemaVersion,
+                                ParsedResumeStructuredDTO.CURRENT_SCHEMA_VERSION)
+                        .eq(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.SUCCESS.getCode())
+                        .isNotNull(ResumeAnalysisRecord::getResumeId)
+                        .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                        .ne(ResumeAnalysisRecord::getId, record.getId())
+                        .orderByDesc(ResumeAnalysisRecord::getUpdatedAt)
+                        .last("limit 1"));
+        if (duplicate == null) {
+            return null;
+        }
+        Resume existingResume = getOwnedResume(duplicate.getResumeId(), userId);
+        int affectedRows = analysisRecordMapper.update(
+                null,
+                new LambdaUpdateWrapper<ResumeAnalysisRecord>()
+                        .set(ResumeAnalysisRecord::getResumeId, existingResume.getId())
+                        .set(ResumeAnalysisRecord::getParseStatus, ResumeParseStatus.SUCCESS.getCode())
+                        .set(ResumeAnalysisRecord::getSchemaVersion,
+                                normalized.structuredResume().getSchemaVersion())
+                        .set(ResumeAnalysisRecord::getPolicyVersion,
+                                ResumeImportNormalizer.POLICY_VERSION)
+                        .set(ResumeAnalysisRecord::getSourceHash, sourceHash)
+                        .set(ResumeAnalysisRecord::getValidationStatus,
+                                normalized.qualityReport().getValidationStatus())
+                        .set(ResumeAnalysisRecord::getQualityReportJson,
+                                normalized.qualityReportJson())
+                        .set(ResumeAnalysisRecord::getErrorMessage, null)
+                        .eq(ResumeAnalysisRecord::getId, record.getId())
+                        .eq(ResumeAnalysisRecord::getUserId, userId)
+                        .eq(ResumeAnalysisRecord::getDeleted, CommonConstants.NO)
+                        .eq(ResumeAnalysisRecord::getParseStatus,
+                                ResumeParseStatus.WAIT_CONFIRM.getCode()));
+        if (affectedRows != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "重复简历解析确认失败，请稍后重试");
+        }
+        aggregateInitializationService.initializeCreatedResume(
+                existingResume.getId(), userId, "RESUME_IMPORT", record.getId());
+        return toConfirmAnalysisVO(
+                record.getId(),
+                existingResume.getId(),
+                ResumeParseStatus.SUCCESS.getCode(),
+                toDetailVO(existingResume));
+    }
+
     private void syncResumeSearchAfterCommit(Long resumeId, Long userId, boolean upsert) {
         resumeSearchSyncOutboxService.enqueue(
                 resumeId,
                 userId,
                 upsert ? ResumeSearchSyncOutboxService.OP_UPSERT : ResumeSearchSyncOutboxService.OP_DELETE);
-    }
-
-    private ParsedResumeStructuredDTO parseStructuredResume(String structuredJson) {
-        JsonNode root = parseStructuredJsonObject(structuredJson);
-        requireObjectField(root, "basicInfo");
-        requireTextField(root, "targetPosition");
-        requireArrayField(root, "skills");
-        requireArrayField(root, "workExperiences");
-        requireArrayField(root, "projectExperiences");
-        requireArrayField(root, "educationExperiences");
-        for (JsonNode project : root.path("projectExperiences")) {
-            if (project == null || !project.isObject()) {
-                throw invalidStructuredJson();
-            }
-            requireArrayField(project, "techStack");
-            requireArrayField(project, "responsibilities");
-            requireArrayField(project, "technicalDifficulties");
-            requireArrayField(project, "achievements");
-        }
-        try {
-            return objectMapper.treeToValue(root, ParsedResumeStructuredDTO.class);
-        } catch (Exception ex) {
-            throw invalidStructuredJson();
-        }
     }
 
     private JsonNode parseStructuredJsonObject(String structuredJson) {
@@ -966,29 +1410,13 @@ public class ResumeServiceImpl implements ResumeService {
         }
     }
 
-    private void requireObjectField(JsonNode root, String fieldName) {
-        if (!root.has(fieldName) || !root.path(fieldName).isObject()) {
-            throw invalidStructuredJson();
-        }
-    }
-
-    private void requireTextField(JsonNode root, String fieldName) {
-        if (!root.has(fieldName) || !root.path(fieldName).isTextual()) {
-            throw invalidStructuredJson();
-        }
-    }
-
-    private void requireArrayField(JsonNode root, String fieldName) {
-        if (!root.has(fieldName) || !root.path(fieldName).isArray()) {
-            throw invalidStructuredJson();
-        }
-    }
-
     private BusinessException invalidStructuredJson() {
         return new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结构化结果格式异常");
     }
 
-    private Resume buildResumeFromStructured(ResumeAnalysisRecord record, ParsedResumeStructuredDTO structuredResume) {
+    private Resume buildResumeFromStructured(
+            ResumeAnalysisRecord record, NormalizationResult normalized) {
+        ParsedResumeStructuredDTO structuredResume = normalized.structuredResume();
         Long existingCount = resumeMapper.selectCount(new LambdaQueryWrapper<Resume>()
                 .eq(Resume::getUserId, record.getUserId()));
         ParsedResumeStructuredDTO.BasicInfo basicInfo = structuredResume.getBasicInfo();
@@ -1002,10 +1430,13 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setPhone(basicInfo == null ? null : basicInfo.getPhone());
         resume.setTargetPosition(targetPosition);
         resume.setSkillStack(joinValues(structuredResume.getSkills(), "、"));
-        resume.setWorkExperience(toCompactJson(structuredResume.getWorkExperiences()));
-        resume.setEducationExperience(toCompactJson(structuredResume.getEducationExperiences()));
-        resume.setSummary(buildResumeSummary(realName, targetPosition, resume.getSkillStack()));
-        resume.setIsDefault(existingCount == null || existingCount == 0 ? CommonConstants.YES : CommonConstants.NO);
+        resume.setWorkExperience(normalized.workExperienceText());
+        resume.setEducationExperience(normalized.educationExperienceText());
+        resume.setSummary(structuredResume.getSummary());
+        ResumeContextEligibility.Assessment eligibility = ResumeContextEligibility.assess(resume);
+        resume.setIsDefault((existingCount == null || existingCount == 0) && eligibility.isEligible()
+                ? CommonConstants.YES
+                : CommonConstants.NO);
         resume.setStatus(CommonConstants.YES);
         return resume;
     }
@@ -1023,10 +1454,14 @@ public class ResumeServiceImpl implements ResumeService {
             project.setResumeId(resumeId);
             project.setProjectName(item.getProjectName());
             project.setProjectPeriod(item.getPeriod());
+            project.setProjectBackground(item.getBackground());
+            project.setRole(item.getRole());
             project.setDescription(item.getDescription());
             project.setTechStack(joinValues(item.getTechStack(), "、"));
             project.setResponsibility(joinValues(item.getResponsibilities(), "\n"));
+            project.setCoreFeatures(joinValues(item.getCoreFeatures(), "\n"));
             project.setTechnicalDifficulties(joinValues(item.getTechnicalDifficulties(), "\n"));
+            project.setOptimizationResults(joinValues(item.getOptimizationResults(), "\n"));
             project.setHighlights(joinValues(item.getAchievements(), "\n"));
             project.setSort(sort);
             project.setSortOrder(sort);
@@ -1036,30 +1471,17 @@ public class ResumeServiceImpl implements ResumeService {
     }
 
     private String buildResumeTitle(String realName, String targetPosition) {
+        String title;
         if (StringUtils.hasText(realName) && StringUtils.hasText(targetPosition)) {
-            return realName + " - " + targetPosition;
+            title = realName + " - " + targetPosition;
+        } else if (StringUtils.hasText(realName)) {
+            title = realName + " - " + DEFAULT_AI_RESUME_TITLE;
+        } else if (StringUtils.hasText(targetPosition)) {
+            title = targetPosition;
+        } else {
+            title = DEFAULT_AI_RESUME_TITLE;
         }
-        if (StringUtils.hasText(realName)) {
-            return realName + " - " + DEFAULT_AI_RESUME_TITLE;
-        }
-        if (StringUtils.hasText(targetPosition)) {
-            return targetPosition;
-        }
-        return DEFAULT_AI_RESUME_TITLE;
-    }
-
-    private String buildResumeSummary(String realName, String targetPosition, String skillStack) {
-        StringBuilder summary = new StringBuilder(DEFAULT_AI_RESUME_TITLE);
-        if (StringUtils.hasText(realName)) {
-            summary.append(": ").append(realName);
-        }
-        if (StringUtils.hasText(targetPosition)) {
-            summary.append(", target ").append(targetPosition);
-        }
-        if (StringUtils.hasText(skillStack)) {
-            summary.append(", skills ").append(skillStack);
-        }
-        return summary.toString();
+        return title.length() <= 128 ? title : title.substring(0, 128);
     }
 
     private String joinValues(List<String> values, String delimiter) {
@@ -1073,19 +1495,20 @@ public class ResumeServiceImpl implements ResumeService {
         return StringUtils.hasText(joined) ? joined : null;
     }
 
-    private String toCompactJson(Object value) {
-        try {
-            return objectMapper.writeValueAsString(value == null ? List.of() : value);
-        } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结构化结果格式异常");
-        }
-    }
-
     private String summarizeRawText(String rawText) {
         if (!StringUtils.hasText(rawText)) {
             return null;
         }
         return rawText.length() <= RAW_TEXT_SUMMARY_LENGTH ? rawText : rawText.substring(0, RAW_TEXT_SUMMARY_LENGTH);
+    }
+
+    private ResumeImportQualityReportVO invalidHistoricalImportReport() {
+        ResumeImportQualityReportVO report = new ResumeImportQualityReportVO();
+        report.setValidationStatus("INVALID_HISTORICAL");
+        report.setConfirmable(false);
+        report.getBlockers().add("历史解析结果不符合当前简历导入契约，不能再次确认生成");
+        report.getWarnings().add("已保留历史解析记录，请通过只读治理工具预览修复影响");
+        return report;
     }
 
     private OptimizeContext createOptimizeRecord(Long resumeId, ResumeOptimizeRequestDTO dto) {
@@ -1739,9 +2162,28 @@ public class ResumeServiceImpl implements ResumeService {
         resume.setWorkExperience(dto.getWorkExperience());
         resume.setEducationExperience(dto.getEducationExperience());
         resume.setSummary(dto.getSummary());
+        if (dto.getPresentationConfig() != null || resume.getPresentationConfigJson() == null) {
+            resume.setPresentationConfigJson(
+                    ResumePresentationConfigNormalizer.normalizeJson(objectMapper, dto.getPresentationConfig()));
+        }
+        applyDocument(resume, dto);
         if (dto.getStatus() != null) {
             resume.setStatus(dto.getStatus());
         }
+    }
+
+    private void applyDocument(Resume resume, ResumeSaveDTO dto) {
+        JsonNode presentationConfig = ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson());
+        if (dto.getDocument() != null) {
+            if (ResumeDocumentStore.writeDocument(objectMapper, resume, dto.getDocument()) == null) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR,
+                        "Resume document must be a schema version 2 document");
+            }
+            return;
+        }
+        ResumeDocumentStore.writeLegacyEdit(objectMapper, resume,
+                resume.getId() == null ? List.of() : projects(resume.getId()), presentationConfig);
     }
 
     private void validateUploadFile(MultipartFile file) {

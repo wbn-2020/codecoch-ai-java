@@ -13,7 +13,11 @@ public class JobReadinessSnapshotVO {
     private Long targetJobId;
     private Long jdAnalysisId;
     private String snapshotHash;
+    private String sourceHash;
     private String policyVersion;
+    private String schemaVersion;
+    private String validationStatus;
+    private String repairBatchId;
     private Integer readinessScore;
     private String readinessLevel;
     private String confidenceLevel;
@@ -28,6 +32,10 @@ public class JobReadinessSnapshotVO {
     private JsonNode summary;
     private JsonNode matrix;
     private List<DimensionScore> dimensions = new ArrayList<>();
+    private Boolean historyFallback;
+    private Boolean regenerated;
+    private Long invalidLatestSnapshotId;
+    private List<String> warnings = new ArrayList<>();
     private LocalDateTime generatedAt;
     private LocalDateTime createdAt;
 

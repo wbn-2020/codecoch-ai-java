@@ -1,7 +1,6 @@
 package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -16,9 +15,12 @@ import com.codecoachai.resume.mapper.JobReadinessSnapshotMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.JobReadinessService;
 import com.codecoachai.resume.service.JobRequirementService;
+import com.codecoachai.resume.service.support.ReadinessDimensionCodec;
+import com.codecoachai.resume.service.support.ReadinessDimensionCodec.DecodeResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -29,6 +31,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -39,20 +42,48 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class JobReadinessServiceImpl implements JobReadinessService {
 
-    static final String POLICY_VERSION = "five-dimension-readiness-v2";
+    static final String POLICY_VERSION = "five-dimension-readiness-v3";
+    private static final int LATEST_CANDIDATE_LIMIT = 50;
     private static final String COVERAGE_STRONG = "STRONG";
     private static final String COVERAGE_WEAK = "WEAK";
     private static final String PRIORITY_MUST = "MUST";
+    private static final Pattern REPAIR_BATCH_ID_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{8,64}");
 
     private final TargetJobMapper targetJobMapper;
     private final JobReadinessSnapshotMapper jobReadinessSnapshotMapper;
     private final JobRequirementService jobRequirementService;
     private final ObjectMapper objectMapper;
+    private final ReadinessDimensionCodec dimensionCodec;
+    private final MeterRegistry meterRegistry;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public JobReadinessSnapshotVO createSnapshot(Long targetJobId) {
         Long userId = SecurityAssert.requireLoginUserId();
+        return createSnapshotForUser(userId, targetJobId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public JobReadinessSnapshotVO regenerateForRepair(Long userId, Long targetJobId, String repairBatchId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "user is required");
+        }
+        if (!StringUtils.hasText(repairBatchId)
+                || !REPAIR_BATCH_ID_PATTERN.matcher(repairBatchId.trim()).matches()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "repairBatchId must be 8-64 letters, digits, dot, underscore, colon, or dash");
+        }
+        return createSnapshotForUser(userId, targetJobId, repairBatchId.trim());
+    }
+
+    private JobReadinessSnapshotVO createSnapshotForUser(Long userId, Long targetJobId) {
+        return createSnapshotForUser(userId, targetJobId, null);
+    }
+
+    private JobReadinessSnapshotVO createSnapshotForUser(Long userId,
+                                                          Long targetJobId,
+                                                          String requestedRepairBatchId) {
         getOwnedTargetJob(targetJobId, userId);
         JobRequirementMatrixVO matrix = jobRequirementService.refreshMatrix(targetJobId);
         List<JobReadinessSnapshotVO.DimensionScore> dimensions = dimensions(matrix);
@@ -60,18 +91,25 @@ public class JobReadinessServiceImpl implements JobReadinessService {
         String matrixJson = writeJson(matrix);
         ObjectNode summary = summary(matrix, score, dimensions);
         String summaryJson = writeJson(summary);
-        String dimensionJson = writeJson(dimensions);
-        String snapshotHash = sha256(POLICY_VERSION + "|" + matrixJson);
+        String dimensionJson = dimensionCodec.encode(dimensions);
+        String sourceHash = sha256(matrixJson);
+        String snapshotHash = sha256(POLICY_VERSION + "|"
+                + ReadinessDimensionCodec.SCHEMA_VERSION + "|" + sourceHash);
 
-        JobReadinessSnapshot existing = jobReadinessSnapshotMapper.selectOne(
-                new LambdaQueryWrapper<JobReadinessSnapshot>()
-                        .eq(JobReadinessSnapshot::getUserId, userId)
-                        .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
-                        .eq(JobReadinessSnapshot::getSnapshotHash, snapshotHash)
-                        .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
-                        .last("limit 1"));
-        if (existing != null) {
+        JobReadinessSnapshot existing = findSnapshotByHash(userId, targetJobId, snapshotHash);
+        if (validDimensions(existing)) {
             return toVO(existing);
+        }
+        String repairBatchId = null;
+        if (existing != null) {
+            repairBatchId = StringUtils.hasText(requestedRepairBatchId)
+                    ? requestedRepairBatchId
+                    : "auto-readiness-" + existing.getId();
+            snapshotHash = sha256(snapshotHash + "|repair|" + existing.getId());
+            JobReadinessSnapshot repaired = findSnapshotByHash(userId, targetJobId, snapshotHash);
+            if (validDimensions(repaired)) {
+                return toVO(repaired);
+            }
         }
 
         JobReadinessSnapshot snapshot = new JobReadinessSnapshot();
@@ -79,7 +117,11 @@ public class JobReadinessServiceImpl implements JobReadinessService {
         snapshot.setTargetJobId(targetJobId);
         snapshot.setJdAnalysisId(matrix.getJdAnalysisId());
         snapshot.setSnapshotHash(snapshotHash);
+        snapshot.setSourceHash(sourceHash);
         snapshot.setPolicyVersion(POLICY_VERSION);
+        snapshot.setSchemaVersion(ReadinessDimensionCodec.SCHEMA_VERSION);
+        snapshot.setValidationStatus("VALID");
+        snapshot.setRepairBatchId(repairBatchId);
         snapshot.setReadinessScore(score.readinessScore());
         snapshot.setReadinessLevel(score.readinessLevel());
         snapshot.setConfidenceLevel(score.confidenceLevel());
@@ -98,14 +140,8 @@ public class JobReadinessServiceImpl implements JobReadinessService {
             jobReadinessSnapshotMapper.insert(snapshot);
             return toVO(snapshot);
         } catch (DuplicateKeyException ex) {
-            JobReadinessSnapshot concurrent = jobReadinessSnapshotMapper.selectOne(
-                    new LambdaQueryWrapper<JobReadinessSnapshot>()
-                            .eq(JobReadinessSnapshot::getUserId, userId)
-                            .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
-                            .eq(JobReadinessSnapshot::getSnapshotHash, snapshotHash)
-                            .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
-                            .last("limit 1"));
-            if (concurrent == null) {
+            JobReadinessSnapshot concurrent = findSnapshotByHash(userId, targetJobId, snapshotHash);
+            if (!validDimensions(concurrent)) {
                 throw ex;
             }
             return toVO(concurrent);
@@ -124,15 +160,40 @@ public class JobReadinessServiceImpl implements JobReadinessService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "user is required");
         }
         getOwnedTargetJob(targetJobId, userId);
-        JobReadinessSnapshot snapshot = jobReadinessSnapshotMapper.selectOne(
-                new LambdaQueryWrapper<JobReadinessSnapshot>()
-                        .eq(JobReadinessSnapshot::getUserId, userId)
-                        .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
-                        .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
-                        .orderByDesc(JobReadinessSnapshot::getGeneratedAt)
-                        .orderByDesc(JobReadinessSnapshot::getId)
-                        .last("limit 1"));
-        return snapshot == null ? null : toVO(snapshot);
+        List<JobReadinessSnapshot> candidates = jobReadinessSnapshotMapper.selectList(
+                readinessHistoryQuery(targetJobId, userId).last("limit " + LATEST_CANDIDATE_LIMIT));
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        JobReadinessSnapshot invalidLatest = null;
+        for (JobReadinessSnapshot candidate : candidates) {
+            SnapshotValidation validation = validateSnapshot(candidate);
+            if (validation.valid()) {
+                JobReadinessSnapshotVO vo = toVO(candidate, validation.dimensionResult());
+                if (invalidLatest != null) {
+                    vo.setHistoryFallback(true);
+                    vo.setInvalidLatestSnapshotId(invalidLatest.getId());
+                    vo.getWarnings().add("READINESS_LATEST_SNAPSHOT_INVALID");
+                    meterRegistry.counter("readiness_snapshot_fallback_to_legacy_total").increment();
+                }
+                return vo;
+            }
+            if (invalidLatest == null) {
+                invalidLatest = candidate;
+            }
+            recordInvalidSnapshot(validation);
+        }
+        try {
+            JobReadinessSnapshotVO regenerated = createSnapshotForUser(userId, targetJobId);
+            regenerated.setRegenerated(true);
+            regenerated.setInvalidLatestSnapshotId(invalidLatest == null ? null : invalidLatest.getId());
+            regenerated.getWarnings().add("READINESS_SNAPSHOT_REGENERATED");
+            meterRegistry.counter("readiness_snapshot_regenerated_total").increment();
+            return regenerated;
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.SEMANTIC_VALIDATION_ERROR,
+                    "readiness history is invalid and could not be regenerated; retry after refreshing job evidence");
+        }
     }
 
     @Override
@@ -152,7 +213,12 @@ public class JobReadinessServiceImpl implements JobReadinessService {
         if (snapshot == null) {
             throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "readiness snapshot is unavailable");
         }
-        return toVO(snapshot);
+        SnapshotValidation validation = validateSnapshot(snapshot);
+        if (!validation.valid()) {
+            recordInvalidSnapshot(validation);
+            throw new BusinessException(ErrorCode.RESOURCE_NOT_FOUND, "readiness snapshot is unavailable");
+        }
+        return toVO(snapshot, validation.dimensionResult());
     }
 
     @Override
@@ -161,13 +227,16 @@ public class JobReadinessServiceImpl implements JobReadinessService {
         long currentPage = requirePageNo(pageNo);
         long currentPageSize = requirePageSize(pageSize);
         getOwnedTargetJob(targetJobId, userId);
-        Page<JobReadinessSnapshot> page = jobReadinessSnapshotMapper.selectPage(
-                new Page<>(currentPage, currentPageSize),
-                readinessHistoryQuery(targetJobId, userId));
-        List<JobReadinessSnapshotVO> records = page.getRecords().stream()
-                .map(this::toVO)
-                .toList();
-        return PageResult.of(records, page.getTotal(), currentPage, currentPageSize);
+        List<JobReadinessSnapshotVO> validRecords = validSnapshotVOs(
+                jobReadinessSnapshotMapper.selectList(readinessHistoryQuery(targetJobId, userId)));
+        long offset = (currentPage - 1) * currentPageSize;
+        if (offset >= validRecords.size()) {
+            return PageResult.of(List.of(), validRecords.size(), currentPage, currentPageSize);
+        }
+        int fromIndex = Math.toIntExact(offset);
+        int toIndex = (int) Math.min((long) validRecords.size(), offset + currentPageSize);
+        return PageResult.of(validRecords.subList(fromIndex, toIndex),
+                validRecords.size(), currentPage, currentPageSize);
     }
 
     @Override
@@ -175,10 +244,10 @@ public class JobReadinessServiceImpl implements JobReadinessService {
         Long userId = SecurityAssert.requireLoginUserId();
         getOwnedTargetJob(targetJobId, userId);
         int limit = sanitizeLimit(query == null ? null : query.getLimit());
-        return jobReadinessSnapshotMapper.selectList(
-                        readinessHistoryQuery(targetJobId, userId).last("limit " + limit))
+        return validSnapshotVOs(jobReadinessSnapshotMapper.selectList(
+                        readinessHistoryQuery(targetJobId, userId)))
                 .stream()
-                .map(this::toVO)
+                .limit(limit)
                 .toList();
     }
 
@@ -189,6 +258,183 @@ public class JobReadinessServiceImpl implements JobReadinessService {
                 .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
                 .orderByDesc(JobReadinessSnapshot::getGeneratedAt)
                 .orderByDesc(JobReadinessSnapshot::getId);
+    }
+
+    private JobReadinessSnapshot findSnapshotByHash(Long userId, Long targetJobId, String snapshotHash) {
+        return jobReadinessSnapshotMapper.selectOne(
+                new LambdaQueryWrapper<JobReadinessSnapshot>()
+                        .eq(JobReadinessSnapshot::getUserId, userId)
+                        .eq(JobReadinessSnapshot::getTargetJobId, targetJobId)
+                        .eq(JobReadinessSnapshot::getSnapshotHash, snapshotHash)
+                        .eq(JobReadinessSnapshot::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+    }
+
+    private boolean validDimensions(JobReadinessSnapshot snapshot) {
+        return snapshot != null && validateSnapshot(snapshot).valid();
+    }
+
+    private DecodeResult decodeDimensions(JobReadinessSnapshot snapshot) {
+        if (snapshot == null) {
+            return dimensionCodec.decode(null, null);
+        }
+        return dimensionCodec.decode(snapshot.getDimensionJson(), snapshot.getSchemaVersion());
+    }
+
+    private SnapshotValidation validateSnapshot(JobReadinessSnapshot snapshot) {
+        DecodeResult dimensionResult = decodeDimensions(snapshot);
+        if (!dimensionResult.valid()) {
+            return new SnapshotValidation(dimensionResult, "DIMENSIONS");
+        }
+        if (snapshot == null) {
+            return new SnapshotValidation(dimensionResult, "MISSING");
+        }
+        if (!POLICY_VERSION.equals(snapshot.getPolicyVersion())) {
+            return new SnapshotValidation(dimensionResult, "POLICY_VERSION");
+        }
+        if (!scoreInRange(snapshot.getReadinessScore())) {
+            return new SnapshotValidation(dimensionResult, "READINESS_SCORE");
+        }
+        if (!isAllowed(snapshot.getReadinessLevel(), "READY", "NEAR_READY", "NEEDS_WORK")) {
+            return new SnapshotValidation(dimensionResult, "READINESS_LEVEL");
+        }
+        if (!isAllowed(snapshot.getConfidenceLevel(), "LOW", "MEDIUM", "HIGH")) {
+            return new SnapshotValidation(dimensionResult, "CONFIDENCE_LEVEL");
+        }
+        if (!validCounts(snapshot)) {
+            return new SnapshotValidation(dimensionResult, "COUNTS");
+        }
+        JsonNode summary = readObject(snapshot.getSummaryJson());
+        if (summary == null || !matchesSummary(summary, snapshot, dimensionResult.dimensions())) {
+            return new SnapshotValidation(dimensionResult, "SUMMARY");
+        }
+        JsonNode matrix = readObject(snapshot.getMatrixJson());
+        if (matrix == null || !matchesMatrix(matrix, snapshot)) {
+            return new SnapshotValidation(dimensionResult, "MATRIX");
+        }
+        return new SnapshotValidation(dimensionResult, null);
+    }
+
+    private boolean validCounts(JobReadinessSnapshot snapshot) {
+        int requirementCount = value(snapshot.getRequirementCount());
+        int strongCount = value(snapshot.getStrongCount());
+        int weakCount = value(snapshot.getWeakCount());
+        int missingCount = value(snapshot.getMissingCount());
+        int mustRequirementCount = value(snapshot.getMustRequirementCount());
+        int mustMissingCount = value(snapshot.getMustMissingCount());
+        return snapshot.getRequirementCount() != null
+                && snapshot.getStrongCount() != null
+                && snapshot.getWeakCount() != null
+                && snapshot.getMissingCount() != null
+                && snapshot.getMustRequirementCount() != null
+                && snapshot.getMustMissingCount() != null
+                && requirementCount >= 0
+                && strongCount >= 0
+                && weakCount >= 0
+                && missingCount >= 0
+                && strongCount + weakCount + missingCount <= requirementCount
+                && mustRequirementCount >= 0
+                && mustRequirementCount <= requirementCount
+                && mustMissingCount >= 0
+                && mustMissingCount <= mustRequirementCount;
+    }
+
+    private boolean matchesSummary(JsonNode summary, JobReadinessSnapshot snapshot,
+                                   List<JobReadinessSnapshotVO.DimensionScore> dimensions) {
+        return summary.isObject()
+                && sameInt(summary, "readinessScore", snapshot.getReadinessScore())
+                && sameText(summary, "readinessLevel", snapshot.getReadinessLevel())
+                && sameText(summary, "confidenceLevel", snapshot.getConfidenceLevel())
+                && sameBoolean(summary, "fallback", CommonConstants.YES.equals(snapshot.getFallback()))
+                && sameInt(summary, "requirementCount", snapshot.getRequirementCount())
+                && sameInt(summary, "strongCount", snapshot.getStrongCount())
+                && sameInt(summary, "weakCount", snapshot.getWeakCount())
+                && sameInt(summary, "missingCount", snapshot.getMissingCount())
+                && sameInt(summary, "mustRequirementCount", snapshot.getMustRequirementCount())
+                && sameInt(summary, "mustMissingCount", snapshot.getMustMissingCount())
+                && summary.path("dimensions").isArray()
+                && summary.path("dimensions").size() == dimensions.size();
+    }
+
+    private boolean matchesMatrix(JsonNode matrix, JobReadinessSnapshot snapshot) {
+        return matrix.isObject()
+                && matrix.path("requirements").isArray()
+                && matrix.path("requirements").size() == value(snapshot.getRequirementCount())
+                && sameInt(matrix, "requirementCount", snapshot.getRequirementCount())
+                && sameInt(matrix, "strongCount", snapshot.getStrongCount())
+                && sameInt(matrix, "weakCount", snapshot.getWeakCount())
+                && sameInt(matrix, "missingCount", snapshot.getMissingCount());
+    }
+
+    private JsonNode readObject(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return null;
+        }
+        try {
+            JsonNode parsed = objectMapper.readTree(raw);
+            return parsed != null && parsed.isObject() ? parsed : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private boolean scoreInRange(Integer score) {
+        return score != null && score >= 0 && score <= 100;
+    }
+
+    private boolean isAllowed(String value, String... allowed) {
+        if (!StringUtils.hasText(value)) {
+            return false;
+        }
+        for (String candidate : allowed) {
+            if (candidate.equalsIgnoreCase(value.trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean sameInt(JsonNode node, String field, Integer expected) {
+        return expected != null && node.path(field).canConvertToInt()
+                && node.path(field).intValue() == expected;
+    }
+
+    private boolean sameText(JsonNode node, String field, String expected) {
+        return StringUtils.hasText(expected) && expected.equalsIgnoreCase(node.path(field).asText());
+    }
+
+    private boolean sameBoolean(JsonNode node, String field, boolean expected) {
+        return node.has(field) && node.path(field).isBoolean() && node.path(field).asBoolean() == expected;
+    }
+
+    private void recordInvalidSnapshot(SnapshotValidation validation) {
+        DecodeResult result = validation.dimensionResult();
+        meterRegistry.counter(
+                "readiness_snapshot_invalid_total",
+                "validation_status",
+                result.status().name()).increment();
+        if (validation.contractIssue() != null) {
+            meterRegistry.counter(
+                    "readiness_snapshot_contract_invalid_total",
+                    "reason",
+                    validation.contractIssue()).increment();
+        }
+    }
+
+    private List<JobReadinessSnapshotVO> validSnapshotVOs(List<JobReadinessSnapshot> snapshots) {
+        if (snapshots == null || snapshots.isEmpty()) {
+            return List.of();
+        }
+        List<JobReadinessSnapshotVO> result = new ArrayList<>();
+        for (JobReadinessSnapshot snapshot : snapshots) {
+            SnapshotValidation validation = validateSnapshot(snapshot);
+            if (validation.valid()) {
+                result.add(toVO(snapshot, validation.dimensionResult()));
+            } else {
+                recordInvalidSnapshot(validation);
+            }
+        }
+        return List.copyOf(result);
     }
 
     private SnapshotScore score(JobRequirementMatrixVO matrix,
@@ -356,61 +602,66 @@ public class JobReadinessServiceImpl implements JobReadinessService {
     }
 
     private JobReadinessSnapshotVO toVO(JobReadinessSnapshot snapshot) {
+        return toVO(snapshot, decodeDimensions(snapshot));
+    }
+
+    private JobReadinessSnapshotVO toVO(JobReadinessSnapshot snapshot, DecodeResult dimensionResult) {
         JobReadinessSnapshotVO vo = new JobReadinessSnapshotVO();
         vo.setId(snapshot.getId());
         vo.setTargetJobId(snapshot.getTargetJobId());
         vo.setJdAnalysisId(snapshot.getJdAnalysisId());
         vo.setSnapshotHash(snapshot.getSnapshotHash());
+        vo.setSourceHash(snapshot.getSourceHash());
         vo.setPolicyVersion(snapshot.getPolicyVersion());
+        vo.setSchemaVersion(dimensionResult.schemaVersion());
+        vo.setValidationStatus(dimensionResult.status().name());
+        vo.setRepairBatchId(snapshot.getRepairBatchId());
         vo.setReadinessScore(snapshot.getReadinessScore());
         vo.setReadinessLevel(snapshot.getReadinessLevel());
         vo.setConfidenceLevel(snapshot.getConfidenceLevel());
-        vo.setFallback(CommonConstants.YES.equals(snapshot.getFallback()));
+        vo.setFallback(CommonConstants.YES.equals(snapshot.getFallback()) || !dimensionResult.valid());
         vo.setRequirementCount(snapshot.getRequirementCount());
         vo.setStrongCount(snapshot.getStrongCount());
         vo.setWeakCount(snapshot.getWeakCount());
         vo.setMissingCount(snapshot.getMissingCount());
         vo.setMustRequirementCount(snapshot.getMustRequirementCount());
         vo.setMustMissingCount(snapshot.getMustMissingCount());
-        JsonNode summary = readJson(snapshot.getSummaryJson());
-        List<JobReadinessSnapshotVO.DimensionScore> dimensions = readDimensions(snapshot.getDimensionJson());
+        JsonNode summary = readJson(snapshot.getSummaryJson(), vo.getWarnings(), "SUMMARY");
+        List<JobReadinessSnapshotVO.DimensionScore> dimensions = dimensionResult.dimensions();
+        if (!dimensionResult.valid()) {
+            vo.getWarnings().add("READINESS_DIMENSIONS_" + dimensionResult.status().name());
+            recordInvalidSnapshot(new SnapshotValidation(dimensionResult, "DIMENSIONS"));
+        } else if (dimensionResult.status()
+                == ReadinessDimensionCodec.ValidationStatus.VALID_LEGACY) {
+            vo.getWarnings().add("READINESS_DIMENSIONS_LEGACY_SCHEMA");
+        }
         dimensions.forEach(dimension -> {
             if (dimension.getSampleInsufficient() == null) {
                 dimension.setSampleInsufficient(value(dimension.getSampleCount()) == 0);
             }
         });
-        vo.setSampleInsufficient((summary != null && summary.path("sampleInsufficient").asBoolean(false))
+        vo.setSampleInsufficient(!dimensionResult.valid()
+                || (summary != null && summary.path("sampleInsufficient").asBoolean(false))
                 || snapshot.getRequirementCount() == null
                 || snapshot.getRequirementCount() < 2
                 || dimensions.stream().anyMatch(dimension -> value(dimension.getSampleCount()) == 0));
         vo.setSummary(summary);
-        vo.setMatrix(readJson(snapshot.getMatrixJson()));
+        vo.setMatrix(readJson(snapshot.getMatrixJson(), vo.getWarnings(), "MATRIX"));
         vo.setDimensions(dimensions);
         vo.setGeneratedAt(snapshot.getGeneratedAt());
         vo.setCreatedAt(snapshot.getCreatedAt());
         return vo;
     }
 
-    private JsonNode readJson(String raw) {
+    private JsonNode readJson(String raw, List<String> warnings, String field) {
         if (!StringUtils.hasText(raw)) {
             return null;
         }
         try {
             return objectMapper.readTree(raw);
         } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "stored readiness snapshot JSON is invalid");
-        }
-    }
-
-    private List<JobReadinessSnapshotVO.DimensionScore> readDimensions(String raw) {
-        if (!StringUtils.hasText(raw)) {
-            return List.of();
-        }
-        try {
-            return objectMapper.readerForListOf(JobReadinessSnapshotVO.DimensionScore.class).readValue(raw);
-        } catch (Exception ex) {
-            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
-                    "stored readiness dimension JSON is invalid");
+            warnings.add("READINESS_" + field + "_JSON_INVALID");
+            return null;
         }
     }
 
@@ -469,6 +720,15 @@ public class JobReadinessServiceImpl implements JobReadinessService {
             boolean sampleInsufficient,
             int mustRequirementCount,
             int mustMissingCount) {
+    }
+
+    private record SnapshotValidation(
+            DecodeResult dimensionResult,
+            String contractIssue) {
+
+        private boolean valid() {
+            return dimensionResult.valid() && contractIssue == null;
+        }
     }
 
     private enum Dimension {

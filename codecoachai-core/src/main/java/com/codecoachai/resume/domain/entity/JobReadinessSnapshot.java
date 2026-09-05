@@ -15,7 +15,11 @@ public class JobReadinessSnapshot extends BaseEntity {
     private Long targetJobId;
     private Long jdAnalysisId;
     private String snapshotHash;
+    private String sourceHash;
     private String policyVersion;
+    private String schemaVersion;
+    private String validationStatus;
+    private String repairBatchId;
     private Integer readinessScore;
     private String readinessLevel;
     private String confidenceLevel;

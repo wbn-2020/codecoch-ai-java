@@ -172,6 +172,7 @@ class JobCoachAgentServiceImplTest {
                 jdbcTemplate,
                 transactionTemplate);
         capturedCoachMetrics.clear();
+        Mockito.lenient().when(agentRunMapper.update(any(), any())).thenReturn(1);
         Mockito.lenient().when(jdbcTemplate.update(any(String.class), any(Object[].class))).thenReturn(1);
         Mockito.lenient().when(transactionTemplate.execute(any())).thenAnswer(invocation -> {
             TransactionCallback<?> callback = invocation.getArgument(0);
@@ -684,6 +685,29 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void failDailyPlanRunDoesNotSettleAsyncTaskWhenRunCasIsLost() {
+        AgentRun running = run(77L, USER_ID);
+        running.setStatus(AgentRunStatusEnum.RUNNING.name());
+        running.setStartedAt(LocalDateTime.now().minusMinutes(2));
+        running.setExecutionId("execution-1");
+        running.setExecutionToken("run-token-1");
+        when(agentRunMapper.selectById(77L)).thenReturn(running);
+        when(agentRunMapper.update(any(), any())).thenReturn(0);
+
+        AgentRunFailureDTO dto = new AgentRunFailureDTO();
+        dto.setUserId(USER_ID);
+        dto.setExecutionId("execution-1");
+        dto.setExecutionToken("run-token-1");
+        dto.setErrorCode(AgentErrorCode.ASYNC_TASK_FAILED);
+        dto.setErrorMessage("late callback from an expired lease");
+
+        DailyPlanVO vo = service.failDailyPlanRun(USER_ID, 77L, dto);
+
+        assertEquals(AgentRunStatusEnum.RUNNING.name(), vo.getStatus());
+        verify(jdbcTemplate, never()).update(any(String.class), any(Object[].class));
+    }
+
+    @Test
     void failDailyPlanRunDoesNotOverwriteTerminalRun() {
         AgentRun success = run(77L, USER_ID);
         success.setStatus(AgentRunStatusEnum.SUCCESS.name());
@@ -744,7 +768,12 @@ class JobCoachAgentServiceImplTest {
         assertEquals("agent.daily-plan.generate", vo.getAsyncBizType());
         assertEquals("88", vo.getAsyncBizId());
         org.mockito.InOrder registrationOrder = Mockito.inOrder(jdbcTemplate, agentMqDispatcher);
-        registrationOrder.verify(jdbcTemplate).update(any(String.class), any(Object[].class));
+        registrationOrder.verify(jdbcTemplate).update(
+                org.mockito.ArgumentMatchers.argThat(sql -> sql != null && sql.contains("SET status = ?")),
+                any(Object[].class));
+        registrationOrder.verify(jdbcTemplate).update(
+                org.mockito.ArgumentMatchers.argThat(sql -> sql != null && sql.contains("INSERT INTO async_task")),
+                any(Object[].class));
         registrationOrder.verify(agentMqDispatcher).dispatchDailyPlanWithReceipt(any(), any(), any());
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<AgentTask>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
@@ -975,6 +1004,13 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
+    void todayTasksPropagatesTaskStorageFailuresInsteadOfReturningAnEmptySnapshot() {
+        when(agentTaskMapper.selectList(any())).thenThrow(new RuntimeException("agent task table unavailable"));
+
+        assertThrows(RuntimeException.class, () -> service.todayTasks(USER_ID, null, LocalDate.now(), null));
+    }
+
+    @Test
     void todayTasksBuildsOneBusinessDateSnapshotAcrossRunsAndTargetJobs() {
         LocalDate dueDate = LocalDate.now();
         AgentTask first = task(99L, USER_ID, AgentTaskStatusEnum.TODO.name());
@@ -1181,7 +1217,7 @@ class JobCoachAgentServiceImplTest {
 
         DailyPlanResult result = new DailyPlanResult();
         result.setSummary("daily plan for 13812345678 zhangsan@example.com");
-        result.setTasks(List.of());
+        result.setTasks(List.of(consumablePlanTask("c1")));
         when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
 
@@ -1321,7 +1357,7 @@ class JobCoachAgentServiceImplTest {
 
         DailyPlanResult result = new DailyPlanResult();
         result.setSummary("daily plan");
-        result.setTasks(List.of());
+        result.setTasks(List.of(consumablePlanTask("c1")));
         when(agentOutputParser.parseDailyPlan(any())).thenReturn(result);
         when(agentTaskMapper.selectList(any())).thenReturn(List.of());
 
@@ -1877,5 +1913,17 @@ class JobCoachAgentServiceImplTest {
         candidate.setRelatedBizId(relatedBizId);
         candidate.setActionUrl(actionUrl);
         return candidate;
+    }
+
+    private PlanTask consumablePlanTask(String candidateId) {
+        PlanTask task = new PlanTask();
+        task.setCandidateId(candidateId);
+        task.setType("QUESTION_PRACTICE");
+        task.setTitle("Complete one focused practice set");
+        task.setDescription("Complete the candidate-backed task and record the result.");
+        task.setReason("Close one verified target-job gap.");
+        task.setPriority("HIGH");
+        task.setEstimatedMinutes(30);
+        return task;
     }
 }

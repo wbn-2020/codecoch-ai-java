@@ -25,4 +25,6 @@ public interface ResumeJobMatchService {
     ResumeJobMatchSubmitVO regenerate(Long id);
 
     ResumeJobMatchSubmitVO executeReport(Long id);
+
+    ResumeJobMatchSubmitVO failExecution(Long id, String reason);
 }

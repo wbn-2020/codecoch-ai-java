@@ -434,6 +434,10 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         requireManifestValue(manifest, "sourceHash", parent.getSourceHash());
         requireManifestValue(manifest, "templateCode", parent.getTemplateCode());
         requireManifestValue(manifest, "templateVersion", parent.getTemplateVersion());
+        ResumeAtsTemplate manifestTemplate = templateForManifest(
+                parent.getTemplateCode(), parent.getTemplateVersion());
+        validateTemplateDefinition(manifestTemplate);
+        requireManifestValue(manifest, "definitionHash", manifestTemplate.getDefinitionHash());
         requireManifestValue(manifest, "applicationPackageId", parent.getSourceApplicationPackageId());
         if (parent.getSourceApplicationPackageId() == null || !StringUtils.hasText(packageSnapshot)
                 || !Objects.equals(Objects.toString(manifest.get("applicationPackageSnapshotHash"), null),
@@ -572,6 +576,7 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         manifest.put("sourceHash", ResumeArtifactHashes.sha256(version.getSnapshotJson()));
         manifest.put("templateCode", template.getTemplateCode());
         manifest.put("templateVersion", template.getTemplateVersion());
+        manifest.put("definitionHash", template.getDefinitionHash());
         List<Map<String, Object>> files = new ArrayList<>();
         files.add(fileManifest(pdf));
         files.add(fileManifest(docx));
@@ -812,6 +817,22 @@ public class ResumeExportArtifactServiceImpl implements ResumeExportArtifactServ
         ResumeAtsTemplate template = templateMapper.selectOne(query);
         if (template == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "ATS template version does not exist");
+        }
+        return template;
+    }
+
+    private ResumeAtsTemplate templateForManifest(String templateCode, Integer templateVersion) {
+        if (!StringUtils.hasText(templateCode) || templateVersion == null) {
+            invalidManifest();
+        }
+        ResumeAtsTemplate template = templateMapper.selectOne(
+                new LambdaQueryWrapper<ResumeAtsTemplate>()
+                        .eq(ResumeAtsTemplate::getTemplateCode, templateCode.trim().toUpperCase(Locale.ROOT))
+                        .eq(ResumeAtsTemplate::getTemplateVersion, templateVersion)
+                        .eq(ResumeAtsTemplate::getDeleted, CommonConstants.NO)
+                        .last("LIMIT 1"));
+        if (template == null) {
+            invalidManifest();
         }
         return template;
     }

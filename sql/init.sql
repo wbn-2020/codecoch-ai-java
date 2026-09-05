@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS question (
 
 CREATE TABLE IF NOT EXISTS question_tag_relation (
   id BIGINT NOT NULL AUTO_INCREMENT,
-  question_id BIGINT NOT NULL,
+  question_id BIGINT DEFAULT NULL,
   tag_id BIGINT NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -376,6 +376,7 @@ CREATE TABLE IF NOT EXISTS file_info (
   mime_type VARCHAR(128) DEFAULT NULL,
   file_size BIGINT NOT NULL,
   storage_path VARCHAR(500) NOT NULL,
+  content_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
   storage_provider VARCHAR(32) NOT NULL DEFAULT 'LOCAL',
   status VARCHAR(32) NOT NULL DEFAULT 'AVAILABLE',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -384,8 +385,22 @@ CREATE TABLE IF NOT EXISTS file_info (
   PRIMARY KEY (id),
   KEY idx_file_info_user (user_id),
   KEY idx_file_info_biz_type (biz_type),
-  KEY idx_file_info_status (status)
+  KEY idx_file_info_status (status),
+  KEY idx_file_info_resume_content (
+    user_id, biz_type, content_sha256, status, deleted, id
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS resume_upload_dedupe_guard (
+  user_id BIGINT NOT NULL,
+  content_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  file_id BIGINT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, content_sha256),
+  KEY idx_resume_upload_guard_file (file_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Atomic user-scoped guard for duplicate resume uploads';
 
 CREATE TABLE IF NOT EXISTS resume_analysis_record (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -396,6 +411,13 @@ CREATE TABLE IF NOT EXISTS resume_analysis_record (
   parse_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
   raw_text MEDIUMTEXT DEFAULT NULL,
   structured_json MEDIUMTEXT DEFAULT NULL,
+  schema_version VARCHAR(32) DEFAULT NULL,
+  policy_version VARCHAR(64) DEFAULT NULL,
+  source_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin DEFAULT NULL,
+  validation_status VARCHAR(32) DEFAULT NULL,
+  quality_report_json MEDIUMTEXT DEFAULT NULL,
+  generated_at DATETIME DEFAULT NULL,
+  repair_batch_id VARCHAR(64) DEFAULT NULL,
   error_message VARCHAR(1000) DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -404,7 +426,35 @@ CREATE TABLE IF NOT EXISTS resume_analysis_record (
   KEY idx_resume_analysis_user (user_id),
   KEY idx_resume_analysis_file (file_id),
   KEY idx_resume_analysis_status (parse_status),
-  KEY idx_resume_analysis_resume (resume_id)
+  KEY idx_resume_analysis_resume (resume_id),
+  KEY idx_resume_analysis_validation (validation_status, schema_version, parse_status, deleted),
+  KEY idx_resume_analysis_repair_batch (repair_batch_id, deleted)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS resume_import_repair_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  repair_batch_id VARCHAR(64) NOT NULL,
+  analysis_record_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  resume_id BIGINT DEFAULT NULL,
+  actor_user_id BIGINT DEFAULT NULL,
+  operation VARCHAR(16) NOT NULL,
+  status VARCHAR(48) NOT NULL DEFAULT 'RUNNING',
+  before_snapshot_ciphertext MEDIUMTEXT DEFAULT NULL,
+  after_snapshot_ciphertext MEDIUMTEXT DEFAULT NULL,
+  before_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  after_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  before_validation_status VARCHAR(32) DEFAULT NULL,
+  after_validation_status VARCHAR(32) DEFAULT NULL,
+  reason_code VARCHAR(64) NOT NULL,
+  note VARCHAR(1000) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_resume_import_repair_batch_record_op (repair_batch_id, analysis_record_id, operation, deleted),
+  KEY idx_resume_import_repair_record (analysis_record_id, created_at),
+  KEY idx_resume_import_repair_status (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS resume_optimize_record (
@@ -615,7 +665,10 @@ CREATE TABLE IF NOT EXISTS prompt_template (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
+  live_scene_guard VARCHAR(64)
+    GENERATED ALWAYS AS (CASE WHEN deleted = 0 THEN scene ELSE NULL END) STORED,
   PRIMARY KEY (id),
+  UNIQUE KEY uk_prompt_template_live_scene (live_scene_guard),
   KEY idx_prompt_scene (scene)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -637,8 +690,13 @@ CREATE TABLE IF NOT EXISTS prompt_template_version (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   deleted TINYINT NOT NULL DEFAULT 0,
+  active_scene_guard VARCHAR(64)
+    GENERATED ALWAYS AS (
+      CASE WHEN deleted = 0 AND status = 'ACTIVE' AND is_active = 1 THEN scene ELSE NULL END
+    ) STORED,
   PRIMARY KEY (id),
   UNIQUE KEY uk_prompt_template_version (template_id, version_code),
+  UNIQUE KEY uk_prompt_version_active_scene (active_scene_guard),
   KEY idx_prompt_version_scene (scene, status, is_active),
   KEY idx_prompt_version_template (template_id, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -1202,16 +1260,16 @@ SET name = 'AI Question Generate',
 WHERE scene = 'AI_QUESTION_GENERATE';
 
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
-SELECT 'LEARNING_PLAN_GENERATE', 'Learning Plan Generate', 'Learning Plan Generate', 'V2 learning plan generation prompt', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.', 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements', 'v2-a9', 1, 1
+SELECT 'LEARNING_PLAN_GENERATE', 'Learning Plan Generate', 'Learning Plan Generate', 'Complete daily learning plan prompt', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages. Each task must include dayOffset and estimatedMinutes. dayOffset values must cover every integer day from 1 through expectedDurationDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes.', 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages. Each task must include dayOffset and estimatedMinutes. dayOffset values must cover every integer day from 1 through expectedDurationDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes.', 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,dailyMinutes,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements', 'v4-118-daily-coverage', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'LEARNING_PLAN_GENERATE');
 
 UPDATE prompt_template
 SET name = 'Learning Plan Generate',
     template_name = 'Learning Plan Generate',
-    content = 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.',
-    template_content = 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages.',
-    variables = 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
-    version = 'v2-a9',
+    content = 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages. Each task must include dayOffset and estimatedMinutes. dayOffset values must cover every integer day from 1 through expectedDurationDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes.',
+    template_content = 'Generate a practical study plan. Output JSON only with planTitle, planSummary, durationDays, and stages. Each task must include dayOffset and estimatedMinutes. dayOffset values must cover every integer day from 1 through expectedDurationDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes.',
+    variables = 'targetPosition,industryDirection,experienceLevel,expectedDurationDays,dailyMinutes,interviewSummary,weaknessSummary,questionPerformanceSummary,resumeWeaknessSummary,extraRequirements',
+    version = 'v4-118-daily-coverage',
     status = 1,
     enabled = 1
 WHERE scene = 'LEARNING_PLAN_GENERATE';
@@ -1233,7 +1291,7 @@ SELECT 'SKILL_GAP_ANALYZE', 'Skill Gap Analyze', 'Skill Gap Analyze', 'V3 skill 
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'SKILL_GAP_ANALYZE');
 
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
-SELECT 'TARGETED_STUDY_PLAN_GENERATE', 'Targeted Study Plan Generate', 'Targeted Study Plan Generate', 'V3 gap-driven study plan generation prompt', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources.', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources. Do not output Markdown, code fences, explanations, or invented candidate experience.', 'learningPlanId,userId,targetJobId,skillProfileId,matchReportId,targetJobJson,skillProfileJson,skillGapsJson,availableDays,dailyMinutes,startDate,existingStudyPlansJson,planTitle', 'v3-be-4', 1, 1
+SELECT 'TARGETED_STUDY_PLAN_GENERATE', 'Targeted Study Plan Generate', 'Targeted Study Plan Generate', 'Complete daily targeted study plan prompt', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources. dayOffset values must cover every integer day from 1 through availableDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes.', 'You are a senior Java backend career coach. Generate a gap-driven study plan from targetJobJson, skillProfileJson, skillGapsJson, availableDays, dailyMinutes, startDate, and existingStudyPlansJson. Output only one JSON object with planTitle, planSummary, durationDays, and stages. Each item must contain dayOffset, skillName, sourceGapId, taskTitle, taskDescription, taskType, priority, estimatedMinutes, acceptance, relatedTags, and resources. dayOffset values must cover every integer day from 1 through availableDays without gaps. Every day must contain at least one executable task. The total estimatedMinutes for each day must not exceed dailyMinutes. Do not output Markdown, code fences, explanations, or invented candidate experience.', 'learningPlanId,userId,targetJobId,skillProfileId,matchReportId,targetJobJson,skillProfileJson,skillGapsJson,availableDays,dailyMinutes,startDate,existingStudyPlansJson,planTitle', 'v4-118-daily-coverage', 1, 1
 WHERE NOT EXISTS (SELECT 1 FROM prompt_template WHERE scene = 'TARGETED_STUDY_PLAN_GENERATE');
 
 INSERT INTO prompt_template (scene, name, template_name, description, content, template_content, variables, version, enabled, status)
@@ -1294,7 +1352,7 @@ INSERT INTO system_config (id, config_key, config_value, value_type, description
 VALUES
   (1, 'interview.max_follow_up_count', '2', 'NUMBER', 'Maximum follow-up count per main question', 1),
   (2, 'interview.max_question_count', '5', 'NUMBER', 'Default maximum questions per interview', 1),
-  (3, 'ai.mock.enabled', 'true', 'BOOLEAN', 'Use mock AI implementation in V1', 1),
+  (3, 'ai.mock.enabled', 'false', 'BOOLEAN', 'DEPRECATED: this legacy database record does not control runtime Mock mode; configure codecoachai.ai.mock-enabled in Nacos or Spring runtime configuration', 0),
   (4, 'ai.timeout.seconds', '30', 'NUMBER', 'AI timeout seconds', 1)
 ON DUPLICATE KEY UPDATE
   config_value = VALUES(config_value),
@@ -2454,3 +2512,38 @@ CREATE TABLE IF NOT EXISTS agent_memory (
   KEY idx_agent_memory_source (source_type, source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   COMMENT='V4 controllable agent memory with V9 promotion idempotency';
+
+CREATE TABLE IF NOT EXISTS job_application_attachment (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  package_id BIGINT DEFAULT NULL,
+  application_id BIGINT DEFAULT NULL,
+  file_id BIGINT NOT NULL,
+  attachment_type VARCHAR(32) NOT NULL DEFAULT 'OTHER',
+  display_name VARCHAR(255) NOT NULL,
+  original_filename VARCHAR(255) NOT NULL,
+  mime_type VARCHAR(128) DEFAULT NULL,
+  file_size BIGINT DEFAULT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  deleted TINYINT NOT NULL DEFAULT 0,
+  active_file_id BIGINT
+    GENERATED ALWAYS AS (
+      CASE WHEN deleted = 0 THEN file_id ELSE NULL END
+    ) STORED,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_job_application_attachment_live_file (active_file_id),
+  KEY idx_job_application_attachment_owner (
+    user_id, package_id, deleted, sort_order, id
+  ),
+  KEY idx_job_application_attachment_application (
+    user_id, application_id, deleted, sort_order, id
+  ),
+  KEY idx_job_application_attachment_file (
+    file_id, deleted
+  ),
+  CONSTRAINT chk_job_application_attachment_scope
+    CHECK (package_id IS NOT NULL OR application_id IS NOT NULL)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Owned file attachments associated with a job application package';

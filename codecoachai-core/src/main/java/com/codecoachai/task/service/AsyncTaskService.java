@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -118,12 +119,24 @@ public class AsyncTaskService {
                                      String traceId,
                                      Object payload,
                                      int maxRetry) {
+        return registerPending(messageId, bizType, bizId, userId, traceId, null, payload, maxRetry);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AsyncTask registerPending(String messageId,
+                                     String bizType,
+                                     String bizId,
+                                     Long userId,
+                                     String traceId,
+                                     String executionId,
+                                     Object payload,
+                                     int maxRetry) {
         if (!StringUtils.hasText(messageId) || !StringUtils.hasText(bizType)) {
             throw new IllegalArgumentException("Async task messageId and bizType are required");
         }
         AsyncTask existing = findByMessageId(messageId);
         if (existing != null) {
-            return existing;
+            return attachExecutionId(existing, executionId);
         }
         LocalDateTime now = leaseTimestamp();
         AsyncTask task = new AsyncTask();
@@ -132,6 +145,10 @@ public class AsyncTaskService {
         task.setBizId(bizId);
         task.setUserId(userId);
         task.setTraceId(traceId);
+        task.setExecutionId(trimToNull(executionId));
+        if (StringUtils.hasText(executionId)) {
+            task.setAttemptNo(1);
+        }
         task.setStatus(STATUS_PENDING);
         task.setRetryCount(0);
         task.setMaxRetry(effectiveMaxRetry(maxRetry));
@@ -144,10 +161,49 @@ public class AsyncTaskService {
         } catch (DuplicateKeyException duplicate) {
             AsyncTask concurrent = findByMessageId(messageId);
             if (concurrent != null) {
-                return concurrent;
+                return attachExecutionId(concurrent, executionId);
             }
             throw duplicate;
         }
+    }
+
+    public AsyncTask findLatestForUser(String bizType, String bizId, Long userId) {
+        if (!StringUtils.hasText(bizType) || !StringUtils.hasText(bizId) || userId == null) {
+            return null;
+        }
+        return asyncTaskMapper.selectOne(new LambdaQueryWrapper<AsyncTask>()
+                .eq(AsyncTask::getBizType, bizType)
+                .eq(AsyncTask::getBizId, bizId)
+                .eq(AsyncTask::getUserId, userId)
+                .eq(AsyncTask::getDeleted, 0)
+                .orderByDesc(AsyncTask::getCreatedAt)
+                .last("limit 1"));
+    }
+
+    public List<AsyncTask> findStalePending(String bizType, LocalDateTime before, int limit) {
+        if (!StringUtils.hasText(bizType) || before == null || limit <= 0) {
+            return List.of();
+        }
+        return asyncTaskMapper.selectList(new LambdaQueryWrapper<AsyncTask>()
+                .eq(AsyncTask::getBizType, bizType)
+                .eq(AsyncTask::getStatus, STATUS_PENDING)
+                .eq(AsyncTask::getDeleted, 0)
+                .le(AsyncTask::getCreatedAt, before)
+                .orderByAsc(AsyncTask::getCreatedAt)
+                .last("limit " + Math.min(limit, 200)));
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public boolean failPendingIfUnclaimed(String messageId, String reason) {
+        if (!StringUtils.hasText(messageId)) {
+            return false;
+        }
+        return asyncTaskMapper.completePendingTask(
+                messageId,
+                STATUS_FAILED,
+                truncate(safeFailureReason(reason), 2000),
+                null,
+                leaseTimestamp()) == 1;
     }
 
     private boolean acquire(MqMessage<?> envelope, int maxRetry, boolean reuseRegisteredTask) {
@@ -322,6 +378,42 @@ public class AsyncTaskService {
                         .last("limit 1"));
     }
 
+    private AsyncTask attachExecutionId(AsyncTask task, String executionId) {
+        String normalizedExecutionId = trimToNull(executionId);
+        if (task == null || normalizedExecutionId == null) {
+            return task;
+        }
+        if (StringUtils.hasText(task.getExecutionId())) {
+            if (!normalizedExecutionId.equals(task.getExecutionId())) {
+                throw new IllegalStateException("Async task executionId conflicts with existing registration");
+            }
+            return task;
+        }
+
+        LocalDateTime now = leaseTimestamp();
+        int updated = asyncTaskMapper.update(null,
+                new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<AsyncTask>()
+                        .eq(AsyncTask::getId, task.getId())
+                        .and(wrapper -> wrapper.isNull(AsyncTask::getExecutionId)
+                                .or()
+                                .eq(AsyncTask::getExecutionId, ""))
+                        .set(AsyncTask::getExecutionId, normalizedExecutionId)
+                        .set(AsyncTask::getAttemptNo, 1)
+                        .set(AsyncTask::getUpdatedAt, now));
+        if (updated == 1) {
+            task.setExecutionId(normalizedExecutionId);
+            task.setAttemptNo(1);
+            task.setUpdatedAt(now);
+            return task;
+        }
+
+        AsyncTask current = findByMessageId(task.getMessageId());
+        if (current != null && normalizedExecutionId.equals(current.getExecutionId())) {
+            return current;
+        }
+        throw new IllegalStateException("Async task executionId could not be attached");
+    }
+
     private boolean acquireExisting(MqMessage<?> envelope, AsyncTask existing, int maxRetry) {
         String status = existing.getStatus();
         if (STATUS_SUCCESS.equals(status) || STATUS_DEAD.equals(status) || STATUS_FAILED.equals(status)) {
@@ -415,13 +507,14 @@ public class AsyncTaskService {
      * and creates or refreshes the application dead-letter record.
      */
     @Transactional(rollbackFor = Exception.class)
-    public void markFailed(String messageId, String reason) {
+    public boolean markFailed(String messageId, String reason) {
         LeaseHandle lease = requireCurrentLease(messageId);
         try {
             LocalDateTime now = leaseTimestamp();
             String safeReason = truncate(safeFailureReason(reason), 2000);
             int pending = asyncTaskMapper.markRetryableFailed(
                     messageId, lease.leaseToken, safeReason, now);
+            boolean terminal = pending == 0;
             if (pending == 0) {
                 int dead = asyncTaskMapper.markRetryExhaustedDead(
                         messageId, lease.leaseToken, safeReason, now);
@@ -429,6 +522,7 @@ public class AsyncTaskService {
                 deadLetterMapper.upsert(buildDeadLetter(lease, safeReason));
             }
             finalizeLeaseAfterTransaction(lease);
+            return terminal;
         } catch (RuntimeException ex) {
             abandonLease(lease);
             throw ex;
@@ -483,16 +577,93 @@ public class AsyncTaskService {
         }
     }
 
+    /**
+     * Starts a manual retry as a child execution. The failed task remains an
+     * auditable parent; the new MQ message gets its own async_task row.
+     */
     @Transactional(rollbackFor = Exception.class)
-    public void markManualRetryDispatchFailed(Long taskId, String reason) {
+    public AsyncTask prepareManualRetry(AsyncTask parentTask, ManualRetryAttempt attempt) {
+        if (parentTask == null || parentTask.getId() == null
+                || !StringUtils.hasText(parentTask.getMessageId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Parent async task is invalid");
+        }
+        if (attempt == null
+                || !StringUtils.hasText(attempt.messageId())
+                || !StringUtils.hasText(attempt.executionId())
+                || !StringUtils.hasText(attempt.parentExecutionId())
+                || !StringUtils.hasText(attempt.payload())
+                || !StringUtils.hasText(attempt.retryPreviewHash())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Manual retry execution identity is invalid");
+        }
+        LocalDateTime now = leaseTimestamp();
+        int parentUpdated = asyncTaskMapper.markManualRetryParentDispatched(
+                parentTask.getId(),
+                parentTask.getMessageId(),
+                attempt.retryPreviewHash(),
+                attempt.parentExecutionId(),
+                attempt.executionId(),
+                attempt.attemptNo(),
+                parentTask.getUpdatedAt(),
+                now);
+        if (parentUpdated != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Task governance changed; refresh retry preview before dispatching");
+        }
+
+        AsyncTask retryTask = new AsyncTask();
+        retryTask.setMessageId(attempt.messageId());
+        retryTask.setBizType(parentTask.getBizType());
+        retryTask.setBizId(parentTask.getBizId());
+        retryTask.setUserId(parentTask.getUserId());
+        retryTask.setTraceId(attempt.traceId());
+        retryTask.setExecutionId(attempt.executionId());
+        retryTask.setParentExecutionId(attempt.parentExecutionId());
+        retryTask.setRunId(parentTask.getRunId());
+        retryTask.setAttemptNo(attempt.attemptNo());
+        retryTask.setIdempotencyKey(attempt.idempotencyKey());
+        retryTask.setStatus(STATUS_PENDING);
+        retryTask.setRetryCount(0);
+        retryTask.setMaxRetry(parentTask.getMaxRetry());
+        retryTask.setPayload(attempt.payload());
+        retryTask.setGovernanceStatus("RETRYING");
+        retryTask.setGovernanceReason("Manual retry dispatch is in progress");
+        retryTask.setGovernanceOwner(parentTask.getGovernanceOwner());
+        retryTask.setGovernanceUpdatedAt(now);
+        retryTask.setRetryPreviewHash(attempt.retryPreviewHash());
+        retryTask.setCreatedAt(now);
+        retryTask.setUpdatedAt(now);
+        if (asyncTaskMapper.insert(retryTask) != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,
+                    "Manual retry task registration failed");
+        }
+        if (StringUtils.hasText(parentTask.getMessageId())) {
+            runAfterCommit(() -> deleteRedisKey(parentTask.getMessageId()));
+        }
+        return retryTask;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void markManualRetryDispatchFailed(Long parentTaskId,
+                                              Long retryTaskId,
+                                              String childExecutionId,
+                                              String reason) {
+        LocalDateTime failedAt = leaseTimestamp();
         int updated = asyncTaskMapper.markManualRetryDispatchFailed(
-                taskId,
+                retryTaskId,
                 null,
                 truncate(safeFailureReason(reason), 2000),
-                leaseTimestamp());
+                failedAt);
         if (updated != 1) {
             throw new BusinessException(ErrorCode.PARAM_ERROR,
                     "Task status changed while retry dispatch was in progress");
+        }
+        int parentUpdated = asyncTaskMapper.markManualRetryParentDispatchFailed(
+                parentTaskId,
+                StringUtils.hasText(childExecutionId) ? childExecutionId : "unknown",
+                failedAt);
+        if (parentUpdated != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "Parent task governance changed while retry dispatch was in progress");
         }
     }
 
@@ -797,6 +968,10 @@ public class AsyncTaskService {
         return text.length() > max ? text.substring(0, max) : text;
     }
 
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
     private String safeFailureReason(String reason) {
         if (!StringUtils.hasText(reason)) {
             return "Async task failed. Check service logs with traceId.";
@@ -816,6 +991,16 @@ public class AsyncTaskService {
             return "Async task failed because an upstream response could not be parsed.";
         }
         return "Async task failed. Check service logs with traceId.";
+    }
+
+    public record ManualRetryAttempt(String messageId,
+                                     String traceId,
+                                     String executionId,
+                                     String parentExecutionId,
+                                     String idempotencyKey,
+                                     int attemptNo,
+                                     String payload,
+                                     String retryPreviewHash) {
     }
 
     private static final class LeaseHandle {

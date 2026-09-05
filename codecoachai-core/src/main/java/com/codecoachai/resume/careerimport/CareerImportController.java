@@ -38,11 +38,14 @@ public class CareerImportController {
     @PostMapping(value = "/csv/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Result<ImportPreview> previewCsv(@RequestPart("file") MultipartFile file,
                                             @RequestParam String timezone,
-                                            @RequestParam(required = false) String mapping) throws IOException {
+                                            @RequestParam(required = false) String mapping,
+                                            @RequestParam(required = false) String contentHash) throws IOException {
         SecurityAssert.requireLoginUserId();
         validateFileSize(file);
+        byte[] content = file.getBytes();
+        CareerImportContentHash.verifyClaim(content, contentHash, "contentHash");
         return Result.success(careerImportService.previewCsv(
-                file.getOriginalFilename(), file.getBytes(), timezone, parseMapping(mapping)));
+                file.getOriginalFilename(), content, timezone, parseMapping(mapping)));
     }
 
     @OperationLog(module = "career-import", action = "IMPORT_CSV",
@@ -52,11 +55,16 @@ public class CareerImportController {
                                           @RequestParam String timezone,
                                           @RequestParam(required = false, defaultValue = "SKIP")
                                           String duplicatePolicy,
-                                          @RequestParam(required = false) String mapping) throws IOException {
+                                          @RequestParam(required = false) String mapping,
+                                          @RequestParam(required = false) String contentHash,
+                                          @RequestParam(required = false) String previewContentHash) throws IOException {
         SecurityAssert.requireLoginUserId();
         validateFileSize(file);
+        byte[] content = file.getBytes();
+        String actualHash = CareerImportContentHash.verifyClaim(content, contentHash, "contentHash");
+        CareerImportContentHash.verifyPreview(actualHash, previewContentHash);
         return Result.success(careerImportService.importCsv(
-                file.getOriginalFilename(), file.getBytes(), timezone, duplicatePolicy, parseMapping(mapping)));
+                file.getOriginalFilename(), content, timezone, duplicatePolicy, parseMapping(mapping)));
     }
 
     @PostMapping(value = "/ics/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

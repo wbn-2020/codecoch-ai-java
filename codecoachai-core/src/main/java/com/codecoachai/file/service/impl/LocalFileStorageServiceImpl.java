@@ -14,6 +14,8 @@ import com.codecoachai.file.domain.vo.InnerFileUploadVO;
 import com.codecoachai.file.mapper.FileInfoMapper;
 import com.codecoachai.file.service.FileStorageService;
 import com.codecoachai.file.util.FileBizTypes;
+import com.codecoachai.file.util.FileContentHashes;
+import com.codecoachai.file.util.FileDownloadValidator;
 import com.codecoachai.file.util.FileUploadValidator;
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -59,6 +61,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     private static final String PARSE_STATUS_SUCCESS = "SUCCESS";
     private static final String PARSE_STATUS_FAILED = "FAILED";
     private static final String PARSE_STATUS_WAIT_CONFIRM = "WAIT_CONFIRM";
+    private static final String PARSE_STATUS_CANCELLED = "CANCELLED";
     private static final String PROVIDER_LOCAL = "LOCAL";
     private static final int NOT_DELETED = 0;
     private static final String HEADER_ORIGINAL_FILENAME = "X-Original-Filename";
@@ -94,8 +97,9 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
             Files.createDirectories(target.getParent());
             file.transferTo(target);
             registerRollbackCleanup(target);
+            String contentSha256 = FileContentHashes.sha256(target);
             FileInfo fileInfo = buildFileInfo(file, normalizedBizType, userId, originalFilename, storedFilename, fileExt,
-                    relativePath);
+                    relativePath, contentSha256);
             fileInfoMapper.insert(fileInfo);
             return toVO(fileInfo);
         } catch (Exception ex) {
@@ -264,9 +268,14 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     }
 
     private void validateSize(MultipartFile file, String bizType) {
-        long maxSizeMb = FileBizTypes.isInterviewVoice(bizType)
-                ? properties.getMaxInterviewVoiceSizeMb()
-                : properties.getMaxSizeMb();
+        long maxSizeMb;
+        if (BIZ_TYPE_RESUME.equals(bizType)) {
+            maxSizeMb = properties.getMaxResumeSizeMb();
+        } else if (FileBizTypes.isInterviewVoice(bizType)) {
+            maxSizeMb = properties.getMaxInterviewVoiceSizeMb();
+        } else {
+            maxSizeMb = properties.getMaxSizeMb();
+        }
         long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
         if (file.getSize() > maxBytes) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
@@ -314,7 +323,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     }
 
     private FileInfo buildFileInfo(MultipartFile file, String bizType, Long userId, String originalFilename,
-                                   String storedFilename, String fileExt, String storagePath) {
+                                   String storedFilename, String fileExt, String storagePath,
+                                   String contentSha256) {
         FileInfo fileInfo = new FileInfo();
         fileInfo.setUserId(userId);
         fileInfo.setBizType(bizType);
@@ -324,6 +334,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         fileInfo.setMimeType(file.getContentType());
         fileInfo.setFileSize(file.getSize());
         fileInfo.setStoragePath(storagePath);
+        fileInfo.setContentSha256(contentSha256);
         fileInfo.setStorageProvider(StringUtils.hasText(properties.getProvider()) ? properties.getProvider() : PROVIDER_LOCAL);
         fileInfo.setStatus(STATUS_AVAILABLE);
         return fileInfo;
@@ -341,6 +352,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setMimeType(fileInfo.getMimeType());
         vo.setStoragePath(fileInfo.getStoragePath());
         vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
         vo.setStatus(fileInfo.getStatus());
         vo.setCreatedAt(fileInfo.getCreatedAt());
         return vo;
@@ -358,6 +370,7 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setMimeType(fileInfo.getMimeType());
         vo.setFileSize(fileInfo.getFileSize());
         vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
         vo.setStatus(fileInfo.getStatus());
         vo.setCreatedAt(fileInfo.getCreatedAt());
         vo.setUpdatedAt(fileInfo.getUpdatedAt());
@@ -398,9 +411,11 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         }
 
         try {
+            long actualSize = Files.size(target);
+            MediaType mediaType = FileDownloadValidator.validate(fileInfo, actualSize);
             return ResponseEntity.ok()
-                    .contentType(resolveMediaType(fileInfo.getMimeType()))
-                    .contentLength(Files.size(target))
+                    .contentType(mediaType)
+                    .contentLength(actualSize)
                     .header(HEADER_ORIGINAL_FILENAME, encodeHeaderValue(fileInfo.getOriginalFilename()))
                     .header(HEADER_FILE_EXT, fileInfo.getFileExt())
                     .header(HEADER_FILE_SIZE, String.valueOf(fileInfo.getFileSize()))
@@ -445,8 +460,16 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
         vo.setBusinessId(analysisStatus.getResumeId());
         vo.setResumeAnalysisRecordId(analysisStatus.getResumeAnalysisRecordId());
         vo.setParseStatus(analysisStatus.getParseStatus());
-        vo.setParseErrorMessage(analysisStatus.getParseErrorMessage());
-        vo.setAnalysisConfirmed(PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus()));
+        vo.setParseErrorMessage(PARSE_STATUS_FAILED.equals(analysisStatus.getParseStatus())
+                ? analysisStatus.getParseErrorMessage()
+                : null);
+        if (PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(true);
+        } else if (PARSE_STATUS_WAIT_CONFIRM.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(false);
+        } else {
+            vo.setAnalysisConfirmed(null);
+        }
         if (isTerminalParseStatus(analysisStatus.getParseStatus())) {
             vo.setParsedAt(analysisStatus.getUpdatedAt());
         }
@@ -458,7 +481,8 @@ public class LocalFileStorageServiceImpl implements FileStorageService {
     private boolean isTerminalParseStatus(String parseStatus) {
         return PARSE_STATUS_SUCCESS.equals(parseStatus)
                 || PARSE_STATUS_FAILED.equals(parseStatus)
-                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus);
+                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus)
+                || PARSE_STATUS_CANCELLED.equals(parseStatus);
     }
 
     private void deleteQuietly(Path target) {

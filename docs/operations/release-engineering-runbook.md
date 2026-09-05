@@ -475,6 +475,27 @@ images are deployment prerequisites rather than release outputs. Pre-provision
 their reviewed digest-pinned references on the target host; the release workflow
 must not pull mutable public tags during a gate.
 
+### PDF CJK Font Gate
+
+The runtime image installs `font-noto-cjk`, refreshes the font cache, and
+exposes the selected regular face at the stable path
+`/opt/codecoachai/fonts/NotoSansCJK-Regular.ttc`. Release Compose passes that
+exact path to Core as `RESUME_EXPORT_PDF_FONT_PATH`; the PDF renderer fails
+closed instead of replacing unencodable Chinese text.
+
+Before activating a candidate that includes PDF export changes, verify the
+loaded immutable image without starting an application service:
+
+```text
+docker run --rm --entrypoint sh \
+  "codecoachai/runtime-base:${CANDIDATE_RELEASE_ID}" \
+  -c 'test -r /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc && fc-scan --format "%{family}\n" /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc | grep -qi "Noto"'
+```
+
+Record the command result with the candidate release evidence. A missing font,
+an unreadable stable path, or a non-Noto scan result blocks activation and must
+not be worked around by substituting a host-mounted font.
+
 ### Candidate Nacos Gate
 
 The release override forces `nacos-config-init` into audit-only mode. Run it

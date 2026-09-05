@@ -2,6 +2,7 @@ package com.codecoachai.resume.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -13,9 +14,12 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.ProjectEvidenceQueryDTO;
+import com.codecoachai.resume.domain.dto.ProjectEvidenceSaveDTO;
 import com.codecoachai.resume.domain.dto.ProjectSkillEvidenceSaveDTO;
 import com.codecoachai.resume.domain.entity.ProjectEvidence;
 import com.codecoachai.resume.domain.entity.ProjectSkillEvidence;
@@ -30,6 +34,7 @@ import com.codecoachai.resume.mapper.ResumeProjectMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.service.EvidenceProfileFeedbackOutboxService;
 import com.codecoachai.resume.service.support.ProjectEvidenceVersionManager;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -124,7 +129,7 @@ class ProjectEvidenceServiceImplTest {
     @Test
     void deletingProjectRequeuesItsAbilityProjection() {
         ProjectEvidence project = project(5L, null, null);
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+        when(projectEvidenceMapper.selectById(5L)).thenReturn(project);
 
         service.delete(project.getId());
 
@@ -136,8 +141,14 @@ class ProjectEvidenceServiceImplTest {
     @Test
     void addingSkillEvidenceRequeuesProjectAbilityProjection() {
         ProjectEvidence project = project(5L, null, null);
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
+        when(projectEvidenceMapper.selectById(5L)).thenReturn(project);
         ProjectSkillEvidenceSaveDTO dto = skillSave("Redis", true);
+        when(skillEvidenceMapper.insert(any(ProjectSkillEvidence.class))).thenAnswer(invocation -> {
+            ProjectSkillEvidence evidence = invocation.getArgument(0);
+            evidence.setId(8L);
+            return 1;
+        });
+        when(skillEvidenceMapper.selectById(8L)).thenAnswer(invocation -> skillEvidence(8L, 5L));
 
         service.addSkillEvidence(project.getId(), dto);
 
@@ -150,8 +161,8 @@ class ProjectEvidenceServiceImplTest {
     void updatingSkillEvidenceRequeuesProjectAbilityProjection() {
         ProjectEvidence project = project(5L, null, null);
         ProjectSkillEvidence evidence = skillEvidence(8L, project.getId());
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
-        when(skillEvidenceMapper.selectOne(any())).thenReturn(evidence);
+        when(projectEvidenceMapper.selectById(5L)).thenReturn(project);
+        when(skillEvidenceMapper.selectById(8L)).thenReturn(evidence);
 
         service.updateSkillEvidence(project.getId(), evidence.getId(),
                 skillSave("Redis Cluster", false));
@@ -165,14 +176,51 @@ class ProjectEvidenceServiceImplTest {
     void deletingSkillEvidenceRequeuesProjectAbilityProjection() {
         ProjectEvidence project = project(5L, null, null);
         ProjectSkillEvidence evidence = skillEvidence(8L, project.getId());
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project);
-        when(skillEvidenceMapper.selectOne(any())).thenReturn(evidence);
+        when(projectEvidenceMapper.selectById(5L)).thenReturn(project);
+        when(skillEvidenceMapper.selectById(8L)).thenReturn(evidence);
 
         service.deleteSkillEvidence(project.getId(), evidence.getId());
 
         verify(skillEvidenceMapper).updateById(evidence);
         verify(profileFeedbackOutboxService)
                 .requeueAbilityProjectionForProject(USER_ID, project.getId());
+    }
+
+    @Test
+    void detailDistinguishesMissingProjectFromForeignOwnedProject() {
+        when(projectEvidenceMapper.selectById(404L)).thenReturn(null);
+
+        BusinessException missing = assertThrows(
+                BusinessException.class, () -> service.detail(404L));
+
+        assertEquals(ErrorCode.RESOURCE_NOT_FOUND.getCode(), missing.getCode());
+
+        ProjectEvidence foreign = project(405L, null, null);
+        foreign.setUserId(99L);
+        when(projectEvidenceMapper.selectById(405L)).thenReturn(foreign);
+
+        BusinessException forbidden = assertThrows(
+                BusinessException.class, () -> service.detail(405L));
+
+        assertEquals(ErrorCode.FORBIDDEN.getCode(), forbidden.getCode());
+    }
+
+    @Test
+    void updateReadsBackPersistedTimesBeforeCapturingVersionAndReturningDetail() {
+        ProjectEvidence before = project(5L, null, null);
+        ProjectEvidence persisted = project(5L, null, null);
+        persisted.setTitle("Updated project");
+        persisted.setCreatedAt(LocalDateTime.of(2026, 8, 1, 9, 0));
+        persisted.setUpdatedAt(LocalDateTime.of(2026, 8, 17, 16, 0));
+        when(projectEvidenceMapper.selectById(5L)).thenReturn(before, persisted);
+        ProjectEvidenceSaveDTO dto = new ProjectEvidenceSaveDTO();
+        dto.setTitle("Updated project");
+
+        var result = service.update(5L, dto);
+
+        assertEquals(persisted.getCreatedAt(), result.getCreatedAt());
+        assertEquals(persisted.getUpdatedAt(), result.getUpdatedAt());
+        verify(projectEvidenceVersionManager).capture(persisted, "MANUAL", 5L);
     }
 
     private ProjectEvidence project(Long id, Long resumeId, Long resumeProjectId) {

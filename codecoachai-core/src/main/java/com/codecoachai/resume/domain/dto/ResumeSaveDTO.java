@@ -1,5 +1,6 @@
 package com.codecoachai.resume.domain.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.Data;
 
 @Data
@@ -16,5 +17,8 @@ public class ResumeSaveDTO {
     private String workExperience;
     private String educationExperience;
     private String summary;
+    private JsonNode presentationConfig;
+    private JsonNode document;
     private Integer status;
+    private Boolean saveAsDraft;
 }

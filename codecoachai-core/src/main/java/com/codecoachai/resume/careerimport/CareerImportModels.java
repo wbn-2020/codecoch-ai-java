@@ -16,6 +16,7 @@ public final class CareerImportModels {
     public static class ImportPreview {
         private String format;
         private String timezone;
+        private String contentHash;
         private List<String> headers = new ArrayList<>();
         private Map<String, String> suggestedMapping = new LinkedHashMap<>();
         private List<String> supportedFields = new ArrayList<>();
@@ -30,6 +31,7 @@ public final class CareerImportModels {
     public static class ImportResult {
         private Long batchId;
         private String format;
+        private String contentHash;
         private String status;
         private Integer totalCount;
         private Integer successCount;

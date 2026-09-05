@@ -52,4 +52,6 @@ public interface StudyPlanService {
     StudyTaskVO skipTask(Long taskId);
 
     StudyPlanGenerateVO regenerate(Long id);
+
+    StudyPlanGenerateVO renew(Long id);
 }

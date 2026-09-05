@@ -750,9 +750,9 @@ class InterviewServiceImplTest {
         assertEquals(true, readProperty(records.get(0), "getComparisonAvailable"));
         assertNull(readProperty(records.get(0), "getComparisonUnavailableReason"));
         assertEquals(89L, readProperty(records.get(1), "getReportId"));
-        assertEquals(42, records.get(1).getTotalScore());
-        assertEquals(true, readProperty(records.get(1), "getComparisonAvailable"));
-        assertNull(readProperty(records.get(1), "getComparisonUnavailableReason"));
+        assertNull(records.get(1).getTotalScore());
+        assertEquals(false, readProperty(records.get(1), "getComparisonAvailable"));
+        assertEquals("REPORT_UNTRUSTED", readProperty(records.get(1), "getComparisonUnavailableReason"));
         assertEquals("REPORT_RUBRIC_SCORES",
                 readProperty(records.get(1), "getComparisonNormalizationSource"));
         assertTrue(records.get(1).getComparisonWarnings().stream().anyMatch(warning ->
@@ -842,7 +842,7 @@ class InterviewServiceImplTest {
             latest.set(report);
             return 1;
         });
-        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(messageMapper.selectList(any())).thenReturn(scorableAnswers());
         when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
         when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
 
@@ -936,7 +936,7 @@ class InterviewServiceImplTest {
             latest.set(invocation.getArgument(0));
             return 1;
         });
-        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(messageMapper.selectList(any())).thenReturn(scorableAnswers());
         when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
         when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
 
@@ -964,7 +964,7 @@ class InterviewServiceImplTest {
             latest.set(report);
             return 1;
         });
-        when(messageMapper.selectList(any())).thenReturn(List.of(scorableAnswer()));
+        when(messageMapper.selectList(any())).thenReturn(scorableAnswers());
         when(aiFeignClient.report(any())).thenReturn(Result.success(generatedAiReport()));
         when(resumeFeignClient.getTargetJob(10L, 300L)).thenReturn(Result.success(null));
         when(resumeFeignClient.createApplicationEvent(eq(10L), eq(501L), any())).thenReturn(Result.success());
@@ -1190,7 +1190,9 @@ class InterviewServiceImplTest {
         report.setTotalScore(82);
         report.setSummary("Good report");
         report.setReportContent("Structured report");
-        report.setQaReview("[{\"questionContent\":\"Redis?\",\"userAnswer\":\"Answer\"}]");
+        report.setQaReview("""
+                [{"questionContent":"Redis?","userAnswer":"Answer","aiScore":82}]
+                """);
         report.setGeneratedAt(LocalDateTime.now());
         return report;
     }
@@ -1348,14 +1350,24 @@ class InterviewServiceImplTest {
     }
 
     private InterviewMessage scorableAnswer() {
+        return scorableAnswer(1);
+    }
+
+    private InterviewMessage scorableAnswer(int index) {
         InterviewMessage message = new InterviewMessage();
-        message.setId(2001L);
+        message.setId(2000L + index);
         message.setSessionId(1L);
         message.setRole("USER");
         message.setMessageType("ANSWER");
-        message.setQuestionContent("How do you keep Redis and MySQL consistent?");
-        message.setUserAnswer("Use delayed double delete and binlog compensation.");
+        message.setQuestionContent("Interview question " + index);
+        message.setUserAnswer("Evidence-backed answer " + index);
         return message;
+    }
+
+    private List<InterviewMessage> scorableAnswers() {
+        return java.util.stream.IntStream.rangeClosed(1, 6)
+                .mapToObj(this::scorableAnswer)
+                .toList();
     }
 
     private GenerateReportVO generatedAiReport() {
@@ -1369,7 +1381,14 @@ class InterviewServiceImplTest {
         vo.setMainProblems("[\"Need deeper examples\"]");
         vo.setSuggestions("[\"Review cache consistency\"]");
         vo.setReviewSuggestions("[\"Practice one follow-up\"]");
-        vo.setQaReview("[{\"questionContent\":\"How do you keep Redis and MySQL consistent?\",\"userAnswer\":\"Use delayed double delete\"}]");
+        vo.setQaReview("""
+                [{"questionContent":"Interview question 1","userAnswer":"Evidence-backed answer 1","aiScore":86},
+                 {"questionContent":"Interview question 2","userAnswer":"Evidence-backed answer 2","aiScore":86},
+                 {"questionContent":"Interview question 3","userAnswer":"Evidence-backed answer 3","aiScore":86},
+                 {"questionContent":"Interview question 4","userAnswer":"Evidence-backed answer 4","aiScore":86},
+                 {"questionContent":"Interview question 5","userAnswer":"Evidence-backed answer 5","aiScore":86},
+                 {"questionContent":"Interview question 6","userAnswer":"Evidence-backed answer 6","aiScore":86}]
+                """);
         vo.setRubricScores("""
                 [
                   {"dimension":"EXPRESSION_STRUCTURE","score":4.5},

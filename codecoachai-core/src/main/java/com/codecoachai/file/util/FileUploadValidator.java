@@ -48,6 +48,22 @@ public final class FileUploadValidator {
         validateFileHeader(file, ext);
     }
 
+    public static boolean isMimeCompatible(String contentType, String fileExt) {
+        if (!StringUtils.hasText(contentType)) {
+            return true;
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        int semicolon = normalized.indexOf(';');
+        if (semicolon >= 0) {
+            normalized = normalized.substring(0, semicolon).trim();
+        }
+        if (GENERIC_MIME_TYPES.contains(normalized)) {
+            return true;
+        }
+        Set<String> allowed = ALLOWED_MIME_TYPES.get(normalizeExt(fileExt));
+        return allowed == null || allowed.contains(normalized);
+    }
+
     private static void validateMimeType(String contentType, String fileExt, boolean explicitMimeRequired) {
         if (!StringUtils.hasText(contentType)) {
             if (explicitMimeRequired) {
@@ -66,8 +82,7 @@ public final class FileUploadValidator {
             }
             return;
         }
-        Set<String> allowed = ALLOWED_MIME_TYPES.get(fileExt);
-        if (allowed != null && !allowed.contains(normalized)) {
+        if (!isMimeCompatible(normalized, fileExt)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "File MIME type does not match its extension.");
         }
     }

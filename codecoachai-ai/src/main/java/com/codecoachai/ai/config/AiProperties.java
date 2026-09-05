@@ -12,8 +12,16 @@ import org.springframework.util.StringUtils;
 @ConfigurationProperties(prefix = "codecoachai.ai")
 public class AiProperties {
 
+    public static final String MOCK_ENABLED_PROPERTY = "codecoachai.ai.mock-enabled";
+
     private Boolean enabled = true;
-    private Boolean mockEnabled = false;
+    /**
+     * Runtime-only switch bound from Nacos or another Spring property source.
+     *
+     * <p>The legacy {@code system_config.ai.mock.enabled} database record is
+     * intentionally not read by the AI runtime.</p>
+     */
+    private Boolean mockEnabled;
     private String provider = "openai-compatible";
     private String baseUrl = "";
     private String apiKey = "";
@@ -26,9 +34,25 @@ public class AiProperties {
         return Duration.ofSeconds(timeoutSeconds == null || timeoutSeconds <= 0 ? 30 : timeoutSeconds);
     }
 
+    public boolean isMockModeConfigured() {
+        return mockEnabled != null;
+    }
+
+    public boolean isMockModeEnabled() {
+        return Boolean.TRUE.equals(mockEnabled);
+    }
+
     @PostConstruct
     public void validate() {
-        if (Boolean.FALSE.equals(enabled) || Boolean.TRUE.equals(mockEnabled)) {
+        if (Boolean.FALSE.equals(enabled)) {
+            return;
+        }
+        if (!isMockModeConfigured()) {
+            throw new IllegalStateException(
+                    MOCK_ENABLED_PROPERTY
+                            + " must be explicitly configured by Nacos or another Spring runtime property source");
+        }
+        if (isMockModeEnabled()) {
             return;
         }
         if (!StringUtils.hasText(baseUrl)) {

@@ -91,12 +91,14 @@ class InnerInterviewReportControllerTest {
 
     @Test
     void completeReportCompletesAgentInterviewTaskWithReportEvidence() throws Exception {
+        stubSessionCompletion();
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
         current.setGenerationToken("token-current");
         when(reportMapper.selectOne(any())).thenReturn(current);
         when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(answerOnlyMessages());
         InnerInterviewReportController.CompleteReportDTO dto =
                 new InnerInterviewReportController.CompleteReportDTO();
         dto.setReportId(88L);
@@ -116,7 +118,8 @@ class InnerInterviewReportControllerTest {
         assertEquals("[\"cache consistency\"]", persisted.getWeaknesses());
         assertEquals("[\"review by topic\"]", persisted.getReviewSuggestions());
         assertEquals("[\"keep practicing\"]", persisted.getSuggestions());
-        assertEquals("[{\"question\":\"Q1\"}]", persisted.getQaReview());
+        assertEquals(completeQaReview(), persisted.getQaReview());
+        assertEquals("[\"cache consistency\"]", persisted.getMainProblems());
         assertEquals(formalRubricScores(), persisted.getRubricScores());
         assertEquals("full report body", persisted.getReportContent());
         verify(agentBusinessActionNotifier).completeInterviewReport(10L, 300L, 88L);
@@ -124,6 +127,7 @@ class InnerInterviewReportControllerTest {
 
     @Test
     void completeReportFailsWhenNeitherScoringContractNorAnswerEvidenceExists() {
+        stubSessionCompletion();
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
@@ -152,6 +156,7 @@ class InnerInterviewReportControllerTest {
 
     @Test
     void completeReportPreservesAnswersAsUnscorableWhenEvaluationEvidenceIsMissing() {
+        stubSessionCompletion();
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
@@ -176,7 +181,7 @@ class InnerInterviewReportControllerTest {
         assertEquals(null, persisted.getTotalScore());
         assertTrue(persisted.getQaReview().contains("回答一"));
         assertTrue(persisted.getQaReview().contains("STORED_INTERVIEW_MESSAGE"));
-        assertTrue(persisted.getFailureReason().contains("缺少可信的逐题评分证据"));
+        assertTrue(persisted.getFailureReason().contains("最小可消费结构不完整"));
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
@@ -202,6 +207,7 @@ class InnerInterviewReportControllerTest {
 
     @Test
     void completeReportKeepsRecoveredSingleDimensionEvidenceUnscorable() {
+        stubSessionCompletion();
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
@@ -279,6 +285,27 @@ class InnerInterviewReportControllerTest {
 
         verify(sessionMapper, never()).update(any(), any());
         verify(reportMapper, never()).updateById(any(InterviewReport.class));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportTreatsDuplicateSuccessfulCallbackForSameAttemptAsIdempotentSuccess() {
+        InterviewReport completed = generatedReport();
+        completed.setGenerationToken("token-current");
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(reportMapper.selectOne(any())).thenReturn(completed);
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("SUCCESS");
+
+        Result<Void> result = controller.completeReport(1L, dto);
+
+        assertEquals(0, result.getCode());
+        verify(sessionMapper, never()).update(any(), any());
+        verify(reportMapper, never()).update(any(InterviewReport.class), any(Wrapper.class));
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
@@ -389,6 +416,10 @@ class InnerInterviewReportControllerTest {
         }
     }
 
+    private void stubSessionCompletion() {
+        when(sessionMapper.update(any(), any(Wrapper.class))).thenReturn(1);
+    }
+
     private InterviewSession targetJobSession() {
         InterviewSession session = new InterviewSession();
         session.setId(1L);
@@ -411,17 +442,18 @@ class InnerInterviewReportControllerTest {
     }
 
     private Map<String, Object> reportPayload() {
-        return Map.of(
-                "totalScore", 82,
-                "summary", "ok",
-                "weakPoints", "[\"system design\"]",
-                "strengths", "[\"clear communication\"]",
-                "weaknesses", "[\"cache consistency\"]",
-                "reviewSuggestions", "[\"review by topic\"]",
-                "suggestions", "[\"keep practicing\"]",
-                "qaReview", "[{\"question\":\"Q1\"}]",
-                "rubricScores", formalRubricScores(),
-                "reportContent", "full report body");
+        return Map.ofEntries(
+                Map.entry("totalScore", 82),
+                Map.entry("summary", "ok"),
+                Map.entry("weakPoints", "[\"system design\"]"),
+                Map.entry("strengths", "[\"clear communication\"]"),
+                Map.entry("weaknesses", "[\"cache consistency\"]"),
+                Map.entry("mainProblems", "[\"cache consistency\"]"),
+                Map.entry("reviewSuggestions", "[\"review by topic\"]"),
+                Map.entry("suggestions", "[\"keep practicing\"]"),
+                Map.entry("qaReview", completeQaReview()),
+                Map.entry("rubricScores", formalRubricScores()),
+                Map.entry("reportContent", "full report body"));
     }
 
     private String formalRubricScores() {
@@ -487,18 +519,34 @@ class InnerInterviewReportControllerTest {
     }
 
     private List<InterviewMessage> answerOnlyMessages() {
-        InterviewMessage question = new InterviewMessage();
-        question.setId(11L);
-        question.setRole("AI");
-        question.setMessageType("QUESTION");
-        question.setQuestionContent("问题一");
+        List<InterviewMessage> messages = new java.util.ArrayList<>();
+        for (int index = 1; index <= 6; index++) {
+            InterviewMessage question = new InterviewMessage();
+            question.setId(10L + (index * 2L) - 1L);
+            question.setRole("AI");
+            question.setMessageType("QUESTION");
+            question.setQuestionContent("问题" + index);
 
-        InterviewMessage answer = new InterviewMessage();
-        answer.setId(12L);
-        answer.setParentMessageId(11L);
-        answer.setRole("USER");
-        answer.setMessageType("ANSWER");
-        answer.setUserAnswer("回答一");
-        return List.of(question, answer);
+            InterviewMessage answer = new InterviewMessage();
+            answer.setId(10L + (index * 2L));
+            answer.setParentMessageId(question.getId());
+            answer.setRole("USER");
+            answer.setMessageType("ANSWER");
+            answer.setUserAnswer("回答" + (index == 1 ? "一" : index));
+            messages.add(question);
+            messages.add(answer);
+        }
+        return List.copyOf(messages);
+    }
+
+    private String completeQaReview() {
+        return """
+                [{"question":"Q1","answer":"A1","score":82,"comment":"点评1"},
+                 {"question":"Q2","answer":"A2","score":82,"comment":"点评2"},
+                 {"question":"Q3","answer":"A3","score":82,"comment":"点评3"},
+                 {"question":"Q4","answer":"A4","score":82,"comment":"点评4"},
+                 {"question":"Q5","answer":"A5","score":82,"comment":"点评5"},
+                 {"question":"Q6","answer":"A6","score":82,"comment":"点评6"}]
+                """.replaceAll("\\s+", "");
     }
 }

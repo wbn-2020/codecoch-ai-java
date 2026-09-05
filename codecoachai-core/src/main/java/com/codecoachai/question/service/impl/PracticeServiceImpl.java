@@ -18,6 +18,7 @@ import com.codecoachai.question.domain.enums.PracticeReviewStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationMatchStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationPracticeStatus;
 import com.codecoachai.question.domain.vo.PracticeRecordVO;
+import com.codecoachai.question.domain.vo.QuestionRecommendationItemVO;
 import com.codecoachai.question.feign.AiPracticeFeignClient;
 import com.codecoachai.question.feign.dto.PracticeReviewDTO;
 import com.codecoachai.question.feign.vo.AgentTaskVO;
@@ -66,12 +67,70 @@ public class PracticeServiceImpl implements PracticeService {
         }
         Question question = getQuestionOrThrow(questionId);
         RecommendationContext recommendationContext = resolveRecommendationContext(userId, question.getId(), dto);
+        return submitQuestion(userId, question, recommendationContext, dto);
+    }
+
+    @Override
+    public QuestionRecommendationItemVO recommendationQuestion(Long recommendationItemId) {
+        RecommendationContext context = loadRecommendationContext(requireCurrentUserId(), recommendationItemId);
+        QuestionRecommendationItem item = context.item();
+        if (!canPracticePrivately(item)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item has no valid private practice content");
+        }
+        QuestionRecommendationItemVO vo = new QuestionRecommendationItemVO();
+        vo.setId(item.getId());
+        vo.setBatchId(item.getBatchId());
+        vo.setQuestionId(item.getQuestionId());
+        vo.setQuestionTitle(item.getQuestionTitle());
+        vo.setQuestionContent(item.getQuestionContent());
+        vo.setQuestionType(item.getQuestionType());
+        vo.setDifficulty(item.getDifficulty());
+        vo.setSkillCode(item.getSkillCode());
+        vo.setSkillName(item.getSkillName());
+        vo.setGapSeverity(item.getGapSeverity());
+        vo.setRecommendReason(item.getRecommendReason());
+        vo.setAnswerHint(item.getAnswerHint());
+        vo.setEvaluatePoints(item.getEvaluatePoints());
+        vo.setSortOrder(item.getSortOrder());
+        vo.setMatchStatus(item.getMatchStatus());
+        vo.setPracticeStatus(item.getPracticeStatus());
+        vo.setCanPractice(true);
+        vo.setPracticeQuestionId(item.getQuestionId());
+        vo.setPracticeKind(item.getQuestionId() == null ? "PRIVATE_RECOMMENDATION" : "QUESTION_BANK");
+        vo.setSourceType(context.batch().getSourceType());
+        vo.setSourceId(context.batch().getSourceId());
+        vo.setTrustStatus("VERIFIED");
+        vo.setFallback(false);
+        vo.setCreatedAt(item.getCreatedAt());
+        vo.setUpdatedAt(item.getUpdatedAt());
+        return vo;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PracticeRecordVO submitRecommendation(Long recommendationItemId, PracticeSubmitDTO dto) {
+        Long userId = requireCurrentUserId();
+        if (dto == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "请填写练习提交内容");
+        }
+        RecommendationContext context = loadRecommendationContext(userId, recommendationItemId);
+        QuestionRecommendationItem item = context.item();
+        if (!canPracticePrivately(item)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item has no valid private practice content");
+        }
+        return submitQuestion(userId, questionFromRecommendation(item), context, dto);
+    }
+
+    private PracticeRecordVO submitQuestion(Long userId, Question question,
+                                            RecommendationContext recommendationContext,
+                                            PracticeSubmitDTO dto) {
         PracticeRecord record = new PracticeRecord();
         record.setUserId(userId);
         record.setQuestionId(question.getId());
         record.setAnswerContent(dto.getAnswerContent().trim());
         record.setAnswerDurationSeconds(dto.getAnswerDurationSeconds());
-        record.setSource(defaultSource(dto.getSource()));
+        record.setSource(recommendationContext != null && question.getId() == null
+                ? "PRIVATE_RECOMMENDATION" : defaultSource(dto.getSource()));
         applyRecommendationContext(record, recommendationContext, dto);
         record.setReferenceAnswerSnapshot(question.getReferenceAnswer());
         record.setQuestionSnapshotJson(questionSnapshot(question));
@@ -261,15 +320,8 @@ public class PracticeServiceImpl implements PracticeService {
         if (dto == null || dto.getRecommendationItemId() == null) {
             return null;
         }
-        QuestionRecommendationItem item = recommendationItemMapper.selectOne(
-                new LambdaQueryWrapper<QuestionRecommendationItem>()
-                        .eq(QuestionRecommendationItem::getId, dto.getRecommendationItemId())
-                        .eq(QuestionRecommendationItem::getUserId, userId)
-                        .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
-                        .last("limit 1"));
-        if (item == null) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item not found");
-        }
+        RecommendationContext context = loadRecommendationContext(userId, dto.getRecommendationItemId());
+        QuestionRecommendationItem item = context.item();
         if (item.getQuestionId() == null
                 || QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode().equals(item.getPracticeStatus())
                 || QuestionRecommendationMatchStatus.UNMATCHED_DRAFT.getCode().equals(item.getMatchStatus())) {
@@ -277,6 +329,25 @@ public class PracticeServiceImpl implements PracticeService {
         }
         if (!questionId.equals(item.getQuestionId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item does not match questionId");
+        }
+        if (dto.getBatchId() != null && !dto.getBatchId().equals(context.batch().getId())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is inconsistent");
+        }
+        return context;
+    }
+
+    private RecommendationContext loadRecommendationContext(Long userId, Long recommendationItemId) {
+        if (recommendationItemId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item is required");
+        }
+        QuestionRecommendationItem item = recommendationItemMapper.selectOne(
+                new LambdaQueryWrapper<QuestionRecommendationItem>()
+                        .eq(QuestionRecommendationItem::getId, recommendationItemId)
+                        .eq(QuestionRecommendationItem::getUserId, userId)
+                        .eq(QuestionRecommendationItem::getDeleted, CommonConstants.NO)
+                        .last("limit 1"));
+        if (item == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation item not found");
         }
         QuestionRecommendationBatch batch = recommendationBatchMapper.selectOne(
                 new LambdaQueryWrapper<QuestionRecommendationBatch>()
@@ -287,10 +358,28 @@ public class PracticeServiceImpl implements PracticeService {
         if (batch == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation batch not found");
         }
-        if (dto.getBatchId() != null && !dto.getBatchId().equals(batch.getId())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "batchId is inconsistent");
+        if (!"SUCCESS".equals(batch.getStatus()) || batch.getAiCallLogId() == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "Recommendation batch is not ready for practice");
         }
         return new RecommendationContext(item, batch);
+    }
+
+    private boolean canPracticePrivately(QuestionRecommendationItem item) {
+        return item != null
+                && StringUtils.hasText(item.getQuestionTitle())
+                && StringUtils.hasText(item.getQuestionContent())
+                && (StringUtils.hasText(item.getAnswerHint()) || StringUtils.hasText(item.getEvaluatePoints()));
+    }
+
+    private Question questionFromRecommendation(QuestionRecommendationItem item) {
+        Question question = new Question();
+        question.setTitle(item.getQuestionTitle());
+        question.setContent(item.getQuestionContent());
+        question.setQuestionType(firstText(item.getQuestionType(), "SHORT_ANSWER"));
+        question.setDifficulty(firstText(item.getDifficulty(), "MEDIUM"));
+        question.setReferenceAnswer(firstText(item.getAnswerHint(), item.getEvaluatePoints()));
+        question.setAnalysis(firstText(item.getEvaluatePoints(), item.getRecommendReason()));
+        return question;
     }
 
     private void applyRecommendationContext(PracticeRecord record, RecommendationContext context,

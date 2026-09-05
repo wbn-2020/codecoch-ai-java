@@ -9,6 +9,12 @@ public interface JobReadinessService {
 
     JobReadinessSnapshotVO createSnapshot(Long targetJobId);
 
+    /**
+     * Regenerates one user's snapshot from current job evidence without overwriting
+     * the historical source snapshot. Intended only for the bounded admin repair flow.
+     */
+    JobReadinessSnapshotVO regenerateForRepair(Long userId, Long targetJobId, String repairBatchId);
+
     JobReadinessSnapshotVO latest(Long targetJobId);
 
     JobReadinessSnapshotVO latestForUser(Long userId, Long targetJobId);

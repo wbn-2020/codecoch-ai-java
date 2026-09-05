@@ -77,11 +77,12 @@ public class QuestionRecommendationGenerateConsumer
             }
 
             QuestionRecommendationGenerateVO result = response.getData();
-            if ("FAILED".equalsIgnoreCase(result.getStatus())) {
+            if (!isConsumableSuccess(result)) {
                 String userReason = StringUtils.hasText(result.getErrorMessage())
                         ? result.getErrorMessage()
-                        : "question recommendation generation failed";
-                String safeReason = safeFailureReason(result.getErrorMessage(), "question recommendation generation failed");
+                        : "question recommendation generation did not produce practice-ready questions";
+                String safeReason = safeFailureReason(result.getErrorMessage(),
+                        "question recommendation generation did not produce practice-ready questions");
                 asyncTaskService.markTerminalFailed(envelope.getMessageId(), safeReason);
                 notifyFailed(payload, userReason);
                 log.warn("Question recommendation task failed batchId={} reason={}",
@@ -131,6 +132,16 @@ public class QuestionRecommendationGenerateConsumer
                 || code == ErrorCode.VALIDATION_ERROR.getCode()
                 || code == ErrorCode.UNAUTHORIZED.getCode()
                 || code == ErrorCode.FORBIDDEN.getCode());
+    }
+
+    private boolean isConsumableSuccess(QuestionRecommendationGenerateVO result) {
+        return result != null
+                && "SUCCESS".equalsIgnoreCase(result.getStatus())
+                && "VERIFIED".equalsIgnoreCase(result.getTrustStatus())
+                && !Boolean.TRUE.equals(result.getFallback())
+                && result.getAiCallLogId() != null
+                && result.getQuestionCount() != null
+                && result.getQuestionCount() > 0;
     }
 
     private String safeFailureReason(String reason, String fallback) {

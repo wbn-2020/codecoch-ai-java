@@ -6,6 +6,8 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import jakarta.validation.ConstraintViolationException;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
@@ -38,7 +40,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<Result<Void>> handleBusinessException(BusinessException ex) {
-        return response(withTrace(Result.fail(ex.getCode(), ex.getMessage())), httpStatusFor(ex));
+        return response(withTrace(Result.fail(
+                ex.getCode(),
+                ex.getMessage(),
+                ex.getRetryable(),
+                ex.getNextStep(),
+                ex.getFieldErrors())), httpStatusFor(ex));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -46,7 +53,7 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
                 .map(this::formatFieldError)
                 .collect(Collectors.joining("; "));
-        return response(withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message)), HttpStatus.BAD_REQUEST);
+        return validationResponse(message, fieldErrors(ex.getBindingResult().getFieldErrors()));
     }
 
     @ExceptionHandler(BindException.class)
@@ -54,7 +61,7 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
                 .map(this::formatFieldError)
                 .collect(Collectors.joining("; "));
-        return response(withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message)), HttpStatus.BAD_REQUEST);
+        return validationResponse(message, fieldErrors(ex.getBindingResult().getFieldErrors()));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)
@@ -62,13 +69,21 @@ public class GlobalExceptionHandler {
         String message = ex.getConstraintViolations().stream()
                 .map(violation -> violation.getPropertyPath() + " " + violation.getMessage())
                 .collect(Collectors.joining("; "));
-        return response(withTrace(Result.fail(ErrorCode.VALIDATION_ERROR.getCode(), message)), HttpStatus.BAD_REQUEST);
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        ex.getConstraintViolations().forEach(violation ->
+                fieldErrors.put(violation.getPropertyPath().toString(), violation.getMessage()));
+        return validationResponse(message, fieldErrors);
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<Result<Void>> handleMissingParameter(MissingServletRequestParameterException ex) {
         return response(
-                withTrace(Result.fail(ErrorCode.PARAM_ERROR.getCode(), ex.getParameterName() + "不能为空")),
+                withTrace(Result.fail(
+                        ErrorCode.PARAM_ERROR.getCode(),
+                        ex.getParameterName() + "不能为空",
+                        false,
+                        "补充必填请求参数后重试",
+                        Map.of(ex.getParameterName(), "不能为空"))),
                 HttpStatus.BAD_REQUEST);
     }
 
@@ -163,6 +178,21 @@ public class GlobalExceptionHandler {
 
     private String formatFieldError(FieldError error) {
         return error.getField() + " " + error.getDefaultMessage();
+    }
+
+    private Map<String, String> fieldErrors(java.util.List<FieldError> errors) {
+        Map<String, String> result = new LinkedHashMap<>();
+        errors.forEach(error -> result.put(error.getField(), error.getDefaultMessage()));
+        return result;
+    }
+
+    private ResponseEntity<Result<Void>> validationResponse(String message, Map<String, String> fieldErrors) {
+        return response(withTrace(Result.fail(
+                ErrorCode.VALIDATION_ERROR.getCode(),
+                message,
+                false,
+                "修正标记字段后重新提交",
+                fieldErrors)), HttpStatus.BAD_REQUEST);
     }
 
     private String sanitize(String message) {

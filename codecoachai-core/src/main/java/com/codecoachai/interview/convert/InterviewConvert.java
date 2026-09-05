@@ -4,6 +4,7 @@ import com.codecoachai.interview.domain.entity.InterviewMessage;
 import com.codecoachai.interview.domain.entity.InterviewReport;
 import com.codecoachai.interview.domain.entity.InterviewSession;
 import com.codecoachai.interview.domain.entity.InterviewStage;
+import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.vo.InterviewListVO;
 import com.codecoachai.interview.domain.vo.InterviewMessageVO;
 import com.codecoachai.interview.domain.vo.InterviewReportNextActionVO;
@@ -87,9 +88,14 @@ public final class InterviewConvert {
         InterviewListVO vo = toListVO(session);
         if (report != null) {
             vo.setReportId(report.getId());
+            vo.setReportStatus(report.getStatus());
             if (InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
                 vo.setTotalScore(report.getTotalScore());
             }
+        } else if (ReportStatusEnum.isComparisonReady(session.getReportStatus())) {
+            // A successful session projection without a report row is stale and not consumable.
+            vo.setReportStatus(ReportStatusEnum.NOT_GENERATED.name());
+            vo.setTotalScore(null);
         }
         return vo;
     }

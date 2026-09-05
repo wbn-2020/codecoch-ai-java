@@ -152,6 +152,27 @@ class AsyncTaskServiceTest {
     }
 
     @Test
+    void registerPendingPersistsStableExecutionIdentity() {
+        when(asyncTaskMapper.selectOne(any())).thenReturn(null);
+
+        AsyncTask registered = service.registerPending(
+                "message-jd-1",
+                "job-target.parse",
+                "88",
+                10L,
+                "trace-jd-1",
+                "execution-jd-1",
+                "payload",
+                3);
+
+        ArgumentCaptor<AsyncTask> taskCaptor = ArgumentCaptor.forClass(AsyncTask.class);
+        verify(asyncTaskMapper).insert(taskCaptor.capture());
+        assertEquals("execution-jd-1", registered.getExecutionId());
+        assertEquals("execution-jd-1", taskCaptor.getValue().getExecutionId());
+        assertEquals(1, taskCaptor.getValue().getAttemptNo());
+    }
+
+    @Test
     void acquireReadyTaskUsesNullToNewTokenCas() {
         AsyncTask pending = task("msg-pending", "PENDING");
         pending.setUpdatedAt(NOW.minusSeconds(10));
@@ -546,10 +567,78 @@ class AsyncTaskServiceTest {
 
         assertThrows(
                 BusinessException.class,
-                () -> service.markManualRetryDispatchFailed(10L, "send failed"));
+                () -> service.markManualRetryDispatchFailed(7L, 10L, "retry:7:child", "send failed"));
 
         verify(asyncTaskMapper).markManualRetryDispatchFailed(
                 eq(10L), isNull(), anyString(), eq(NOW));
+        verify(asyncTaskMapper, never()).markManualRetryParentDispatchFailed(any(), anyString(), any());
+    }
+
+    @Test
+    void manualRetryCreatesAuditableChildAndAdvancesParentAttempt() {
+        AsyncTask parent = task("msg-parent", "FAILED");
+        parent.setId(7L);
+        parent.setExecutionId(null);
+        parent.setAttemptNo(1);
+        parent.setRetryCount(1);
+        parent.setGovernanceStatus("RETRY_APPROVED");
+        parent.setRetryPreviewHash("preview-v2");
+        parent.setUpdatedAt(NOW);
+        AsyncTaskService.ManualRetryAttempt attempt = new AsyncTaskService.ManualRetryAttempt(
+                "msg-child",
+                "trace-child",
+                "retry:7:child",
+                "legacy-task:7",
+                "retry-key-child",
+                3,
+                "{\"batchId\":\"batch-1\"}",
+                "preview-v2");
+        when(asyncTaskMapper.markManualRetryParentDispatched(
+                7L,
+                "msg-parent",
+                "preview-v2",
+                "legacy-task:7",
+                "retry:7:child",
+                3,
+                NOW,
+                NOW)).thenReturn(1);
+        when(asyncTaskMapper.insert(any(AsyncTask.class))).thenAnswer(invocation -> {
+            AsyncTask inserted = invocation.getArgument(0);
+            inserted.setId(17L);
+            return 1;
+        });
+
+        AsyncTask child = service.prepareManualRetry(parent, attempt);
+
+        assertEquals(17L, child.getId());
+        assertEquals("retry:7:child", child.getExecutionId());
+        assertEquals("legacy-task:7", child.getParentExecutionId());
+        assertEquals(3, child.getAttemptNo());
+        assertEquals("RETRYING", child.getGovernanceStatus());
+        verify(asyncTaskMapper).markManualRetryParentDispatched(
+                7L,
+                "msg-parent",
+                "preview-v2",
+                "legacy-task:7",
+                "retry:7:child",
+                3,
+                NOW,
+                NOW);
+    }
+
+    @Test
+    void manualDispatchFailureMovesParentAndChildToManualReviewTogether() {
+        when(asyncTaskMapper.markManualRetryDispatchFailed(
+                eq(17L), isNull(), anyString(), eq(NOW))).thenReturn(1);
+        when(asyncTaskMapper.markManualRetryParentDispatchFailed(
+                7L, "retry:7:child", NOW)).thenReturn(1);
+
+        service.markManualRetryDispatchFailed(7L, 17L, "retry:7:child", "send failed");
+
+        verify(asyncTaskMapper).markManualRetryDispatchFailed(
+                eq(17L), isNull(), anyString(), eq(NOW));
+        verify(asyncTaskMapper).markManualRetryParentDispatchFailed(
+                7L, "retry:7:child", NOW);
     }
 
     private AsyncTaskService newService(AsyncTaskLeaseRuntime runtime) {

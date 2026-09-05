@@ -453,19 +453,20 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             GenerateQuestionRecommendationVO aiResult = FeignResultUtils.unwrap(
                     aiRecommendationFeignClient.generate(aiRequest));
             validateAiResult(aiResult);
-            replaceItems(batch, aiResult.getQuestions());
+            int questionCount = replaceItems(batch, aiResult.getQuestions());
             batch.setStatus(QuestionRecommendationBatchStatus.SUCCESS.getCode());
             batch.setAiCallLogId(aiResult.getAiCallLogId());
-            batch.setQuestionCount(aiResult.getQuestions().size());
+            batch.setQuestionCount(questionCount);
             batch.setResultJson(toJson(QuestionRecommendationResultPayloadUtils.buildMinimizedMetadata(
                     aiResult.getAiCallLogId(),
                     batch.getId(),
-                    aiResult.getQuestions().size())));
+                    questionCount)));
             batch.setErrorMessage(null);
             batchMapper.updateById(batch);
             return toGenerateVO(batchMapper.selectById(batch.getId()));
         } catch (RuntimeException ex) {
             String failureMessage = userFacingGenerationError(ex);
+            clearBatchItems(batch);
             batch.setStatus(QuestionRecommendationBatchStatus.FAILED.getCode());
             batch.setErrorMessage(truncateErrorMessage(failureMessage));
             batchMapper.updateById(batch);
@@ -763,12 +764,13 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     }
 
     private void validateAiResult(GenerateQuestionRecommendationVO aiResult) {
-        if (aiResult == null || aiResult.getQuestions() == null || aiResult.getQuestions().isEmpty()) {
+        if (aiResult == null || aiResult.getAiCallLogId() == null
+                || aiResult.getQuestions() == null || aiResult.getQuestions().isEmpty()) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题暂时没有生成有效题目，请稍后重试");
         }
     }
 
-    private void replaceItems(QuestionRecommendationBatch batch, List<QuestionRecommendationDraftItemVO> drafts) {
+    private int replaceItems(QuestionRecommendationBatch batch, List<QuestionRecommendationDraftItemVO> drafts) {
         itemMapper.delete(new LambdaQueryWrapper<QuestionRecommendationItem>()
                 .eq(QuestionRecommendationItem::getBatchId, batch.getId())
                 .eq(QuestionRecommendationItem::getUserId, batch.getUserId()));
@@ -798,14 +800,23 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             item.setMatchStatus(matched
                     ? QuestionRecommendationMatchStatus.MATCHED.getCode()
                     : QuestionRecommendationMatchStatus.UNMATCHED_DRAFT.getCode());
-            item.setPracticeStatus(matched
-                    ? QuestionRecommendationPracticeStatus.UNPRACTICED.getCode()
-                    : QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode());
+            item.setPracticeStatus(QuestionRecommendationPracticeStatus.UNPRACTICED.getCode());
             itemMapper.insert(item);
         }
         if (order == 1) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "推荐题暂时没有生成有效题目，请稍后重试");
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "推荐题没有生成合法题干，请调整岗位短板后重新生成");
         }
+        return order - 1;
+    }
+
+    private void clearBatchItems(QuestionRecommendationBatch batch) {
+        if (batch == null || batch.getId() == null || batch.getUserId() == null) {
+            return;
+        }
+        itemMapper.delete(new LambdaQueryWrapper<QuestionRecommendationItem>()
+                .eq(QuestionRecommendationItem::getBatchId, batch.getId())
+                .eq(QuestionRecommendationItem::getUserId, batch.getUserId()));
     }
 
     private Long matchExistingQuestion(QuestionRecommendationDraftItemVO draft) {
@@ -1504,12 +1515,14 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         vo.setAnswerHint(item.getAnswerHint());
         vo.setEvaluatePoints(item.getEvaluatePoints());
         vo.setSortOrder(item.getSortOrder());
-        boolean canPractice = item.getQuestionId() != null
+        boolean officialQuestion = item.getQuestionId() != null
                 && QuestionRecommendationMatchStatus.MATCHED.getCode().equals(defaultMatchStatus(item));
+        boolean canPractice = officialQuestion || hasPrivatePracticeContent(item);
         vo.setMatchStatus(defaultMatchStatus(item));
         vo.setPracticeStatus(defaultPracticeStatus(item, canPractice));
         vo.setCanPractice(canPractice);
-        vo.setPracticeQuestionId(canPractice ? item.getQuestionId() : null);
+        vo.setPracticeQuestionId(officialQuestion ? item.getQuestionId() : null);
+        vo.setPracticeKind(officialQuestion ? "QUESTION_BANK" : canPractice ? "PRIVATE_RECOMMENDATION" : null);
         vo.setSourceType(presentation.sourceType());
         vo.setSourceId(presentation.sourceId());
         vo.setTrustStatus(itemTrustStatus(item, batch, canPractice));
@@ -1530,9 +1543,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     }
 
     private String defaultPracticeStatus(QuestionRecommendationItem item, boolean canPractice) {
-        if (!canPractice) {
-            return QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode();
-        }
+        if (!canPractice) return QuestionRecommendationPracticeStatus.NOT_PRACTICABLE.getCode();
         return StringUtils.hasText(item.getPracticeStatus())
                 ? item.getPracticeStatus()
                 : QuestionRecommendationPracticeStatus.UNPRACTICED.getCode();
@@ -1569,9 +1580,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     }
 
     private String itemTrustStatus(QuestionRecommendationItem item, QuestionRecommendationBatch batch, boolean canPractice) {
-        if (!canPractice) {
-            return TRUST_FALLBACK;
-        }
+        if (!canPractice) return TRUST_FALLBACK;
         if (batch == null || batch.getAiCallLogId() == null) {
             return TRUST_PARTIAL;
         }
@@ -1591,8 +1600,17 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
         if (!canPractice) {
             return source + " " + sourceId + " · " + skill + " · AI 推荐方向尚未匹配正式题库。";
         }
-        String reason = firstText(item.getRecommendReason(), item.getAnswerHint(), item.getEvaluatePoints(), "已匹配正式题库，可直接练习。");
+        String practiceSource = item.getQuestionId() == null ? "岗位专属私有练习题" : "已匹配正式题库";
+        String reason = firstText(item.getRecommendReason(), item.getAnswerHint(), item.getEvaluatePoints(),
+                practiceSource + "，可直接练习。");
         return source + " " + sourceId + " · " + skill + " · " + reason;
+    }
+
+    private boolean hasPrivatePracticeContent(QuestionRecommendationItem item) {
+        return item != null
+                && StringUtils.hasText(item.getQuestionTitle())
+                && StringUtils.hasText(item.getQuestionContent())
+                && (StringUtils.hasText(item.getAnswerHint()) || StringUtils.hasText(item.getEvaluatePoints()));
     }
 
     private PresentationEvidence presentationEvidence(QuestionRecommendationBatch batch) {

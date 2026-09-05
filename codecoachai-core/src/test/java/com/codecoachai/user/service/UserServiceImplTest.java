@@ -3,6 +3,7 @@ package com.codecoachai.user.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -18,6 +19,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.codecoachai.common.security.admin.AdminPermissionCache;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -61,6 +64,8 @@ class UserServiceImplTest {
     private JdbcTemplate jdbcTemplate;
     @Mock
     private AdminPermissionCache adminPermissionCache;
+    @Mock
+    private StudyProgressStatisticsService progressStatisticsService;
 
     private UserServiceImpl userService;
 
@@ -72,7 +77,8 @@ class UserServiceImplTest {
                 roleService,
                 passwordEncoder,
                 jdbcTemplate,
-                adminPermissionCache);
+                adminPermissionCache,
+                progressStatisticsService);
         LoginUserContext.setLoginUser(new LoginUser(1001L, "admin", "Admin", List.of("ADMIN")));
     }
 
@@ -142,6 +148,17 @@ class UserServiceImplTest {
     @Test
     @SuppressWarnings({"rawtypes", "unchecked"})
     void dashboardUsesLatestActivePlanCumulativeProgressAndShanghaiBusinessDate() {
+        StudyProgressSnapshot progress = new StudyProgressSnapshot();
+        progress.setPlanId(88L);
+        progress.setPlanTitle("Latest active plan");
+        progress.setPlanSummary("Read-only plan summary");
+        progress.setPlanStatus("ACTIVE");
+        progress.setTotalTasks(3);
+        progress.setCompletedTasks(3);
+        progress.setCompletionRate(100);
+        progress.setBusinessDate(LocalDate.now(ZoneId.of("Asia/Shanghai")));
+        progress.setBusinessTimezone("Asia/Shanghai");
+        when(progressStatisticsService.current(1001L)).thenReturn(progress);
         List<String> queriedSql = new ArrayList<>();
         when(jdbcTemplate.queryForObject(anyString(), eq(Long.class), any(Object[].class)))
                 .thenAnswer(invocation -> {
@@ -194,9 +211,16 @@ class UserServiceImplTest {
         assertEquals("NO_SCHEDULE", overview.getActiveStudyPlan().getTodayStatus());
         assertEquals(0L, overview.getTodayTaskCount());
         assertEquals(0L, overview.getTodayCompletedTaskCount());
-        assertTrue(queriedSql.stream().anyMatch(sql ->
-                sql.contains("plan_status = 'ACTIVE'") && sql.contains("ORDER BY updated_at DESC, id DESC")));
+        verify(progressStatisticsService).current(1001L);
         assertTrue(queriedSql.stream().noneMatch(sql -> sql.contains("CURDATE()")));
+    }
+
+    @Test
+    void dashboardPropagatesMetadataFailuresInsteadOfReportingAnEmptyOverview() {
+        when(progressStatisticsService.current(1001L))
+                .thenThrow(new RuntimeException("metadata unavailable"));
+
+        assertThrows(RuntimeException.class, () -> userService.getDashboardOverview());
     }
 
     @Test

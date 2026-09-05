@@ -10,6 +10,7 @@ import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
+import com.codecoachai.common.mq.payload.ResumeJobMatchPayload;
 import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.resume.domain.dto.ResumeJobMatchCreateDTO;
 import com.codecoachai.resume.domain.dto.ResumeJobMatchQueryDTO;
@@ -44,6 +45,7 @@ import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
 import com.codecoachai.resume.service.ResumeJobMatchService;
 import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
@@ -56,6 +58,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
@@ -78,6 +81,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private static final String TRUST_VERIFIED = ResumeJobMatchTrustPolicy.TRUST_VERIFIED;
     private static final String TRUST_PARTIAL = ResumeJobMatchTrustPolicy.TRUST_PARTIAL;
     private static final String TRUST_FALLBACK = ResumeJobMatchTrustPolicy.TRUST_FALLBACK;
+    private static final int MATCH_ASYNC_MAX_RETRY = 3;
     private static final int DETAIL_DIMENSION_MAX_CHARS = 255;
     private static final int DETAIL_SKILL_NAME_MAX_BYTES = 65_535;
     private static final int DETAIL_MATCH_LEVEL_MAX_CHARS = 32;
@@ -96,6 +100,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     private final TransactionTemplate transactionTemplate;
     private final Optional<ResumeJobMatchMqDispatcher> resumeJobMatchMqDispatcher;
     private final ResumeJobMatchTrustPolicy resumeJobMatchTrustPolicy;
+    private final AsyncTaskService asyncTaskService;
 
     @Override
     public ResumeJobMatchSubmitVO createReport(ResumeJobMatchCreateDTO dto) {
@@ -110,11 +115,25 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             }
         }
         ResumeJobMatchReport report = transactionTemplate.execute(status -> createProcessingReport(context));
-        MqDispatchReceipt receipt = dispatchAnalyze(report);
+        MqDispatchReceipt pendingReceipt;
+        try {
+            pendingReceipt = registerPendingDispatch(report);
+        } catch (RuntimeException ex) {
+            log.error("Resume job match task registration failed reportId={}", report.getId(), ex);
+            return failExecution(report.getId(), "resume job match task registration failed");
+        }
+        MqDispatchReceipt receipt = dispatchAnalyze(report, pendingReceipt);
         if (receipt != null) {
             return withAsyncReceipt(toSubmitVO(report), receipt);
         }
-        return generateReport(report.getId());
+        ResumeJobMatchSubmitVO result = generateReport(report.getId());
+        asyncTaskService.completePending(
+                pendingReceipt.getMessageId(),
+                isTrustedSuccess(result),
+                result,
+                result == null ? "resume job match fallback execution did not return a result"
+                        : result.getErrorMessage());
+        return withAsyncReceipt(result, pendingReceipt);
     }
 
     @Override
@@ -225,16 +244,40 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         MatchContext context = prepareContext(oldReport.getResumeId(), oldReport.getTargetJobId(), userId,
                 oldReport.getResumeVersionId(), oldReport.getJdAnalysisId());
         ResumeJobMatchReport newReport = transactionTemplate.execute(status -> createProcessingReport(context));
-        MqDispatchReceipt receipt = dispatchAnalyze(newReport);
+        MqDispatchReceipt pendingReceipt;
+        try {
+            pendingReceipt = registerPendingDispatch(newReport);
+        } catch (RuntimeException ex) {
+            log.error("Resume job match task registration failed reportId={}", newReport.getId(), ex);
+            return failExecution(newReport.getId(), "resume job match task registration failed");
+        }
+        MqDispatchReceipt receipt = dispatchAnalyze(newReport, pendingReceipt);
         if (receipt != null) {
             return withAsyncReceipt(toSubmitVO(newReport), receipt);
         }
-        return generateReport(newReport.getId());
+        ResumeJobMatchSubmitVO result = generateReport(newReport.getId());
+        asyncTaskService.completePending(
+                pendingReceipt.getMessageId(),
+                isTrustedSuccess(result),
+                result,
+                result == null ? "resume job match fallback execution did not return a result"
+                        : result.getErrorMessage());
+        return withAsyncReceipt(result, pendingReceipt);
     }
 
     @Override
     public ResumeJobMatchSubmitVO executeReport(Long id) {
         return generateReport(id);
+    }
+
+    @Override
+    public ResumeJobMatchSubmitVO failExecution(Long id, String reason) {
+        ResumeJobMatchReport failed = transactionTemplate.execute(
+                status -> markExecutionTerminatedFailed(id, reason));
+        if (failed == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match failure could not be persisted");
+        }
+        return toSubmitVO(failed);
     }
 
     private ResumeJobMatchSubmitVO generateReport(Long reportId) {
@@ -246,15 +289,42 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         try {
             MatchContext context = prepareContext(report.getResumeId(), report.getTargetJobId(), report.getUserId(),
                     report.getResumeVersionId(), report.getJdAnalysisId());
-            AnalyzeResumeJobMatchVO response = FeignResultUtils.unwrap(aiFeignClient.analyzeResumeJobMatch(toAiRequest(report, context)));
+            AnalyzeResumeJobMatchVO response = invokeAiMatchAnalysis(report, context);
             JsonNode resultJson = parseResultJson(response == null ? null : response.getResultJson());
             ResumeJobMatchReport success = persistGeneratedMatchResult(
                     report.getId(), resultJson, response == null ? null : response.getAiCallLogId());
+            updateAiBusinessOutcome(success);
             return toSubmitVO(success);
+        } catch (ResumeJobMatchRetryableException ex) {
+            releaseReportForRetry(report.getId());
+            log.warn("Resume job match generation will retry reportId={}", report.getId(), ex);
+            throw ex;
         } catch (RuntimeException ex) {
             log.warn("Resume job match generation failed, reportId={}", report.getId(), ex);
             ResumeJobMatchReport failed = transactionTemplate.execute(status -> markFailed(report.getId(), ex));
             return toSubmitVO(failed);
+        }
+    }
+
+    private AnalyzeResumeJobMatchVO invokeAiMatchAnalysis(
+            ResumeJobMatchReport report, MatchContext context) {
+        try {
+            return FeignResultUtils.unwrap(aiFeignClient.analyzeResumeJobMatch(toAiRequest(report, context)));
+        } catch (RuntimeException ex) {
+            throw new ResumeJobMatchRetryableException(
+                    "AI match analysis invocation failed", ex);
+        }
+    }
+
+    private void releaseReportForRetry(Long reportId) {
+        int affectedRows = reportMapper.update(null, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .set(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.PROCESSING.getCode())
+                .set(ResumeJobMatchReport::getErrorMessage, null)
+                .eq(ResumeJobMatchReport::getId, reportId)
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode()));
+        if (affectedRows != 1) {
+            log.warn("Resume job match retry release lost reportId={}", reportId);
         }
     }
 
@@ -303,9 +373,87 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     }
 
     private MqDispatchReceipt dispatchAnalyze(ResumeJobMatchReport report) {
-        return report == null ? null : resumeJobMatchMqDispatcher
-                .map(dispatcher -> dispatcher.dispatchAnalyzeWithReceipt(report.getId(), report.getUserId()))
+        return dispatchAnalyze(report, null);
+    }
+
+    private MqDispatchReceipt dispatchAnalyze(
+            ResumeJobMatchReport report, MqDispatchReceipt pendingReceipt) {
+        if (report == null) {
+            return null;
+        }
+        MqDispatchReceipt receipt = resumeJobMatchMqDispatcher
+                .map(dispatcher -> dispatcher.dispatchAnalyzeWithReceipt(
+                        report.getId(),
+                        report.getUserId(),
+                        pendingReceipt == null ? null : pendingReceipt.getMessageId(),
+                        pendingReceipt == null ? null : pendingReceipt.getTraceId()))
                 .orElse(null);
+        if (receipt != null && "SEND_OK".equalsIgnoreCase(receipt.getSendStatus())) {
+            return receipt;
+        }
+        if (receipt != null) {
+            log.warn("Resume job match dispatch did not send reportId={} sendStatus={}",
+                    report.getId(), receipt.getSendStatus());
+        }
+        return null;
+    }
+
+    private MqDispatchReceipt registerPendingDispatch(ResumeJobMatchReport report) {
+        if (report == null || report.getId() == null || report.getUserId() == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report cannot be dispatched");
+        }
+        String traceId = UUID.randomUUID().toString().replace("-", "");
+        String messageId = MATCH_ASYNC_BIZ_TYPE + ":" + report.getId() + ":" + traceId;
+        asyncTaskService.registerPending(
+                messageId,
+                MATCH_ASYNC_BIZ_TYPE,
+                String.valueOf(report.getId()),
+                report.getUserId(),
+                traceId,
+                messageId,
+                ResumeJobMatchPayload.builder()
+                        .reportId(report.getId())
+                        .userId(report.getUserId())
+                        .build(),
+                MATCH_ASYNC_MAX_RETRY);
+        return MqDispatchReceipt.builder()
+                .messageId(messageId)
+                .traceId(traceId)
+                .bizType(MATCH_ASYNC_BIZ_TYPE)
+                .bizId(String.valueOf(report.getId()))
+                .userId(report.getUserId())
+                .sendStatus("PENDING")
+                .build();
+    }
+
+    private boolean isTrustedSuccess(ResumeJobMatchSubmitVO result) {
+        return result != null
+                && ResumeJobMatchStatus.SUCCESS.getCode().equalsIgnoreCase(result.getStatus())
+                && TRUST_VERIFIED.equalsIgnoreCase(result.getTrustStatus())
+                && !Boolean.TRUE.equals(result.getFallback())
+                && Integer.valueOf(0).equals(result.getSchemaWarningCount())
+                && result.getAiCallLogId() != null;
+    }
+
+    private void updateAiBusinessOutcome(ResumeJobMatchReport report) {
+        if (report == null || report.getAiCallLogId() == null) {
+            return;
+        }
+        ResumeJobMatchTrustPolicy.Assessment assessment = resumeJobMatchTrustPolicy.assess(report);
+        Map<String, Object> outcome = new LinkedHashMap<>();
+        outcome.put("aiCallLogId", report.getAiCallLogId());
+        outcome.put("deliveryQuality", assessment.trustedSuccess() ? "COMPLETE" : "DEGRADED");
+        outcome.put("fallbackReasonCode", assessment.trustedSuccess()
+                ? null
+                : "MATCH_REPORT_" + assessment.trustStatus());
+        outcome.put("schemaVersion", "resume-job-match-v1");
+        outcome.put("validationStatus", assessment.trustedSuccess() ? "CONSUMABLE" : "REJECTED");
+        try {
+            aiFeignClient.markResumeJobMatchOutcome(outcome);
+        } catch (RuntimeException ex) {
+            log.error("Resume job match AI outcome callback failed reportId={} aiCallLogId={}",
+                    report.getId(), report.getAiCallLogId(), ex);
+        }
     }
 
     private MatchContext prepareContext(Long resumeId, Long targetJobId, Long userId,
@@ -400,6 +548,9 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         report.setStatus(ResumeJobMatchStatus.SUCCESS.getCode());
         report.setErrorMessage(null);
         report.setAiCallLogId(aiCallLogId);
+        if (!resumeJobMatchTrustPolicy.assess(report).trustedSuccess()) {
+            return markUntrustedResultFailed(report, normalizedResult, dimensionScores, aiCallLogId);
+        }
         int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
                 .eq(ResumeJobMatchReport::getId, report.getId())
                 .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
@@ -442,6 +593,45 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         return reportMapper.selectById(report.getId());
     }
 
+    private ResumeJobMatchReport markUntrustedResultFailed(ResumeJobMatchReport report, ObjectNode normalizedResult,
+                                                           JsonNode dimensionScores, Long aiCallLogId) {
+        normalizedResult.put("trustStatus", TRUST_FALLBACK);
+        normalizedResult.put("fallback", true);
+        normalizedResult.put("status", ResumeJobMatchStatus.FAILED.getCode());
+        ObjectNode diagnostic = objectMapper.createObjectNode();
+        diagnostic.put("category", "MATCH_RESULT_UNTRUSTED");
+        diagnostic.put("message", "AI result did not satisfy the consumable match-report contract");
+        normalizedResult.set("errorDiagnostic", diagnostic);
+
+        report.setStatus(ResumeJobMatchStatus.FAILED.getCode());
+        report.setOverallScore(requireScore(normalizedResult, "overallScore"));
+        report.setTechStackScore(requireScore(dimensionScores, "techStack"));
+        report.setProjectExperienceScore(requireScore(dimensionScores, "projectExperience"));
+        report.setBusinessFitScore(requireScore(dimensionScores, "businessFit"));
+        report.setCommunicationScore(requireScore(dimensionScores, "communication"));
+        report.setStrengthsJson(jsonArrayText(normalizedResult, "strengths"));
+        report.setGapsJson(jsonArrayText(normalizedResult, "gaps"));
+        report.setResumeRisksJson(jsonArrayText(normalizedResult, "resumeRisks"));
+        report.setOptimizationSuggestionsJson(jsonArrayText(normalizedResult, "optimizationSuggestions"));
+        report.setRecommendedLearningTopicsJson(jsonArrayText(normalizedResult, "recommendedLearningTopics"));
+        report.setRecommendedInterviewTopicsJson(jsonArrayText(normalizedResult, "recommendedInterviewTopics"));
+        report.setSummary(textValue(normalizedResult, "summary"));
+        report.setRawResultJson(normalizedResult.toString());
+        report.setErrorMessage("匹配报告未通过可信校验，请检查简历与岗位内容后重新生成。");
+        report.setAiCallLogId(aiCallLogId);
+        int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, report.getId())
+                .eq(ResumeJobMatchReport::getStatus, ResumeJobMatchStatus.RUNNING.getCode())
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO));
+        if (affectedRows != 1) {
+            return reportMapper.selectById(report.getId());
+        }
+        detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
+                .eq(ResumeJobMatchDetail::getReportId, report.getId())
+                .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
+        return reportMapper.selectById(report.getId());
+    }
+
     private ResumeJobMatchReport markFailed(Long reportId, RuntimeException ex) {
         ResumeJobMatchReport report = reportMapper.selectById(reportId);
         if (report == null) {
@@ -463,6 +653,35 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
                 .eq(ResumeJobMatchDetail::getReportId, reportId)
                 .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
+        return reportMapper.selectById(reportId);
+    }
+
+    private ResumeJobMatchReport markExecutionTerminatedFailed(Long reportId, String reason) {
+        ResumeJobMatchReport report = reportMapper.selectById(reportId);
+        if (report == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Resume job match report missing");
+        }
+        ResumeJobMatchStatus status = ResumeJobMatchStatus.of(report.getStatus());
+        if (status == ResumeJobMatchStatus.SUCCESS || status == ResumeJobMatchStatus.FAILED) {
+            return report;
+        }
+        report.setStatus(ResumeJobMatchStatus.FAILED.getCode());
+        report.setErrorMessage("匹配报告执行未完成，请重新生成后再查看结果。");
+        ObjectNode diagnostic = objectMapper.createObjectNode();
+        diagnostic.put("category", "MATCH_EXECUTION_TERMINATED");
+        diagnostic.put("message", safeDiagnosticText(reason));
+        report.setRawResultJson(toJson(diagnostic));
+        int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getId, reportId)
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .in(ResumeJobMatchReport::getStatus,
+                        ResumeJobMatchStatus.PROCESSING.getCode(),
+                        ResumeJobMatchStatus.RUNNING.getCode()));
+        if (affectedRows == 1) {
+            detailMapper.delete(new LambdaQueryWrapper<ResumeJobMatchDetail>()
+                    .eq(ResumeJobMatchDetail::getReportId, reportId)
+                    .eq(ResumeJobMatchDetail::getUserId, report.getUserId()));
+        }
         return reportMapper.selectById(reportId);
     }
 
@@ -899,6 +1118,7 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
             return vo;
         }
         vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setExecutionId(receipt.getMessageId());
         vo.setAsyncTraceId(receipt.getTraceId());
         vo.setAsyncBizType(receipt.getBizType());
         vo.setAsyncBizId(receipt.getBizId());
@@ -1109,7 +1329,8 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         try {
             root = readJsonOrNull(resultJson);
         } catch (RuntimeException ex) {
-            return fallbackStoredMatchResult("AI 返回内容暂时无法整理为匹配报告，系统已生成待复核记录。", ex);
+            throw new ResumeJobMatchRetryableException(
+                    "AI match analysis response could not be parsed", ex);
         }
         JsonNode unwrapped = unwrapStoredMatchRoot(root);
         if (unwrapped instanceof ObjectNode) {
@@ -1866,6 +2087,13 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         private static String message(Long reportId, String reason) {
             return "Resume job match result persistence failed, reportId="
                     + reportId + ", reason=" + reason;
+        }
+    }
+
+    private static final class ResumeJobMatchRetryableException extends RuntimeException {
+
+        private ResumeJobMatchRetryableException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

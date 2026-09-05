@@ -32,6 +32,36 @@ class InterviewConvertTest {
     }
 
     @Test
+    void listVoDoesNotExposeAStaleGeneratedSessionWithoutAReportRow() {
+        InterviewSession session = new InterviewSession();
+        session.setId(66L);
+        session.setReportStatus("GENERATED");
+        session.setTotalScore(91);
+
+        InterviewListVO vo = InterviewConvert.toListVO(session, null);
+
+        assertEquals("NOT_GENERATED", vo.getReportStatus());
+        assertNull(vo.getReportId());
+        assertNull(vo.getTotalScore());
+    }
+
+    @Test
+    void listVoUsesTheCurrentReportStatusAndHidesAnUntrustedScore() {
+        InterviewSession session = new InterviewSession();
+        session.setId(66L);
+        session.setReportStatus("GENERATED");
+        session.setTotalScore(91);
+        InterviewReport report = generatedReport();
+        report.setStatus("UNSCORABLE");
+
+        InterviewListVO vo = InterviewConvert.toListVO(session, report);
+
+        assertEquals("UNSCORABLE", vo.getReportStatus());
+        assertEquals(88L, vo.getReportId());
+        assertNull(vo.getTotalScore());
+    }
+
+    @Test
     void generatedReportBuildsDeterministicNextActionsFromReportData() {
         InterviewReport report = generatedReport();
         report.setRecommendedQuestions("[\"Redis 缓存穿透怎么处理？\"]");

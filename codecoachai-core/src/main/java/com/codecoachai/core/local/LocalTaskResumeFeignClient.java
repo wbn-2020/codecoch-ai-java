@@ -64,6 +64,16 @@ public class LocalTaskResumeFeignClient implements ResumeFeignClient {
     }
 
     @Override
+    public Result<ResumeJobMatchSubmitVO> failJobMatchReport(Long reportId, String reason) {
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(reportId, "reportId");
+            return resultMapper.value(
+                    Result.success(resumeJobMatchService.failExecution(reportId, reason)),
+                    ResumeJobMatchSubmitVO.class);
+        });
+    }
+
+    @Override
     public Result<ResumeOptimizeSubmitVO> executeResumeOptimize(Long recordId) {
         return resultMapper.invoke(() -> {
             resultMapper.requireParameter(recordId, "recordId");

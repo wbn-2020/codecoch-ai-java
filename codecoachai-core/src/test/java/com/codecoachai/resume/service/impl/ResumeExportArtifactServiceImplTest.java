@@ -133,6 +133,7 @@ class ResumeExportArtifactServiceImplTest {
                 templateMapper, exportMapper, artifactMapper, packageMapper, snapshotManager,
                 documentFactory, List.of(renderer), new ResumeZipBuilder(objectMapper),
                 fileFeignClient, properties, new ResumeUploadAdmissionGuard(properties), objectMapper);
+        lenient().when(templateMapper.selectOne(any())).thenReturn(validTemplate());
     }
 
     @AfterEach
@@ -359,6 +360,7 @@ class ResumeExportArtifactServiceImplTest {
         assertTrue(entries.containsKey("application-package.json"));
         Map<String, Object> manifest = objectMapper.readValue(entries.get("manifest.json"), LinkedHashMap.class);
         List<Map<String, Object>> files = (List<Map<String, Object>>) manifest.get("files");
+        assertEquals(validTemplate().getDefinitionHash(), manifest.get("definitionHash"));
         assertEquals(entries.keySet().stream().filter(name -> !"manifest.json".equals(name)).count(), files.size());
         for (Map<String, Object> file : files) {
             byte[] entryBytes = entries.get(file.get("name").toString());
@@ -366,6 +368,21 @@ class ResumeExportArtifactServiceImplTest {
             assertEquals(entryBytes.length, ((Number) file.get("size")).longValue());
             assertEquals(sha256(entryBytes), file.get("sha256"));
         }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void rebuiltZipRejectsTamperedTemplateDefinitionHash() throws Exception {
+        ResumeArtifact zipArtifact = readyZipArtifact();
+        Map<String, Object> stored = objectMapper.readValue(zipArtifact.getManifestJson(), LinkedHashMap.class);
+        Map<String, Object> manifest = (Map<String, Object>) stored.get("zipManifest");
+        manifest.put("definitionHash", "tampered-definition-hash");
+        zipArtifact.setManifestJson(objectMapper.writeValueAsString(stored));
+        when(artifactMapper.selectOne(any())).thenReturn(zipArtifact);
+
+        assertThrows(BusinessException.class, () -> service.download(zipArtifact.getId()));
+
+        verifyNoInteractions(fileFeignClient);
     }
 
     @Test
@@ -780,6 +797,7 @@ class ResumeExportArtifactServiceImplTest {
         manifest.put("sourceHash", "source-hash");
         manifest.put("templateCode", "ATS_SINGLE_COLUMN");
         manifest.put("templateVersion", 1);
+        manifest.put("definitionHash", validTemplate().getDefinitionHash());
         manifest.put("applicationPackageId", 40L);
         manifest.put("applicationPackageSnapshotHash", ResumeArtifactHashes.sha256(packageSnapshot));
         manifest.put("files", List.of(

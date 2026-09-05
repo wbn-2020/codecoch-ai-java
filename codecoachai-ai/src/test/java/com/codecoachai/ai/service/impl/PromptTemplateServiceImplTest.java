@@ -34,6 +34,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DuplicateKeyException;
 
 @ExtendWith(MockitoExtension.class)
 class PromptTemplateServiceImplTest {
@@ -103,7 +104,9 @@ class PromptTemplateServiceImplTest {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.createVersion(102L, dto));
 
-        assertTrue(exception.getMessage().contains("unused=[userAnswer]"));
+        assertTrue(exception.getMessage().contains("未使用变量=[userAnswer]"));
+        assertEquals("提示词变量声明与正文占位符不一致：未声明变量=[]，未使用变量=[userAnswer]",
+                exception.getFieldErrors().get("variables"));
         verify(promptTemplateVersionMapper, never()).insert(any(PromptTemplateVersion.class));
     }
 
@@ -120,8 +123,76 @@ class PromptTemplateServiceImplTest {
         BusinessException exception = assertThrows(BusinessException.class,
                 () -> service.activateVersion(201L, null));
 
-        assertTrue(exception.getMessage().contains("unused=[userAnswer]"));
+        assertTrue(exception.getMessage().contains("未使用变量=[userAnswer]"));
         verify(promptTemplateMapper, never()).selectById(102L);
+    }
+
+    @Test
+    void createPromptRejectsDuplicateSceneWithFieldDiagnostic() {
+        PromptTemplateSaveDTO dto = new PromptTemplateSaveDTO();
+        dto.setScene("INTERVIEW_ANSWER_EVALUATE");
+        dto.setName("回答评分模板");
+        dto.setContent("input={{input}}");
+        dto.setVariables("input");
+        when(promptTemplateMapper.selectCount(any())).thenReturn(1L);
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.createPrompt(dto));
+
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertEquals("该模板场景已存在", exception.getFieldErrors().get("scene"));
+        assertTrue(exception.getNextStep().contains("编辑已有模板"));
+        verify(promptTemplateMapper, never()).insert(any(PromptTemplate.class));
+    }
+
+    @Test
+    void createPromptMapsConcurrentSceneDuplicateToFieldDiagnostic() {
+        PromptTemplateSaveDTO dto = new PromptTemplateSaveDTO();
+        dto.setScene("INTERVIEW_ANSWER_EVALUATE");
+        dto.setName("回答评分模板");
+        dto.setContent("input={{input}}");
+        dto.setVariables("input");
+        when(promptTemplateMapper.selectCount(any())).thenReturn(0L);
+        when(promptTemplateMapper.insert(any(PromptTemplate.class)))
+                .thenThrow(new DuplicateKeyException("uk_prompt_template_live_scene"));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.createPrompt(dto));
+
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertEquals("该模板场景已存在", exception.getFieldErrors().get("scene"));
+    }
+
+    @Test
+    void createVersionMapsConcurrentDuplicateToVersionCodeField() {
+        PromptTemplate template = new PromptTemplate();
+        template.setId(107L);
+        template.setScene("INTERVIEW_ANSWER_EVALUATE");
+        when(promptTemplateMapper.selectById(107L)).thenReturn(template);
+        when(promptTemplateVersionMapper.selectCount(any())).thenReturn(0L);
+        when(promptTemplateVersionMapper.insert(any(PromptTemplateVersion.class)))
+                .thenThrow(new DuplicateKeyException("uk_prompt_template_version"));
+
+        PromptTemplateVersionCreateDTO dto = new PromptTemplateVersionCreateDTO();
+        dto.setVersionCode("v2");
+        dto.setContent("input={{input}}");
+        dto.setVariablesJson("input");
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.createVersion(107L, dto));
+
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertEquals("当前模板下该版本号已存在", exception.getFieldErrors().get("versionCode"));
+    }
+
+    @Test
+    void createOperationsDeclareTransactionBoundaries() throws Exception {
+        assertTrue(PromptTemplateServiceImpl.class
+                .getMethod("createPrompt", PromptTemplateSaveDTO.class)
+                .isAnnotationPresent(Transactional.class));
+        assertTrue(PromptTemplateServiceImpl.class
+                .getMethod("createVersion", Long.class, PromptTemplateVersionCreateDTO.class)
+                .isAnnotationPresent(Transactional.class));
     }
 
     @Test
@@ -178,6 +249,35 @@ class PromptTemplateServiceImplTest {
         assertEquals("ACTIVE", version.getStatus());
         assertEquals(1, version.getIsActive());
         verify(promptTemplateVersionMapper).updateById(version);
+    }
+
+    @Test
+    void activateVersionMapsConcurrentActiveSceneConflictAndRollsBackTransaction() {
+        PromptTemplateVersion version = new PromptTemplateVersion();
+        version.setId(204L);
+        version.setTemplateId(108L);
+        version.setScene(PromptSceneContracts.JOB_COACH_DAILY_PLAN_SCENE);
+        version.setVersionCode(PromptSceneContracts.JOB_COACH_DAILY_PLAN_VERSION);
+        version.setStatus("DRAFT");
+        version.setContent("SKILL_GAP_ITEM context={{contextJson}} candidates={{candidatesJson}} "
+                + "count={{taskCount}} max={{maxTotalMinutes}}");
+        version.setVariablesJson("contextJson,candidatesJson,taskCount,maxTotalMinutes");
+
+        PromptTemplate template = new PromptTemplate();
+        template.setId(108L);
+        template.setScene(PromptSceneContracts.JOB_COACH_DAILY_PLAN_SCENE);
+        when(promptTemplateVersionMapper.selectById(204L)).thenReturn(version);
+        when(promptTemplateMapper.selectById(108L)).thenReturn(template);
+        when(promptTemplateVersionMapper.updateById(version))
+                .thenThrow(new DuplicateKeyException("uk_prompt_version_active_scene"));
+
+        BusinessException exception = assertThrows(BusinessException.class,
+                () -> service.activateVersion(204L, null));
+
+        assertEquals(ErrorCode.RESOURCE_RELATION_CONFLICT.getCode(), exception.getCode());
+        assertEquals("该场景已由另一项并发操作激活版本", exception.getFieldErrors().get("scene"));
+        assertTrue(exception.getRetryable());
+        verify(promptTemplateMapper, never()).update(isNull(), any());
     }
 
     @Test

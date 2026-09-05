@@ -3,6 +3,7 @@ package com.codecoachai.system.domain.vo;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import lombok.Data;
 
 @Data
@@ -21,6 +22,16 @@ public class AdminDashboardOverviewVO {
         private String label;
         private Long value;
         private String sourceTable;
+        private String status;
+        private String reason;
+        private String scopeDescription;
+        private String windowType;
+        private LocalDateTime windowStart;
+        private LocalDateTime windowEnd;
+        private LocalDateTime updatedAt;
+        private String businessTimezone;
+        private String navigationPath;
+        private Map<String, String> navigationQuery;
     }
 
     @Data
@@ -42,6 +53,14 @@ public class AdminDashboardOverviewVO {
         private String status;
         private String sourceTable;
         private String reason;
+        private String scopeDescription;
+        private String windowType;
+        private LocalDateTime windowStart;
+        private LocalDateTime windowEnd;
+        private LocalDateTime updatedAt;
+        private String businessTimezone;
+        private String navigationPath;
+        private Map<String, String> navigationQuery;
     }
 
     @Data

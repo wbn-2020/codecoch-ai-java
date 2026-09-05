@@ -30,6 +30,21 @@ public class AsyncTask extends BaseEntity {
     /** 链路追踪 ID */
     private String traceId;
 
+    /** 跨模块稳定执行 ID */
+    private String executionId;
+
+    /** 重试或补偿执行的父执行 ID */
+    private String parentExecutionId;
+
+    /** Agent run 或其他业务运行记录 ID */
+    private Long runId;
+
+    /** 当前执行尝试次数 */
+    private Integer attemptNo;
+
+    /** 防重复执行键 */
+    private String idempotencyKey;
+
     /** 任务状态：PENDING / RUNNING / SUCCESS / FAILED / DEAD */
     private String status;
 
@@ -50,6 +65,24 @@ public class AsyncTask extends BaseEntity {
 
     /** 任务结果（JSON，可空） */
     private String result;
+
+    /** 统一终态原因码 */
+    private String terminalReasonCode;
+
+    /** 人工治理状态，不影响实际任务状态机 */
+    private String governanceStatus;
+
+    /** 人工或系统记录的治理原因 */
+    private String governanceReason;
+
+    /** 负责处理的团队或角色 */
+    private String governanceOwner;
+
+    /** 最近一次治理状态更新时间 */
+    private LocalDateTime governanceUpdatedAt;
+
+    /** 操作前预览摘要的校验散列 */
+    private String retryPreviewHash;
 
     /** 当前 RUNNING 租约的最近领取或续租时间 */
     private LocalDateTime startedAt;

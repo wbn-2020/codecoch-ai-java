@@ -57,7 +57,12 @@ import com.codecoachai.resume.service.ResumeSearchSyncOutboxService;
 import com.codecoachai.resume.service.JobApplicationLifecycleService;
 import com.codecoachai.resume.service.V4ResumeCareerService;
 import com.codecoachai.resume.service.support.JobApplicationLifecyclePolicy;
+import com.codecoachai.resume.support.ResumeDocumentNormalizer;
+import com.codecoachai.resume.support.ResumeDocumentStore;
+import com.codecoachai.resume.support.ResumePresentationConfigNormalizer;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -224,7 +229,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
-        restoreProjects(resume.getId(), versionSnapshot);
+        syncDocumentColumn(resume, versionSnapshot);
+        syncRestoredProjects(resume, restoreProjects(resume.getId(), versionSnapshot));
         clearCurrentVersions(resumeId, resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -242,7 +248,8 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         Map<String, Object> versionSnapshot = readMap(version.getSnapshotJson());
         applySnapshot(resume, versionSnapshot);
         resumeMapper.updateById(resume);
-        restoreProjects(resume.getId(), versionSnapshot);
+        syncDocumentColumn(resume, versionSnapshot);
+        syncRestoredProjects(resume, restoreProjects(resume.getId(), versionSnapshot));
         clearCurrentVersions(version.getResumeId(), resume.getUserId());
         version.setCurrentFlag(1);
         resumeVersionMapper.updateById(version);
@@ -1896,6 +1903,12 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         map.put("workExperience", resume.getWorkExperience());
         map.put("educationExperience", resume.getEducationExperience());
         map.put("summary", resume.getSummary());
+        map.put("presentationConfig", ResumePresentationConfigNormalizer.parseStored(
+                objectMapper, resume.getPresentationConfigJson()));
+        JsonNode document = ResumeDocumentStore.readStored(objectMapper, resume.getDocumentJson());
+        if (document != null) {
+            map.put("document", document);
+        }
         map.put("projects", projectsForSnapshot(resume.getId()).stream()
                 .map(this::projectSnapshot)
                 .sorted(Comparator
@@ -1921,6 +1934,7 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
 
     private Map<String, Object> projectSnapshot(ResumeProject project) {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("projectId", project.getId());
         map.put("projectName", project.getProjectName());
         map.put("projectPeriod", project.getProjectPeriod());
         map.put("projectBackground", project.getProjectBackground());
@@ -1947,23 +1961,43 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
         resume.setWorkExperience(text(map.get("workExperience")));
         resume.setEducationExperience(text(map.get("educationExperience")));
         resume.setSummary(text(map.get("summary")));
+        resume.setPresentationConfigJson(ResumePresentationConfigNormalizer.normalizeJson(
+                objectMapper, objectMapper.valueToTree(map.get("presentationConfig"))));
+        ObjectNode normalizedDocument = ResumeDocumentNormalizer.normalize(
+                objectMapper, objectMapper.valueToTree(map.get("document")));
+        resume.setDocumentJson(normalizedDocument == null ? null : writeJson(normalizedDocument));
     }
 
-    private void restoreProjects(Long resumeId, Map<String, Object> snapshot) {
-        if (resumeId == null || snapshot == null || !snapshot.containsKey("projects")) {
+    /**
+     * A snapshot without a document hands authority back to the flat mirror, and clearing the column
+     * needs an explicit update because null-valued fields are skipped by the entity update.
+     */
+    private void syncDocumentColumn(Resume resume, Map<String, Object> snapshot) {
+        if (snapshot != null && snapshot.get("document") != null) {
             return;
+        }
+        resumeMapper.update(null, new LambdaUpdateWrapper<Resume>()
+                .eq(Resume::getId, resume.getId())
+                .set(Resume::getDocumentJson, null));
+    }
+
+    private List<ResumeProject> restoreProjects(Long resumeId, Map<String, Object> snapshot) {
+        if (resumeId == null || snapshot == null || !snapshot.containsKey("projects")) {
+            return List.of();
         }
         resumeProjectMapper.delete(new LambdaQueryWrapper<ResumeProject>()
                 .eq(ResumeProject::getResumeId, resumeId));
         Object rawProjects = snapshot.get("projects");
         if (!(rawProjects instanceof List<?> projects)) {
-            return;
+            return List.of();
         }
+        List<ResumeProject> restored = new ArrayList<>();
         for (Object rawProject : projects) {
             if (!(rawProject instanceof Map<?, ?> projectSnapshot)) {
                 continue;
             }
             ResumeProject project = new ResumeProject();
+            project.setId(positiveLong(projectSnapshot.get("projectId")));
             project.setResumeId(resumeId);
             project.setProjectName(text(projectSnapshot.get("projectName")));
             project.setProjectPeriod(text(projectSnapshot.get("projectPeriod")));
@@ -1978,7 +2012,29 @@ public class V4ResumeCareerServiceImpl implements V4ResumeCareerService {
             project.setHighlights(text(projectSnapshot.get("highlights")));
             project.setSort(integer(projectSnapshot.get("sort"), 0));
             project.setSortOrder(integer(projectSnapshot.get("sortOrder"), project.getSort()));
-            resumeProjectMapper.insert(project);
+            if (project.getId() == null || resumeProjectMapper.restoreSnapshotById(project) == 0) {
+                resumeProjectMapper.insert(project);
+            }
+            restored.add(project);
+        }
+        return restored;
+    }
+
+    private void syncRestoredProjects(Resume resume, List<ResumeProject> projects) {
+        if (ResumeDocumentStore.writeProjects(objectMapper, resume, projects) != null) {
+            resumeMapper.updateById(resume);
+        }
+    }
+
+    private Long positiveLong(Object value) {
+        if (value instanceof Number number && number.longValue() > 0) {
+            return number.longValue();
+        }
+        try {
+            long parsed = Long.parseLong(text(value));
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 

@@ -28,6 +28,7 @@ import com.codecoachai.interview.domain.entity.StudyPlanSkillRelation;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.domain.enums.ReportStatusEnum;
 import com.codecoachai.interview.domain.vo.StudyPlanAgentEvidenceVO;
+import com.codecoachai.interview.domain.vo.StudyPlanDailyViewVO;
 import com.codecoachai.interview.domain.vo.StudyPlanDetailVO;
 import com.codecoachai.interview.domain.vo.StudyPlanGenerateVO;
 import com.codecoachai.interview.domain.vo.StudyPlanListVO;
@@ -49,6 +50,7 @@ import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Optional;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -131,6 +133,9 @@ class StudyPlanServiceImplTest {
                 transactionTemplate,
                 Optional.of(studyPlanMqDispatcher),
                 asyncTaskService);
+        org.mockito.Mockito.lenient().when(studyPlanMapper.insert(any(StudyPlan.class))).thenReturn(1);
+        org.mockito.Mockito.lenient().when(studyPlanMapper.updateById(any(StudyPlan.class))).thenReturn(1);
+        org.mockito.Mockito.lenient().when(studyTaskMapper.insert(any(StudyTask.class))).thenReturn(1);
     }
 
     @AfterEach
@@ -179,7 +184,7 @@ class StudyPlanServiceImplTest {
         assertEquals(1, detail.getTotalTaskCount());
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Wrapper<StudyTask>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
-        org.mockito.Mockito.verify(studyTaskMapper, org.mockito.Mockito.times(2)).selectList(wrapperCaptor.capture());
+        org.mockito.Mockito.verify(studyTaskMapper).selectList(wrapperCaptor.capture());
         wrapperCaptor.getAllValues().forEach(wrapper -> {
             String sqlSegment = wrapper.getSqlSegment();
             assertTrue(sqlSegment.contains("plan_id"));
@@ -191,13 +196,18 @@ class StudyPlanServiceImplTest {
     @Test
     void generateExistingPlanCountsOnlyCurrentUserOwnedTasksAndRelations() {
         LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        StudyPlan existing = activePlan();
+        existing.setDurationDays(14);
+        existing.setDailyMinutes(60);
+        existing.setStartDate(today());
         when(reportMapper.selectOne(any())).thenReturn(generatedReport());
-        when(studyPlanMapper.selectOne(any())).thenReturn(activePlan());
+        when(studyPlanMapper.selectOne(any())).thenReturn(existing);
         when(studyTaskMapper.selectList(any())).thenReturn(List.of(activeTask()));
         when(relationMapper.selectCount(any())).thenReturn(1L);
 
         StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
         dto.setReportId(3001L);
+        dto.setStartDate(today());
 
         StudyPlanGenerateVO result = service.generate(dto);
 
@@ -276,6 +286,7 @@ class StudyPlanServiceImplTest {
         dto.setReportId(report.getId());
         dto.setExpectedDurationDays(21);
         dto.setDailyMinutes(90);
+        dto.setStartDate(today());
 
         service.generate(dto);
 
@@ -286,6 +297,7 @@ class StudyPlanServiceImplTest {
         assertEquals(report.getId(), planCaptor.getValue().getReportId());
         assertEquals(report.getSessionId(), planCaptor.getValue().getSessionId());
         assertEquals(90, planCaptor.getValue().getDailyMinutes());
+        assertEquals(today(), planCaptor.getValue().getStartDate());
         verify(asyncTaskService).registerPending(
                 org.mockito.ArgumentMatchers.startsWith("study-plan.generate:" + PLAN_ID + ":"),
                 org.mockito.ArgumentMatchers.eq(StudyPlanMqDispatcher.BIZ_TYPE_GENERATE),
@@ -294,6 +306,146 @@ class StudyPlanServiceImplTest {
                 org.mockito.ArgumentMatchers.anyString(),
                 any(),
                 org.mockito.ArgumentMatchers.eq(3));
+    }
+
+    @Test
+    void generateReusesExistingPlanOnlyWhenScheduleParametersMatch() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        StudyPlan existing = activePlan();
+        existing.setDurationDays(14);
+        existing.setDailyMinutes(60);
+        existing.setStartDate(today());
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        when(studyPlanMapper.selectOne(any())).thenReturn(existing);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of(activeTask()));
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(3001L);
+        dto.setExpectedDurationDays(14);
+        dto.setDailyMinutes(60);
+        dto.setStartDate(today());
+
+        StudyPlanGenerateVO result = service.generate(dto);
+
+        assertEquals(PLAN_ID, result.getPlanId());
+        assertEquals(1, result.getTaskCount());
+        verify(studyPlanMapper, never()).insert(any(StudyPlan.class));
+        verify(studyPlanMqDispatcher, never()).dispatchGenerateWithReceipt(any(), any());
+    }
+
+    @Test
+    void generateDoesNotSilentlyReuseGeneratingPlanWithDifferentScheduleParameters() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        StudyPlan existing = activePlan();
+        existing.setPlanStatus("GENERATING");
+        existing.setDurationDays(30);
+        existing.setDailyMinutes(120);
+        existing.setStartDate(today().plusDays(2));
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        when(studyPlanMapper.selectOne(any())).thenReturn(existing);
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(3001L);
+        dto.setExpectedDurationDays(14);
+        dto.setDailyMinutes(60);
+        dto.setStartDate(today());
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.generate(dto));
+
+        assertTrue(exception.getMessage().contains("其他参数"));
+        verify(studyPlanMapper, never()).insert(any(StudyPlan.class));
+        verify(studyPlanMqDispatcher, never()).dispatchGenerateWithReceipt(any(), any());
+    }
+
+    @Test
+    void generateRejectsPastStartDateBeforeCreatingPlan() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        when(reportMapper.selectOne(any())).thenReturn(generatedReport());
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(3001L);
+        dto.setExpectedDurationDays(14);
+        dto.setDailyMinutes(60);
+        dto.setStartDate(today().minusDays(1));
+
+        BusinessException exception = assertThrows(BusinessException.class, () -> service.generate(dto));
+
+        assertTrue(exception.getMessage().contains("不能早于今天"));
+        verify(studyPlanMapper, never()).insert(any(StudyPlan.class));
+        verify(studyPlanMqDispatcher, never()).dispatchGenerateWithReceipt(any(), any());
+    }
+
+    @Test
+    void generateCreatesNewPlanWhenActivePlanUsesDifferentScheduleParameters() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        InterviewReport report = generatedReport();
+        StudyPlan existing = activePlan();
+        existing.setDurationDays(30);
+        existing.setDailyMinutes(120);
+        existing.setStartDate(today().plusDays(2));
+        InterviewSession session = new InterviewSession();
+        session.setId(report.getSessionId());
+        session.setUserId(USER_ID);
+        stubTransactions();
+        when(studyPlanMqDispatcher.isAvailable()).thenReturn(true);
+        when(reportMapper.selectOne(any())).thenReturn(report);
+        when(studyPlanMapper.selectOne(any())).thenReturn(existing);
+        when(studyPlanMapper.insert(any(StudyPlan.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, StudyPlan.class).setId(PLAN_ID + 1);
+            return 1;
+        });
+        when(sessionMapper.selectOne(any())).thenReturn(session);
+        when(studyPlanMqDispatcher.dispatchGenerateWithReceipt(any(), any()))
+                .thenReturn(MqDispatchReceipt.builder()
+                        .messageId("study-plan-message-new")
+                        .bizType(StudyPlanMqDispatcher.BIZ_TYPE_GENERATE)
+                        .bizId(String.valueOf(PLAN_ID + 1))
+                        .build());
+        StudyPlanGenerateDTO dto = new StudyPlanGenerateDTO();
+        dto.setReportId(report.getId());
+        dto.setExpectedDurationDays(14);
+        dto.setDailyMinutes(60);
+        dto.setStartDate(today());
+
+        StudyPlanGenerateVO result = service.generate(dto);
+
+        assertEquals(PLAN_ID + 1, result.getPlanId());
+        ArgumentCaptor<StudyPlan> planCaptor = ArgumentCaptor.forClass(StudyPlan.class);
+        verify(studyPlanMapper).insert(planCaptor.capture());
+        assertEquals(14, planCaptor.getValue().getDurationDays());
+        assertEquals(60, planCaptor.getValue().getDailyMinutes());
+        assertEquals(today(), planCaptor.getValue().getStartDate());
+    }
+
+    @Test
+    void dailyViewUsesPersistedStartDateInsteadOfCreatedAt() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        StudyPlan plan = activePlan();
+        plan.setStartDate(LocalDate.of(2026, 6, 20));
+        StudyTask task = activeTask();
+        task.setPlannedDate(null);
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of(task));
+
+        StudyPlanDailyViewVO result = service.dailyView(PLAN_ID, "2026-06-20");
+
+        assertEquals(1, result.getDayIndex());
+        assertEquals(1, result.getTotalTaskCount());
+        assertEquals(task.getId(), result.getTasks().get(0).getId());
+    }
+
+    @Test
+    void dailyViewDoesNotInventScheduleForLegacyPlanWithoutStartDate() {
+        LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
+        StudyPlan plan = activePlan();
+        plan.setStartDate(null);
+        StudyTask task = activeTask();
+        task.setPlannedDate(null);
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of(task));
+
+        StudyPlanDailyViewVO result = service.dailyView(PLAN_ID, "2026-06-18");
+
+        assertEquals(0, result.getDayIndex());
+        assertEquals(0, result.getTotalTaskCount());
     }
 
     @Test
@@ -337,8 +489,9 @@ class StudyPlanServiceImplTest {
         verify(studyPlanMapper).update(planCaptor.capture(), any());
         assertEquals(requestedDays, planCaptor.getValue().getDurationDays());
         ArgumentCaptor<StudyTask> taskCaptor = ArgumentCaptor.forClass(StudyTask.class);
-        verify(studyTaskMapper).insert(taskCaptor.capture());
-        assertEquals(30, taskCaptor.getValue().getEstimatedMinutes());
+        verify(studyTaskMapper, org.mockito.Mockito.times(requestedDays)).insert(taskCaptor.capture());
+        assertTrue(taskCaptor.getAllValues().stream()
+                .allMatch(task -> Integer.valueOf(30).equals(task.getEstimatedMinutes())));
     }
 
     @Test
@@ -394,14 +547,11 @@ class StudyPlanServiceImplTest {
 
     @Test
     void executeTargetedPlanFailsWhenSameDayTaskTotalExceedsDailyBudget() throws Exception {
-        StudyPlan plan = generatingTargetedPlan(21, 60);
-        GenerateLearningPlanVO aiPlan = validAiPlan(21, 35);
-        GenerateLearningPlanVO.ItemVO second = new GenerateLearningPlanVO.ItemVO();
+        StudyPlan plan = generatingTargetedPlan(2, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(2, 35);
+        GenerateLearningPlanVO.ItemVO second = aiPlan.getStages().get(0).getItems().get(1);
         second.setDayOffset(1);
-        second.setTaskTitle("Practice concurrency");
         second.setEstimatedMinutes(30);
-        aiPlan.getStages().get(0).getItems().get(0).setDayOffset(1);
-        aiPlan.getStages().get(0).setItems(List.of(aiPlan.getStages().get(0).getItems().get(0), second));
         stubTransactions();
         when(studyPlanMapper.selectOne(any())).thenReturn(plan);
         when(studyPlanMapper.update(any(), any())).thenReturn(1);
@@ -418,15 +568,8 @@ class StudyPlanServiceImplTest {
 
     @Test
     void executeTargetedPlanAllowsFullBudgetOnDifferentDays() throws Exception {
-        StudyPlan plan = generatingTargetedPlan(21, 60);
-        GenerateLearningPlanVO aiPlan = validAiPlan(21, 60);
-        GenerateLearningPlanVO.ItemVO first = aiPlan.getStages().get(0).getItems().get(0);
-        first.setDayOffset(1);
-        GenerateLearningPlanVO.ItemVO second = new GenerateLearningPlanVO.ItemVO();
-        second.setDayOffset(2);
-        second.setTaskTitle("Practice concurrency");
-        second.setEstimatedMinutes(60);
-        aiPlan.getStages().get(0).setItems(List.of(first, second));
+        StudyPlan plan = generatingTargetedPlan(2, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(2, 60);
         stubTransactions();
         when(studyPlanMapper.selectOne(any())).thenReturn(plan);
         when(studyPlanMapper.update(any(), any())).thenReturn(1);
@@ -441,6 +584,86 @@ class StudyPlanServiceImplTest {
     }
 
     @Test
+    void executeReportPlanPersistsDayOffsetAsPlannedDate() throws Exception {
+        StudyPlan plan = generatingReportPlan(2, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(2, 60);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("ACTIVE", result.getPlanStatus());
+        ArgumentCaptor<StudyTask> taskCaptor = ArgumentCaptor.forClass(StudyTask.class);
+        verify(studyTaskMapper, org.mockito.Mockito.times(2)).insert(taskCaptor.capture());
+        assertEquals(
+                List.of(LocalDate.of(2026, 6, 18), LocalDate.of(2026, 6, 19)),
+                taskCaptor.getAllValues().stream().map(StudyTask::getPlannedDate).toList());
+    }
+
+    @Test
+    void executeReportPlanFailsWhenAiPlanDoesNotCoverEveryDay() throws Exception {
+        StudyPlan plan = generatingReportPlan(30, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(30, 30);
+        List<GenerateLearningPlanVO.ItemVO> incomplete =
+                new java.util.ArrayList<>(aiPlan.getStages().get(0).getItems());
+        incomplete.remove(incomplete.size() - 1);
+        aiPlan.getStages().get(0).setItems(incomplete);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("未覆盖完整周期"));
+        assertTrue(result.getFailureReason().contains("[30]"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeReportPlanFailsWhenTaskDayIsOutsideRequestedDuration() throws Exception {
+        StudyPlan plan = generatingReportPlan(21, 60);
+        GenerateLearningPlanVO aiPlan = validAiPlan(21, 30);
+        aiPlan.getStages().get(0).getItems().get(0).setDayOffset(22);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(aiPlan));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("第 22 天不在 1 到 21 天范围内"));
+        verify(studyTaskMapper, never()).insert(any(StudyTask.class));
+    }
+
+    @Test
+    void executeReportPlanFailsWhenTaskPersistenceDoesNotSucceed() throws Exception {
+        StudyPlan plan = generatingReportPlan(21, 60);
+        stubTransactions();
+        when(studyPlanMapper.selectOne(any())).thenReturn(plan);
+        when(studyPlanMapper.update(any(), any())).thenReturn(1);
+        when(studyTaskMapper.selectList(any())).thenReturn(List.of());
+        when(studyTaskMapper.insert(any(StudyTask.class))).thenReturn(0);
+        when(relationMapper.selectCount(any())).thenReturn(0L);
+        when(aiFeignClient.generateLearningPlan(any())).thenReturn(Result.success(validAiPlan(21, 30)));
+
+        StudyPlanGenerateVO result = service.executeGeneration(PLAN_ID, USER_ID);
+
+        assertEquals("FAILED", result.getPlanStatus());
+        assertTrue(result.getFailureReason().contains("学习计划任务保存失败"));
+    }
+
+    @Test
     void generateFromGapInheritsTrustedInterviewReportSource() {
         LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).build());
         InnerSkillProfileVO profile = trustedInterviewProfile();
@@ -448,7 +671,7 @@ class StudyPlanServiceImplTest {
         dto.setProfileId(profile.getProfileId());
         dto.setDays(21);
         dto.setDailyMinutes(90);
-        dto.setStartDate(LocalDate.of(2026, 6, 19));
+        dto.setStartDate(today());
         stubTransactions();
         when(studyPlanMqDispatcher.isAvailable()).thenReturn(true);
         when(resumeFeignClient.getSkillProfile(profile.getProfileId()))
@@ -554,16 +777,25 @@ class StudyPlanServiceImplTest {
     }
 
     private GenerateLearningPlanVO validAiPlan(int durationDays, int estimatedMinutes) {
-        GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
-        item.setTaskTitle("Review concurrency");
-        item.setEstimatedMinutes(estimatedMinutes);
+        List<GenerateLearningPlanVO.ItemVO> items = new java.util.ArrayList<>();
+        for (int day = 1; day <= durationDays; day++) {
+            GenerateLearningPlanVO.ItemVO item = new GenerateLearningPlanVO.ItemVO();
+            item.setDayOffset(day);
+            item.setTaskTitle("Review concurrency day " + day);
+            item.setEstimatedMinutes(estimatedMinutes);
+            items.add(item);
+        }
         GenerateLearningPlanVO.StageVO stage = new GenerateLearningPlanVO.StageVO();
         stage.setStageNo(1);
-        stage.setItems(List.of(item));
+        stage.setItems(items);
         GenerateLearningPlanVO plan = new GenerateLearningPlanVO();
         plan.setDurationDays(durationDays);
         plan.setStages(List.of(stage));
         return plan;
+    }
+
+    private static LocalDate today() {
+        return LocalDate.now(ZoneId.of("Asia/Shanghai"));
     }
 
     private InnerSkillProfileVO trustedInterviewProfile() {

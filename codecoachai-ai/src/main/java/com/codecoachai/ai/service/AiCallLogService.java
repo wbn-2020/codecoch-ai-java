@@ -1,6 +1,7 @@
 package com.codecoachai.ai.service;
 
 import com.codecoachai.ai.domain.entity.AiCallLog;
+import com.codecoachai.ai.domain.support.AiDeliverySemantics;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.router.AiModelRouter;
 import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
@@ -13,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -77,6 +79,10 @@ public class AiCallLogService {
             logEntry.setUserId(ctx.getUserId());
             logEntry.setScene(ctx.getScene());
             logEntry.setBusinessId(ctx.getBusinessId());
+            logEntry.setExecutionId(ctx.getExecutionId());
+            logEntry.setParentExecutionId(ctx.getParentExecutionId());
+            logEntry.setAttemptNo(ctx.getAttemptNo());
+            logEntry.setIdempotencyKey(ctx.getIdempotencyKey());
             logEntry.setRequestId(StringUtils.hasText(ctx.getRequestId()) ? ctx.getRequestId() : UUID.randomUUID().toString());
             logEntry.setTraceId(currentTraceId());
             logEntry.setPromptTemplateId(ctx.getPromptTemplateId());
@@ -90,6 +96,13 @@ public class AiCallLogService {
             logEntry.setRequestBody(null);
 
             if (result != null) {
+                AiDeliverySemantics.Outcome delivery = AiDeliverySemantics.fromLegacy(
+                        result.getResultSource(),
+                        result.getModel(),
+                        result.getRouteTrace(),
+                        ctx.getRequestBody(),
+                        null,
+                        1);
                 logEntry.setModelName(result.getModel());
                 logEntry.setModel(result.getModel());
                 logEntry.setResponseContent(null);
@@ -102,14 +115,19 @@ public class AiCallLogService {
                 logEntry.setTokenCost(result.getEstimatedCost());
                 logEntry.setSuccess(1);
                 logEntry.setStatus(1);
+                logEntry.setExecutionSource(delivery.executionSource());
+                logEntry.setDeliveryQuality(delivery.deliveryQuality());
+                logEntry.setFallbackReasonCode(result.getFallbackReasonCode());
             } else {
                 logEntry.setSuccess(0);
                 logEntry.setStatus(0);
+                logEntry.setDeliveryQuality(AiDeliverySemantics.FAILED);
             }
 
             if (error != null) {
                 logEntry.setSuccess(0);
                 logEntry.setStatus(0);
+                logEntry.setDeliveryQuality(AiDeliverySemantics.FAILED);
                 logEntry.setErrorMessage(AiErrorSanitizer.safeFailureSummary(error));
             }
 
@@ -124,6 +142,36 @@ public class AiCallLogService {
         } catch (Exception ex) {
             log.warn("AI 调用日志写入失败 scene={}", ctx.getScene(), ex);
         }
+    }
+
+    public void markDeliveryOutcome(Long aiCallLogId,
+                                    String executionSource,
+                                    String deliveryQuality,
+                                    String fallbackReasonCode,
+                                    String schemaVersion,
+                                    String validationStatus) {
+        if (aiCallLogId == null) {
+            return;
+        }
+        AiDeliverySemantics.Outcome delivery = AiDeliverySemantics.resolve(
+                executionSource,
+                deliveryQuality,
+                null,
+                null,
+                null,
+                null,
+                null,
+                AiDeliverySemantics.FAILED.equals(deliveryQuality) ? 0 : 1);
+        LambdaUpdateWrapper<AiCallLog> update = new LambdaUpdateWrapper<AiCallLog>()
+                .eq(AiCallLog::getId, aiCallLogId)
+                .set(AiCallLog::getDeliveryQuality, delivery.deliveryQuality())
+                .set(AiCallLog::getFallbackReasonCode, fallbackReasonCode)
+                .set(AiCallLog::getSchemaVersion, schemaVersion)
+                .set(AiCallLog::getValidationStatus, validationStatus);
+        if (StringUtils.hasText(executionSource)) {
+            update.set(AiCallLog::getExecutionSource, delivery.executionSource());
+        }
+        aiCallLogMapper.update(null, update);
     }
 
     private String currentTraceId() {

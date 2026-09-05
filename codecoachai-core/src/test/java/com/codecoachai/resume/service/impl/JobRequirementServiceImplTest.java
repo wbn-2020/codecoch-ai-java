@@ -124,8 +124,38 @@ class JobRequirementServiceImplTest {
                 second.getRequirements().get(0).getRequirementKey());
         assertTrue(first.getRequirements().get(0).getSourceFallback());
         assertEquals("LOW", first.getRequirements().get(0).getConfidenceLevel());
+        assertEquals("senior", first.getRequirements().get(0).getRequiredLevel());
         verify(jobRequirementMapper).insert(any(JobRequirement.class));
         verify(jobRequirementMapper).updateById(any(JobRequirement.class));
+    }
+
+    @Test
+    void firstMatrixGetMaterializesParsedRequirementsOnceAndSubsequentGetIsIdempotent() {
+        when(targetJobMapper.selectOne(any())).thenReturn(targetJob());
+        JobDescriptionAnalysis analysis = analysis();
+        analysis.setRequiredSkillsJson("[{\"name\":\"Java\",\"confidence\":\"HIGH\"}]");
+        analysis.setRawResultJson("{\"trustStatus\":\"VERIFIED\"}");
+        when(jobDescriptionAnalysisMapper.selectOne(any())).thenReturn(analysis);
+
+        AtomicReference<JobRequirement> stored = new AtomicReference<>();
+        when(jobRequirementMapper.selectList(any())).thenAnswer(invocation ->
+                stored.get() == null ? List.of() : List.of(stored.get()));
+        when(jobRequirementMapper.insert(any(JobRequirement.class))).thenAnswer(invocation -> {
+            JobRequirement requirement = invocation.getArgument(0);
+            requirement.setId(501L);
+            stored.set(requirement);
+            return 1;
+        });
+        when(jobRequirementEvidenceMapper.selectList(any())).thenReturn(List.of());
+
+        var first = service.getMatrix(11L);
+        var second = service.getMatrix(11L);
+
+        assertEquals(1, first.getRequirementCount());
+        assertEquals("MISSING", first.getRequirements().get(0).getCoverageLevel());
+        assertEquals(first.getRequirements().get(0).getRequirementKey(),
+                second.getRequirements().get(0).getRequirementKey());
+        verify(jobRequirementMapper).insert(any(JobRequirement.class));
     }
 
     @Test

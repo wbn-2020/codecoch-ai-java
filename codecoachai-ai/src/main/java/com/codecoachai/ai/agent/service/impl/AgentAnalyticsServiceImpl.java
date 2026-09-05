@@ -241,7 +241,8 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
         if (end != null) {
             wrapper.le(AgentTask::getDueDate, end);
         }
-        return agentTaskMapper.selectList(wrapper);
+        List<AgentTask> tasks = agentTaskMapper.selectList(wrapper);
+        return tasks == null ? List.of() : tasks;
     }
 
     private List<AgentRun> userRuns(Long userId, LocalDate start, LocalDate end) {
@@ -253,7 +254,8 @@ public class AgentAnalyticsServiceImpl implements AgentAnalyticsService {
         if (end != null) {
             wrapper.le(AgentRun::getPlanDate, end);
         }
-        return agentRunMapper.selectList(wrapper);
+        List<AgentRun> runs = agentRunMapper.selectList(wrapper);
+        return runs == null ? List.of() : runs;
     }
 
     private Long countTasks(List<AgentTask> tasks, String status) {

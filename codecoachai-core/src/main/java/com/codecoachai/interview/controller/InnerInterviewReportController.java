@@ -20,7 +20,7 @@ import com.codecoachai.interview.mapper.InterviewReportMapper;
 import com.codecoachai.interview.mapper.InterviewSessionMapper;
 import com.codecoachai.interview.mq.InterviewMqDispatcher;
 import com.codecoachai.interview.service.impl.AgentBusinessActionNotifier;
-import com.codecoachai.interview.support.InterviewReportScoringContract;
+import com.codecoachai.interview.support.InterviewReportConsumabilityContract;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
 import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -41,6 +41,7 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -108,6 +109,7 @@ public class InnerInterviewReportController {
     }
 
     @PostMapping("/{sessionId}/complete-report")
+    @Transactional(rollbackFor = Exception.class)
     public Result<Void> completeReport(@PathVariable Long sessionId, @RequestBody CompleteReportDTO dto) {
         InterviewSession session = sessionMapper.selectById(sessionId);
         if (session == null) {
@@ -122,17 +124,20 @@ public class InnerInterviewReportController {
         if (report == null && (dto.getReportId() != null || StringUtils.hasText(dto.getGenerationToken()))) {
             log.info("Ignore interview report callback without current report, sessionId={}, payloadReportId={}",
                     sessionId, dto.getReportId());
-            return Result.success();
+            return Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Interview report attempt is stale");
         }
         if (report != null && !matchesReportAttempt(report, dto.getReportId(), dto.getGenerationToken())) {
             log.info("Ignore stale interview report callback, sessionId={}, currentReportId={}, payloadReportId={}",
                     sessionId, report.getId(), dto.getReportId());
-            return Result.success();
+            return Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Interview report attempt is stale");
         }
         if (report != null && !ReportStatusEnum.GENERATING.name().equals(report.getStatus())) {
             log.info("Ignore duplicate interview report callback, sessionId={}, reportId={}, currentStatus={}",
                     sessionId, report.getId(), report.getStatus());
-            return Result.success();
+            if (success && ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+                return Result.success();
+            }
+            return Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Interview report attempt is already terminal");
         }
         if (report == null) {
             report = new InterviewReport();
@@ -148,21 +153,21 @@ public class InnerInterviewReportController {
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
             StoredEvidenceRecovery recovery = recoverReportFromStoredEvidence(sessionId, report);
-            InterviewReportScoringContract.Validation scoringContract =
-                    InterviewReportScoringContract.validate(
+            InterviewReportConsumabilityContract.Validation consumability =
+                    InterviewReportConsumabilityContract.validate(
                             objectMapper,
-                            report.getTotalScore(),
-                            report.getRubricVersion(),
-                            report.getRubricScores());
-            if (!scoringContract.valid()) {
+                            report,
+                            recovery.answerCount(),
+                            null);
+            if (!consumability.valid()) {
                 completionFailureReason = recovery.hasAnswers()
-                        ? "本轮问答已保留，但缺少可信的逐题评分证据，暂时无法生成综合评分。"
+                        ? "本轮问答已保留，但报告最小可消费结构不完整，暂时无法生成可信复盘。"
                         : "面试报告缺少有效回答证据，无法生成复盘报告。";
                 report.setStatus(recovery.hasAnswers()
                         ? ReportStatusEnum.UNSCORABLE.name()
                         : ReportStatusEnum.FAILED.name());
                 report.setTotalScore(null);
-                report.setFailureReason(completionFailureReason);
+                report.setFailureReason(completionFailureReason + " [" + consumability.reasonCode() + "]");
                 success = false;
                 completed = recovery.hasAnswers();
             } else {
@@ -174,7 +179,9 @@ public class InnerInterviewReportController {
             report.setFailureReason(completionFailureReason);
         }
         if (report.getId() == null) {
-            reportMapper.insert(report);
+            if (reportMapper.insert(report) != 1) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Persist interview report failed");
+            }
         } else {
             LambdaUpdateWrapper<InterviewReport> reportUpdate = new LambdaUpdateWrapper<InterviewReport>()
                     .eq(InterviewReport::getId, report.getId())
@@ -189,7 +196,7 @@ public class InnerInterviewReportController {
             if (reportMapper.update(report, reportUpdate) != 1) {
                 log.info("Ignore stale interview report callback CAS, sessionId={}, reportId={}",
                         sessionId, report.getId());
-                return Result.success();
+                return Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Interview report attempt is stale");
             }
         }
 
@@ -197,7 +204,7 @@ public class InnerInterviewReportController {
                 sessionId, report.getId(), report.getStatus());
 
         Integer completedScore = success ? report.getTotalScore() : null;
-        sessionMapper.update(null,
+        int sessionUpdated = sessionMapper.update(null,
                 new LambdaUpdateWrapper<InterviewSession>()
                         .eq(InterviewSession::getId, sessionId)
                         .set(InterviewSession::getStatus,
@@ -210,12 +217,17 @@ public class InnerInterviewReportController {
                         .set(!success, InterviewSession::getFailureReason, completionFailureReason)
                         .set(InterviewSession::getEndTime, now)
                         .set(InterviewSession::getUpdatedAt, now));
+        if (sessionUpdated != 1) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Persist interview session completion failed");
+        }
 
         if (success) {
             interviewMqDispatcher.dispatchInterviewSearchUpsert(sessionId, session.getUserId());
             completeAgentInterviewTask(session, report);
+            return Result.success();
         }
-        return Result.success();
+        return Result.fail(ErrorCode.PARAM_ERROR.getCode(),
+                firstText(completionFailureReason, "Interview report is not consumable"));
     }
 
     @GetMapping("/reports/users/{userId}/{reportId}/agent-evidence")

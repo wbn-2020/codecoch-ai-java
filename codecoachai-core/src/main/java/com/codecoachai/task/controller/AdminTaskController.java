@@ -22,15 +22,18 @@ import com.codecoachai.common.mq.payload.SearchSyncPayload;
 import com.codecoachai.common.mq.payload.StudyPlanGeneratePayload;
 import com.codecoachai.common.mq.producer.MqProducer;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
-import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
+import com.codecoachai.common.security.context.LoginUserContext;
 import com.codecoachai.common.web.log.OperationLog;
 import com.codecoachai.task.domain.dto.AdminTaskActionDTO;
 import com.codecoachai.task.domain.entity.AsyncTask;
 import com.codecoachai.task.domain.entity.MessageDeadLetter;
+import com.codecoachai.task.domain.enums.AsyncTaskGovernanceStatus;
 import com.codecoachai.task.domain.vo.AdminAsyncTaskVO;
 import com.codecoachai.task.domain.vo.AdminDeadLetterVO;
+import com.codecoachai.task.domain.vo.AdminTaskGovernancePreviewVO;
 import com.codecoachai.task.domain.vo.AdminTaskImpactPreviewVO;
+import com.codecoachai.task.domain.vo.AdminTaskStatsVO;
 import com.codecoachai.task.mapper.AsyncTaskMapper;
 import com.codecoachai.task.mapper.MessageDeadLetterMapper;
 import com.codecoachai.task.service.AsyncTaskService;
@@ -40,14 +43,19 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -86,6 +94,9 @@ public class AdminTaskController {
     private static final String INDEX_QUESTION = "cc_question";
     private static final String INDEX_RESUME = "cc_resume";
     private static final String INDEX_INTERVIEW = "cc_interview";
+    private static final ZoneId ADMIN_STATS_ZONE_ID = ZoneId.of(AsyncTaskMapper.ADMIN_STATS_TIMEZONE);
+    private static final String ALL_TIME_TO_SNAPSHOT = "ALL_TIME_TO_SNAPSHOT";
+    private static final String RANGE_TO_SNAPSHOT = "RANGE_TO_SNAPSHOT";
 
     private final AsyncTaskMapper asyncTaskMapper;
     private final MessageDeadLetterMapper deadLetterMapper;
@@ -104,13 +115,21 @@ public class AdminTaskController {
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String bizType,
             @RequestParam(required = false) String status,
-            @RequestParam(required = false) Long userId) {
+            @RequestParam(required = false) String governanceStatus,
+            @RequestParam(required = false) Long userId,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdFrom,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdBefore) {
         permissionGuard.require(PERM_TASK_LIST);
+        validateTaskWindow(createdFrom, createdBefore);
         // type 是早期管理页字段，bizType 是当前实体字段；统一解析后再查询。
         String resolvedBizType = StringUtils.hasText(bizType) ? bizType : type;
+        List<String> resolvedStatuses = normalizeStatusFilter(status);
         Page<AsyncTask> page = asyncTaskMapper.selectPage(
                 Page.of(defaultPage(pageNo), defaultSize(pageSize)),
                 new LambdaQueryWrapper<AsyncTask>()
+                        .eq(AsyncTask::getDeleted, 0)
                         .and(StringUtils.hasText(keyword), wrapper -> wrapper
                                 .like(AsyncTask::getMessageId, keyword)
                                 .or().like(AsyncTask::getBizType, keyword)
@@ -118,11 +137,58 @@ public class AdminTaskController {
                                 .or().like(AsyncTask::getStatus, keyword)
                                 .or().like(AsyncTask::getFailureReason, keyword))
                         .eq(StringUtils.hasText(resolvedBizType), AsyncTask::getBizType, resolvedBizType)
-                        .eq(StringUtils.hasText(status), AsyncTask::getStatus, status)
+                        .eq(resolvedStatuses.size() == 1, AsyncTask::getStatus,
+                                resolvedStatuses.size() == 1 ? resolvedStatuses.get(0) : null)
+                        .in(resolvedStatuses.size() > 1, AsyncTask::getStatus, resolvedStatuses)
+                        .eq(StringUtils.hasText(governanceStatus), AsyncTask::getGovernanceStatus,
+                                AsyncTaskGovernanceStatus.normalize(governanceStatus))
                         .eq(userId != null, AsyncTask::getUserId, userId)
+                        .ge(createdFrom != null, AsyncTask::getCreatedAt, createdFrom)
+                        .lt(createdBefore != null, AsyncTask::getCreatedAt, createdBefore)
                         .orderByDesc(AsyncTask::getCreatedAt));
         return Result.success(PageResult.of(page.getRecords().stream().map(this::toTaskVO).toList(),
                 page.getTotal(), page.getCurrent(), page.getSize()));
+    }
+
+    static List<String> normalizeStatusFilter(String status) {
+        if (!StringUtils.hasText(status)) {
+            return List.of();
+        }
+        return Pattern.compile("[,，]")
+                .splitAsStream(status)
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .map(value -> value.toUpperCase(Locale.ROOT))
+                .distinct()
+                .limit(20)
+                .toList();
+    }
+
+    @Operation(summary = "List bounded async-task governance inventory")
+    @GetMapping("/governance-inventory")
+    public Result<List<AdminAsyncTaskVO>> governanceInventory(
+            @RequestParam(required = false) String bizType,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String governanceStatus,
+            @RequestParam(required = false) Long minAgeMinutes,
+            @RequestParam(defaultValue = "50") Integer limit) {
+        permissionGuard.require(PERM_TASK_LIST);
+        LocalDateTime now = LocalDateTime.now();
+        long safeMinAge = minAgeMinutes == null ? 0L : Math.max(0L, Math.min(minAgeMinutes, 43_200L));
+        LambdaQueryWrapper<AsyncTask> wrapper = new LambdaQueryWrapper<AsyncTask>()
+                .eq(StringUtils.hasText(bizType), AsyncTask::getBizType, bizType == null ? null : bizType.trim())
+                .eq(StringUtils.hasText(status), AsyncTask::getStatus, status == null ? null : status.trim())
+                .eq(StringUtils.hasText(governanceStatus), AsyncTask::getGovernanceStatus,
+                        StringUtils.hasText(governanceStatus)
+                                ? AsyncTaskGovernanceStatus.normalize(governanceStatus)
+                                : null)
+                .le(safeMinAge > 0, AsyncTask::getCreatedAt, now.minusMinutes(safeMinAge))
+                .orderByDesc(AsyncTask::getUpdatedAt)
+                .last("limit " + safeLimit(limit));
+        if (!StringUtils.hasText(status)) {
+            wrapper.in(AsyncTask::getStatus, List.of("FAILED", "DEAD", "ERROR", "DEAD_LETTER"));
+        }
+        return Result.success(asyncTaskMapper.selectList(wrapper).stream().map(this::toTaskVO).toList());
     }
 
     @Operation(summary = "Get async task")
@@ -188,13 +254,91 @@ public class AdminTaskController {
 
     @Operation(summary = "Task status stats")
     @GetMapping("/stats")
-    public Result<List<Map<String, Object>>> stats() {
+    public Result<AdminTaskStatsVO> stats(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdFrom,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime createdBefore) {
         permissionGuard.require(PERM_TASK_LIST);
-        List<Map<String, Object>> counts = asyncTaskMapper.selectMaps(
-                new QueryWrapper<AsyncTask>()
-                        .select("status", "COUNT(*) AS count")
-                        .groupBy("status"));
-        return Result.success(counts);
+        validateTaskWindow(createdFrom, createdBefore);
+        LocalDateTime generatedAt = LocalDateTime.now(ADMIN_STATS_ZONE_ID);
+        LocalDateTime windowEnd = createdBefore == null ? generatedAt : createdBefore;
+        List<String> resolvedStatuses = normalizeStatusFilter(status);
+        long total = asyncTaskMapper.countAdminTasks(
+                resolvedStatuses,
+                createdFrom,
+                windowEnd);
+        QueryWrapper<AsyncTask> statsWrapper = new QueryWrapper<AsyncTask>()
+                .select("status", "COUNT(1) AS count")
+                .eq("deleted", 0)
+                .ge(createdFrom != null, "created_at", createdFrom)
+                .lt("created_at", windowEnd)
+                .groupBy("status");
+        if (!resolvedStatuses.isEmpty()) {
+            statsWrapper.in("status", resolvedStatuses);
+        }
+        List<Map<String, Object>> counts = asyncTaskMapper.selectMaps(statsWrapper);
+        AdminTaskStatsVO vo = new AdminTaskStatsVO();
+        vo.setTotal(total);
+        vo.setStatusCounts(counts.stream().map(this::toStatusCount).toList());
+        vo.setStatuses(resolvedStatuses);
+        vo.setStatusFilter(resolvedStatuses.isEmpty() ? "ALL" : String.join(",", resolvedStatuses));
+        vo.setWindowType(createdFrom == null ? ALL_TIME_TO_SNAPSHOT : RANGE_TO_SNAPSHOT);
+        vo.setWindowStart(createdFrom);
+        vo.setWindowEnd(windowEnd);
+        vo.setGeneratedAt(generatedAt);
+        vo.setBusinessTimezone(AsyncTaskMapper.ADMIN_STATS_TIMEZONE);
+        vo.setScopeDescription(taskStatsScopeDescription(resolvedStatuses));
+        vo.setNavigationPath("/admin/async-tasks");
+        vo.setNavigationQuery(taskStatsNavigationQuery(resolvedStatuses, createdFrom, windowEnd));
+        return Result.success(vo);
+    }
+
+    private AdminTaskStatsVO.StatusCountVO toStatusCount(Map<String, Object> row) {
+        AdminTaskStatsVO.StatusCountVO vo = new AdminTaskStatsVO.StatusCountVO();
+        Object status = mapValue(row, "status");
+        Object count = mapValue(row, "count");
+        vo.setStatus(status == null ? null : String.valueOf(status));
+        vo.setCount(count instanceof Number number ? number.longValue() : 0L);
+        return vo;
+    }
+
+    private Object mapValue(Map<String, Object> row, String key) {
+        return row.entrySet().stream()
+                .filter(entry -> key.equalsIgnoreCase(entry.getKey()))
+                .map(Map.Entry::getValue)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String taskStatsScopeDescription(List<String> statuses) {
+        if (statuses.equals(AsyncTaskMapper.ADMIN_FAILURE_STATUSES)) {
+            return "全部未删除任务；状态为 FAILED、DEAD、ERROR 或 DEAD_LETTER；统计截止时间不含之后新建任务。";
+        }
+        return statuses.isEmpty()
+                ? "全部未删除任务；统计截止时间不含之后新建任务。"
+                : "全部未删除任务；仅统计指定状态；统计截止时间不含之后新建任务。";
+    }
+
+    private Map<String, String> taskStatsNavigationQuery(List<String> statuses,
+                                                         LocalDateTime createdFrom,
+                                                         LocalDateTime createdBefore) {
+        java.util.LinkedHashMap<String, String> query = new java.util.LinkedHashMap<>();
+        if (!statuses.isEmpty()) {
+            query.put("status", String.join(",", statuses));
+        }
+        if (createdFrom != null) {
+            query.put("createdFrom", createdFrom.toString());
+        }
+        query.put("createdBefore", createdBefore.toString());
+        return query;
+    }
+
+    private void validateTaskWindow(LocalDateTime createdFrom, LocalDateTime createdBefore) {
+        if (createdFrom != null && createdBefore != null && !createdFrom.isBefore(createdBefore)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "createdFrom must be before createdBefore");
+        }
     }
 
     @Operation(summary = "Preview failed async task retry impact")
@@ -203,6 +347,54 @@ public class AdminTaskController {
         permissionGuard.require(PERM_TASK_RETRY);
         AsyncTask task = getTaskEntity(id);
         return Result.success(taskRetryPreview(task));
+    }
+
+    @Operation(summary = "Preview async task governance classification")
+    @GetMapping("/{id}/governance-preview")
+    public Result<AdminTaskGovernancePreviewVO> governancePreview(@PathVariable Long id) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        return Result.success(taskGovernancePreview(getTaskEntity(id)));
+    }
+
+    @Operation(summary = "Classify async task governance state without dispatching")
+    @PostMapping("/{id}/governance")
+    @OperationLog(module = "task", action = "GOVERN_ASYNC_TASK",
+            description = "人工分类异步任务治理状态", logArgs = false, logResponse = false)
+    public Result<Void> updateTaskGovernance(@PathVariable Long id,
+                                             @RequestBody(required = false) AdminTaskActionDTO dto) {
+        permissionGuard.require(PERM_TASK_RETRY);
+        String note = requireActionNote(dto);
+        String lockKey = requireConfirmedTaskAction("async-task-governance:" + id, dto);
+        try {
+            AsyncTask task = getTaskEntity(id);
+            AdminTaskGovernancePreviewVO preview = taskGovernancePreview(task);
+            if (!StringUtils.hasText(dto == null ? null : dto.getPreviewHash())
+                    || !preview.getPreviewHash().equals(dto.getPreviewHash().trim())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "治理预览已过期，请刷新后重新确认");
+            }
+            AsyncTaskGovernanceStatus requested = AsyncTaskGovernanceStatus.parse(dto.getGovernanceStatus());
+            if (!preview.getAllowedGovernanceStatuses().contains(requested.name())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "当前任务状态不允许设置该治理状态");
+            }
+            LocalDateTime now = LocalDateTime.now();
+            int updated = asyncTaskMapper.updateGovernance(
+                    task.getId(),
+                    requested.name(),
+                    truncate(note, 500),
+                    truncate(dto.getGovernanceOwner(), 128),
+                    AsyncTaskGovernanceStatus.RETRY_APPROVED.equals(requested)
+                            ? retryPreviewHash(task, now)
+                            : preview.getPreviewHash(),
+                    task.getUpdatedAt(),
+                    now);
+            if (updated != 1) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "任务已更新，请刷新治理预览后重试");
+            }
+            return Result.success();
+        } catch (RuntimeException ex) {
+            operationConfirmationGuard.release(lockKey);
+            throw ex;
+        }
     }
 
     @Operation(summary = "Retry failed async task")
@@ -219,20 +411,33 @@ public class AdminTaskController {
             if (!isRetryableTaskStatus(task.getStatus())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "Only FAILED/DEAD tasks can be retried");
             }
-            // Validate payload and redispatch the original envelope instead of only flipping status.
-            RetryDispatch dispatch = buildRetryDispatch(task);
-            asyncTaskService.prepareManualRetry(task.getId(), task.getMessageId());
+            AdminTaskImpactPreviewVO preview = taskRetryPreview(task);
+            if (!StringUtils.hasText(dto == null ? null : dto.getPreviewHash())
+                    || !preview.getPreviewHash().equals(dto.getPreviewHash().trim())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "重试预览已过期，请刷新后重新确认");
+            }
+            if (!AsyncTaskGovernanceStatus.RETRY_APPROVED.name().equals(
+                    AsyncTaskGovernanceStatus.normalize(task.getGovernanceStatus()))) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "任务必须先完成 RETRY_APPROVED 治理审批");
+            }
+            if (!preview.getPreviewHash().equals(task.getRetryPreviewHash())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "任务重试审批与当前预览不一致，请重新审批");
+            }
+            RetryDispatch dispatch = buildRetryDispatch(task, newRetryIdentity(task, preview.getPreviewHash()));
+            AsyncTask retryTask = asyncTaskService.prepareManualRetry(task, dispatch.attempt);
             try {
                 MqProducer producer = mqProducer.orElseThrow(() ->
                         new BusinessException(ErrorCode.SYSTEM_ERROR, "MQ producer is not available"));
                 dispatchAttempted = true;
                 producer.sendEnvelopeSync(dispatch.destination, dispatch.envelope);
             } catch (BusinessException ex) {
-                asyncTaskService.markManualRetryDispatchFailed(task.getId(),
+                asyncTaskService.markManualRetryDispatchFailed(
+                        task.getId(), retryTask.getId(), retryTask.getExecutionId(),
                         "Manual retry dispatch failed: " + ex.getMessage());
                 throw ex;
             } catch (Exception ex) {
-                asyncTaskService.markManualRetryDispatchFailed(task.getId(),
+                asyncTaskService.markManualRetryDispatchFailed(
+                        task.getId(), retryTask.getId(), retryTask.getExecutionId(),
                         "Manual retry dispatch failed: " + ex.getMessage());
                 throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Manual retry dispatch failed");
             }
@@ -419,11 +624,56 @@ public class AdminTaskController {
         vo.setBizId(task.getBizId());
         vo.setUserId(task.getUserId());
         vo.setCurrentStatus(task.getStatus());
+        vo.setPreviewHash(retryPreviewHash(task));
         vo.setExecutable(isRetryableTaskStatus(task.getStatus()));
         vo.setRiskLevel("MEDIUM");
         vo.setRequiredPermission(PERM_TASK_RETRY);
         vo.setRequiredNote("请填写失败原因已处理的说明");
         vo.setImpact("将任务状态重置为 PENDING，后续由对应补偿流程重新执行；非幂等业务可能产生重复 AI 调用或重复解析。");
+        return vo;
+    }
+
+    private AdminTaskGovernancePreviewVO taskGovernancePreview(AsyncTask task) {
+        String failureClass = failureClass(task);
+        boolean successful = "SUCCESS".equalsIgnoreCase(task.getStatus());
+        boolean retryable = isRetryableTaskStatus(task.getStatus());
+        AdminTaskGovernancePreviewVO vo = new AdminTaskGovernancePreviewVO();
+        vo.setId(task.getId());
+        vo.setBizType(task.getBizType());
+        vo.setBizId(task.getBizId());
+        vo.setTaskStatus(task.getStatus());
+        vo.setGovernanceStatus(AsyncTaskGovernanceStatus.normalize(task.getGovernanceStatus()));
+        vo.setFailureClass(failureClass);
+        vo.setAgeMinutes(taskAgeMinutes(task, LocalDateTime.now()));
+        vo.setRetryAllowed(retryable);
+        if (successful) {
+            vo.setRecommendedGovernanceStatus(AsyncTaskGovernanceStatus.RESOLVED.name());
+            vo.setRecommendedOwner("SYSTEM");
+            vo.setImpact("仅记录已成功任务的治理结论，不会重新投递消息或改变执行状态。");
+            vo.setAllowedGovernanceStatuses(List.of(AsyncTaskGovernanceStatus.RESOLVED.name()));
+        } else if ("UPSTREAM_UNAVAILABLE".equals(failureClass) && retryable) {
+            vo.setRecommendedGovernanceStatus(AsyncTaskGovernanceStatus.RETRY_APPROVED.name());
+            vo.setRecommendedOwner("PLATFORM_ONCALL");
+            vo.setImpact("仅记录“已批准重试”的人工结论；仍需通过独立的重试预览和确认流程才能投递消息。");
+            vo.setAllowedGovernanceStatuses(List.of(
+                    AsyncTaskGovernanceStatus.RETRY_APPROVED.name(),
+                    AsyncTaskGovernanceStatus.WONT_RETRY.name(),
+                    AsyncTaskGovernanceStatus.MANUAL_ACTION_REQUIRED.name()));
+        } else if (retryable) {
+            vo.setRecommendedGovernanceStatus(AsyncTaskGovernanceStatus.MANUAL_ACTION_REQUIRED.name());
+            vo.setRecommendedOwner(recommendedOwner(failureClass));
+            vo.setImpact("仅记录人工处置结论，不会修改任务执行状态、删除死信或投递 MQ 消息。");
+            vo.setAllowedGovernanceStatuses(List.of(
+                    AsyncTaskGovernanceStatus.RETRY_APPROVED.name(),
+                    AsyncTaskGovernanceStatus.WONT_RETRY.name(),
+                    AsyncTaskGovernanceStatus.MANUAL_ACTION_REQUIRED.name()));
+        } else {
+            vo.setRecommendedGovernanceStatus(AsyncTaskGovernanceStatus.UNASSESSED.name());
+            vo.setRecommendedOwner("SYSTEM");
+            vo.setImpact("任务尚未进入可人工分类的终态；该预览不会修改执行状态或投递消息。");
+            vo.setAllowedGovernanceStatuses(List.of());
+        }
+        vo.setPreviewHash(governancePreviewHash(task, failureClass));
         return vo;
     }
 
@@ -443,7 +693,7 @@ public class AdminTaskController {
         return vo;
     }
 
-    private RetryDispatch buildRetryDispatch(AsyncTask task) {
+    private RetryDispatch buildRetryDispatch(AsyncTask task, RetryIdentity identity) {
         if (!StringUtils.hasText(task.getMessageId())) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "async task messageId is empty");
         }
@@ -453,7 +703,7 @@ public class AdminTaskController {
             if (payload == null || payload.getResumeId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_PARSE),
                     bizType, resolveBizId(task.getBizId(), payload.getResumeId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -463,7 +713,7 @@ public class AdminTaskController {
                     || payload.getResumeId() == null || payload.getUserId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume optimize payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_OPTIMIZE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_OPTIMIZE),
                     bizType, resolveBizId(task.getBizId(), payload.getOptimizeRecordId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -472,7 +722,7 @@ public class AdminTaskController {
             if (payload == null || payload.getTargetJobId() == null || payload.getUserId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task job target payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_JOB_TARGET_PARSE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.RESUME, MqTopics.RESUME_TAG_JOB_TARGET_PARSE),
                     bizType, resolveBizId(task.getBizId(), payload.getTargetJobId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -481,7 +731,7 @@ public class AdminTaskController {
             if (payload == null || payload.getReportId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task resume job match payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.JOB_MATCH, MqTopics.JOB_MATCH_TAG_ANALYZE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.JOB_MATCH, MqTopics.JOB_MATCH_TAG_ANALYZE),
                     bizType, resolveBizId(task.getBizId(), payload.getReportId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -490,7 +740,7 @@ public class AdminTaskController {
             if (payload == null || !StringUtils.hasText(payload.getBatchId())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task question payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_AI_GENERATE),
                     BIZ_QUESTION_GENERATE, resolveBizId(task.getBizId(), payload.getBatchId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -501,7 +751,8 @@ public class AdminTaskController {
                 throw new BusinessException(ErrorCode.PARAM_ERROR,
                         "async task question recommendation payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_RECOMMENDATION_GENERATE),
+            return retryDispatch(task, identity,
+                    MqTopics.dest(MqTopics.QUESTION, MqTopics.QUESTION_TAG_RECOMMENDATION_GENERATE),
                     bizType, resolveBizId(task.getBizId(), payload.getBatchId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -510,7 +761,7 @@ public class AdminTaskController {
             if (payload == null || payload.getSessionId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task interview payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.INTERVIEW, MqTopics.INTERVIEW_TAG_REPORT),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.INTERVIEW, MqTopics.INTERVIEW_TAG_REPORT),
                     bizType, resolveBizId(task.getBizId(), payload.getSessionId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -519,7 +770,7 @@ public class AdminTaskController {
             if (payload == null || payload.getPlanId() == null || payload.getUserId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task study plan payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.STUDY_PLAN, MqTopics.STUDY_PLAN_TAG_GENERATE),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.STUDY_PLAN, MqTopics.STUDY_PLAN_TAG_GENERATE),
                     bizType, resolveBizId(task.getBizId(), payload.getPlanId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -528,7 +779,12 @@ public class AdminTaskController {
             if (payload == null || payload.getRunId() == null || payload.getUserId() == null) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task agent daily plan payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.AGENT, MqTopics.AGENT_TAG_DAILY_PLAN),
+            payload.setExecutionId(identity.executionId());
+            payload.setParentExecutionId(identity.parentExecutionId());
+            payload.setIdempotencyKey(identity.idempotencyKey());
+            payload.setAttemptNo(identity.attemptNo());
+            payload.setExecutionToken(identity.executionToken());
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.AGENT, MqTopics.AGENT_TAG_DAILY_PLAN),
                     bizType, resolveBizId(task.getBizId(), payload.getRunId()),
                     resolveUserId(task.getUserId(), payload.getUserId()), payload);
         }
@@ -538,25 +794,65 @@ public class AdminTaskController {
                     || !StringUtils.hasText(payload.getDocId())) {
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "async task search payload is invalid");
             }
-            return retryDispatch(task, MqTopics.dest(MqTopics.SEARCH, resolveSearchTag(payload.getIndexName())),
+            return retryDispatch(task, identity, MqTopics.dest(MqTopics.SEARCH, resolveSearchTag(payload.getIndexName())),
                     bizType, resolveBizId(task.getBizId(), payload.getDocId()), task.getUserId(), payload);
         }
         throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported async task bizType: " + bizType);
     }
 
-    private <T> RetryDispatch retryDispatch(AsyncTask task, String destination, String bizType,
+    private <T> RetryDispatch retryDispatch(AsyncTask task, RetryIdentity identity,
+                                            String destination, String bizType,
                                             String bizId, Long userId, T payload) {
+        String payloadJson = serializePayload(payload);
         MqMessage<T> envelope = MqMessage.<T>builder()
-                .messageId(task.getMessageId())
-                .traceId(task.getTraceId())
+                .messageId(identity.messageId())
+                .traceId(identity.traceId())
                 .bizType(bizType)
                 .bizId(bizId)
                 .userId(userId)
                 .payload(payload)
-                .retryCount(task.getRetryCount() == null ? 0 : task.getRetryCount())
+                .retryCount(0)
                 .createdAt(LocalDateTime.now())
                 .build();
-        return new RetryDispatch(destination, envelope);
+        return new RetryDispatch(destination, envelope,
+                new AsyncTaskService.ManualRetryAttempt(
+                        identity.messageId(),
+                        identity.traceId(),
+                        identity.executionId(),
+                        identity.parentExecutionId(),
+                        identity.idempotencyKey(),
+                        identity.attemptNo(),
+                        payloadJson,
+                        identity.retryPreviewHash()));
+    }
+
+    private RetryIdentity newRetryIdentity(AsyncTask task, String retryPreviewHash) {
+        String token = UUID.randomUUID().toString().replace("-", "");
+        String executionId = "retry:" + task.getId() + ":" + token;
+        String parentExecutionId = StringUtils.hasText(task.getExecutionId())
+                ? task.getExecutionId()
+                : "legacy-task:" + task.getId();
+        int currentAttemptNo = Math.max(
+                task.getAttemptNo() == null ? 1 : task.getAttemptNo(),
+                Math.max(0, task.getRetryCount() == null ? 0 : task.getRetryCount()) + 1);
+        int attemptNo = currentAttemptNo + 1;
+        return new RetryIdentity(
+                "admin-retry:" + task.getId() + ":" + token,
+                "admin-retry-trace:" + token,
+                executionId,
+                parentExecutionId,
+                "admin-retry:" + executionId,
+                attemptNo,
+                token,
+                retryPreviewHash);
+    }
+
+    private String serializePayload(Object payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception ex) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "async task payload cannot be serialized");
+        }
     }
 
     private Long resolveUserId(Long taskUserId, Long payloadUserId) {
@@ -572,6 +868,12 @@ public class AdminTaskController {
         vo.setUserId(task.getUserId());
         vo.setTraceId(task.getTraceId());
         vo.setStatus(task.getStatus());
+        vo.setExecutionId(task.getExecutionId());
+        vo.setParentExecutionId(task.getParentExecutionId());
+        vo.setRunId(task.getRunId());
+        vo.setAttemptNo(task.getAttemptNo());
+        vo.setIdempotencyKey(task.getIdempotencyKey());
+        vo.setTerminalReasonCode(task.getTerminalReasonCode());
         vo.setRetryCount(task.getRetryCount());
         vo.setMaxRetry(task.getMaxRetry());
         vo.setMaxRetryCount(task.getMaxRetry());
@@ -581,11 +883,64 @@ public class AdminTaskController {
         vo.setResultPreview(preview(task.getResult()));
         vo.setResultHash(sha256Prefix(task.getResult()));
         vo.setRawFieldsAvailable(StringUtils.hasText(task.getPayload()) || StringUtils.hasText(task.getResult()));
+        vo.setGovernanceStatus(AsyncTaskGovernanceStatus.normalize(task.getGovernanceStatus()));
+        vo.setGovernanceReason(maskText(task.getGovernanceReason()));
+        vo.setGovernanceOwner(task.getGovernanceOwner());
+        vo.setRetryPreviewHash(task.getRetryPreviewHash());
+        vo.setFailureClass(failureClass(task));
+        vo.setAgeMinutes(taskAgeMinutes(task, LocalDateTime.now()));
+        vo.setGovernanceUpdatedAt(task.getGovernanceUpdatedAt());
         vo.setStartedAt(task.getStartedAt());
         vo.setCompletedAt(task.getCompletedAt());
         vo.setCreatedAt(task.getCreatedAt());
         vo.setUpdatedAt(task.getUpdatedAt());
         return vo;
+    }
+
+    private String failureClass(AsyncTask task) {
+        String status = task == null ? "" : String.valueOf(task.getStatus()).toUpperCase();
+        if ("SUCCESS".equals(status)) {
+            return "NONE";
+        }
+        String reason = task == null ? "" : String.valueOf(task.getFailureReason()).toLowerCase();
+        if (reason.contains("credential") || reason.contains("authorization")
+                || reason.contains("auth") || reason.contains("token")) {
+            return "AUTH_OR_CONFIGURATION";
+        }
+        if (reason.contains("json") || reason.contains("parse") || reason.contains("deserialize")
+                || reason.contains("payload")) {
+            return "PAYLOAD_CONTRACT";
+        }
+        if (reason.contains("timeout") || reason.contains("connection")
+                || reason.contains("unavailable") || reason.contains("upstream")
+                || reason.contains("502") || reason.contains("503")) {
+            return "UPSTREAM_UNAVAILABLE";
+        }
+        if ("DEAD".equals(status) || "DEAD_LETTER".equals(status)) {
+            return "RETRY_EXHAUSTED";
+        }
+        return StringUtils.hasText(reason) ? "UNCLASSIFIED_FAILURE" : "PENDING_ASSESSMENT";
+    }
+
+    private String recommendedOwner(String failureClass) {
+        if ("AUTH_OR_CONFIGURATION".equals(failureClass)) {
+            return "PLATFORM_ADMIN";
+        }
+        if ("PAYLOAD_CONTRACT".equals(failureClass)) {
+            return "BUSINESS_ENGINEERING";
+        }
+        if ("UPSTREAM_UNAVAILABLE".equals(failureClass)) {
+            return "PLATFORM_ONCALL";
+        }
+        return "BUSINESS_ENGINEERING";
+    }
+
+    private long taskAgeMinutes(AsyncTask task, LocalDateTime now) {
+        LocalDateTime since = task.getUpdatedAt() != null ? task.getUpdatedAt() : task.getCreatedAt();
+        if (since == null || now == null || since.isAfter(now)) {
+            return 0L;
+        }
+        return Duration.between(since, now).toMinutes();
     }
 
     private AdminDeadLetterVO toDeadLetterVO(MessageDeadLetter dl) {
@@ -869,6 +1224,59 @@ public class AdminTaskController {
         return pageNo == null || pageNo < 1 ? 1L : pageNo;
     }
 
+    private String governancePreviewHash(AsyncTask task, String failureClass) {
+        String source = String.join("|",
+                String.valueOf(task.getId()),
+                String.valueOf(task.getStatus()),
+                String.valueOf(task.getUpdatedAt()),
+                AsyncTaskGovernanceStatus.normalize(task.getGovernanceStatus()),
+                String.valueOf(task.getFailureReason()),
+                String.valueOf(task.getRetryCount()),
+                String.valueOf(task.getMaxRetry()),
+                failureClass);
+        return sha256(source);
+    }
+
+    private String retryPreviewHash(AsyncTask task) {
+        return retryPreviewHash(task, task.getUpdatedAt());
+    }
+
+    private String retryPreviewHash(AsyncTask task, LocalDateTime version) {
+        String source = String.join("|",
+                String.valueOf(task.getId()),
+                String.valueOf(task.getStatus()),
+                String.valueOf(task.getBizType()),
+                String.valueOf(task.getBizId()),
+                String.valueOf(task.getMessageId()),
+                String.valueOf(task.getExecutionId()),
+                String.valueOf(task.getParentExecutionId()),
+                String.valueOf(task.getAttemptNo()),
+                String.valueOf(task.getRetryCount()),
+                String.valueOf(task.getMaxRetry()),
+                String.valueOf(task.getTerminalReasonCode()),
+                sha256Prefix(task.getFailureReason()),
+                version == null ? "" : version.withNano(0).toString(),
+                sha256Prefix(task.getPayload()));
+        return sha256(source);
+    }
+
+    private String sha256(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 is unavailable", ex);
+        }
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (!StringUtils.hasText(value)) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.length() <= maxLength ? normalized : normalized.substring(0, maxLength);
+    }
+
     private long defaultSize(Long pageSize) {
         return pageSize == null || pageSize < 1 ? 20L : Math.min(pageSize, 100L);
     }
@@ -877,11 +1285,24 @@ public class AdminTaskController {
 
         private final String destination;
         private final MqMessage<?> envelope;
+        private final AsyncTaskService.ManualRetryAttempt attempt;
 
-        private RetryDispatch(String destination, MqMessage<?> envelope) {
+        private RetryDispatch(String destination, MqMessage<?> envelope,
+                              AsyncTaskService.ManualRetryAttempt attempt) {
             this.destination = destination;
             this.envelope = envelope;
+            this.attempt = attempt;
         }
+    }
+
+    private record RetryIdentity(String messageId,
+                                 String traceId,
+                                 String executionId,
+                                 String parentExecutionId,
+                                 String idempotencyKey,
+                                 int attemptNo,
+                                 String executionToken,
+                                 String retryPreviewHash) {
     }
 
     private static final class DeadLetterReplayDispatch {

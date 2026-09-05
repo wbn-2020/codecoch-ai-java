@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Answers;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -49,6 +51,11 @@ class ResumeVersionSnapshotManagerTest {
 
     @BeforeAll
     static void initTableInfo() {
+        if (TableInfoHelper.getTableInfo(Resume.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                    Resume.class);
+        }
         if (TableInfoHelper.getTableInfo(ResumeVersion.class) == null) {
             TableInfoHelper.initTableInfo(
                     new MapperBuilderAssistant(new MybatisConfiguration(), ""),
@@ -309,6 +316,68 @@ class ResumeVersionSnapshotManagerTest {
         assertTrue(calls.contains("version.insert"), calls.toString());
     }
 
+    @Test
+    void insertAndApplyNormalizesPresentationConfigBeforePersistingStableVersion() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        Resume callerResume = resume("Stable summary");
+        ObjectNode snapshot = snapshot(mapper, "Suggested rewrite", List.of());
+        snapshot.putObject("presentationConfig")
+                .put("templateCode", "UNTRUSTED")
+                .putObject("fieldOrder")
+                .putArray("realName")
+                .add("email")
+                .add("<script>");
+        when(resumeMapper.lockOwnedResume(callerResume.getId(), callerResume.getUserId()))
+                .thenReturn(callerResume.getId());
+        when(versionMapper.selectLatestForUpdate(callerResume.getUserId(), callerResume.getId()))
+                .thenReturn(null);
+
+        snapshotManager.insertAndApply(
+                callerResume,
+                snapshot,
+                "MANUAL_SAVE",
+                null,
+                "Stable version");
+
+        ArgumentCaptor<ResumeVersion> versionCaptor = forClass(ResumeVersion.class);
+        verify(versionMapper).insert(versionCaptor.capture());
+        ObjectNode persisted = (ObjectNode) mapper.readTree(versionCaptor.getValue().getSnapshotJson());
+        assertEquals("ATS_SINGLE_COLUMN", persisted.path("presentationConfig").path("templateCode").asText());
+        assertEquals(
+                List.of("email"),
+                mapper.convertValue(
+                        persisted.path("presentationConfig").path("fieldOrder").path("realName"),
+                        List.class));
+        assertEquals(
+                "ATS_SINGLE_COLUMN",
+                mapper.readTree(callerResume.getPresentationConfigJson()).path("templateCode").asText());
+    }
+
+    @Test
+    void insertAndApplyRestoresSnapshotProjectWithItsOriginalId() {
+        ObjectMapper mapper = new ObjectMapper();
+        Resume callerResume = resume("Stable summary");
+        ResumeProject versionProject = project(11L, "Stable project", 1, 1);
+        ObjectNode snapshot = snapshot(mapper, "Stable summary", List.of(versionProject));
+        when(resumeMapper.lockOwnedResume(callerResume.getId(), callerResume.getUserId()))
+                .thenReturn(callerResume.getId());
+        when(versionMapper.selectLatestForUpdate(callerResume.getUserId(), callerResume.getId()))
+                .thenReturn(null);
+        when(projectMapper.restoreSnapshotById(any(ResumeProject.class))).thenReturn(1);
+
+        snapshotManager.insertAndApply(
+                callerResume,
+                snapshot,
+                "MANUAL_SAVE",
+                null,
+                "Stable version");
+
+        ArgumentCaptor<ResumeProject> projectCaptor = forClass(ResumeProject.class);
+        verify(projectMapper).restoreSnapshotById(projectCaptor.capture());
+        assertEquals(11L, projectCaptor.getValue().getId());
+        verify(projectMapper, never()).insert(any(ResumeProject.class));
+    }
+
     private ResumeVersionSnapshotManager guardedManager(
             ObjectMapper mapper,
             List<String> calls,
@@ -397,6 +466,7 @@ class ResumeVersionSnapshotManagerTest {
         ArrayNode projectArray = snapshot.putArray("projects");
         for (ResumeProject project : projects) {
             ObjectNode value = projectArray.addObject();
+            value.put("projectId", project.getId());
             putNullable(value, "projectName", project.getProjectName());
             putNullable(value, "projectPeriod", project.getProjectPeriod());
             putNullable(value, "projectBackground", project.getProjectBackground());

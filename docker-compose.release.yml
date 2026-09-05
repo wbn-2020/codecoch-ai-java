@@ -71,6 +71,8 @@ services:
       OSS_BUCKET: ${OSS_BUCKET:?OSS_BUCKET is required for release}
       OSS_AK: ${OSS_AK:?OSS_AK is required for release}
       OSS_SK: ${OSS_SK:?OSS_SK is required for release}
+      # Runtime image installs font-noto-cjk and exposes this stable symlink.
+      RESUME_EXPORT_PDF_FONT_PATH: /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc
       CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for release}
       CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET is required for release}
       CODECOACHAI_CALLER_AI_SIGNING_SECRET: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for release}

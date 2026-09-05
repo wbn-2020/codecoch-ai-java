@@ -11,6 +11,8 @@ import com.codecoachai.resume.feign.vo.InnerFileDownloadVO;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.service.FileContentService;
 import com.codecoachai.resume.service.extractor.ResumeTextExtractorDispatcher;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer;
+import com.codecoachai.resume.service.support.ResumeImportNormalizer.NormalizationResult;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -19,6 +21,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.HexFormat;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -68,6 +71,7 @@ public class InnerResumeAnalysisController {
     private final ResumeAnalysisRecordMapper analysisRecordMapper;
     private final FileContentService fileContentService;
     private final ResumeTextExtractorDispatcher textExtractorDispatcher;
+    private final ResumeImportNormalizer resumeImportNormalizer;
 
     @Operation(summary = "获取简历解析任务原始数据（rawText + 元信息）")
     @GetMapping("/{id}/raw")
@@ -123,12 +127,21 @@ public class InnerResumeAnalysisController {
         if (existing == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析记录不存在：" + id);
         }
-        String status = StringUtils.hasText(dto.getParseStatus()) ? dto.getParseStatus() : "SUCCESS";
+        String status = StringUtils.hasText(dto.getParseStatus())
+                ? dto.getParseStatus().trim().toUpperCase(Locale.ROOT)
+                : ResumeParseStatus.SUCCESS.getCode();
         ResumeParseStatus parseStatus = ResumeParseStatus.of(status);
         if (parseStatus == null) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "Unsupported resume parse status: " + status);
         }
         logCallbackDiagnostics(status, dto);
+        NormalizationResult normalized = null;
+        if (parseStatus == ResumeParseStatus.WAIT_CONFIRM) {
+            if (!StringUtils.hasText(dto.getStructuredJson())) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "简历解析结构化结果不能为空");
+            }
+            normalized = resumeImportNormalizer.normalize(dto.getStructuredJson());
+        }
 
         LambdaUpdateWrapper<ResumeAnalysisRecord> upd = new LambdaUpdateWrapper<ResumeAnalysisRecord>()
                 .eq(ResumeAnalysisRecord::getId, id)
@@ -138,19 +151,39 @@ public class InnerResumeAnalysisController {
                         .isNull(ResumeAnalysisRecord::getParseStatus))
                 .set(ResumeAnalysisRecord::getParseStatus, status)
                 .set(ResumeAnalysisRecord::getUpdatedAt, LocalDateTime.now());
-        if (StringUtils.hasText(dto.getStructuredJson())) {
-            upd.set(ResumeAnalysisRecord::getStructuredJson, dto.getStructuredJson());
+        String canonicalStructuredJson = normalized == null
+                ? dto.getStructuredJson()
+                : normalized.normalizedJson();
+        if (parseStatus == ResumeParseStatus.WAIT_CONFIRM && StringUtils.hasText(canonicalStructuredJson)) {
+            upd.set(ResumeAnalysisRecord::getStructuredJson, canonicalStructuredJson);
         }
         if (StringUtils.hasText(dto.getRawText())) {
             upd.set(ResumeAnalysisRecord::getRawText, dto.getRawText());
         }
-        if (StringUtils.hasText(dto.getErrorMessage())) {
+        if (normalized != null) {
+            String sourceRawText = StringUtils.hasText(dto.getRawText())
+                    ? dto.getRawText()
+                    : existing.getRawText();
+            upd.set(ResumeAnalysisRecord::getSchemaVersion,
+                            normalized.structuredResume().getSchemaVersion())
+                    .set(ResumeAnalysisRecord::getPolicyVersion, ResumeImportNormalizer.POLICY_VERSION)
+                    .set(ResumeAnalysisRecord::getSourceHash,
+                            resumeImportNormalizer.sourceHash(sourceRawText))
+                    .set(ResumeAnalysisRecord::getValidationStatus,
+                            normalized.qualityReport().getValidationStatus())
+                    .set(ResumeAnalysisRecord::getQualityReportJson, normalized.qualityReportJson())
+                    .set(ResumeAnalysisRecord::getGeneratedAt, LocalDateTime.now());
+        }
+        if (parseStatus == ResumeParseStatus.FAILED) {
+            clearStructuredResult(upd);
             upd.set(ResumeAnalysisRecord::getErrorMessage, safeParseErrorMessage());
+        } else {
+            upd.set(ResumeAnalysisRecord::getErrorMessage, null);
         }
         int updated = analysisRecordMapper.update(null, upd);
         if (updated <= 0) {
             ResumeAnalysisRecord latest = analysisRecordMapper.selectById(id);
-            if (isIdempotentDuplicate(latest, status, dto)) {
+            if (isIdempotentDuplicate(latest, status, canonicalStructuredJson, dto.getRawText())) {
                 log.info("Resume analysis record {} duplicate callback ignored, status={}", id, status);
                 return Result.success();
             }
@@ -159,6 +192,17 @@ public class InnerResumeAnalysisController {
         }
         log.info("Resume analysis record {} updated to {}", id, status);
         return Result.success();
+    }
+
+    private void clearStructuredResult(LambdaUpdateWrapper<ResumeAnalysisRecord> update) {
+        update.set(ResumeAnalysisRecord::getStructuredJson, null)
+                .set(ResumeAnalysisRecord::getSchemaVersion, null)
+                .set(ResumeAnalysisRecord::getPolicyVersion, null)
+                .set(ResumeAnalysisRecord::getSourceHash, null)
+                .set(ResumeAnalysisRecord::getValidationStatus, null)
+                .set(ResumeAnalysisRecord::getQualityReportJson, null)
+                .set(ResumeAnalysisRecord::getGeneratedAt, null)
+                .set(ResumeAnalysisRecord::getRepairBatchId, null);
     }
 
     @Data
@@ -206,15 +250,16 @@ public class InnerResumeAnalysisController {
         }
     }
 
-    private boolean isIdempotentDuplicate(ResumeAnalysisRecord latest, String status, CompleteDTO dto) {
+    private boolean isIdempotentDuplicate(
+            ResumeAnalysisRecord latest, String status, String structuredJson, String rawText) {
         if (latest == null || !Objects.equals(latest.getParseStatus(), status)) {
             return false;
         }
-        if (StringUtils.hasText(dto.getStructuredJson())
-                && !Objects.equals(latest.getStructuredJson(), dto.getStructuredJson())) {
+        if (StringUtils.hasText(structuredJson)
+                && !Objects.equals(latest.getStructuredJson(), structuredJson)) {
             return false;
         }
-        if (StringUtils.hasText(dto.getRawText()) && !Objects.equals(latest.getRawText(), dto.getRawText())) {
+        if (StringUtils.hasText(rawText) && !Objects.equals(latest.getRawText(), rawText)) {
             return false;
         }
         return true;

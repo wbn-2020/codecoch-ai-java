@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -14,6 +16,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.mq.domain.MqDispatchReceipt;
 import com.codecoachai.common.security.context.LoginUser;
 import com.codecoachai.common.security.context.LoginUserContext;
@@ -23,6 +26,7 @@ import com.codecoachai.resume.domain.dto.ResumeJobMatchQueryDTO;
 import com.codecoachai.resume.domain.entity.JobDescriptionAnalysis;
 import com.codecoachai.resume.domain.entity.Resume;
 import com.codecoachai.resume.domain.entity.ResumeAnalysisRecord;
+import com.codecoachai.resume.domain.entity.ResumeJobMatchDetail;
 import com.codecoachai.resume.domain.entity.ResumeJobMatchReport;
 import com.codecoachai.resume.domain.entity.ResumeProject;
 import com.codecoachai.resume.domain.entity.ResumeVersion;
@@ -32,6 +36,7 @@ import com.codecoachai.resume.domain.enums.ResumeJobMatchStatus;
 import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchSubmitVO;
 import com.codecoachai.resume.feign.AiFeignClient;
+import com.codecoachai.resume.feign.vo.AnalyzeResumeJobMatchVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.ResumeAnalysisRecordMapper;
 import com.codecoachai.resume.mapper.ResumeJobMatchDetailMapper;
@@ -42,6 +47,7 @@ import com.codecoachai.resume.mapper.ResumeVersionMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.ResumeJobMatchMqDispatcher;
 import com.codecoachai.resume.service.support.ResumeJobMatchTrustPolicy;
+import com.codecoachai.task.service.AsyncTaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -90,6 +96,8 @@ class ResumeJobMatchServiceImplTest {
     private TransactionTemplate transactionTemplate;
     @Mock
     private ResumeJobMatchMqDispatcher mqDispatcher;
+    @Mock
+    private AsyncTaskService asyncTaskService;
 
     private ResumeJobMatchServiceImpl service;
 
@@ -131,7 +139,8 @@ class ResumeJobMatchServiceImplTest {
                 objectMapper,
                 transactionTemplate,
                 Optional.of(mqDispatcher),
-                new ResumeJobMatchTrustPolicy(objectMapper));
+                new ResumeJobMatchTrustPolicy(objectMapper),
+                asyncTaskService);
     }
 
     @AfterEach
@@ -150,7 +159,7 @@ class ResumeJobMatchServiceImplTest {
         assertEquals(99L, result.getReportId());
         assertEquals(ResumeJobMatchStatus.SUCCESS.getCode(), result.getStatus());
         verify(reportMapper, never()).insert(any(ResumeJobMatchReport.class));
-        verify(mqDispatcher, never()).dispatchAnalyzeWithReceipt(any(), any());
+        verify(mqDispatcher, never()).dispatchAnalyzeWithReceipt(any(), any(), any(), any());
     }
 
     @Test
@@ -158,6 +167,7 @@ class ResumeJobMatchServiceImplTest {
         stubMatchContext(REPORT_TIME.plusMinutes(5));
         when(reportMapper.selectOne(any())).thenReturn(successReport(99L, REPORT_TIME));
         stubProcessingReportCreate(200L);
+        stubAcceptedDispatch(200L);
 
         ResumeJobMatchSubmitVO result = service.createReport(createDto());
 
@@ -177,6 +187,7 @@ class ResumeJobMatchServiceImplTest {
                 REPORT_TIME.minusHours(2));
         when(reportMapper.selectOne(any())).thenReturn(successReport(99L, REPORT_TIME));
         stubProcessingReportCreate(201L);
+        stubAcceptedDispatch(201L);
 
         ResumeJobMatchSubmitVO result = service.createReport(createDto());
 
@@ -187,12 +198,46 @@ class ResumeJobMatchServiceImplTest {
     }
 
     @Test
+    void createReportFallsBackToSynchronousExecutionWhenDispatchIsNotSendOk() {
+        stubMatchContext(REPORT_TIME.minusHours(2));
+        when(reportMapper.selectOne(any())).thenReturn(null);
+        stubProcessingReportCreate(203L);
+        when(mqDispatcher.dispatchAnalyzeWithReceipt(eq(203L), eq(USER_ID), any(), any())).thenReturn(MqDispatchReceipt.builder()
+                .messageId("msg-203")
+                .traceId("trace-203")
+                .bizType("resume-job-match.analyze")
+                .bizId("203")
+                .userId(USER_ID)
+                .sendStatus("SEND_FAILED")
+                .build());
+        ResumeJobMatchReport persisted = successReport(203L, REPORT_TIME);
+        when(reportMapper.selectById(203L)).thenReturn(
+                processingReport(203L),
+                runningReport(203L),
+                runningReport(203L),
+                persisted);
+        when(reportMapper.update(any(), any())).thenReturn(1);
+        when(detailMapper.insert(any(ResumeJobMatchDetail.class))).thenReturn(1);
+        when(aiFeignClient.analyzeResumeJobMatch(any())).thenReturn(Result.success(aiMatchResponse()));
+
+        ResumeJobMatchSubmitVO result = service.createReport(createDto());
+
+        assertEquals(203L, result.getReportId());
+        assertEquals(ResumeJobMatchStatus.SUCCESS.getCode(), result.getStatus());
+        assertTrue(result.getAsyncMessageId().startsWith("resume-job-match.analyze:203:"));
+        verify(aiFeignClient).analyzeResumeJobMatch(any());
+        verify(asyncTaskService).completePending(
+                any(), eq(true), any(), nullable(String.class));
+    }
+
+    @Test
     void createReportStoresResumeVersionWhenVersionIsRequested() {
         stubMatchContext(REPORT_TIME.minusHours(2));
         when(resumeVersionMapper.selectOne(any(LambdaQueryWrapper.class))).thenReturn(resumeVersion(RESUME_VERSION_ID, RESUME_ID));
         ResumeJobMatchReport existing = successReport(99L, REPORT_TIME);
         when(reportMapper.selectOne(any())).thenReturn(existing);
         stubProcessingReportCreate(202L);
+        stubAcceptedDispatch(202L);
 
         ResumeJobMatchSubmitVO result = service.createReport(createDto(RESUME_VERSION_ID));
 
@@ -356,14 +401,64 @@ class ResumeJobMatchServiceImplTest {
             report.setUpdatedAt(REPORT_TIME.plusMinutes(6));
             return 1;
         });
-        when(mqDispatcher.dispatchAnalyzeWithReceipt(reportId, USER_ID)).thenReturn(MqDispatchReceipt.builder()
+    }
+
+    private void stubAcceptedDispatch(long reportId) {
+        when(mqDispatcher.dispatchAnalyzeWithReceipt(eq(reportId), eq(USER_ID), any(), any())).thenReturn(MqDispatchReceipt.builder()
                 .messageId("msg-" + reportId)
                 .traceId("trace-" + reportId)
                 .bizType("resume-job-match.analyze")
                 .bizId(String.valueOf(reportId))
                 .userId(USER_ID)
-                .sendStatus("SENT")
+                .sendStatus("SEND_OK")
                 .build());
+    }
+
+    private AnalyzeResumeJobMatchVO aiMatchResponse() {
+        AnalyzeResumeJobMatchVO response = new AnalyzeResumeJobMatchVO();
+        response.setAiCallLogId(66L);
+        response.setResultJson("""
+                {
+                  "overallScore": 82,
+                  "dimensionScores": {
+                    "techStack": 80,
+                    "projectExperience": 78,
+                    "businessFit": 85,
+                    "communication": 86
+                  },
+                  "strengths": [],
+                  "gaps": [
+                    {
+                      "skillName": "Redis",
+                      "category": "TECH_STACK",
+                      "severity": "MEDIUM",
+                      "targetLevel": 4,
+                      "currentLevel": 2,
+                      "description": "缺少缓存高并发场景的项目证据",
+                      "evidence": "项目经历未体现 Redis 高并发缓存方案",
+                      "recommendedActions": ["补充缓存方案和压测结果"]
+                    }
+                  ],
+                  "resumeRisks": [],
+                  "optimizationSuggestions": [],
+                  "recommendedLearningTopics": [],
+                  "recommendedInterviewTopics": [],
+                  "summary": "匹配结果可用。"
+                }
+                """);
+        return response;
+    }
+
+    private ResumeJobMatchReport processingReport(long id) {
+        ResumeJobMatchReport report = successReport(id, REPORT_TIME);
+        report.setStatus(ResumeJobMatchStatus.PROCESSING.getCode());
+        return report;
+    }
+
+    private ResumeJobMatchReport runningReport(long id) {
+        ResumeJobMatchReport report = successReport(id, REPORT_TIME);
+        report.setStatus(ResumeJobMatchStatus.RUNNING.getCode());
+        return report;
     }
 
     private ResumeJobMatchCreateDTO createDto() {

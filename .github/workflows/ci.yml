@@ -78,6 +78,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install release script test dependencies
+        run: python -m pip install --disable-pip-version-check -r scripts/release/requirements-test.txt
+
       - name: Check changed lines for whitespace errors
         shell: bash
         run: |
@@ -163,7 +166,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ vars.CODECOACHAI_FRONTEND_REPOSITORY || 'wbn-2020/codecoch-ai-vue' }}
-          ref: ${{ vars.CODECOACHAI_FRONTEND_REF || 'dev-260703' }}
+          ref: ${{ vars.CODECOACHAI_FRONTEND_REF || 'dev-260731' }}
           path: frontend
           token: ${{ secrets.CODECOACHAI_FRONTEND_READ_TOKEN || github.token }}
           persist-credentials: false

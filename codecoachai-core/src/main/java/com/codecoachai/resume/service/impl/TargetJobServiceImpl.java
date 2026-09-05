@@ -23,6 +23,7 @@ import com.codecoachai.resume.feign.vo.ParseJobDescriptionVO;
 import com.codecoachai.resume.mapper.JobDescriptionAnalysisMapper;
 import com.codecoachai.resume.mapper.TargetJobMapper;
 import com.codecoachai.resume.mq.JobTargetParseMqDispatcher;
+import com.codecoachai.resume.service.JobRequirementService;
 import com.codecoachai.resume.service.TargetJobService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +54,7 @@ public class TargetJobServiceImpl implements TargetJobService {
     private final TransactionTemplate transactionTemplate;
     private final DistributedLockHelper distributedLockHelper;
     private final Optional<JobTargetParseMqDispatcher> jobTargetParseMqDispatcher;
+    private final JobRequirementService jobRequirementService;
 
     @Override
     public List<TargetJobVO> listTargetJobs(TargetJobQueryDTO query) {
@@ -208,15 +210,23 @@ public class TargetJobServiceImpl implements TargetJobService {
         }
         if (JobDescriptionParseStatus.PARSING.getCode().equals(job.getParseStatus())) {
             JobDescriptionAnalysisVO parsing = existing == null ? toParsingHintVO(job, userId) : toAnalysisVO(existing);
-            return attachSyntheticTaskHint(parsing, id, userId);
+            return attachLatestTaskHint(attachSyntheticTaskHint(parsing, id, userId), id, userId);
         }
 
         JobDescriptionAnalysis parsing = transactionTemplate.execute(status -> markParsing(job, existing, request));
-        MqDispatchReceipt receipt = dispatchParse(job, request);
-        if (receipt != null) {
+        MqDispatchReceipt receipt;
+        try {
+            receipt = dispatchParse(job, request);
+        } catch (RuntimeException ex) {
+            return toAnalysisVO(transactionTemplate.execute(status ->
+                    markFailed(job.getId(), userId, parsing.getId(), ex)));
+        }
+        if (isAsyncAccepted(receipt)) {
             return withAsyncReceipt(toAnalysisVO(parsing), receipt);
         }
-        return parseMarkedJob(job, userId, parsing.getId(), request);
+        JobDescriptionAnalysisVO result = parseMarkedJob(job, userId, parsing.getId(), request);
+        completeSynchronousFallback(receipt, result);
+        return receipt == null ? result : withAsyncReceipt(result, receipt);
     }
 
     @Override
@@ -288,7 +298,7 @@ public class TargetJobServiceImpl implements TargetJobService {
         requireUserId(userId);
         getOwnedTargetJob(id, userId);
         JobDescriptionAnalysis analysis = latestAnalysis(id, userId);
-        return analysis == null ? null : toAnalysisVO(analysis);
+        return analysis == null ? null : attachLatestTaskHint(toAnalysisVO(analysis), id, userId);
     }
 
     private void validateParseable(TargetJob job) {
@@ -304,16 +314,43 @@ public class TargetJobServiceImpl implements TargetJobService {
                 .orElse(null);
     }
 
+    private boolean isAsyncAccepted(MqDispatchReceipt receipt) {
+        return receipt != null && "SEND_OK".equalsIgnoreCase(receipt.getSendStatus());
+    }
+
+    private void completeSynchronousFallback(
+            MqDispatchReceipt receipt, JobDescriptionAnalysisVO result) {
+        if (receipt == null) {
+            return;
+        }
+        boolean successful = result != null
+                && JobDescriptionParseStatus.PARSED.getCode().equals(result.getParseStatus());
+        String failureReason = successful ? null : result == null
+                ? "Job description parse returned no result"
+                : result.getParseErrorMessage();
+        jobTargetParseMqDispatcher.ifPresent(dispatcher ->
+                dispatcher.completeSynchronousFallback(receipt, successful, result, failureReason));
+    }
+
     private JobDescriptionAnalysisVO withAsyncReceipt(JobDescriptionAnalysisVO vo, MqDispatchReceipt receipt) {
         if (vo == null || receipt == null) {
             return vo;
         }
         vo.setAsyncMessageId(receipt.getMessageId());
+        vo.setExecutionId(receipt.getMessageId());
         vo.setAsyncTraceId(receipt.getTraceId());
         vo.setAsyncBizType(receipt.getBizType());
         vo.setAsyncBizId(receipt.getBizId());
         vo.setAsyncSendStatus(receipt.getSendStatus());
         return vo;
+    }
+
+    private JobDescriptionAnalysisVO attachLatestTaskHint(JobDescriptionAnalysisVO vo,
+                                                          Long targetJobId,
+                                                          Long userId) {
+        return jobTargetParseMqDispatcher
+                .map(dispatcher -> dispatcher.attachLatestTaskReceipt(vo, targetJobId, userId))
+                .orElse(vo);
     }
 
     private JobDescriptionAnalysisVO attachSyntheticTaskHint(JobDescriptionAnalysisVO vo, Long targetJobId, Long userId) {
@@ -391,6 +428,7 @@ public class TargetJobServiceImpl implements TargetJobService {
         analysis.setParseStatus(JobDescriptionParseStatus.PARSED.getCode());
         analysis.setParseErrorMessage(null);
         analysisMapper.updateById(analysis);
+        jobRequirementService.materializeForUser(targetJobId, userId, analysis);
 
         targetJobMapper.update(null, new LambdaUpdateWrapper<TargetJob>()
                 .set(TargetJob::getParseStatus, JobDescriptionParseStatus.PARSED.getCode())

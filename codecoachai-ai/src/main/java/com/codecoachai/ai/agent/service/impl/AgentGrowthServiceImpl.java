@@ -35,6 +35,8 @@ import com.codecoachai.ai.service.AiService;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -103,6 +105,7 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     private final AgentReviewPlanService agentReviewPlanService;
     private final ObjectMapper objectMapper;
     private final AgentBusinessTimeProvider timeProvider;
+    private final StudyProgressStatisticsService progressStatisticsService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -181,14 +184,19 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         List<AgentTask> tasks = tasks(userId, start, end);
         long done = countTasks(tasks, AgentTaskStatusEnum.DONE.name());
         BigDecimal completionRate = rate(done, tasks.size());
-        long totalReviewCount = agentReviewMapper.selectCount(
-                new LambdaQueryWrapper<AgentReview>().eq(AgentReview::getUserId, userId));
-        long totalMemoryCount = agentMemoryMapper.selectCount(new LambdaQueryWrapper<AgentMemory>()
+        long totalReviewCount = Math.max(0L, agentReviewMapper.selectCount(
+                new LambdaQueryWrapper<AgentReview>()
+                        .eq(AgentReview::getUserId, userId)
+                        .eq(AgentReview::getDeleted, 0)));
+        long totalMemoryCount = Math.max(0L, agentMemoryMapper.selectCount(new LambdaQueryWrapper<AgentMemory>()
                 .eq(AgentMemory::getUserId, userId)
-                .eq(AgentMemory::getEnabled, 1));
+                .eq(AgentMemory::getEnabled, 1)
+                .eq(AgentMemory::getDeleted, 0)));
         GrowthEvidencePolicy policy = buildEvidencePolicy(tasks.size(), done);
+        StudyProgressSnapshot studyProgress = progressStatisticsService.current(userId);
 
         GrowthOverviewVO vo = new GrowthOverviewVO();
+        vo.setStudyProgress(studyProgress);
         vo.setTotalReviewCount(totalReviewCount);
         vo.setTotalMemoryCount(totalMemoryCount);
         vo.setTopSkills(topSkillMetrics(tasks));
@@ -215,10 +223,12 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         int actualDays = normalizeDays(days);
         LocalDate start = timeProvider.today().minusDays(actualDays - 1L);
         String timeWindow = "最近" + actualDays + "天";
-        return skillGrowthSnapshotMapper.selectList(new LambdaQueryWrapper<SkillGrowthSnapshot>()
+        List<SkillGrowthSnapshot> snapshots = skillGrowthSnapshotMapper.selectList(new LambdaQueryWrapper<SkillGrowthSnapshot>()
                         .eq(SkillGrowthSnapshot::getUserId, userId)
+                        .eq(SkillGrowthSnapshot::getDeleted, 0)
                         .ge(SkillGrowthSnapshot::getSnapshotDate, start)
-                        .orderByAsc(SkillGrowthSnapshot::getSnapshotDate))
+                        .orderByAsc(SkillGrowthSnapshot::getSnapshotDate));
+        return (snapshots == null ? List.<SkillGrowthSnapshot>of() : snapshots)
                 .stream().map(snapshot -> toSkillVO(snapshot, timeWindow)).toList();
     }
 
@@ -227,10 +237,12 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
         int actualDays = normalizeDays(days);
         LocalDate start = timeProvider.today().minusDays(actualDays - 1L);
         String timeWindow = "最近" + actualDays + "天";
-        return readinessScoreRecordMapper.selectList(new LambdaQueryWrapper<ReadinessScoreRecord>()
+        List<ReadinessScoreRecord> records = readinessScoreRecordMapper.selectList(new LambdaQueryWrapper<ReadinessScoreRecord>()
                         .eq(ReadinessScoreRecord::getUserId, userId)
+                        .eq(ReadinessScoreRecord::getDeleted, 0)
                         .ge(ReadinessScoreRecord::getScoreDate, start)
-                        .orderByAsc(ReadinessScoreRecord::getScoreDate))
+                        .orderByAsc(ReadinessScoreRecord::getScoreDate));
+        return (records == null ? List.<ReadinessScoreRecord>of() : records)
                 .stream().map(record -> toReadinessVO(record, timeWindow)).toList();
     }
 
@@ -373,10 +385,12 @@ public class AgentGrowthServiceImpl implements AgentGrowthService {
     }
 
     private List<AgentTask> tasks(Long userId, LocalDate start, LocalDate end) {
-        return agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
+        List<AgentTask> tasks = agentTaskMapper.selectList(new LambdaQueryWrapper<AgentTask>()
                 .eq(AgentTask::getUserId, userId)
+                .eq(AgentTask::getDeleted, 0)
                 .ge(AgentTask::getDueDate, start)
                 .le(AgentTask::getDueDate, end));
+        return tasks == null ? List.of() : tasks;
     }
 
     private AgentReview dailyReviewIdentity(Long userId,

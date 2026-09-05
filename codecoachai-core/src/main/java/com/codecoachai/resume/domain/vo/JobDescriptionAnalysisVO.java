@@ -24,6 +24,7 @@ public class JobDescriptionAnalysisVO {
     private JsonNode skillWeights;
     private String summary;
     private Long aiCallLogId;
+    private String executionId;
     private String asyncMessageId;
     private String asyncTraceId;
     private String asyncBizType;

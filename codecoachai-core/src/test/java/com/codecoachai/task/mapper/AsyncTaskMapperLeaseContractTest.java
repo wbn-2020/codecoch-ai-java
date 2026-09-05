@@ -101,6 +101,50 @@ class AsyncTaskMapperLeaseContractTest {
         }
     }
 
+    @Test
+    void terminalAndManualRetryTransitionsMaintainGovernanceLifecycle() {
+        String success = updateSql("markSuccess");
+        assertTrue(success.contains("governance_status = 'resolved'"), success);
+
+        String terminal = updateSql("markTerminalFailed");
+        assertTrue(terminal.contains("governance_status = 'manual_action_required'"), terminal);
+
+        String retryable = updateSql("markRetryableFailed");
+        assertTrue(retryable.contains("governance_status = 'unassessed'"), retryable);
+
+        String exhausted = updateSql("markRetryExhaustedDead");
+        assertTrue(exhausted.contains("governance_status = 'manual_action_required'"), exhausted);
+
+        String manualRetry = updateSql("prepareManualRetry");
+        assertTrue(manualRetry.contains("governance_status = 'retrying'"), manualRetry);
+
+        String parentDispatch = updateSql("markManualRetryParentDispatched");
+        assertTrue(parentDispatch.contains("retry_count = retry_count + 1"), parentDispatch);
+        assertTrue(parentDispatch.contains("execution_id = coalesce"), parentDispatch);
+        assertTrue(parentDispatch.contains("retry_preview_hash = null"), parentDispatch);
+        assertTrue(parentDispatch.contains("#{childexecutionid}"), parentDispatch);
+        assertTrue(parentDispatch.contains("#{childattemptno}"), parentDispatch);
+
+        String dispatchFailure = updateSql("markManualRetryDispatchFailed");
+        assertTrue(dispatchFailure.contains("governance_status = 'manual_action_required'"), dispatchFailure);
+
+        String parentDispatchFailure = updateSql("markManualRetryParentDispatchFailed");
+        assertTrue(parentDispatchFailure.contains("governance_status = 'manual_action_required'"),
+                parentDispatchFailure);
+        assertTrue(parentDispatchFailure.contains("#{childexecutionid}"), parentDispatchFailure);
+
+        String pendingCompletion = updateSql("completePendingTask");
+        assertTrue(pendingCompletion.contains("governance_status = case"), pendingCompletion);
+    }
+
+    @Test
+    void governanceClassificationUsesUpdatedAtCompareAndSet() {
+        String sql = updateSql("updateGovernance");
+        assertTrue(sql.contains("updated_at <=> #{expectedupdatedat}"), sql);
+        assertTrue(sql.contains("retry_preview_hash = #{previewhash}"), sql);
+        assertTrue(sql.contains("governance_updated_at = #{governanceupdatedat}"), sql);
+    }
+
     private static String updateSql(String methodName) {
         Update annotation = method(methodName).getAnnotation(Update.class);
         if (annotation == null) {

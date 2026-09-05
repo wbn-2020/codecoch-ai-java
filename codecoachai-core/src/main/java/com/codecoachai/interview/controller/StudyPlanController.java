@@ -123,6 +123,11 @@ public class StudyPlanController {
         return Result.success(studyPlanService.regenerate(id));
     }
 
+    @PostMapping("/study-plans/{id}/renew")
+    public Result<StudyPlanGenerateVO> renew(@PathVariable Long id) {
+        return Result.success(studyPlanService.renew(id));
+    }
+
     @PostMapping("/study-tasks/{taskId}/status")
     public Result<StudyTaskVO> updateTaskStatus(@PathVariable Long taskId,
                                                 @Valid @RequestBody StudyTaskStatusUpdateDTO dto) {

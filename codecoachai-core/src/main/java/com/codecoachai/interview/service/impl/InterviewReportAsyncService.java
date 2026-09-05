@@ -27,6 +27,8 @@ import com.codecoachai.interview.scenario.InterviewScenarioBinding;
 import com.codecoachai.interview.scenario.InterviewScenarioBindingMapper;
 import com.codecoachai.interview.scenario.InterviewRubricVersionMapper;
 import com.codecoachai.interview.support.InterviewReportTrustPolicy;
+import com.codecoachai.interview.support.InterviewReportConsumabilityContract;
+import com.codecoachai.interview.support.InterviewReportPromptBudgeter;
 import com.codecoachai.interview.support.InterviewReportScoringContract;
 import com.codecoachai.interview.support.InterviewRubricVersion;
 import com.codecoachai.common.mq.domain.MqMessage;
@@ -126,34 +128,64 @@ public class InterviewReportAsyncService {
                 return;
             }
             GenerateReportVO aiReport = FeignResultUtils.unwrap(aiFeignClient.report(buildReportDTO(session, messages)));
-            interviewReportTransactionService.completeReportSuccess(
-                    () -> doCompleteReportSuccess(session, reportId, generationToken, aiReport, messages));
-            asyncTaskService.markSuccess(registeredMessageId, aiReport);
+            interviewReportTransactionService.completeReportSuccess(() -> {
+                ReportCompletionOutcome outcome =
+                        doCompleteReportSuccess(session, reportId, generationToken, aiReport, messages);
+                if (outcome.businessSuccess()) {
+                    asyncTaskService.markSuccess(registeredMessageId, aiReport);
+                } else {
+                    asyncTaskService.markTerminalFailed(registeredMessageId, outcome.failureReason());
+                }
+                return outcome;
+            });
         } catch (RuntimeException ex) {
             log.warn("Interview report generation failed, sessionId={}", session.getId(), ex);
-            interviewReportTransactionService.completeReportFailed(
-                    () -> doCompleteReportFailed(session, reportId, generationToken));
-            asyncTaskService.markTerminalFailed(registeredMessageId, ex.getMessage());
+            try {
+                interviewReportTransactionService.completeReportFailed(
+                        () -> doCompleteReportFailed(session, reportId, generationToken));
+                asyncTaskService.markTerminalFailed(registeredMessageId, ex.getMessage());
+            } catch (RuntimeException persistenceEx) {
+                persistenceEx.addSuppressed(ex);
+                log.error("Critical: failed to persist interview report failure state, "
+                                + "sessionId={}, reportId={}",
+                        session.getId(), reportId, persistenceEx);
+                asyncTaskService.markFailed(registeredMessageId, persistenceEx.getMessage());
+                throw persistenceEx;
+            }
         }
     }
 
-    private void doCompleteReportSuccess(InterviewSession session, Long reportId, String generationToken,
-                                         GenerateReportVO aiReport, List<InterviewMessage> messages) {
+    private ReportCompletionOutcome doCompleteReportSuccess(InterviewSession session, Long reportId,
+                                                            String generationToken,
+                                                            GenerateReportVO aiReport,
+                                                            List<InterviewMessage> messages) {
         InterviewReport report = currentReport(session.getId(), reportId, generationToken);
         if (report == null) {
             log.info("Skip stale async report success write-back, sessionId={}, reportId={}",
                     session.getId(), reportId);
-            return;
+            return ReportCompletionOutcome.staleAttempt();
         }
         report.setStatus(ReportStatusEnum.GENERATED.name());
         applyReportContent(report, aiReport, messages);
-        if (InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
+        InterviewReportConsumabilityContract.Validation consumability =
+                InterviewReportConsumabilityContract.validate(
+                        objectMapper,
+                        report,
+                        countScorableAnswers(messages),
+                        reportRubricDimensions(report.getSessionId()));
+        if (!consumability.valid()) {
+            markReportAiIncomplete(report, messages);
+            report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
+                    + " [" + consumability.reasonCode() + "]");
+        }
+        boolean businessSuccess = ReportStatusEnum.GENERATED.name().equals(report.getStatus());
+        if (businessSuccess && InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {
             applyLearningFeedback(report, messages);
         }
         if (!updateCurrentReportAttempt(report, generationToken)) {
             log.info("Skip stale async report success CAS, sessionId={}, reportId={}",
                     session.getId(), reportId);
-            return;
+            return ReportCompletionOutcome.staleAttempt();
         }
 
         session.setStatus(InterviewStatusEnum.COMPLETED.name());
@@ -169,11 +201,16 @@ public class InterviewReportAsyncService {
             session.setFailureReason(report.getFailureReason());
         }
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
-        sessionMapper.updateById(session);
-        if (ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
+        if (sessionMapper.updateById(session) != 1) {
+            throw new IllegalStateException("Persist interview session completion failed");
+        }
+        if (businessSuccess) {
             syncInterviewSearchAfterCommit(session.getId(), session.getUserId());
             completeAgentInterviewTask(session, report);
         }
+        return businessSuccess
+                ? ReportCompletionOutcome.success()
+                : ReportCompletionOutcome.incomplete(report.getFailureReason());
     }
 
     private void doCompleteReportFailed(InterviewSession session, Long reportId, String generationToken) {
@@ -183,23 +220,20 @@ public class InterviewReportAsyncService {
                     session.getId(), reportId);
             return;
         }
-        try {
-            report.setStatus(ReportStatusEnum.FAILED.name());
-            report.setTotalScore(null);
-            report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
-            if (!updateCurrentReportAttempt(report, generationToken)) {
-                log.info("Skip stale async report failure CAS, sessionId={}, reportId={}",
-                        session.getId(), reportId);
-                return;
-            }
-            session.setStatus(InterviewStatusEnum.FAILED.name());
-            session.setReportStatus(ReportStatusEnum.FAILED.name());
-            session.setTotalScore(null);
-            session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
-            sessionMapper.updateById(session);
-        } catch (RuntimeException ex) {
-            log.error("Critical: failed to persist interview report failure state, " +
-                    "sessionId={}, reportId={}", session.getId(), report.getId(), ex);
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setTotalScore(null);
+        report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
+        if (!updateCurrentReportAttempt(report, generationToken)) {
+            log.info("Skip stale async report failure CAS, sessionId={}, reportId={}",
+                    session.getId(), reportId);
+            return;
+        }
+        session.setStatus(InterviewStatusEnum.FAILED.name());
+        session.setReportStatus(ReportStatusEnum.FAILED.name());
+        session.setTotalScore(null);
+        session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
+        if (sessionMapper.updateById(session) != 1) {
+            throw new IllegalStateException("Persist interview session failure failed");
         }
     }
 
@@ -220,10 +254,10 @@ public class InterviewReportAsyncService {
         dto.setResumeContent(resume == null ? null : resume.getSummary());
         dto.setProjectContent(buildProjectContent(resume));
         Map<Long, InterviewMessage> messagesById = messageById(messages);
-        dto.setMessages(messages.stream()
+        dto.setMessages(InterviewReportPromptBudgeter.budget(messages.stream()
                 .map(message -> reportMessageText(message, messagesById))
                 .filter(StringUtils::hasText)
-                .toList());
+                .toList()));
         dto.setTrainingScene(session.getTrainingScene());
         dto.setTargetSkillDomain(session.getTargetSkillDomain());
         dto.setTargetSkillCodes(readStringList(session.getTargetSkillCodes()));
@@ -380,7 +414,7 @@ public class InterviewReportAsyncService {
                         aiReport == null ? null : aiReport.getRubricScores(),
                         reportRubricDimensions(report.getSessionId()));
         if (!scoringContract.valid()) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + scoringContract.reasonCode() + "]");
             return;
@@ -414,7 +448,7 @@ public class InterviewReportAsyncService {
     private void applyFallbackReportContent(InterviewReport report, GenerateReportVO aiReport,
                                             List<InterviewMessage> messages, int answerCount) {
         if (answerCount <= 0) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             return;
         }
         Integer totalScore = firstValidTotalScore(
@@ -426,7 +460,7 @@ public class InterviewReportAsyncService {
                 InterviewReportScoringContract.validate(
                         objectMapper, totalScore, rubricVersion, rubricScores);
         if (!scoringContract.valid()) {
-            markReportAiIncomplete(report);
+            markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + scoringContract.reasonCode() + "]");
             return;
@@ -774,11 +808,6 @@ public class InterviewReportAsyncService {
 
     private boolean aiReportMissingDisplayContent(GenerateReportVO aiReport) {
         return aiReport == null
-                || !InterviewReportScoringContract.validate(
-                        objectMapper,
-                        aiReport.getTotalScore(),
-                        InterviewRubricVersion.CURRENT,
-                        aiReport.getRubricScores()).valid()
                 || !StringUtils.hasText(aiReport.getSummary())
                 || !StringUtils.hasText(aiReport.getReportContent());
     }
@@ -1013,6 +1042,10 @@ public class InterviewReportAsyncService {
     }
 
     private void markReportAiIncomplete(InterviewReport report) {
+        markReportAiIncomplete(report, null);
+    }
+
+    private void markReportAiIncomplete(InterviewReport report, List<InterviewMessage> messages) {
         report.setStatus(ReportStatusEnum.UNSCORABLE.name());
         report.setTotalScore(null);
         report.setSummary(REPORT_AI_INCOMPLETE_MESSAGE);
@@ -1024,7 +1057,7 @@ public class InterviewReportAsyncService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview(firstText(report.getQaReview(), "[]"));
+        report.setQaReview(firstText(report.getQaReview(), buildFallbackQaReview(messages), "[]"));
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -1069,7 +1102,9 @@ public class InterviewReportAsyncService {
         session.setTotalScore(null);
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
         session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
-        sessionMapper.updateById(session);
+        if (sessionMapper.updateById(session) != 1) {
+            throw new IllegalStateException("Persist interview session completion failed");
+        }
     }
 
     private boolean hasScorableAnswers(List<InterviewMessage> messages) {
@@ -1209,5 +1244,21 @@ public class InterviewReportAsyncService {
             }
         }
         return null;
+    }
+
+    private record ReportCompletionOutcome(boolean businessSuccess, boolean stale, String failureReason) {
+
+        private static ReportCompletionOutcome success() {
+            return new ReportCompletionOutcome(true, false, null);
+        }
+
+        private static ReportCompletionOutcome incomplete(String failureReason) {
+            return new ReportCompletionOutcome(false, false,
+                    StringUtils.hasText(failureReason) ? failureReason : REPORT_AI_INCOMPLETE_MESSAGE);
+        }
+
+        private static ReportCompletionOutcome staleAttempt() {
+            return new ReportCompletionOutcome(false, true, "Interview report attempt is stale");
+        }
     }
 }
