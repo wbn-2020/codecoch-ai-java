@@ -2,11 +2,15 @@ package com.codecoachai.ai.convert;
 
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.enums.AiResultSourceEnum;
+import com.codecoachai.ai.domain.support.AiDeliverySemantics;
 import com.codecoachai.ai.domain.entity.PromptTemplate;
 import com.codecoachai.ai.domain.entity.PromptTemplateVersion;
 import com.codecoachai.ai.domain.vo.AiCallLogVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVO;
 import com.codecoachai.ai.domain.vo.PromptTemplateVersionVO;
+import com.codecoachai.ai.operations.AiOperationsDictionary;
+import com.codecoachai.ai.operations.AiOperationsDictionary.FailureDescription;
+import com.codecoachai.ai.operations.AiOperationsDictionary.SceneDescription;
 import com.codecoachai.ai.security.SensitiveTextMasker;
 
 public final class AiConvert {
@@ -86,6 +90,10 @@ public final class AiConvert {
         vo.setId(log.getId());
         vo.setUserId(log.getUserId());
         vo.setScene(log.getScene());
+        SceneDescription scene = AiOperationsDictionary.describeScene(log.getScene());
+        vo.setSceneLabel(scene.label());
+        vo.setSceneCategory(scene.category());
+        vo.setSceneRegistered(scene.registered());
         vo.setModelName(log.getModelName());
         vo.setPromptTemplateId(log.getPromptTemplateId());
         vo.setPromptTemplateVersionId(log.getPromptTemplateVersionId());
@@ -96,10 +104,19 @@ public final class AiConvert {
         vo.setTraceIdShort(shortId(log.getTraceId()));
         vo.setShortTraceId(vo.getTraceIdShort());
         vo.setRouteTrace(log.getRouteTrace());
-        AiResultSourceEnum resultSource = resolveResultSource(log);
+        AiDeliverySemantics.Outcome delivery = AiDeliverySemantics.resolve(
+                log.getExecutionSource(),
+                log.getDeliveryQuality(),
+                null,
+                log.getModelName(),
+                log.getRouteTrace(),
+                log.getRequestBody(),
+                log.getResponseBody(),
+                log.getSuccess());
+        AiResultSourceEnum resultSource = delivery.legacyResultSource();
         vo.setResultSource(resultSource.name());
         vo.setResultSourceLabel(resultSource.getLabel());
-        vo.setFallback(resultSource == AiResultSourceEnum.FALLBACK);
+        vo.setFallback(delivery.fallback());
         vo.setEstimatedCost(log.getEstimatedCost() == null ? log.getTokenCost() : log.getEstimatedCost());
         vo.setInputVariablesJson(includeRawFields ? log.getInputVariablesJson() : null);
         vo.setInputVariablesPreview(includeTextPreview ? preview(log.getInputVariablesJson()) : null);
@@ -117,6 +134,15 @@ public final class AiConvert {
         vo.setResponseContentHash(SensitiveTextMasker.sha256Prefix(log.getResponseContent()));
         vo.setResponsePreview(vo.getResponseContentPreview());
         vo.setBusinessId(log.getBusinessId());
+        vo.setExecutionId(log.getExecutionId());
+        vo.setParentExecutionId(log.getParentExecutionId());
+        vo.setAttemptNo(log.getAttemptNo());
+        vo.setIdempotencyKey(log.getIdempotencyKey());
+        vo.setExecutionSource(delivery.executionSource());
+        vo.setDeliveryQuality(delivery.deliveryQuality());
+        vo.setFallbackReasonCode(log.getFallbackReasonCode());
+        vo.setSchemaVersion(log.getSchemaVersion());
+        vo.setValidationStatus(log.getValidationStatus());
         vo.setElapsedMs(log.getElapsedMs());
         vo.setCostMillis(log.getCostMillis());
         vo.setSuccess(log.getSuccess());
@@ -126,6 +152,13 @@ public final class AiConvert {
         vo.setStatus(log.getStatus());
         vo.setErrorMessage(SensitiveTextMasker.maskText(log.getErrorMessage()));
         vo.setErrorMessagePreview(includeTextPreview ? preview(log.getErrorMessage()) : null);
+        FailureDescription failure = AiOperationsDictionary.describeFailure(
+                log.getErrorMessage(), log.getSuccess(), log.getStatus());
+        vo.setFailureType(failure.code());
+        vo.setFailureTypeLabel(failure.label());
+        vo.setFailureHttpStatus(failure.httpStatus());
+        vo.setOperatorMessage(failure.operatorMessage());
+        vo.setOperatorSuggestion(failure.operatorSuggestion());
         vo.setRequestBody(includeRawFields ? log.getRequestBody() : null);
         vo.setRequestBodyPreview(includeTextPreview ? preview(log.getRequestBody()) : null);
         vo.setRequestBodyHash(SensitiveTextMasker.sha256Prefix(log.getRequestBody()));
@@ -159,44 +192,6 @@ public final class AiConvert {
                 || normalized.contains("QUESTION")
                 || normalized.contains("AGENT")
                 || normalized.contains("MATCH");
-    }
-
-    private static AiResultSourceEnum resolveResultSource(AiCallLog log) {
-        String modelName = lower(log.getModelName());
-        String routeTrace = lower(log.getRouteTrace());
-        String requestBody = lower(log.getRequestBody());
-        String responseBody = lower(log.getResponseBody());
-        if (modelName.contains("mock")
-                || modelName.contains("模拟")
-                || requestBody.contains("\"mockmode\":true")
-                || requestBody.contains("mockmode=true")
-                || responseBody.contains("\"mockmode\":true")) {
-            return AiResultSourceEnum.MOCK;
-        }
-        if (routeTrace.contains("->")
-                || routeTrace.contains("degraded")
-                || requestBody.contains("\"fallbackused\":true")
-                || requestBody.contains("fallbackused=true")
-                || requestBody.contains("degraded")
-                || responseBody.contains("\"fallback\":true")
-                || responseBody.contains("\"truststatus\":\"fallback\"")
-                || responseBody.contains("degraded")) {
-            return AiResultSourceEnum.FALLBACK;
-        }
-        if (modelName.contains("rule")
-                || routeTrace.contains("rule")
-                || requestBody.contains("\"resultsource\":\"rule\"")
-                || responseBody.contains("\"resultsource\":\"rule\"")) {
-            return AiResultSourceEnum.RULE;
-        }
-        if (hasText(modelName) || hasText(routeTrace)) {
-            return AiResultSourceEnum.LLM;
-        }
-        return AiResultSourceEnum.UNKNOWN;
-    }
-
-    private static String lower(String value) {
-        return value == null ? "" : value.trim().toLowerCase();
     }
 
     private static String shortId(String value) {

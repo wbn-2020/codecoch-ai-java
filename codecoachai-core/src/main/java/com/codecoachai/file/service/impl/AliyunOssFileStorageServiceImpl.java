@@ -1,0 +1,589 @@
+package com.codecoachai.file.service.impl;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.domain.PageResult;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.oss.config.OssProperties;
+import com.codecoachai.common.oss.domain.OssUploadResult;
+import com.codecoachai.common.oss.service.OssFileService;
+import com.codecoachai.file.config.FileStorageProperties;
+import com.codecoachai.file.domain.dto.AdminFileQueryDTO;
+import com.codecoachai.file.domain.entity.FileInfo;
+import com.codecoachai.file.domain.vo.FileInfoVO;
+import com.codecoachai.file.domain.vo.FileResumeAnalysisStatusVO;
+import com.codecoachai.file.domain.vo.InnerFileUploadVO;
+import com.codecoachai.file.mapper.FileInfoMapper;
+import com.codecoachai.file.service.FileStorageService;
+import com.codecoachai.file.util.FileBizTypes;
+import com.codecoachai.file.util.FileContentHashes;
+import com.codecoachai.file.util.FileDownloadValidator;
+import com.codecoachai.file.util.FileUploadValidator;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.InputStreamResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.util.StringUtils;
+import org.springframework.web.multipart.MultipartFile;
+
+/**
+ * 阿里云 OSS 实现 FileStorageService。
+ * 仅在 codecoachai.file.storage.provider=ALIYUN_OSS 时启用，与 LocalFileStorageServiceImpl 互斥。
+ *
+ * 下载路径：使用 OSS 私有签名 URL 重定向（生产推荐）；当前 download() 简化为读取字节流再返回。
+ */
+@Service
+@RequiredArgsConstructor
+@Slf4j
+@ConditionalOnProperty(
+        prefix = "codecoachai.file.storage",
+        name = "provider",
+        havingValue = "ALIYUN_OSS")
+public class AliyunOssFileStorageServiceImpl implements FileStorageService {
+
+    private static final String STATUS_AVAILABLE = "AVAILABLE";
+    private static final String BIZ_TYPE_RESUME = "RESUME";
+    private static final String PARSE_STATUS_SUCCESS = "SUCCESS";
+    private static final String PARSE_STATUS_FAILED = "FAILED";
+    private static final String PARSE_STATUS_WAIT_CONFIRM = "WAIT_CONFIRM";
+    private static final String PARSE_STATUS_CANCELLED = "CANCELLED";
+    private static final String PROVIDER_OSS = "ALIYUN_OSS";
+    private static final int NOT_DELETED = 0;
+    private static final DateTimeFormatter DATE_PATH_FORMATTER = DateTimeFormatter.ofPattern("yyyy/MM");
+
+    private final FileInfoMapper fileInfoMapper;
+    private final FileStorageProperties properties;
+    private final OssFileService ossFileService;
+    private final OssProperties ossProperties;
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public InnerFileUploadVO upload(MultipartFile file, String bizType, Long userId) {
+        String normalizedBizType = FileBizTypes.requireAllowed(bizType);
+        validateBasic(file, normalizedBizType, userId);
+        String originalFilename = safeOriginalFilename(file.getOriginalFilename());
+        String fileExt = extractExtension(originalFilename);
+        validateExtension(normalizedBizType, fileExt);
+        validateSize(file, normalizedBizType);
+        // 先做文件头/内容校验，再上传 OSS，避免伪装扩展名的文件进入对象存储。
+        FileUploadValidator.validateContent(file, normalizedBizType, fileExt);
+
+        // OSS Key：{bizType}/{userId}/yyyy/MM/{uuid}.{ext}
+        String storedFilename = UUID.randomUUID().toString().replace("-", "") + "." + fileExt;
+        String ossKey = FileBizTypes.directoryName(normalizedBizType) + "/"
+                + userId + "/"
+                + LocalDate.now().format(DATE_PATH_FORMATTER) + "/"
+                + storedFilename;
+
+        String uploadedKey = null;
+        AtomicBoolean uploadedCleanupDone = new AtomicBoolean(false);
+        try {
+            MessageDigest md5Digest = MessageDigest.getInstance("MD5");
+            MessageDigest sha256Digest = FileContentHashes.digest();
+            OssUploadResult uploaded;
+            try (InputStream shaInput = new DigestInputStream(file.getInputStream(), sha256Digest);
+                 InputStream inputStream = new DigestInputStream(shaInput, md5Digest)) {
+                uploaded = ossFileService.upload(ossKey, inputStream, file.getSize(),
+                        StringUtils.hasText(file.getContentType()) ? file.getContentType() : "application/octet-stream");
+            }
+            uploadedKey = uploaded.getOssKey();
+            registerOssRollbackCleanup(uploadedKey, uploadedCleanupDone);
+            String md5 = HexFormat.of().formatHex(md5Digest.digest());
+            String contentSha256 = HexFormat.of().formatHex(sha256Digest.digest());
+
+            FileInfo fileInfo = new FileInfo();
+            fileInfo.setUserId(userId);
+            fileInfo.setBizType(normalizedBizType);
+            fileInfo.setOriginalFilename(originalFilename);
+            fileInfo.setStoredFilename(storedFilename);
+            fileInfo.setFileExt(fileExt);
+            fileInfo.setMimeType(file.getContentType());
+            fileInfo.setFileSize(file.getSize());
+            fileInfo.setStoragePath(uploaded.getOssKey());   // 兼容老字段
+            fileInfo.setOssKey(uploaded.getOssKey());
+            fileInfo.setBucket(ossProperties.getBucket());
+            fileInfo.setEtag(uploaded.getEtag());
+            fileInfo.setMd5(md5);
+            fileInfo.setContentSha256(contentSha256);
+            fileInfo.setStorageProvider(PROVIDER_OSS);
+            fileInfo.setStatus(STATUS_AVAILABLE);
+            fileInfoMapper.insert(fileInfo);
+
+            log.info("OSS upload succeeded fileId={} bizType={} keyMeta={} size={}",
+                    fileInfo.getId(), normalizedBizType, safeKeyMeta(uploadedKey), file.getSize());
+            return toVO(fileInfo);
+        } catch (IOException e) {
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "read-error");
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件读取失败，请稍后重试");
+        } catch (BusinessException be) {
+            // OSS SDK 或校验层已经给出业务异常时直接透传，避免包装后丢失可读错误码。
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "business-error");
+            throw be;
+        } catch (Exception ex) {
+            deleteOssQuietly(uploadedKey, uploadedCleanupDone, "system-error");
+            log.error("OSS 上传失败", ex);
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "文件上传失败，请稍后重试");
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteUserFile(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = storageKey(fileInfo);
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        int deleted = fileInfoMapper.deleteById(fileInfo.getId());
+        if (deleted != 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR,
+                    "文件状态已变化，请刷新后重试");
+        }
+        runAfterCommit(() -> {
+            try {
+                deleteOssRequired(key);
+                log.info("OSS file physically deleted after metadata commit fileId={} userId={} bizType={} keyMeta={}",
+                        fileId, userId, fileInfo.getBizType(), safeKeyMeta(key));
+            } catch (BusinessException ex) {
+                log.error("OSS metadata committed but physical deletion failed fileId={} userId={} bizType={} keyMeta={}",
+                        fileId, userId, fileInfo.getBizType(), safeKeyMeta(key), ex);
+            }
+        });
+    }
+
+    @Override
+    public ResponseEntity<Resource> download(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        return downloadResource(fileInfo);
+    }
+
+    @Override
+    public String downloadUrl(Long fileId, Long userId, String bizType) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = storageKey(fileInfo);
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件存储信息缺失，暂不可下载");
+        }
+        if (!ossFileService.exists(key)) {
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_NOT_FOUND,
+                    "文件对象不存在或已被移除，无法生成下载链接");
+        }
+        return ossFileService.signUrl(key, null);
+    }
+
+    @Override
+    public FileInfoVO getUserFile(Long fileId, Long userId) {
+        return toFileInfoVO(getAvailableFile(fileId, userId, null));
+    }
+
+    @Override
+    public ResponseEntity<Resource> adminDownload(Long fileId) {
+        FileInfo fileInfo = getAvailableAdminFile(fileId);
+        return downloadResource(fileInfo);
+    }
+
+    private ResponseEntity<Resource> downloadResource(FileInfo fileInfo) {
+        String key = storageKey(fileInfo);
+        if (!StringUtils.hasText(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        MediaType mediaType = FileDownloadValidator.validate(fileInfo, null);
+        if (!ossFileService.exists(key)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File is not available for download.");
+        }
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .contentLength(fileInfo.getFileSize())
+                .header("X-Original-Filename", encodeHeaderValue(fileInfo.getOriginalFilename()))
+                .header("X-File-Ext", fileInfo.getFileExt())
+                .header("X-File-Size", String.valueOf(fileInfo.getFileSize()))
+                .header("X-Mime-Type", StringUtils.hasText(fileInfo.getMimeType())
+                        ? fileInfo.getMimeType()
+                        : MediaType.APPLICATION_OCTET_STREAM_VALUE)
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(fileInfo.getOriginalFilename(), StandardCharsets.UTF_8)
+                        .build()
+                .toString())
+                .body(new InputStreamResource(ossFileService.openStream(key)));
+    }
+
+    private MediaType resolveMediaType(String mimeType) {
+        if (!StringUtils.hasText(mimeType)) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+        try {
+            return MediaType.parseMediaType(mimeType);
+        } catch (IllegalArgumentException ex) {
+            return MediaType.APPLICATION_OCTET_STREAM;
+        }
+    }
+
+    private String encodeHeaderValue(String value) {
+        if (!StringUtils.hasText(value)) {
+            return "";
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * 推荐方式：返回签名 URL 让前端直接访问 OSS。本接口被 InnerFileController 调用时可选。
+     */
+    public String signUrl(Long fileId, Long userId, String bizType, Duration expire) {
+        FileInfo fileInfo = getAvailableFile(fileId, userId, bizType);
+        String key = storageKey(fileInfo);
+        return ossFileService.signUrl(key, expire);
+    }
+
+    @Override
+    public PageResult<FileInfoVO> pageAdminFiles(AdminFileQueryDTO query) {
+        AdminFileQueryDTO actualQuery = query == null ? new AdminFileQueryDTO() : query;
+        List<Long> parseStatusFileIds = resolveParseStatusFileIds(actualQuery);
+        if (parseStatusFileIds != null && parseStatusFileIds.isEmpty()) {
+            return PageResult.empty(actualQuery.effectivePageNo(), actualQuery.effectivePageSize());
+        }
+        Page<FileInfo> page = fileInfoMapper.selectPage(
+                Page.of(actualQuery.effectivePageNo(), actualQuery.effectivePageSize()),
+                new LambdaQueryWrapper<FileInfo>()
+                        .eq(actualQuery.getUserId() != null, FileInfo::getUserId, actualQuery.getUserId())
+                        .eq(StringUtils.hasText(actualQuery.getBizType()), FileInfo::getBizType, actualQuery.getBizType())
+                        .eq(StringUtils.hasText(actualQuery.getStatus()), FileInfo::getStatus, actualQuery.getStatus())
+                        .in(parseStatusFileIds != null, FileInfo::getId, parseStatusFileIds)
+                        .orderByDesc(FileInfo::getCreatedAt));
+        List<FileInfoVO> records = page.getRecords().stream().map(this::toFileInfoVO).toList();
+        fillResumeAnalysisStatus(records);
+        return PageResult.of(records, page.getTotal(), page.getCurrent(), page.getSize());
+    }
+
+    @Override
+    public FileInfoVO getAdminFile(Long fileId) {
+        FileInfo fileInfo = fileInfoMapper.selectById(fileId);
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可用");
+        }
+        FileInfoVO vo = toFileInfoVO(fileInfo);
+        try {
+            fillResumeAnalysisStatus(vo, fileInfoMapper.selectLatestResumeAnalysisByFileId(fileId));
+        } catch (RuntimeException ex) {
+            log.warn("Failed to fill resume analysis status for fileId={}", fileId, ex);
+        }
+        return vo;
+    }
+
+    // ============== 工具方法 ==============
+
+    private FileInfo getAvailableFile(Long fileId, Long userId, String bizType) {
+        if (fileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件信息不能为空");
+        }
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        String normalizedBizType = FileBizTypes.normalizeOrNull(bizType);
+        if (normalizedBizType != null) {
+            normalizedBizType = FileBizTypes.requireAllowed(normalizedBizType);
+        }
+        FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
+                .eq(FileInfo::getId, fileId)
+                .eq(FileInfo::getUserId, userId)
+                .eq(StringUtils.hasText(normalizedBizType), FileInfo::getBizType, normalizedBizType)
+                .eq(FileInfo::getStatus, STATUS_AVAILABLE)
+                .eq(FileInfo::getDeleted, NOT_DELETED)
+                .last("limit 1"));
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或已不可用");
+        }
+        return fileInfo;
+    }
+
+    private FileInfo getAvailableAdminFile(Long fileId) {
+        if (fileId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件信息不能为空");
+        }
+        FileInfo fileInfo = fileInfoMapper.selectOne(new LambdaQueryWrapper<FileInfo>()
+                .eq(FileInfo::getId, fileId)
+                .eq(FileInfo::getStatus, STATUS_AVAILABLE)
+                .eq(FileInfo::getDeleted, NOT_DELETED)
+                .last("limit 1"));
+        if (fileInfo == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件不存在或暂不可下载");
+        }
+        return fileInfo;
+    }
+
+    private void validateBasic(MultipartFile file, String bizType, Long userId) {
+        if (userId == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "用户信息不能为空");
+        }
+        if (!StringUtils.hasText(bizType)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件用途不能为空");
+        }
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "上传文件不能为空");
+        }
+    }
+
+    private void validateSize(MultipartFile file, String bizType) {
+        long maxSizeMb;
+        if (BIZ_TYPE_RESUME.equals(bizType)) {
+            maxSizeMb = properties.getMaxResumeSizeMb();
+        } else if (FileBizTypes.isInterviewVoice(bizType)) {
+            maxSizeMb = properties.getMaxInterviewVoiceSizeMb();
+        } else {
+            maxSizeMb = properties.getMaxSizeMb();
+        }
+        long maxBytes = Math.max(1L, maxSizeMb) * 1024L * 1024L;
+        if (file.getSize() > maxBytes) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件大小超过限制");
+        }
+    }
+
+    private String safeOriginalFilename(String originalFilename) {
+        if (!StringUtils.hasText(originalFilename)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不能为空");
+        }
+        String normalized = originalFilename.replace('\\', '/');
+        String filename = normalized.substring(normalized.lastIndexOf('/') + 1);
+        if (!StringUtils.hasText(filename) || filename.contains("..")) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件名不合法");
+        }
+        return filename;
+    }
+
+    private String extractExtension(String filename) {
+        int index = filename.lastIndexOf('.');
+        if (index < 0 || index == filename.length() - 1) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "文件扩展名不能为空");
+        }
+        return filename.substring(index + 1).toLowerCase(Locale.ROOT);
+    }
+
+    private void validateExtension(String bizType, String fileExt) {
+        if (!FileBizTypes.isExtensionAllowed(bizType, fileExt, properties.getAllowedExtensions())) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "file type not allowed");
+        }
+    }
+
+    private InnerFileUploadVO toVO(FileInfo fileInfo) {
+        InnerFileUploadVO vo = new InnerFileUploadVO();
+        vo.setFileId(fileInfo.getId());
+        vo.setUserId(fileInfo.getUserId());
+        vo.setBizType(fileInfo.getBizType());
+        vo.setOriginalFilename(fileInfo.getOriginalFilename());
+        vo.setStoredFilename(fileInfo.getStoredFilename());
+        vo.setFileSize(fileInfo.getFileSize());
+        vo.setFileExt(fileInfo.getFileExt());
+        vo.setMimeType(fileInfo.getMimeType());
+        vo.setStoragePath(fileInfo.getStoragePath());
+        vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
+        vo.setStatus(fileInfo.getStatus());
+        vo.setCreatedAt(fileInfo.getCreatedAt());
+        return vo;
+    }
+
+    private FileInfoVO toFileInfoVO(FileInfo fileInfo) {
+        FileInfoVO vo = new FileInfoVO();
+        vo.setId(fileInfo.getId());
+        vo.setUserId(fileInfo.getUserId());
+        vo.setBizType(fileInfo.getBizType());
+        vo.setBusinessType(fileInfo.getBizType());
+        vo.setOriginalFilename(fileInfo.getOriginalFilename());
+        vo.setStoredFilename(fileInfo.getStoredFilename());
+        vo.setFileExt(fileInfo.getFileExt());
+        vo.setMimeType(fileInfo.getMimeType());
+        vo.setFileSize(fileInfo.getFileSize());
+        vo.setStorageProvider(fileInfo.getStorageProvider());
+        vo.setContentSha256(fileInfo.getContentSha256());
+        vo.setStatus(fileInfo.getStatus());
+        vo.setCreatedAt(fileInfo.getCreatedAt());
+        vo.setUpdatedAt(fileInfo.getUpdatedAt());
+        return vo;
+    }
+
+    private void fillResumeAnalysisStatus(List<FileInfoVO> records) {
+        List<Long> resumeFileIds = records.stream()
+                .filter(item -> item.getId() != null)
+                .filter(item -> BIZ_TYPE_RESUME.equals(item.getBizType()))
+                .map(FileInfoVO::getId)
+                .distinct()
+                .toList();
+        if (resumeFileIds.isEmpty()) {
+            return;
+        }
+        try {
+            Map<Long, FileResumeAnalysisStatusVO> latestRecordMap = fileInfoMapper
+                    .selectLatestResumeAnalysisByFileIds(resumeFileIds)
+                    .stream()
+                    .collect(Collectors.toMap(FileResumeAnalysisStatusVO::getFileId, Function.identity(),
+                            (left, right) -> left));
+            for (FileInfoVO record : records) {
+                fillResumeAnalysisStatus(record, latestRecordMap.get(record.getId()));
+            }
+        } catch (RuntimeException ex) {
+            // 文件列表是主流程，解析状态只作为管理端辅助信息，查询失败时不阻断列表展示。
+            log.warn("Failed to fill resume analysis status for fileIds={}", resumeFileIds, ex);
+        }
+    }
+
+    private List<Long> resolveParseStatusFileIds(AdminFileQueryDTO query) {
+        if (query == null || !StringUtils.hasText(query.getParseStatus())) {
+            return null;
+        }
+        String parseStatus = query.getParseStatus().trim().toUpperCase(Locale.ROOT);
+        try {
+            return fileInfoMapper.selectLatestResumeFileIdsByParseStatus(parseStatus);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to resolve resume file ids by parseStatus={}", parseStatus, ex);
+            return List.of();
+        }
+    }
+
+    private void fillResumeAnalysisStatus(FileInfoVO vo, FileResumeAnalysisStatusVO analysisStatus) {
+        if (vo == null || analysisStatus == null) {
+            return;
+        }
+        vo.setResumeId(analysisStatus.getResumeId());
+        vo.setBusinessId(analysisStatus.getResumeId());
+        vo.setResumeAnalysisRecordId(analysisStatus.getResumeAnalysisRecordId());
+        vo.setParseStatus(analysisStatus.getParseStatus());
+        vo.setParseErrorMessage(PARSE_STATUS_FAILED.equals(analysisStatus.getParseStatus())
+                ? analysisStatus.getParseErrorMessage()
+                : null);
+        if (PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(true);
+        } else if (PARSE_STATUS_WAIT_CONFIRM.equals(analysisStatus.getParseStatus())) {
+            vo.setAnalysisConfirmed(false);
+        } else {
+            vo.setAnalysisConfirmed(null);
+        }
+        if (isTerminalParseStatus(analysisStatus.getParseStatus())) {
+            vo.setParsedAt(analysisStatus.getUpdatedAt());
+        }
+        if (PARSE_STATUS_SUCCESS.equals(analysisStatus.getParseStatus())) {
+            vo.setConfirmedAt(analysisStatus.getUpdatedAt());
+        }
+    }
+
+    private boolean isTerminalParseStatus(String parseStatus) {
+        return PARSE_STATUS_SUCCESS.equals(parseStatus)
+                || PARSE_STATUS_FAILED.equals(parseStatus)
+                || PARSE_STATUS_WAIT_CONFIRM.equals(parseStatus)
+                || PARSE_STATUS_CANCELLED.equals(parseStatus);
+    }
+
+    private void registerOssRollbackCleanup(String ossKey, AtomicBoolean cleaned) {
+        if (!StringUtils.hasText(ossKey) || !TransactionSynchronizationManager.isSynchronizationActive()) {
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED) {
+                    deleteOssQuietly(ossKey, cleaned, "transaction-rollback");
+                }
+            }
+        });
+    }
+
+    private void runAfterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
+    }
+
+    private void deleteOssQuietly(String ossKey, AtomicBoolean cleaned, String reason) {
+        if (!StringUtils.hasText(ossKey) || cleaned == null || !cleaned.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            ossFileService.delete(ossKey);
+            log.warn("OSS upload compensation deleted orphan object reason={} keyMeta={}", reason, safeKeyMeta(ossKey));
+        } catch (RuntimeException cleanupEx) {
+            log.warn("OSS upload compensation failed reason={} keyMeta={}", reason, safeKeyMeta(ossKey), cleanupEx);
+        }
+    }
+
+    private void deleteOssRequired(String ossKey) {
+        if (!StringUtils.hasText(ossKey)) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "File storage key is missing.");
+        }
+        try {
+            ossFileService.delete(ossKey);
+        } catch (RuntimeException ex) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR, "Physical file deletion failed.");
+        }
+    }
+
+    private String storageKey(FileInfo fileInfo) {
+        if (fileInfo == null) {
+            return null;
+        }
+        return StringUtils.hasText(fileInfo.getOssKey()) ? fileInfo.getOssKey() : fileInfo.getStoragePath();
+    }
+
+    private String safeKeyMeta(String key) {
+        if (!StringUtils.hasText(key)) {
+            return "empty";
+        }
+        return "len=" + key.length()
+                + ",hash=" + shortSha256(key)
+                + ",suffix=" + safeSuffix(key);
+    }
+
+    private String shortSha256(String value) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(md.digest(value.getBytes(StandardCharsets.UTF_8))).substring(0, 12);
+        } catch (NoSuchAlgorithmException ex) {
+            return "unavailable";
+        }
+    }
+
+    private String safeSuffix(String key) {
+        int slash = key.lastIndexOf('/');
+        String filename = slash >= 0 ? key.substring(slash + 1) : key;
+        int dot = filename.lastIndexOf('.');
+        if (dot < 0 || dot == filename.length() - 1) {
+            return "none";
+        }
+        String suffix = filename.substring(dot + 1).toLowerCase(Locale.ROOT);
+        return suffix.length() > 16 ? suffix.substring(0, 16) : suffix;
+    }
+}

@@ -13,22 +13,13 @@ WORKDIR /build
 
 COPY pom.xml .
 COPY codecoachai-common ./codecoachai-common
+COPY codecoachai-core ./codecoachai-core
 COPY codecoachai-gateway ./codecoachai-gateway
-COPY codecoachai-auth ./codecoachai-auth
-COPY codecoachai-user ./codecoachai-user
 COPY codecoachai-ai ./codecoachai-ai
-COPY codecoachai-resume ./codecoachai-resume
-COPY codecoachai-interview ./codecoachai-interview
-COPY codecoachai-question ./codecoachai-question
-COPY codecoachai-file ./codecoachai-file
-COPY codecoachai-system ./codecoachai-system
-COPY codecoachai-task ./codecoachai-task
 COPY codecoachai-search ./codecoachai-search
 
 RUN case "${SERVICE}" in \
-      codecoachai-gateway|codecoachai-auth|codecoachai-user|codecoachai-ai|\
-      codecoachai-resume|codecoachai-interview|codecoachai-question|\
-      codecoachai-file|codecoachai-system|codecoachai-task|codecoachai-search) ;; \
+      codecoachai-gateway|codecoachai-core|codecoachai-ai|codecoachai-search) ;; \
       *) echo "Unsupported SERVICE: ${SERVICE}" >&2; exit 2 ;; \
     esac \
     && mvn -B -ntp -DskipTests -pl "${SERVICE}" -am package \
@@ -52,13 +43,17 @@ ENV TZ=Asia/Shanghai \
     HEALTH_MONITOR_INTERVAL_SECONDS=10 \
     HEALTH_MONITOR_FAILURE_THRESHOLD=6
 
-RUN apk add --no-cache tzdata \
+RUN apk add --no-cache tzdata fontconfig font-noto-cjk \
     && addgroup -S -g 10001 codecoachai \
     && adduser -S -D -H -u 10001 -G codecoachai codecoachai \
-    && mkdir -p /app /opt/codecoachai/health-probe \
+    && mkdir -p /app /opt/codecoachai/health-probe /opt/codecoachai/fonts \
+    && font_path="$(find /usr/share/fonts -type f \( -iname 'NotoSansCJK*Regular*.ttc' -o -iname 'NotoSansCJKsc-Regular.otf' \) | sort | head -n 1)" \
+    && test -n "$font_path" \
+    && ln -s "$font_path" /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc \
+    && fc-cache -f \
     && chown codecoachai:codecoachai /app \
     && chmod 0750 /app \
-    && chmod 0755 /opt/codecoachai/health-probe
+    && chmod 0755 /opt/codecoachai/health-probe /opt/codecoachai/fonts
 
 WORKDIR /app
 COPY --from=health-probe-builder /health-probe/classes/ /opt/codecoachai/health-probe/

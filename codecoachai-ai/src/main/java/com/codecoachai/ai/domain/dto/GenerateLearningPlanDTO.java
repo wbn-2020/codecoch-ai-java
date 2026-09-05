@@ -19,5 +19,6 @@ public class GenerateLearningPlanDTO {
     private String questionPerformanceSummary;
     private String resumeWeaknessSummary;
     private Integer expectedDurationDays;
+    private Integer dailyMinutes;
     private String extraRequirements;
 }

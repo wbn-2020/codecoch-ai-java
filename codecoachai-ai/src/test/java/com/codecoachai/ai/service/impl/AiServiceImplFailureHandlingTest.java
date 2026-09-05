@@ -15,6 +15,7 @@ import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.domain.dto.AnalyzeResumeJobMatchDTO;
 import com.codecoachai.ai.domain.dto.GenerateLearningPlanDTO;
 import com.codecoachai.ai.domain.dto.GenerateQuestionDraftDTO;
+import com.codecoachai.ai.domain.dto.GenerateReportDTO;
 import com.codecoachai.ai.domain.dto.GenerateTargetedStudyPlanDTO;
 import com.codecoachai.ai.domain.dto.ParseJobDescriptionDTO;
 import com.codecoachai.ai.domain.dto.PracticeReviewDTO;
@@ -28,8 +29,10 @@ import com.codecoachai.ai.service.AiCallLogService;
 import com.codecoachai.ai.service.PromptRenderResult;
 import com.codecoachai.ai.service.PromptRenderService;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDate;
+import java.util.List;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -55,7 +58,7 @@ class AiServiceImplFailureHandlingTest {
         aiProperties.setMockEnabled(false);
         aiProperties.setProvider("openai-compatible");
         aiProperties.setModel("deepseek-chat");
-        when(promptRenderService.render(any(String.class), any(String.class), anyMap()))
+        org.mockito.Mockito.lenient().when(promptRenderService.render(any(String.class), any(String.class), anyMap()))
                 .thenAnswer(invocation -> PromptRenderResult.builder()
                         .scene(invocation.getArgument(0))
                         .renderedPrompt("rendered prompt")
@@ -179,6 +182,46 @@ class AiServiceImplFailureHandlingTest {
     }
 
     @Test
+    void generateReportMockUsesPersistedScoresAndMarksFallbackEvidence() throws Exception {
+        AiProperties mockProperties = new AiProperties();
+        mockProperties.setMockEnabled(true);
+        when(promptRenderService.render(any(String.class), any(String.class), anyMap(),
+                any(String.class), org.mockito.ArgumentMatchers.nullable(String.class)))
+                .thenAnswer(invocation -> PromptRenderResult.builder()
+                        .scene(invocation.getArgument(0))
+                        .renderedPrompt("rendered prompt")
+                        .inputVariablesJson("{}")
+                        .modelParamsJson("{}")
+                        .promptHash("hash")
+                        .fallbackUsed(false)
+                        .build());
+        AiServiceImpl mockService = new AiServiceImpl(
+                aiCallLogMapper,
+                promptRenderService,
+                aiCallLogService,
+                mockProperties,
+                new ObjectMapper());
+        GenerateReportDTO dto = new GenerateReportDTO();
+        dto.setInterviewId(42L);
+        dto.setUserId(10L);
+        dto.setMessages(List.of(
+                "Role: AI\nType: EVALUATION\nScore：60\nContent: 基础概念正确。",
+                "Role: AI\nType: EVALUATION\nScore：72\nContent: 需要补充边界条件。"));
+
+        var result = mockService.generateReport(dto);
+        var rubric = new ObjectMapper().readTree(result.getRubricScores());
+        var adviceEvidence = new ObjectMapper().readTree(result.getAdviceEvidence());
+
+        assertEquals(66, result.getTotalScore());
+        assertEquals(5, rubric.size());
+        assertEquals("EXPRESSION_STRUCTURE", rubric.get(0).path("dimension").asText());
+        assertEquals(3.3D, rubric.get(0).path("score").asDouble());
+        assertTrue(adviceEvidence.get(0).path("fallback").asBoolean());
+        assertEquals("LOCAL_MOCK", adviceEvidence.get(0).path("source").asText());
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
     void parseJobDescriptionRequestsJsonAndNormalizesWrappedAliases() throws Exception {
         RouteResult routeResult = new RouteResult();
         routeResult.setContent("""
@@ -201,9 +244,141 @@ class AiServiceImplFailureHandlingTest {
         assertEquals("JSON", contextCaptor.getValue().getResponseFormat());
         assertEquals("200", contextCaptor.getValue().getBusinessId());
         assertEquals("负责核心交易服务的接口设计与稳定性治理", json.path("responsibilities").get(0).asText());
-        assertEquals("Java", json.path("requiredSkills").get(0).asText());
+        JsonNode javaSkill = json.path("requiredSkills").get(0);
+        assertEquals("Java", javaSkill.path("name").asText());
+        assertEquals("熟悉", javaSkill.path("requiredLevel").asText());
+        assertEquals("HIGH", javaSkill.path("confidence").asText());
+        assertTrue(javaSkill.path("evidence").asText().contains("要求熟悉 Java"));
         assertEquals("面向高并发业务场景招聘 Java 后端工程师。", json.path("summary").asText());
         assertEquals(911L, result.getAiCallLogId());
+    }
+
+    @Test
+    void parseJobDescriptionRejectsInferredKubernetesWhenJdOnlyMentionsContainerizationAndNacos() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("Kubernetes"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署与 Nacos 配置管理。");
+        dto.setUserTargetDirection("Java 后端，期望学习 Kubernetes");
+
+        assertThrows(BusinessException.class, () -> service.parseJobDescription(dto));
+
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
+    void parseJobDescriptionRejectsInferredK8sWhenJdOnlyMentionsContainerizationAndNacos() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("k8s"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署与 Nacos 配置管理。");
+
+        assertThrows(BusinessException.class, () -> service.parseJobDescription(dto));
+
+        verify(aiCallLogMapper).insert(any(AiCallLog.class));
+    }
+
+    @Test
+    void parseJobDescriptionAllowsK8sWhenJdExplicitlyMentionsKubernetes() {
+        when(aiCallLogService.callAndLog(any(AiCallContext.class)))
+                .thenReturn(jobDescriptionRouteResult("K8s"));
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责 Java 服务的容器化部署，要求具备 Kubernetes 集群运维经验。");
+
+        var result = assertDoesNotThrow(() -> service.parseJobDescription(dto));
+
+        assertEquals(915L, result.getAiCallLogId());
+        assertTrue(result.getResultJson().contains("K8s"));
+    }
+
+    @Test
+    void parseJobDescriptionPreservesFamiliarLevelInsteadOfModelUpgrade() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责核心交易服务研发"],
+                  "requiredSkills": [
+                    {
+                      "name": "Spring Boot",
+                      "category": "framework",
+                      "requiredLevel": "精通",
+                      "weight": 90,
+                      "evidence": "模型推断",
+                      "confidence": "HIGH"
+                    }
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(916L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责核心交易服务研发，要求熟悉 Spring Boot，并具备 MySQL 项目经验。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("熟悉", skill.path("requiredLevel").asText());
+        assertEquals("HIGH", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("要求熟悉 Spring Boot"));
+        assertFalse(result.getResultJson().contains("\"requiredLevel\":\"精通\""));
+    }
+
+    @Test
+    void parseJobDescriptionDoesNotMatchJavaInsideJavaScript() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责交易服务研发"],
+                  "requiredSkills": [
+                    {"name":"Java","category":"language","requiredLevel":"精通","weight":90}
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(917L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("前端要求精通 JavaScript；后端要求熟悉 Java 开发与排障。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("熟悉", skill.path("requiredLevel").asText());
+        assertEquals("HIGH", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("熟悉 Java"));
+    }
+
+    @Test
+    void parseJobDescriptionDowngradesUnstatedCapabilityLevelToUnknown() throws Exception {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["维护订单服务"],
+                  "requiredSkills": [
+                    {
+                      "name": "MySQL",
+                      "category": "database",
+                      "requiredLevel": "expert",
+                      "weight": 80,
+                      "evidence": "模型推断",
+                      "confidence": "HIGH"
+                    }
+                  ],
+                  "summary": "Java 后端岗位"
+                }
+                """);
+        routeResult.setAiCallLogId(917L);
+        when(aiCallLogService.callAndLog(any(AiCallContext.class))).thenReturn(routeResult);
+        ParseJobDescriptionDTO dto = jobDescriptionDTO();
+        dto.setJdText("负责订单服务开发，使用 MySQL 完成数据持久化。");
+
+        var result = service.parseJobDescription(dto);
+        var skill = new ObjectMapper().readTree(result.getResultJson()).path("requiredSkills").get(0);
+
+        assertEquals("未明确", skill.path("requiredLevel").asText());
+        assertEquals("LOW", skill.path("confidence").asText());
+        assertTrue(skill.path("evidence").asText().contains("使用 MySQL"));
     }
 
     @Test
@@ -471,6 +646,28 @@ class AiServiceImplFailureHandlingTest {
         dto.setCompanyName("上海星云数据科技有限公司");
         dto.setJdText("负责核心交易服务研发，要求熟悉 Java、Spring Boot 与 MySQL。");
         return dto;
+    }
+
+    private RouteResult jobDescriptionRouteResult(String technology) {
+        RouteResult routeResult = new RouteResult();
+        routeResult.setContent("""
+                {
+                  "responsibilities": ["负责 Java 服务交付"],
+                  "requiredSkills": [
+                    {
+                      "name": "%s",
+                      "category": "deployment",
+                      "requiredLevel": 3,
+                      "weight": 70,
+                      "evidence": "模型输出的技术要求"
+                    }
+                  ],
+                  "techStackKeywords": ["%s"],
+                  "summary": "岗位要求具备 %s 相关能力。"
+                }
+                """.formatted(technology, technology, technology));
+        routeResult.setAiCallLogId(915L);
+        return routeResult;
     }
 
     private ResumeOptimizeAiRequestDTO resumeOptimizeDTO() {

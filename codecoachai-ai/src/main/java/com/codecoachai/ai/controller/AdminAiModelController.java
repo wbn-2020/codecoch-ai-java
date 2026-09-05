@@ -2,8 +2,17 @@ package com.codecoachai.ai.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.codecoachai.ai.client.AiProviderException;
+import com.codecoachai.ai.client.ProviderAiCaller;
 import com.codecoachai.ai.domain.dto.AiModelConfigSaveDTO;
+import com.codecoachai.ai.domain.dto.AiModelProbeDTO;
+import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.domain.entity.AiModelConfig;
+import com.codecoachai.ai.domain.enums.AiFailureType;
+import com.codecoachai.ai.domain.vo.AiModelHealthLogRow;
+import com.codecoachai.ai.domain.vo.AiModelProbeVO;
+import com.codecoachai.ai.domain.vo.AiModelHealthSummaryVO;
+import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.mapper.AiModelConfigMapper;
 import com.codecoachai.ai.security.AesGcmTextEncryptor;
 import com.codecoachai.ai.security.AiProviderEndpointPolicy;
@@ -14,9 +23,13 @@ import com.codecoachai.common.core.exception.BusinessException;
 import com.codecoachai.common.security.admin.AdminPermissionGuard;
 import com.codecoachai.common.security.admin.AdminOperationConfirmationGuard;
 import com.codecoachai.common.web.log.OperationLog;
+import jakarta.validation.Valid;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -39,8 +52,11 @@ public class AdminAiModelController {
     private static final String PERM_MODEL_LIST = "admin:ai:model:list";
     private static final String PERM_MODEL_WRITE = "admin:ai:model:write";
     private static final String PERM_MODEL_PUBLISH = "admin:ai:model:publish";
+    private static final String MODEL_PROBE_PROMPT = "请仅回复：连接正常。";
 
     private final AiModelConfigMapper mapper;
+    private final AiCallLogMapper aiCallLogMapper;
+    private final ProviderAiCaller providerAiCaller;
     private final AesGcmTextEncryptor apiKeyEncryptor;
     private final AiProviderEndpointPolicy endpointPolicy;
     private final AdminPermissionGuard permissionGuard;
@@ -64,7 +80,8 @@ public class AdminAiModelController {
                 .orderByDesc(AiModelConfig::getDefaultModel)
                 .orderByAsc(AiModelConfig::getSortOrder)
                 .orderByDesc(AiModelConfig::getUpdatedAt));
-        rows.forEach(this::maskApiKey);
+        Map<Long, Map<String, AiModelHealthLogRow>> healthRows = loadHealthRows(rows);
+        rows.forEach(row -> applyListSummary(row, healthRows.getOrDefault(row.getId(), Collections.emptyMap())));
         return Result.success(rows);
     }
 
@@ -87,10 +104,20 @@ public class AdminAiModelController {
         return detail(id);
     }
 
+    @GetMapping({"/admin/ai/models/{id}/health", "/admin/ai/model-configs/{id}/health"})
+    public Result<AiModelHealthSummaryVO> health(@PathVariable Long id) {
+        permissionGuard.require(PERM_MODEL_LIST);
+        AiModelConfig modelConfig = get(id);
+        Map<Long, Map<String, AiModelHealthLogRow>> healthRows = loadHealthRows(List.of(modelConfig));
+        return Result.success(buildHealthSummary(
+                modelConfig,
+                healthRows.getOrDefault(modelConfig.getId(), Collections.emptyMap())));
+    }
+
     @PostMapping("/admin/ai/models")
     @OperationLog(module = "ai", action = "CREATE_AI_MODEL", description = "Create AI model config", logArgs = false, logResponse = false)
     @Transactional(rollbackFor = Exception.class)
-    public Result<AiModelConfig> create(@RequestBody AiModelConfigSaveDTO dto) {
+    public Result<AiModelConfig> create(@Valid @RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
         return runConfirmedOperation("ai-model-create:" + modelOperationTarget(dto),
                 dto == null ? null : dto.getConfirm(),
@@ -100,8 +127,11 @@ public class AdminAiModelController {
                 () -> {
                     AiModelConfig entity = new AiModelConfig();
                     apply(entity, dto);
+                    ensureDefaultModelEnabled(entity);
+                    ensureModelReadyForDefault(entity);
+                    ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), null);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-                        clearDefault(entity.getProvider(), null);
+                        clearGlobalDefault(null);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
                     writeModelConfigWithDefaultGuard(() -> mapper.insert(entity));
@@ -112,7 +142,7 @@ public class AdminAiModelController {
     @PutMapping("/admin/ai/models/{id}")
     @OperationLog(module = "ai", action = "UPDATE_AI_MODEL", description = "Update AI model config", logArgs = false, logResponse = false)
     @Transactional(rollbackFor = Exception.class)
-    public Result<AiModelConfig> update(@PathVariable Long id, @RequestBody AiModelConfigSaveDTO dto) {
+    public Result<AiModelConfig> update(@PathVariable Long id, @Valid @RequestBody AiModelConfigSaveDTO dto) {
         permissionGuard.require(PERM_MODEL_WRITE);
         return runConfirmedOperation("ai-model-update:" + id,
                 dto == null ? null : dto.getConfirm(),
@@ -121,9 +151,14 @@ public class AdminAiModelController {
                 dto == null ? null : dto.getIdempotencyKey(),
                 () -> {
                     AiModelConfig entity = get(id);
+                    Integer originalDefaultModel = entity.getDefaultModel();
                     apply(entity, dto);
+                    ensureExistingDefaultIsNotCleared(originalDefaultModel, entity.getDefaultModel());
+                    ensureDefaultModelEnabled(entity);
+                    ensureModelReadyForDefault(entity);
+                    ensureModelCodeUnique(entity.getProvider(), entity.getModelCode(), id);
                     if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-                        clearDefault(entity.getProvider(), id);
+                        clearGlobalDefault(id);
                     }
                     encryptPlainApiKeyBeforeSave(entity);
                     writeModelConfigWithDefaultGuard(() -> mapper.updateById(entity));
@@ -144,7 +179,8 @@ public class AdminAiModelController {
                 dto == null ? null : dto.getIdempotencyKey(),
                 () -> {
                     AiModelConfig entity = get(id);
-                    clearDefault(entity.getProvider(), id);
+                    ensureModelConfigComplete(entity);
+                    clearGlobalDefault(id);
                     entity.setDefaultModel(1);
                     entity.setEnabled(1);
                     encryptPlainApiKeyBeforeSave(entity);
@@ -179,6 +215,37 @@ public class AdminAiModelController {
                     encryptPlainApiKeyBeforeSave(entity);
                     mapper.updateById(entity);
                     return Result.success(maskApiKey(entity));
+        });
+    }
+
+    @PostMapping("/admin/ai/models/{id}/probe")
+    @OperationLog(module = "ai", action = "PROBE_AI_MODEL", description = "Probe AI model connectivity",
+            logArgs = false, logResponse = false)
+    public Result<AiModelProbeVO> probe(@PathVariable Long id,
+                                        @RequestBody(required = false) AiModelProbeDTO dto) {
+        permissionGuard.require(PERM_MODEL_PUBLISH);
+        return runConfirmedOperation("ai-model-probe:" + id,
+                dto == null ? null : dto.getConfirm(),
+                dto == null ? null : dto.getDryRun(),
+                dto == null ? null : dto.getReason(),
+                dto == null ? null : dto.getIdempotencyKey(),
+                () -> {
+                    AiModelConfig modelConfig = get(id);
+                    String probePrompt = resolveProbePrompt(dto == null ? null : dto.getPrompt());
+                    long startedAt = System.currentTimeMillis();
+                    try {
+                        ProviderAiCaller.CallResult callResult =
+                                providerAiCaller.probe(modelConfig, probePrompt);
+                        AiModelProbeVO result = successProbe(modelConfig, callResult, probePrompt);
+                        recordProbeLog(modelConfig, callResult, null, 1,
+                                System.currentTimeMillis() - startedAt);
+                        return Result.success(result);
+                    } catch (AiProviderException ex) {
+                        AiModelProbeVO result = failureProbe(modelConfig, ex,
+                                System.currentTimeMillis() - startedAt, probePrompt);
+                        recordProbeLog(modelConfig, null, result.getMessage(), 0, result.getElapsedMs());
+                        return Result.success(result);
+                    }
                 });
     }
 
@@ -224,8 +291,19 @@ public class AdminAiModelController {
 
     private void apply(AiModelConfig entity, AiModelConfigSaveDTO dto) {
         String modelCode = dto == null ? null : (StringUtils.hasText(dto.getModelCode()) ? dto.getModelCode() : dto.getModelName());
-        if (dto == null || !StringUtils.hasText(dto.getProvider()) || !StringUtils.hasText(modelCode)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, "供应商和模型标识不能为空");
+        if (dto == null || !StringUtils.hasText(dto.getProvider())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "provider",
+                    "供应商标识不能为空",
+                    "填写供应商标识后重新提交");
+        }
+        if (!StringUtils.hasText(modelCode)) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "modelName",
+                    "模型标识不能为空",
+                    "填写供应商要求的模型 ID 后重新提交");
         }
         entity.setProvider(dto.getProvider().trim());
         entity.setModelCode(modelCode.trim());
@@ -238,8 +316,12 @@ public class AdminAiModelController {
         }
         entity.setTemperature(dto.getTemperature());
         entity.setMaxTokens(dto.getMaxTokens());
-        entity.setDefaultModel(dto.getDefaultModel() != null ? dto.getDefaultModel()
-                : dto.getIsDefault() == null ? 0 : dto.getIsDefault());
+        Integer requestedDefault = dto.getDefaultModel() != null ? dto.getDefaultModel() : dto.getIsDefault();
+        if (requestedDefault != null) {
+            entity.setDefaultModel(requestedDefault);
+        } else if (entity.getDefaultModel() == null) {
+            entity.setDefaultModel(0);
+        }
         entity.setEnabled(dto.getEnabled() != null ? dto.getEnabled()
                 : dto.getStatus() == null ? 1 : dto.getStatus());
         entity.setSortOrder(dto.getSortOrder() == null ? 100 : dto.getSortOrder());
@@ -254,33 +336,116 @@ public class AdminAiModelController {
         return entity;
     }
 
-    private void clearDefault(String provider, Long excludeId) {
+    private void clearGlobalDefault(Long excludeId) {
         mapper.update(null, new LambdaUpdateWrapper<AiModelConfig>()
-                .eq(AiModelConfig::getProvider, provider)
                 .ne(excludeId != null, AiModelConfig::getId, excludeId)
                 .set(AiModelConfig::getDefaultModel, 0));
+    }
+
+    private void ensureDefaultModelEnabled(AiModelConfig entity) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel())
+                && !Integer.valueOf(1).equals(entity.getEnabled())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "enabled",
+                    "默认模型必须保持启用状态",
+                    "先启用模型，或取消本次设为默认的请求");
+        }
+    }
+
+    private void ensureModelReadyForDefault(AiModelConfig entity) {
+        if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
+            ensureModelConfigComplete(entity);
+        }
+    }
+
+    private void ensureModelConfigComplete(AiModelConfig entity) {
+        if (!StringUtils.hasText(entity.getApiBaseUrl())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    "设为默认模型前必须填写可用的接口地址",
+                    "补充允许访问的 HTTPS 接口地址后重试");
+        }
+        if (!StringUtils.hasText(entity.getApiKey())) {
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiKey",
+                    "设为默认模型前必须配置 API Key",
+                    "编辑模型并配置 API Key 后再设为默认");
+        }
+    }
+
+    private void ensureExistingDefaultIsNotCleared(Integer originalDefaultModel, Integer updatedDefaultModel) {
+        if (Integer.valueOf(1).equals(originalDefaultModel)
+                && !Integer.valueOf(1).equals(updatedDefaultModel)) {
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "defaultModel",
+                    "系统要求始终保留一个已启用的全局默认模型，不能直接取消默认",
+                    "请将其它配置完整的模型设为默认，系统会原子切换默认模型");
+        }
     }
 
     private void writeModelConfigWithDefaultGuard(Runnable action) {
         try {
             action.run();
         } catch (DuplicateKeyException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "同一供应商只能有一个默认模型，请刷新后重试");
+            if (isModelCodeDuplicate(ex)) {
+                throw duplicateModelCodeConflict();
+            }
+            throw new BusinessException(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "全局默认模型发生并发冲突，本次修改未生效",
+                    true,
+                    "刷新模型列表，确认当前默认模型后重新操作",
+                    Map.of("defaultModel", "全局只能有一个已启用的默认模型"));
         }
+    }
+
+    private void ensureModelCodeUnique(String provider, String modelCode, Long excludeId) {
+        Long count = mapper.selectCount(new LambdaQueryWrapper<AiModelConfig>()
+                .eq(AiModelConfig::getProvider, provider)
+                .eq(AiModelConfig::getModelCode, modelCode)
+                .ne(excludeId != null, AiModelConfig::getId, excludeId));
+        if (count != null && count > 0) {
+            throw duplicateModelCodeConflict();
+        }
+    }
+
+    private BusinessException duplicateModelCodeConflict() {
+        return new BusinessException(
+                ErrorCode.RESOURCE_RELATION_CONFLICT,
+                "同一供应商下已存在相同的模型标识",
+                false,
+                "修改供应商标识或模型标识，或返回列表编辑已有配置",
+                Map.of(
+                        "provider", "该供应商与模型标识组合已存在",
+                        "modelName", "该供应商与模型标识组合已存在"));
+    }
+
+    private boolean isModelCodeDuplicate(DuplicateKeyException ex) {
+        String message = ex == null ? null : ex.getMessage();
+        return StringUtils.hasText(message) && message.contains("uk_ai_model_provider_code");
     }
 
     private void ensureDefaultModelNotDisabled(AiModelConfig entity, Integer enabled) {
         if (Integer.valueOf(1).equals(entity.getDefaultModel()) && Integer.valueOf(0).equals(enabled)) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Default AI model cannot be disabled. Set another default model first.");
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "enabled",
+                    "默认模型不能直接停用",
+                    "先将其它配置完整的模型设为默认，再停用当前模型");
         }
     }
 
     private void ensureDefaultModelNotDeleted(AiModelConfig entity) {
         if (Integer.valueOf(1).equals(entity.getDefaultModel())) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR,
-                    "Default AI model cannot be deleted. Set another default model first.");
+            throw BusinessException.field(
+                    ErrorCode.RESOURCE_RELATION_CONFLICT,
+                    "defaultModel",
+                    "默认模型不能直接删除",
+                    "先将其它配置完整的模型设为默认，再删除当前模型");
         }
     }
 
@@ -290,6 +455,170 @@ public class AdminAiModelController {
             entity.setApiKey(null);
         }
         return entity;
+    }
+
+    private AiModelProbeVO successProbe(
+            AiModelConfig modelConfig,
+            ProviderAiCaller.CallResult callResult,
+            String probePrompt) {
+        AiModelProbeVO result = new AiModelProbeVO();
+        result.setModelId(modelConfig.getId());
+        result.setProvider(modelConfig.getProvider());
+        result.setModelCode(modelConfig.getModelCode());
+        result.setSuccess(true);
+        result.setStatus("SUCCESS");
+        result.setFailureType(AiFailureType.NONE.name());
+        result.setElapsedMs(callResult.getElapsedMs());
+        result.setPromptTokens(callResult.getPromptTokens());
+        result.setCompletionTokens(callResult.getCompletionTokens());
+        result.setTotalTokens(callResult.getTotalTokens());
+        result.setMessage("连接成功");
+        result.setRequestPromptPreview(SensitiveTextMasker.safePreview(probePrompt));
+        result.setResponsePreview(SensitiveTextMasker.safePreview(callResult.getContent()));
+        return result;
+    }
+
+    private AiModelProbeVO failureProbe(
+            AiModelConfig modelConfig,
+            AiProviderException exception,
+            long elapsedMs,
+            String probePrompt) {
+        AiModelProbeVO result = new AiModelProbeVO();
+        result.setModelId(modelConfig.getId());
+        result.setProvider(modelConfig.getProvider());
+        result.setModelCode(modelConfig.getModelCode());
+        result.setSuccess(false);
+        result.setStatus("FAILED");
+        result.setFailureType(exception.getFailureType() == null
+                ? AiFailureType.UNKNOWN_ERROR.name()
+                : exception.getFailureType().name());
+        result.setHttpStatus(exception.getHttpStatus());
+        result.setElapsedMs(elapsedMs);
+        result.setMessage(SensitiveTextMasker.safePreview(exception.getMessage()));
+        result.setRequestPromptPreview(SensitiveTextMasker.safePreview(probePrompt));
+        return result;
+    }
+
+    private String resolveProbePrompt(String prompt) {
+        if (!StringUtils.hasText(prompt)) {
+            return MODEL_PROBE_PROMPT;
+        }
+        String value = prompt.trim();
+        if (value.length() > 500) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "测试语句不能超过 500 个字符");
+        }
+        return value;
+    }
+
+    private void recordProbeLog(
+            AiModelConfig modelConfig,
+            ProviderAiCaller.CallResult callResult,
+            String failureMessage,
+            Integer success,
+            long elapsedMs) {
+        try {
+            AiCallLog logEntry = new AiCallLog();
+            logEntry.setScene("ADMIN_MODEL_PROBE");
+            logEntry.setModelName(modelConfig.getModelCode());
+            logEntry.setModel(modelConfig.getModelCode());
+            logEntry.setRouteTrace(modelConfig.getProvider());
+            logEntry.setElapsedMs(elapsedMs);
+            logEntry.setCostMillis(elapsedMs);
+            logEntry.setSuccess(success);
+            logEntry.setStatus(success);
+            logEntry.setErrorMessage(failureMessage);
+            if (callResult != null) {
+                logEntry.setPromptTokens(callResult.getPromptTokens());
+                logEntry.setCompletionTokens(callResult.getCompletionTokens());
+                logEntry.setTotalTokens(callResult.getTotalTokens());
+                logEntry.setEstimatedCost(callResult.getEstimatedCost());
+                logEntry.setTokenCost(callResult.getEstimatedCost());
+            }
+            aiCallLogMapper.insert(logEntry);
+        } catch (RuntimeException ex) {
+            log.warn("Failed to persist AI model probe log for modelId={}", modelConfig.getId(), ex);
+        }
+    }
+
+    private void applyListSummary(AiModelConfig entity, Map<String, AiModelHealthLogRow> healthRows) {
+        if (entity == null) {
+            return;
+        }
+        AiModelHealthSummaryVO summary = buildHealthSummary(entity, healthRows);
+        entity.setCallHealthStatus(summary.getHealthStatus());
+        entity.setLastCallSuccessAt(summary.getLastSuccessAt());
+        entity.setLastCallFailureAt(summary.getLastFailureAt());
+        entity.setLastCallFailureSummary(summary.getLastFailureSummary());
+        maskApiKey(entity);
+    }
+
+    private AiModelHealthSummaryVO buildHealthSummary(
+            AiModelConfig modelConfig,
+            Map<String, AiModelHealthLogRow> healthRows) {
+        AiModelHealthLogRow latestCall = healthRows.get("LATEST");
+        AiModelHealthLogRow latestSuccess = healthRows.get("SUCCESS");
+        AiModelHealthLogRow latestFailure = healthRows.get("FAILURE");
+
+        AiModelHealthSummaryVO vo = new AiModelHealthSummaryVO();
+        vo.setModelId(modelConfig.getId());
+        vo.setProvider(modelConfig.getProvider());
+        vo.setModelCode(modelConfig.getModelCode());
+        vo.setHealthStatus(resolveHealthStatus(latestCall));
+        vo.setLastCallStatus(resolveCallStatus(latestCall));
+        vo.setLastCallAt(createdAt(latestCall));
+        vo.setLastSuccessAt(createdAt(latestSuccess));
+        vo.setLastFailureAt(createdAt(latestFailure));
+        vo.setLastFailureSummary(latestFailure == null
+                ? null
+                : SensitiveTextMasker.safePreview(latestFailure.getErrorMessage()));
+        return vo;
+    }
+
+    private Map<Long, Map<String, AiModelHealthLogRow>> loadHealthRows(List<AiModelConfig> modelConfigs) {
+        if (modelConfigs == null || modelConfigs.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        List<AiModelHealthLogRow> rows = aiCallLogMapper.selectModelHealthRows(modelConfigs);
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return rows.stream()
+                .filter(row -> row.getModelConfigId() != null && StringUtils.hasText(row.getHealthBucket()))
+                .collect(Collectors.groupingBy(
+                        AiModelHealthLogRow::getModelConfigId,
+                        Collectors.toMap(
+                                AiModelHealthLogRow::getHealthBucket,
+                                Function.identity(),
+                                (left, right) -> left)));
+    }
+
+    private String resolveHealthStatus(AiModelHealthLogRow latestCall) {
+        String callStatus = resolveCallStatus(latestCall);
+        if ("SUCCESS".equals(callStatus)) {
+            return "HEALTHY";
+        }
+        if ("FAILED".equals(callStatus)) {
+            return "DEGRADED";
+        }
+        return "UNKNOWN";
+    }
+
+    private String resolveCallStatus(AiModelHealthLogRow logEntry) {
+        if (logEntry == null) {
+            return "UNKNOWN";
+        }
+        Integer success = logEntry.getSuccess() != null ? logEntry.getSuccess() : logEntry.getStatus();
+        if (Integer.valueOf(1).equals(success)) {
+            return "SUCCESS";
+        }
+        if (Integer.valueOf(0).equals(success)) {
+            return "FAILED";
+        }
+        return "UNKNOWN";
+    }
+
+    private java.time.LocalDateTime createdAt(AiModelHealthLogRow logEntry) {
+        return logEntry == null ? null : logEntry.getCreatedAt();
     }
 
     private String encryptApiKey(String apiKey) {
@@ -303,13 +632,48 @@ public class AdminAiModelController {
 
     private String normalizeApiBaseUrl(String apiBaseUrl) {
         if (!StringUtils.hasText(apiBaseUrl)) {
-            return null;
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    "接口地址不能为空",
+                    "填写允许访问的 HTTPS 接口地址后重试");
         }
         try {
             return endpointPolicy.validateAndNormalizeBaseUrl(apiBaseUrl);
         } catch (IllegalArgumentException ex) {
-            throw new BusinessException(ErrorCode.PARAM_ERROR, ex.getMessage());
+            String message = endpointValidationMessage(ex.getMessage());
+            throw BusinessException.field(
+                    ErrorCode.VALIDATION_ERROR,
+                    "apiBaseUrl",
+                    message,
+                    "使用系统允许名单中的公网 HTTPS 主机；不要填写内网、回环、带查询参数或无法解析的地址");
         }
+    }
+
+    private String endpointValidationMessage(String rawMessage) {
+        String message = rawMessage == null ? "" : rawMessage;
+        if (message.contains("allowlist")) {
+            return "接口地址主机不在系统允许名单中";
+        }
+        if (message.contains("cannot be resolved")) {
+            return "接口地址主机无法解析";
+        }
+        if (message.contains("non-public")) {
+            return "接口地址不能解析到内网、回环或保留地址";
+        }
+        if (message.contains("must use HTTPS")) {
+            return "接口地址必须使用 HTTPS";
+        }
+        if (message.contains("port is not allowed")) {
+            return "接口地址端口不在系统允许范围内";
+        }
+        if (message.contains("user info, query, or fragment")) {
+            return "接口地址不能包含账号信息、查询参数或锚点";
+        }
+        if (message.contains("invalid")) {
+            return "接口地址格式不正确";
+        }
+        return "接口地址不符合供应商安全策略";
     }
 
     private void encryptPlainApiKeyBeforeSave(AiModelConfig entity) {

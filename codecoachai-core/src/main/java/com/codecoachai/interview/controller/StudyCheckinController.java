@@ -1,0 +1,168 @@
+package com.codecoachai.interview.controller;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.codecoachai.common.core.domain.Result;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
+import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
+import com.codecoachai.common.security.util.SecurityAssert;
+import com.codecoachai.interview.domain.entity.StudyCheckin;
+import com.codecoachai.interview.domain.entity.StudyPlan;
+import com.codecoachai.interview.domain.entity.StudyTask;
+import com.codecoachai.interview.mapper.StudyCheckinMapper;
+import com.codecoachai.interview.mapper.StudyPlanMapper;
+import com.codecoachai.interview.mapper.StudyTaskMapper;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import java.time.LocalDate;
+import java.util.List;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+/**
+ * 学习打卡 Controller。
+ * 提供每日打卡、连续天数、打卡记录查询。
+ */
+@Tag(name = "学习打卡")
+@RestController
+@RequestMapping("/study-checkins")
+@RequiredArgsConstructor
+public class StudyCheckinController {
+
+    private final StudyCheckinMapper checkinMapper;
+    private final StudyTaskMapper studyTaskMapper;
+    private final StudyPlanMapper studyPlanMapper;
+    private final StudyProgressStatisticsService progressStatisticsService;
+
+    @Operation(summary = "今日打卡")
+    @PostMapping
+    public Result<StudyCheckin> checkin(@RequestBody(required = false) CheckinDTO dto) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        LocalDate today = progressStatisticsService.businessDate();
+        Long planId = dto == null ? null : dto.getPlanId();
+        validateOwnedPlan(userId, planId);
+
+        // 检查是否已打卡
+        StudyCheckin existing = checkinMapper.selectOne(
+                new LambdaQueryWrapper<StudyCheckin>()
+                        .eq(StudyCheckin::getUserId, userId)
+                        .eq(StudyCheckin::getDeleted, 0)
+                        .eq(StudyCheckin::getCheckinDate, today));
+        if (existing != null) {
+            return Result.success(existing);
+        }
+
+        // 统计今日完成任务数
+        Long completedToday = studyTaskMapper.selectCount(
+                new LambdaQueryWrapper<StudyTask>()
+                        .eq(StudyTask::getUserId, userId)
+                        .eq(StudyTask::getDeleted, 0)
+                        .eq(StudyTask::getPlannedDate, today)
+                        .in(StudyTask::getTaskStatus, "DONE", "COMPLETED"));
+
+        StudyCheckin checkin = new StudyCheckin();
+        checkin.setUserId(userId);
+        checkin.setPlanId(planId);
+        checkin.setCheckinDate(today);
+        checkin.setCompletedTasks(completedToday.intValue());
+        checkin.setStudyMinutes(dto != null ? dto.getStudyMinutes() : 0);
+        checkin.setNote(dto != null ? dto.getNote() : null);
+        checkinMapper.insert(checkin);
+        return Result.success(checkin);
+    }
+
+    @Operation(summary = "查询打卡记录（最近N天）")
+    @GetMapping
+    public Result<List<StudyCheckin>> list(
+            @RequestParam(defaultValue = "30") Integer days) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        LocalDate startDate = progressStatisticsService.businessDate().minusDays(Math.max(0, days - 1L));
+        List<StudyCheckin> records = checkinMapper.selectList(
+                new LambdaQueryWrapper<StudyCheckin>()
+                        .eq(StudyCheckin::getUserId, userId)
+                        .eq(StudyCheckin::getDeleted, 0)
+                        .ge(StudyCheckin::getCheckinDate, startDate)
+                        .orderByDesc(StudyCheckin::getCheckinDate));
+        return Result.success(records);
+    }
+
+    @Operation(summary = "连续打卡天数")
+    @GetMapping("/streak")
+    public Result<StreakVO> streak() {
+        Long userId = SecurityAssert.requireLoginUserId();
+        StudyProgressSnapshot snapshot = progressStatisticsService.current(userId);
+        StreakVO vo = new StreakVO();
+        vo.setCurrentStreak(snapshot.getCurrentStreak());
+        vo.setTotalCheckinDays(snapshot.getTotalCheckinDays());
+        vo.setCheckedInToday(snapshot.isCheckedInToday());
+        vo.setBusinessDate(snapshot.getBusinessDate());
+        vo.setBusinessTimezone(snapshot.getBusinessTimezone());
+        return Result.success(vo);
+    }
+
+    @Operation(summary = "学习进度统计")
+    @GetMapping("/progress")
+    public Result<ProgressVO> progress(@RequestParam(required = false) Long planId) {
+        Long userId = SecurityAssert.requireLoginUserId();
+        validateOwnedPlan(userId, planId);
+        StudyProgressSnapshot snapshot = progressStatisticsService.forPlan(userId, planId);
+        ProgressVO vo = new ProgressVO();
+        vo.setPlanId(snapshot.getPlanId());
+        vo.setTotalTasks(snapshot.getTotalTasks());
+        vo.setCompletedTasks(snapshot.getCompletedTasks());
+        vo.setSkippedTasks(snapshot.getSkippedTasks());
+        vo.setPendingTasks(snapshot.getPendingTasks());
+        vo.setCompletionRate(snapshot.getCompletionRate());
+        vo.setBusinessDate(snapshot.getBusinessDate());
+        vo.setBusinessTimezone(snapshot.getBusinessTimezone());
+        return Result.success(vo);
+    }
+
+    private void validateOwnedPlan(Long userId, Long planId) {
+        if (planId == null) {
+            return;
+        }
+        Long count = studyPlanMapper.selectCount(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, planId)
+                .eq(StudyPlan::getUserId, userId)
+                .eq(StudyPlan::getDeleted, 0));
+        if (count == null || count == 0) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或无权访问");
+        }
+    }
+
+    @Data
+    public static class CheckinDTO {
+        private Long planId;
+        private Integer studyMinutes;
+        private String note;
+    }
+
+    @Data
+    public static class StreakVO {
+        private int currentStreak;
+        private int totalCheckinDays;
+        private boolean checkedInToday;
+        private LocalDate businessDate;
+        private String businessTimezone;
+    }
+
+    @Data
+    public static class ProgressVO {
+        private Long planId;
+        private int totalTasks;
+        private int completedTasks;
+        private int skippedTasks;
+        private int pendingTasks;
+        private int completionRate;
+        private LocalDate businessDate;
+        private String businessTimezone;
+    }
+}

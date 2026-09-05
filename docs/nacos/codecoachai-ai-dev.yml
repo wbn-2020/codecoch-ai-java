@@ -7,11 +7,58 @@ spring:
     url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: ${MYSQL_USERNAME:root}
     password: ${MYSQL_PASSWORD}
+  servlet:
+    multipart:
+      max-file-size: 8MB
+      max-request-size: 9MB
 
 codecoachai:
+  internal:
+    auth:
+      legacy-shared-secret: ""
+      legacy-shared-secret-enabled: false
+      legacy-shared-secret-callers: []
+      caller-key-rings:
+        codecoachai-gateway:
+          secrets:
+            - ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}
+          permissions: []
+          forward-user-context: true
+        codecoachai-core:
+          secrets:
+            - ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET}
+          permissions:
+            - GET /inner/agent/campaign-archive-sources/users/{userId}/campaigns/{campaignId}
+            - GET /inner/agent/reminders/candidates
+            - POST /inner/agent/job-coach/business-actions/complete
+            - POST /inner/agent/job-coach/daily-plan/runs/{runId}/execute
+            - POST /inner/agent/job-coach/daily-plan/runs/{runId}/fail
+            - POST /inner/agent/knowledge/search
+            - POST /inner/ai/application-event-reviews/generate
+            - POST /inner/ai/embeddings
+            - POST /inner/ai/interview/evaluate
+            - POST /inner/ai/interview/evaluate/stream
+            - POST /inner/ai/interview/follow-up
+            - POST /inner/ai/interview/question
+            - POST /inner/ai/interview/report
+            - POST /inner/ai/interview-preparations/generate
+            - POST /inner/ai/job-descriptions/parse
+            - POST /inner/ai/learning-plans/generate
+            - POST /inner/ai/practice/review
+            - POST /inner/ai/question-recommendations/generate
+            - POST /inner/ai/questions/generate
+            - POST /inner/ai/resume/optimize
+            - POST /inner/ai/resume/parse
+            - POST /inner/ai/resume-job-match/analyze
+            - POST /inner/ai/resume-job-match/outcome
+            - POST /inner/ai/skill-gaps/analyze
+            - POST /inner/ai/study-plans/generate-from-gap
+          forward-user-context: true
   ai:
     enabled: true
-    # Dev acceptance uses real DeepSeek calls. Set DEEPSEEK_API_KEY in env/private Nacos before startup.
+    # Authoritative runtime Mock switch. The legacy system_config.ai.mock.enabled
+    # record is retired and cannot change AI routing. Dev acceptance uses real
+    # DeepSeek calls; set DEEPSEEK_API_KEY in env/private Nacos before startup.
     mock-enabled: false
     provider: openai-compatible
     model: ${AI_MODEL:deepseek-chat}
@@ -49,6 +96,7 @@ codecoachai:
       allowed-hosts:
         - api.deepseek.com
         - dashscope.aliyuncs.com
+        - chatapi.weixin.qq.com
       allowed-ports:
         - 443
     crypto:

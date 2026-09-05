@@ -2,17 +2,18 @@
 -- Test environment business reset and formal Chinese seed data
 -- ============================================================================
 -- Scope:
---   * Preserve accounts, roles, permissions, system/model configuration, and
---     immutable product definitions.
---   * Physically remove all other records from codecoachai_v1.
---   * Seed one coherent fictional Chinese career journey for user001.
+--   * Preserve the admin account, roles, permissions, system/model
+--     configuration, immutable product definitions, and audit/operation logs.
+--   * Physically remove user business data and non-admin test accounts from
+--     codecoachai_v1.
+--   * Seed one coherent fictional Chinese career journey for admin.
 --
 -- Safety:
---   1. Run only after a verified database backup.
---   2. Stop application containers and consumers before execution.
---   3. This script refuses to run unless the caller sets the explicit session
+--   1. Run only after object-level review and explicit test-environment
+--      authorization.
+--   2. This script refuses to run unless the caller sets the explicit session
 --      variable shown in the execution runbook.
---   4. This is intentionally a sandbox script. Do not move it into Flyway.
+--   3. This is intentionally a sandbox script. Do not move it into Flyway.
 --
 -- Required session variable:
 --   SET @codecoachai_allow_test_business_reset = 'I_UNDERSTAND_TEST_RESET_20260716';
@@ -41,11 +42,11 @@ DELIMITER ;
 CALL assert_test_business_reset_allowed();
 DROP PROCEDURE IF EXISTS assert_test_business_reset_allowed;
 
-SET @seed_now = '2026-07-16 10:00:00';
+SET @seed_now = NOW();
 SET @seed_user_id = (
   SELECT id
   FROM sys_user
-  WHERE username = 'user001' AND deleted = 0
+  WHERE username = 'admin' AND deleted = 0
   LIMIT 1
 );
 
@@ -55,7 +56,7 @@ CREATE PROCEDURE assert_seed_user_exists()
 BEGIN
   IF @seed_user_id IS NULL THEN
     SIGNAL SQLSTATE '45000'
-      SET MESSAGE_TEXT = 'The required user001 account is missing or disabled.';
+      SET MESSAGE_TEXT = 'The required admin account is missing or disabled.';
   END IF;
 END//
 DELIMITER ;
@@ -63,8 +64,9 @@ DELIMITER ;
 CALL assert_seed_user_exists();
 DROP PROCEDURE IF EXISTS assert_seed_user_exists;
 
--- Preserve identities, authorization, runtime configuration, and stable
--- definitions. Everything else is business, audit, cache, or derived data.
+-- Preserve the administrator identity, authorization, runtime configuration,
+-- stable definitions, and audit/operation records. Everything else is
+-- user-facing business data, derived data, or a disposable asynchronous queue.
 DELIMITER //
 DROP PROCEDURE IF EXISTS clear_non_baseline_tables//
 CREATE PROCEDURE clear_non_baseline_tables()
@@ -92,7 +94,16 @@ BEGIN
         'resume_ats_template',
         'ability_skill_node',
         'analytics_metric_definition',
-        'flyway_schema_history'
+        'flyway_schema_history',
+        'login_log',
+        'operation_log',
+        'slow_sql_log',
+        'ai_call_log',
+        'analytics_job_log',
+        'async_task',
+        'message_dead_letter',
+        'interview_audio_cleanup_record',
+        'interview_audio_retention_record'
       )
     ORDER BY table_name;
   DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = 1;
@@ -120,6 +131,10 @@ DELIMITER ;
 START TRANSACTION;
 
 CALL clear_non_baseline_tables();
+
+-- Only the administrator account is retained after a formal test reset.
+DELETE FROM sys_user_role WHERE user_id <> @seed_user_id;
+DELETE FROM sys_user WHERE id <> @seed_user_id;
 
 -- ============================================================================
 -- Question bank
@@ -1117,9 +1132,132 @@ INSERT INTO notification (
    'INTERVIEW_REPORT', '9702802', 0, NULL, 0, NULL, NULL, 'SUCCESS', NULL,
    '2026-07-16 08:05:00', '2026-07-16 08:05:00', '2026-07-16 08:05:00', 0),
   (9704403, @seed_user_id, 'CAREER', '技术一面提醒',
-   '星穹企业服务技术一面安排在 2026 年 7 月 18 日下午，请提前准备权限和审计场景。',
+  '星穹企业服务技术一面安排在 2026 年 7 月 18 日下午，请提前准备权限和审计场景。',
    'CAREER_CALENDAR_EVENT', '9703702', 0, NULL, 0, NULL, NULL, 'SUCCESS', NULL,
    '2026-07-16 09:00:00', '2026-07-16 09:00:00', '2026-07-16 09:00:00', 0);
+
+-- Keep active work in the current test week. Historical records remain dated
+-- as evidence, while current tasks, reminders, and the active weekly plan do
+-- not render as stale or overdue when the test environment is revisited.
+SET @seed_week_start = DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY);
+
+UPDATE job_application
+SET next_follow_up_at = CASE id
+  WHEN 9703002 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 1 DAY), '10:00:00')
+  WHEN 9703003 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 2 DAY), '15:00:00')
+  WHEN 9703004 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 3 DAY), '10:00:00')
+  ELSE next_follow_up_at
+END,
+updated_at = @seed_now
+WHERE id IN (9703002, 9703003, 9703004);
+
+UPDATE career_calendar_event
+SET starts_at_utc = CASE id
+  WHEN 9703701 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 1 DAY), '02:00:00')
+  WHEN 9703702 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 2 DAY), '07:00:00')
+  WHEN 9703703 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 3 DAY), '02:00:00')
+  WHEN 9703704 THEN TIMESTAMP(CURDATE(), '11:00:00')
+END,
+ends_at_utc = CASE id
+  WHEN 9703701 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 1 DAY), '02:30:00')
+  WHEN 9703702 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 2 DAY), '08:00:00')
+  WHEN 9703703 THEN TIMESTAMP(DATE_ADD(CURDATE(), INTERVAL 3 DAY), '02:30:00')
+  WHEN 9703704 THEN TIMESTAMP(CURDATE(), '12:00:00')
+END,
+updated_at = @seed_now
+WHERE id IN (9703701, 9703702, 9703703, 9703704);
+
+UPDATE agent_run
+SET plan_date = CASE id
+  WHEN 9703901 THEN CURDATE()
+  WHEN 9703902 THEN DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+END,
+started_at = CASE id
+  WHEN 9703901 THEN TIMESTAMP(CURDATE(), '08:00:00')
+  WHEN 9703902 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '20:45:00')
+END,
+finished_at = CASE id
+  WHEN 9703901 THEN TIMESTAMP(CURDATE(), '08:00:01')
+  WHEN 9703902 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '20:45:01')
+END,
+updated_at = @seed_now
+WHERE id IN (9703901, 9703902);
+
+UPDATE agent_task
+SET due_date = CASE id
+  WHEN 9704001 THEN CURDATE()
+  WHEN 9704002 THEN CURDATE()
+  WHEN 9704003 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+  WHEN 9704004 THEN DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+  WHEN 9704005 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+  WHEN 9704006 THEN DATE_SUB(CURDATE(), INTERVAL 2 DAY)
+END,
+started_at = CASE id
+  WHEN 9704002 THEN TIMESTAMP(CURDATE(), '09:00:00')
+  WHEN 9704004 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '18:00:00')
+  ELSE started_at
+END,
+completed_at = CASE id
+  WHEN 9704004 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '18:35:00')
+  ELSE completed_at
+END,
+deferred_at = CASE id
+  WHEN 9704005 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '17:00:00')
+  ELSE deferred_at
+END,
+skipped_at = CASE id
+  WHEN 9704006 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '17:10:00')
+  ELSE skipped_at
+END,
+updated_at = @seed_now
+WHERE id BETWEEN 9704001 AND 9704006;
+
+UPDATE agent_week_plan
+SET week_start_date = @seed_week_start,
+    week_end_date = DATE_ADD(@seed_week_start, INTERVAL 6 DAY),
+    generated_at = TIMESTAMP(CURDATE(), '08:00:01'),
+    refreshed_at = TIMESTAMP(CURDATE(), '08:00:01'),
+    updated_at = @seed_now
+WHERE id = 9704101;
+
+UPDATE agent_week_plan_item
+SET planned_date = CASE id
+  WHEN 9704201 THEN CURDATE()
+  WHEN 9704202 THEN CURDATE()
+  WHEN 9704203 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+  WHEN 9704204 THEN DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+END,
+due_date = CASE id
+  WHEN 9704201 THEN CURDATE()
+  WHEN 9704202 THEN CURDATE()
+  WHEN 9704203 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+  WHEN 9704204 THEN DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+END,
+updated_at = @seed_now
+WHERE id BETWEEN 9704201 AND 9704204;
+
+UPDATE agent_review
+SET review_date = DATE_SUB(CURDATE(), INTERVAL 1 DAY),
+    updated_at = @seed_now
+WHERE id = 9704301;
+
+UPDATE notification
+SET content = CASE id
+  WHEN 9704402 THEN '项目深挖报告建议在今天完成容量估算、限流降级和消息补偿专项复练。'
+  WHEN 9704403 THEN CONCAT('星穹企业服务技术一面安排在 ', DATE_FORMAT(DATE_ADD(CURDATE(), INTERVAL 2 DAY), '%Y 年 %c 月 %e 日'), '下午，请提前准备权限和审计场景。')
+END,
+sent_at = CASE id
+  WHEN 9704401 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '20:05:00')
+  WHEN 9704402 THEN TIMESTAMP(CURDATE(), '08:05:00')
+  WHEN 9704403 THEN TIMESTAMP(CURDATE(), '09:00:00')
+END,
+created_at = CASE id
+  WHEN 9704401 THEN TIMESTAMP(DATE_SUB(CURDATE(), INTERVAL 1 DAY), '20:05:00')
+  WHEN 9704402 THEN TIMESTAMP(CURDATE(), '08:05:00')
+  WHEN 9704403 THEN TIMESTAMP(CURDATE(), '09:00:00')
+END,
+updated_at = @seed_now
+WHERE id BETWEEN 9704401 AND 9704403;
 
 COMMIT;
 
@@ -1130,22 +1268,22 @@ SELECT CONCAT('PRESERVED_USERS=', COUNT(*))
 FROM sys_user
 WHERE deleted = 0;
 
-SELECT CONCAT('SEEDED_USER001_RESUMES=', COUNT(*))
+SELECT CONCAT('SEEDED_ADMIN_RESUMES=', COUNT(*))
 FROM resume
 WHERE user_id = @seed_user_id AND deleted = 0;
 
-SELECT CONCAT('SEEDED_USER001_TARGET_JOBS=', COUNT(*))
+SELECT CONCAT('SEEDED_ADMIN_TARGET_JOBS=', COUNT(*))
 FROM target_job
 WHERE user_id = @seed_user_id AND deleted = 0;
 
-SELECT CONCAT('SEEDED_USER001_INTERVIEW_REPORTS=', COUNT(*))
+SELECT CONCAT('SEEDED_ADMIN_INTERVIEW_REPORTS=', COUNT(*))
 FROM interview_report
 WHERE user_id = @seed_user_id AND deleted = 0;
 
-SELECT CONCAT('SEEDED_USER001_PENDING_SUGGESTIONS=', COUNT(*))
+SELECT CONCAT('SEEDED_ADMIN_PENDING_SUGGESTIONS=', COUNT(*))
 FROM resume_suggestion
 WHERE user_id = @seed_user_id AND status = 'PENDING' AND deleted = 0;
 
-SELECT CONCAT('SEEDED_USER001_APPLICATIONS=', COUNT(*))
+SELECT CONCAT('SEEDED_ADMIN_APPLICATIONS=', COUNT(*))
 FROM job_application
 WHERE user_id = @seed_user_id AND deleted = 0;

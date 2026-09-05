@@ -9,6 +9,9 @@ public class AiCallLogVO {
     private Long id;
     private Long userId;
     private String scene;
+    private String sceneLabel;
+    private String sceneCategory;
+    private Boolean sceneRegistered;
     private String modelName;
     private Long promptTemplateId;
     private Long promptTemplateVersionId;
@@ -39,6 +42,15 @@ public class AiCallLogVO {
     private String responseContentHash;
     private String responsePreview;
     private String businessId;
+    private String executionId;
+    private String parentExecutionId;
+    private Integer attemptNo;
+    private String idempotencyKey;
+    private String executionSource;
+    private String deliveryQuality;
+    private String fallbackReasonCode;
+    private String schemaVersion;
+    private String validationStatus;
     private Long elapsedMs;
     private Long costMillis;
     private Integer success;
@@ -48,6 +60,11 @@ public class AiCallLogVO {
     private Integer status;
     private String errorMessage;
     private String errorMessagePreview;
+    private String failureType;
+    private String failureTypeLabel;
+    private Integer failureHttpStatus;
+    private String operatorMessage;
+    private String operatorSuggestion;
     private String requestBody;
     private String requestBodyPreview;
     private String requestBodyHash;

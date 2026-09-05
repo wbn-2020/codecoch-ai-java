@@ -10,7 +10,8 @@ param(
     [string]$AuditDir = $(if ($env:NACOS_AUDIT_DIR) { $env:NACOS_AUDIT_DIR } else { "" }),
     [string[]]$DataId = @(),
     [switch]$ConfirmWrite,
-    [switch]$AllowCreateConfig
+    [switch]$AllowCreateConfig,
+    [switch]$CreateMissingOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +21,30 @@ $guardScript = Join-Path $PSScriptRoot "nacos_config_guard.py"
 
 if (-not (Test-Path -LiteralPath $guardScript)) {
     throw "Nacos config guard not found: $guardScript"
+}
+if ($Target -eq "namespace" -and (-not $Namespace -or $Namespace -eq "public")) {
+    throw "Target namespace requires a non-empty dedicated -Namespace value other than public."
+}
+if ($DataId.Count -eq 0 -and $env:NACOS_DATA_IDS) {
+    $DataId = @(
+        $env:NACOS_DATA_IDS -split "," |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+}
+if ($DataId.Count -eq 0) {
+    $profile = if ($env:SPRING_PROFILES_ACTIVE) { $env:SPRING_PROFILES_ACTIVE } else { "dev" }
+    if ($profile -notmatch '^[A-Za-z0-9_-]+$') {
+        throw "SPRING_PROFILES_ACTIVE must be one simple profile name."
+    }
+    $DataId = @(
+        "codecoachai-common-$profile.yml",
+        "codecoachai-redis-$profile.yml",
+        "codecoachai-gateway-$profile.yml",
+        "codecoachai-core-$profile.yml",
+        "codecoachai-ai-$profile.yml",
+        "codecoachai-search-$profile.yml"
+    )
 }
 
 function Test-Python3Command {
@@ -72,6 +97,9 @@ if ($ConfirmWrite) {
 }
 if ($AllowCreateConfig) {
     $arguments += "--allow-create-config"
+}
+if ($CreateMissingOnly) {
+    $arguments += "--create-missing-only"
 }
 
 if (-not $ConfirmWrite) {

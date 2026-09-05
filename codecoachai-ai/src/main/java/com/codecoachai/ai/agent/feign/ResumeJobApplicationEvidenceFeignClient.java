@@ -6,7 +6,7 @@ import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 
-@FeignClient(name = "codecoachai-resume", contextId = "resumeJobApplicationEvidenceFeignClient")
+@FeignClient(name = "codecoachai-core", contextId = "resumeJobApplicationEvidenceFeignClient")
 public interface ResumeJobApplicationEvidenceFeignClient {
 
     @GetMapping("/inner/applications/users/{userId}/events/{eventId}/agent-evidence")

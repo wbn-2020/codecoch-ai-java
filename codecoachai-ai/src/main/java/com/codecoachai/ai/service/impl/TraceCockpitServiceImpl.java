@@ -1,6 +1,7 @@
 package com.codecoachai.ai.service.impl;
 
 import com.codecoachai.ai.domain.dto.TraceCockpitQueryDTO;
+import com.codecoachai.ai.domain.support.AiDeliverySemantics;
 import com.codecoachai.ai.domain.vo.TraceCockpitResultVO;
 import com.codecoachai.ai.domain.vo.TraceEdgeVO;
 import com.codecoachai.ai.domain.vo.TraceGovernanceSuggestionVO;
@@ -162,6 +163,9 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
                        success, prompt_tokens AS promptTokens, completion_tokens AS completionTokens,
                        total_tokens AS totalTokens, status, error_message AS errorMessage,
                        route_trace AS routeTrace, estimated_cost AS estimatedCost, token_cost AS tokenCost,
+                       execution_source AS executionSource, delivery_quality AS deliveryQuality,
+                       fallback_reason_code AS fallbackReasonCode, schema_version AS schemaVersion,
+                       validation_status AS validationStatus,
                        created_at AS createdAt, updated_at AS updatedAt,
                        CASE WHEN request_prompt IS NOT NULL OR response_content IS NOT NULL
                               OR request_body IS NOT NULL OR response_body IS NOT NULL
@@ -204,7 +208,16 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         Long id = asLong(row, "id");
         String traceId = asString(row, "traceId");
         String requestId = asString(row, "requestId");
-        boolean fallback = containsFallback(asString(row, "routeTrace"));
+        AiDeliverySemantics.Outcome delivery = AiDeliverySemantics.resolve(
+                asString(row, "executionSource"),
+                asString(row, "deliveryQuality"),
+                null,
+                firstText(asString(row, "modelName"), asString(row, "model")),
+                asString(row, "routeTrace"),
+                null,
+                null,
+                asInteger(row, "success"));
+        boolean fallback = delivery.fallback();
         String status = normalizeStatus(firstNonNull(row.get("success"), row.get("status")), fallback);
 
         TraceNodeVO node = baseNode("ai-" + id, MOD_AI_CALL, "ai_call_log", id, firstText(asString(row, "scene"), "AI call " + id),
@@ -229,7 +242,12 @@ public class TraceCockpitServiceImpl implements TraceCockpitService {
         putMeta(node, "scene", asString(row, "scene"));
         putMeta(node, "modelName", firstText(asString(row, "modelName"), asString(row, "model")));
         putMeta(node, "routeTrace", asString(row, "routeTrace"));
-        putMeta(node, "resultSource", fallback ? "FALLBACK_INFERRED" : "REAL");
+        putMeta(node, "resultSource", delivery.legacyResultSource().name());
+        putMeta(node, "executionSource", delivery.executionSource());
+        putMeta(node, "deliveryQuality", delivery.deliveryQuality());
+        putMeta(node, "fallbackReasonCode", asString(row, "fallbackReasonCode"));
+        putMeta(node, "schemaVersion", asString(row, "schemaVersion"));
+        putMeta(node, "validationStatus", asString(row, "validationStatus"));
         putMeta(node, "fallback", fallback);
         putMeta(node, "elapsedMs", firstNonNull(asLong(row, "elapsedMs"), asLong(row, "costMillis")));
         putMeta(node, "totalTokens", asLong(row, "totalTokens"));

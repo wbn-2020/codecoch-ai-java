@@ -19,7 +19,7 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class AuthTokenClient {
 
-    private static final String AUTH_TOKEN_INFO_URL = "lb://codecoachai-auth/inner/auth/token-info";
+    static final String AUTH_TOKEN_INFO_URL = "lb://codecoachai-core/inner/auth/token-info";
     private static final String GATEWAY_SERVICE_NAME = "codecoachai-gateway";
     private static final ParameterizedTypeReference<Result<TokenInfo>> TOKEN_INFO_TYPE =
             new ParameterizedTypeReference<>() {

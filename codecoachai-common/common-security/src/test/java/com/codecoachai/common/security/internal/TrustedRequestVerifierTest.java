@@ -49,7 +49,7 @@ class TrustedRequestVerifierTest {
         InternalAuthProperties properties = new InternalAuthProperties();
         properties.setEnabled(true);
         properties.setSecret(SECRET);
-        properties.setLegacySharedSecretCallers(Set.of("codecoachai-task", "codecoachai-gateway"));
+        properties.setLegacySharedSecretCallers(Set.of("codecoachai-core", "codecoachai-gateway"));
         properties.setAllowedClockSkewSeconds(300);
         properties.setNonceTtlSeconds(300);
         properties.setMaxSignedBodyBytes(1024);
@@ -68,11 +68,11 @@ class TrustedRequestVerifierTest {
 
         HttpServletRequest verified = verifier.verify(
                 request,
-                "codecoachai-task",
+                "codecoachai-core",
                 String.valueOf(NOW),
                 NONCE,
                 signature("payload"),
-                "internal-request:codecoachai-task",
+                "internal-request:codecoachai-core",
                 "payload",
                 bodySha256,
                 false);
@@ -89,11 +89,11 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
-                        "codecoachai-task",
+                        "codecoachai-core",
                         String.valueOf(NOW),
                         NONCE,
                         "invalid",
-                        "internal-request:codecoachai-task",
+                        "internal-request:codecoachai-core",
                         "payload",
                         InternalSignatureUtils.EMPTY_BODY_SHA256,
                         false));
@@ -133,11 +133,11 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
-                        "codecoachai-task",
+                        "codecoachai-core",
                         String.valueOf(NOW),
                         NONCE,
                         signature("payload"),
-                        "internal-request:codecoachai-task",
+                        "internal-request:codecoachai-core",
                         "payload",
                         InternalSignatureUtils.STREAMING_BODY_SHA256,
                         false));
@@ -158,11 +158,11 @@ class TrustedRequestVerifierTest {
                 VerificationException.class,
                 () -> verifier.verify(
                         request,
-                        "codecoachai-task",
+                        "codecoachai-core",
                         String.valueOf(NOW),
                         NONCE,
                         signature("payload"),
-                        "internal-request:codecoachai-task",
+                        "internal-request:codecoachai-core",
                         "payload",
                         InternalSignatureUtils.EMPTY_BODY_SHA256,
                         false));
@@ -180,11 +180,11 @@ class TrustedRequestVerifierTest {
 
         verifier.verify(
                 request,
-                "codecoachai-task",
+                "codecoachai-core",
                 String.valueOf(futureTimestamp),
                 NONCE,
                 signature("payload"),
-                "internal-request:codecoachai-task",
+                "internal-request:codecoachai-core",
                 "payload",
                 InternalSignatureUtils.EMPTY_BODY_SHA256,
                 false);

@@ -1,5 +1,11 @@
 # CodeCoachAI V2 A1 简历文件上传说明
 
+> 架构迁移说明（2026-08-06）：本文最初按八个独立业务服务编写。
+> `dev-fb-260805` 已将文件、简历等业务能力合并到 `codecoachai-core`，
+> 当前不再单独部署 `codecoachai-file` 或 `codecoachai-resume`。
+> 因此本文中的历史模块名仅用于说明原始功能边界；当前配置以
+> `docs/nacos/codecoachai-core-dev.yml` 为准，相关接口由 Core 服务提供。
+
 ## 1. 范围
 
 A1 对应正式 V2 PRD 中的 P0 能力：
@@ -11,19 +17,20 @@ A1 对应正式 V2 PRD 中的 P0 能力：
 
 ## 2. 已完成能力
 
-- 新增 `codecoachai-file` 模块。
-- `resume-service` 暴露用户端接口 `POST /resumes/upload`。
-- `resume-service` 接收 `MultipartFile` 后调用 `codecoachai-file` 内部接口保存文件。
-- `codecoachai-file` 提供内部接口 `POST /inner/files/upload`。
+- 历史版本新增 `codecoachai-file` 模块；当前文件能力已迁入 `codecoachai-core`。
+- 当前 `codecoachai-core` 暴露用户端接口 `POST /resumes/upload`。
+- 当前 `codecoachai-core` 在进程内完成文件保存与简历解析记录创建。
+- 当前 `codecoachai-core` 继续提供内部接口 `POST /inner/files/upload`，但不再经过跨进程
+  `codecoachai-file` 服务。
 - 文件保存成功后写入 `file_info`。
 - `resume-service` 创建 `resume_analysis_record`，初始状态为 `PENDING`。
 - 返回 `fileId`、`analysisRecordId`、`parseStatus`、原始文件名、文件大小和扩展名。
 
 ## 3. 本地文件存储配置
 
-配置模板位于：
+当前配置模板位于：
 
-`docs/nacos/codecoachai-file-dev.yml`
+`docs/nacos/codecoachai-core-dev.yml`
 
 关键配置：
 
@@ -69,8 +76,8 @@ A1 已做以下校验：
 - `POST /resumes/upload` 是用户端接口，需要登录。
 - `POST /inner/files/upload` 只允许后端服务间调用。
 - 内部调用复用现有 `/inner/**` HMAC 签名机制。
-- 前端不直接调用 `codecoachai-file`。
-- Gateway 现有 `/resumes/**` 路由可覆盖 `/resumes/upload`，不新增公开 file-service 路由。
+- 前端不直接调用独立文件服务；文件接口由 `codecoachai-core` 承载。
+- Gateway 现有 `/resumes/**` 路由可覆盖 `/resumes/upload`，不新增公开独立文件服务路由。
 
 ## 6. A1 不做什么
 

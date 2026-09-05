@@ -16,7 +16,7 @@ class PromptTemplateVariableValidatorTest {
                 () -> PromptTemplateVariableValidator.validateDefinition(
                         "Question: {{questionContent}}", "questionContent,userAnswer"));
 
-        assertTrue(exception.getMessage().contains("unused=[userAnswer]"));
+        assertTrue(exception.getMessage().contains("未使用变量=[userAnswer]"));
     }
 
     @Test

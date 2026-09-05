@@ -1,0 +1,82 @@
+spring:
+  application:
+    name: codecoachai-core
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  config:
+    import:
+      - optional:nacos:codecoachai-common-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-redis-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
+      - optional:nacos:codecoachai-core-${spring.profiles.active}.yml?group=DEFAULT_GROUP&refreshEnabled=true
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+        namespace: ${NACOS_NAMESPACE}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+      config:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        group: DEFAULT_GROUP
+        file-extension: yml
+        namespace: ${NACOS_NAMESPACE}
+        username: ${NACOS_USERNAME:}
+        password: ${NACOS_PASSWORD:}
+
+sa-token:
+  token-name: Authorization
+  timeout: 86400
+  active-timeout: 14400
+  is-read-cookie: false
+
+codecoachai:
+  auth:
+    password-reset:
+      delivery-provider: ${PASSWORD_RESET_DELIVERY_PROVIDER:mock}
+      allow-mock: ${PASSWORD_RESET_ALLOW_MOCK:true}
+      reset-url-template: ${PASSWORD_RESET_URL_TEMPLATE:https://codecoachai.example/reset-password#token={token}}
+  resume:
+    career-import:
+      recovery:
+        stale-after-minutes: ${CAREER_IMPORT_RECOVERY_STALE_AFTER_MINUTES:30}
+        initial-delay: ${CAREER_IMPORT_RECOVERY_INITIAL_DELAY:15000}
+        fixed-delay: ${CAREER_IMPORT_RECOVERY_FIXED_DELAY:60000}
+    export:
+      max-source-text-bytes: ${RESUME_EXPORT_MAX_SOURCE_TEXT_BYTES:1048576}
+      max-artifact-bytes: ${RESUME_EXPORT_MAX_ARTIFACT_BYTES:10485760}
+      max-zip-entries: ${RESUME_EXPORT_MAX_ZIP_ENTRIES:12}
+      # Upload admission concurrency and wait settings apply at Core startup; restart is required after changes.
+      max-concurrent-uploads: ${RESUME_EXPORT_MAX_CONCURRENT_UPLOADS:2}
+      upload-acquire-timeout-millis: ${RESUME_EXPORT_UPLOAD_ACQUIRE_TIMEOUT_MILLIS:250}
+      pdf-font-path: ${RESUME_EXPORT_PDF_FONT_PATH:}
+    campaign-archive:
+      max-entry-bytes: ${CAMPAIGN_ARCHIVE_MAX_ENTRY_BYTES:2097152}
+      max-total-uncompressed-bytes: ${CAMPAIGN_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:8388608}
+      max-archive-bytes: ${CAMPAIGN_ARCHIVE_MAX_BYTES:10485760}
+      max-entries: ${CAMPAIGN_ARCHIVE_MAX_ENTRIES:15}
+      max-rows-per-section: ${CAMPAIGN_ARCHIVE_MAX_ROWS_PER_SECTION:5000}
+      max-error-message-chars: ${CAMPAIGN_ARCHIVE_MAX_ERROR_MESSAGE_CHARS:1000}
+  question:
+    duplicate:
+      max-batch-check-count: 100
+      max-rule-candidate-count: 200
+      vector-search-limit: 30
+      embedding-batch-size: 64
+      title-jaccard-threshold: 0.75
+      title-levenshtein-threshold: 0.82
+      content-similarity-threshold: 0.70
+      semantic-similarity-threshold: 0.82
+      semantic-review-threshold: 0.78
+      semantic-strong-threshold: 0.88
+      semantic-vector-weight: 0.78
+      semantic-text-weight: 0.22
+      semantic-metadata-weight: 0.08
+      semantic-tag-weight: 0.08
+  task:
+    consumers:
+      enabled: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:false}

@@ -1,72 +1,64 @@
 package com.codecoachai.ai.service;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.verify;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.ai.domain.entity.AiCallLog;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.router.AiModelRouter;
-import com.codecoachai.ai.router.AiModelRouter.AiCallContext;
-import com.codecoachai.ai.router.AiModelRouter.RouteResult;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 @ExtendWith(MockitoExtension.class)
 class AiCallLogServiceTest {
 
+    @BeforeAll
+    static void initializeMybatisMetadata() {
+        if (TableInfoHelper.getTableInfo(AiCallLog.class) == null) {
+            TableInfoHelper.initTableInfo(
+                    new MapperBuilderAssistant(new MybatisConfiguration(), ""),
+                    AiCallLog.class);
+        }
+    }
+
     @Mock
     private AiModelRouter aiModelRouter;
     @Mock
     private AiCallLogMapper aiCallLogMapper;
-    @Captor
-    private ArgumentCaptor<AiCallLog> logCaptor;
 
     @Test
-    void callAndLogStoresOnlySafeMetadataWithoutRawPromptInputOrResponse() {
-        RouteResult routeResult = new RouteResult();
-        routeResult.setModel("deepseek-chat");
-        routeResult.setContent("raw response with phone 13800000000");
-        routeResult.setPromptTokens(12);
-        routeResult.setCompletionTokens(8);
-        routeResult.setTotalTokens(20);
-        routeResult.setRouteTrace("deepseek");
-        routeResult.setEstimatedCost(0.01D);
-        when(aiModelRouter.chat(any())).thenReturn(routeResult);
-        when(aiCallLogMapper.insert(logCaptor.capture())).thenReturn(1);
+    void outcomeWithoutExecutionSourcePreservesTheRecordedSource() {
+        AiCallLogService service = new AiCallLogService(aiModelRouter, aiCallLogMapper);
 
-        AiCallContext context = new AiCallContext();
-        context.setScene("interview.report");
-        context.setUserId(10L);
-        context.setBusinessId("report-1");
-        context.setRequestId("req-1");
-        context.setPromptTemplateId(2L);
-        context.setPromptTemplateVersionId(3L);
-        context.setPromptVersion("v1");
-        context.setInputVariablesJson("{\"resume\":\"full resume text\",\"phone\":\"13800000000\"}");
-        context.setModelParamsJson("{\"temperature\":0.2}");
-        context.setPromptHash("sha256-prompt");
-        context.setResponseFormat("JSON");
-        context.setPrompt("full prompt containing resume and JD");
-        context.setRequestBody("{\"prompt\":\"full prompt containing resume and JD\"}");
+        service.markDeliveryOutcome(12L, null, "COMPLETE", null, "resume-job-match-v1", "CONSUMABLE");
 
-        RouteResult result = new AiCallLogService(aiModelRouter, aiCallLogMapper).callAndLog(context);
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        ArgumentCaptor<Wrapper> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(aiCallLogMapper).update(isNull(), wrapperCaptor.capture());
+        assertFalse(((LambdaUpdateWrapper<?>) wrapperCaptor.getValue()).getSqlSet().contains("execution_source"));
+    }
 
-        AiCallLog saved = logCaptor.getValue();
-        assertEquals(routeResult, result);
-        assertEquals("sha256-prompt", saved.getPromptHash());
-        assertEquals("deepseek-chat", saved.getModel());
-        assertEquals(20, saved.getTotalTokens());
-        assertEquals("deepseek", saved.getRouteTrace());
-        assertNull(saved.getInputVariablesJson());
-        assertNull(saved.getRequestPrompt());
-        assertNull(saved.getRequestBody());
-        assertNull(saved.getResponseContent());
-        assertNull(saved.getResponseBody());
+    @Test
+    void explicitExecutionSourceIsPersistedWithTheOutcome() {
+        AiCallLogService service = new AiCallLogService(aiModelRouter, aiCallLogMapper);
+
+        service.markDeliveryOutcome(12L, "FALLBACK_MODEL", "DEGRADED",
+                "MATCH_REPORT_FALLBACK", "resume-job-match-v1", "REJECTED");
+
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        ArgumentCaptor<Wrapper> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(aiCallLogMapper).update(isNull(), wrapperCaptor.capture());
+        assertTrue(((LambdaUpdateWrapper<?>) wrapperCaptor.getValue()).getSqlSet().contains("execution_source"));
     }
 }

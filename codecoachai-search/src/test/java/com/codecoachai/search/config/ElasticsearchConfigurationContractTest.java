@@ -55,17 +55,53 @@ class ElasticsearchConfigurationContractTest {
         Map<String, Object> services = mapping(compose.get("services"));
         Map<String, Object> search = mapping(services.get("codecoachai-search"));
         Map<String, Object> environment = mapping(search.get("environment"));
+        Map<String, Object> elasticsearch = mapping(services.get("elasticsearch"));
+        Map<String, Object> elasticsearchEnvironment = mapping(elasticsearch.get("environment"));
 
-        assertEquals("http://elasticsearch:9200", environment.get("SPRING_ELASTICSEARCH_URIS"));
-        assertEquals("elastic", environment.get("SPRING_ELASTICSEARCH_USERNAME"));
         assertEquals(
-                "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}",
+                "${ELASTIC_PASSWORD:-codecoachai-local-elastic}",
+                elasticsearchEnvironment.get("ELASTIC_PASSWORD"));
+        assertEquals(
+                "${ELASTICSEARCH_URIS:-http://elasticsearch:9200}",
+                environment.get("ELASTICSEARCH_URIS"));
+        assertEquals("${ELASTICSEARCH_USERNAME:-elastic}", environment.get("ELASTICSEARCH_USERNAME"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:-codecoachai-local-elastic}",
+                environment.get("ELASTIC_PASSWORD"));
+        assertEquals(
+                "${ELASTICSEARCH_URIS:-http://elasticsearch:9200}",
+                environment.get("SPRING_ELASTICSEARCH_URIS"));
+        assertEquals("${ELASTICSEARCH_USERNAME:-elastic}", environment.get("SPRING_ELASTICSEARCH_USERNAME"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:-codecoachai-local-elastic}",
                 environment.get("SPRING_ELASTICSEARCH_PASSWORD"));
-        assertEquals("http://elasticsearch:9200", environment.get("CODECOACHAI_ELASTICSEARCH_URIS"));
-        assertEquals("elastic", environment.get("CODECOACHAI_ELASTICSEARCH_USERNAME"));
         assertEquals(
-                "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for Search}",
+                "${ELASTICSEARCH_URIS:-http://elasticsearch:9200}",
+                environment.get("CODECOACHAI_ELASTICSEARCH_URIS"));
+        assertEquals(
+                "${ELASTICSEARCH_USERNAME:-elastic}",
+                environment.get("CODECOACHAI_ELASTICSEARCH_USERNAME"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:-codecoachai-local-elastic}",
                 environment.get("CODECOACHAI_ELASTICSEARCH_PASSWORD"));
+
+        Map<String, Object> releaseCompose =
+                yaml.load(Files.readString(repositoryRoot.resolve("docker-compose.release.yml")));
+        Map<String, Object> releaseSearch =
+                mapping(mapping(releaseCompose.get("services")).get("codecoachai-search"));
+        Map<String, Object> releaseEnvironment = mapping(releaseSearch.get("environment"));
+        assertEquals(
+                "${ELASTICSEARCH_URIS:?ELASTICSEARCH_URIS is required for release}",
+                releaseEnvironment.get("SPRING_ELASTICSEARCH_URIS"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}",
+                releaseEnvironment.get("SPRING_ELASTICSEARCH_PASSWORD"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}",
+                releaseEnvironment.get("CODECOACHAI_ELASTICSEARCH_PASSWORD"));
+        assertEquals(
+                "${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}",
+                releaseEnvironment.get("ELASTIC_PASSWORD"));
 
         Map<String, Object> nacos = yaml.load(Files.readString(
                 repositoryRoot.resolve("docs/nacos/codecoachai-search-dev.yml")));

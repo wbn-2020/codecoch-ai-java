@@ -127,12 +127,15 @@ class AiConvertTest {
         AiCallLog log = sampleLog("AGENT_DAILY_PLAN");
         log.setModelName("deepseek-chat");
         log.setRouteTrace("deepseek");
+        log.setSuccess(1);
 
         AiCallLogVO vo = AiConvert.toLogVO(log);
 
         assertEquals("LLM", vo.getResultSource());
         assertEquals("真实模型", vo.getResultSourceLabel());
         assertFalse(vo.getFallback());
+        assertEquals("PRIMARY_MODEL", vo.getExecutionSource());
+        assertEquals("COMPLETE", vo.getDeliveryQuality());
     }
 
     @Test
@@ -146,6 +149,8 @@ class AiConvertTest {
         assertEquals("FALLBACK", vo.getResultSource());
         assertEquals("降级兜底", vo.getResultSourceLabel());
         assertTrue(vo.getFallback());
+        assertEquals("FALLBACK_MODEL", vo.getExecutionSource());
+        assertEquals("COMPLETE", vo.getDeliveryQuality());
     }
 
     @Test
@@ -159,6 +164,8 @@ class AiConvertTest {
         assertEquals("MOCK", vo.getResultSource());
         assertEquals("模拟数据", vo.getResultSourceLabel());
         assertFalse(vo.getFallback());
+        assertEquals("MOCK", vo.getExecutionSource());
+        assertEquals("DEGRADED", vo.getDeliveryQuality());
     }
 
     @Test
@@ -183,6 +190,24 @@ class AiConvertTest {
         assertEquals("UNKNOWN", vo.getResultSource());
         assertEquals("未知来源", vo.getResultSourceLabel());
         assertFalse(vo.getFallback());
+    }
+
+    @Test
+    void logVoAddsOperationalSceneAndFailureDiagnosisWithoutReplacingTechnicalError() {
+        AiCallLog log = sampleLog("ADMIN_MODEL_PROBE");
+        log.setSuccess(0);
+        log.setStatus(0);
+        log.setErrorMessage("errorType=HTTP_ERROR; httpStatus=429; errorRef=abc");
+
+        AiCallLogVO vo = AiConvert.toLogVO(log);
+
+        assertEquals("模型连通性检测", vo.getSceneLabel());
+        assertEquals("模型治理", vo.getSceneCategory());
+        assertEquals("HTTP_ERROR", vo.getFailureType());
+        assertEquals("供应商限流或额度不足", vo.getFailureTypeLabel());
+        assertEquals(429, vo.getFailureHttpStatus());
+        assertTrue(vo.getErrorMessage().contains("errorType=HTTP_ERROR"));
+        assertTrue(vo.getOperatorSuggestion().contains("额度"));
     }
 
     private AiCallLog sampleLog(String scene) {

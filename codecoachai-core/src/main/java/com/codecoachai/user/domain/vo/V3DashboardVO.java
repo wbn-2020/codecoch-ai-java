@@ -1,0 +1,129 @@
+package com.codecoachai.user.domain.vo;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
+import lombok.Data;
+
+@Data
+public class V3DashboardVO {
+
+    private TargetJobCardVO currentTargetJob;
+    private MatchSummaryVO latestMatch;
+    private SkillProfileSummaryVO skillProfile;
+    private StudyProgressVO studyProgress;
+    private RecommendedQuestionsVO recommendedQuestions;
+    private RecentInterviewVO recentInterview;
+    private RecentReportVO recentReport;
+    private List<TrendItemVO> trainingTrend;
+    private List<NextActionVO> nextActions;
+    private Boolean degraded;
+    private List<String> governanceTips;
+    private LocalDateTime generatedAt;
+
+    @Data
+    public static class TargetJobCardVO {
+        private Long id;
+        private String jobTitle;
+        private String companyName;
+        private String jobLevel;
+        private String status;
+        private Boolean current;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class MatchSummaryVO {
+        private Long reportId;
+        private Long resumeId;
+        private Long targetJobId;
+        private Integer overallScore;
+        private String status;
+        private String trustStatus;
+        private Boolean fallback;
+        private Integer schemaWarningCount;
+        private String summary;
+        private String evidenceSummary;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class SkillProfileSummaryVO {
+        private Long profileId;
+        private Long targetJobId;
+        private Integer overallScore;
+        private Integer overallLevel;
+        private String summary;
+        private List<Map<String, Object>> radar;
+        private List<Map<String, Object>> gaps;
+    }
+
+    @Data
+    public static class StudyProgressVO {
+        private Long activePlanId;
+        private Long totalTasks;
+        private Long completedTasks;
+        private Long skippedTasks;
+        private Long pendingTasks;
+        private Integer completionRate;
+        private Integer currentStreak;
+        private Integer totalCheckinDays;
+        private Boolean checkedInToday;
+        private LocalDate businessDate;
+        private String businessTimezone;
+    }
+
+    @Data
+    public static class RecommendedQuestionsVO {
+        private Long batchId;
+        private Long targetJobId;
+        private String sourceType;
+        private Long sourceId;
+        private Long matchReportId;
+        private Long skillProfileId;
+        private Long studyPlanId;
+        private String status;
+        private Long questionCount;
+        private Long canPracticeCount;
+        private Long pendingPracticeCount;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class RecentInterviewVO {
+        private Long interviewId;
+        private String title;
+        private String status;
+        private String reportStatus;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    public static class RecentReportVO {
+        private Long reportId;
+        private Long interviewId;
+        private String status;
+        private Integer totalScore;
+        private List<String> weakPoints;
+        private List<String> suggestions;
+        private LocalDateTime generatedAt;
+    }
+
+    @Data
+    public static class TrendItemVO {
+        private LocalDate date;
+        private Long interviewCount;
+        private Long completedCount;
+        private Long averageScore;
+    }
+
+    @Data
+    public static class NextActionVO {
+        private String actionType;
+        private String title;
+        private String description;
+        private String targetPath;
+        private Integer priority;
+    }
+}

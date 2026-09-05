@@ -9,7 +9,7 @@ spring:
           enabled: false
       routes:
         - id: codecoachai-auth
-          uri: lb://codecoachai-auth
+          uri: lb://codecoachai-core
           predicates:
             - Path=/auth/**
           filters:
@@ -20,145 +20,147 @@ spring:
                 redis-rate-limiter.burstCapacity: 10
                 redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-user-users
-          uri: lb://codecoachai-user
+          uri: lb://codecoachai-core
           predicates:
             - Path=/users,/users/**
         - id: codecoachai-user-dashboard
-          uri: lb://codecoachai-user
+          uri: lb://codecoachai-core
           predicates:
             - Path=/dashboard,/dashboard/**
         - id: codecoachai-user-admin-users
-          uri: lb://codecoachai-user
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/users,/admin/users/**
         # Order is intentional: the system role-menu route must precede the broad user /admin/roles/** route.
         - id: codecoachai-system-admin-role-menus
-          uri: lb://codecoachai-system
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/roles/*/menus
         - id: codecoachai-user-admin-roles
-          uri: lb://codecoachai-user
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/roles,/admin/roles/**
         - id: codecoachai-question-users
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/questions,/questions/**
         - id: codecoachai-question-recommendations
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/question-recommendations,/question-recommendations/**
         - id: codecoachai-question-practice
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/practice,/practice/**
         - id: codecoachai-question-admin-questions
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/questions,/admin/questions/**
         - id: codecoachai-question-admin-reviews
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-reviews,/admin/question-reviews/**
         - id: codecoachai-question-admin-relations
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-relations,/admin/question-relations/**
         # Order is intentional: question-owned /admin/ai/questions/** must precede the broad AI /admin/ai/** route.
         - id: codecoachai-question-admin-ai-generate
-          uri: lb://codecoachai-question
+          order: -100
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/ai/questions/generate,/admin/ai/questions/**
         - id: codecoachai-question-admin-sse
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/ai/sse/admin/questions/**
         - id: codecoachai-question-admin-duplicate-reviews
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-duplicate-reviews,/admin/question-duplicate-reviews/**,/admin/question-duplicate-eval,/admin/question-duplicate-eval/**
         - id: codecoachai-question-admin-categories
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-categories,/admin/question-categories/**,/categories,/categories/**
         - id: codecoachai-question-admin-tags
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-tags,/admin/question-tags/**,/tags,/tags/**
         - id: codecoachai-question-admin-groups
-          uri: lb://codecoachai-question
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/question-groups,/admin/question-groups/**
         - id: codecoachai-resume
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/resumes,/resumes/**,/admin/resumes,/admin/resumes/**,/resume-versions,/resume-versions/**,/resume-suggestions,/resume-suggestions/**,/resume-ats-templates,/resume-ats-templates/**,/resume-exports,/resume-exports/**,/resume-artifacts,/resume-artifacts/**,/applications,/applications/**,/application-packages,/application-packages/**,/project-evidence,/project-evidence/**,/ability-map,/ability-map/**,/job-experiments,/job-experiments/**,/job-experiments-v2,/job-experiments-v2/**,/career-calendar,/career-calendar/**,/career-imports,/career-imports/**,/portfolio-demo,/portfolio-demo/**,/career-campaigns,/career-campaigns/**,/career-campaign-archive-exports,/career-campaign-archive-exports/**,/offers,/offers/**,/career-contacts,/career-contacts/**,/career-activities,/career-activities/**,/research-sources,/research-sources/**,/research-snapshots,/research-snapshots/**,/interview-processes,/interview-processes/**,/interview-rounds,/interview-rounds/**,/interview-round-contacts,/interview-round-contacts/**,/ai/sse/resume/**
         # Kept separate from the large resume route because the current Gateway runtime
         # does not reliably register this token when it is part of that aggregate predicate.
         - id: codecoachai-resume-claim-audits
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/resume-claim-audits,/resume-claim-audits/**
         # Evidence result routes must remain isolated from the aggregate predicate. In the
         # current Gateway runtime, late tokens in that predicate can be silently omitted.
         - id: codecoachai-resume-evidence-results
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/evidence-assets/overview,/evidence-assets/overview/**,/evidence-assets/usages,/evidence-assets/usages/**,/evidence-assets/results,/evidence-assets/results/**,/evidence-usages,/evidence-usages/**,/evidence-usage-results,/evidence-usage-results/**
         - id: codecoachai-resume-job-targets
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/job-targets,/job-targets/**
         - id: codecoachai-resume-job-match
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/resume-job-match,/resume-job-match/**
         - id: codecoachai-resume-skill-profiles
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/skill-profiles,/skill-profiles/**
         - id: codecoachai-resume-sse
-          uri: lb://codecoachai-resume
+          uri: lb://codecoachai-core
           predicates:
             - Path=/ai/sse/resume-optimize,/ai/sse/job-targets/**,/ai/sse/resume-job-match/**
         - id: codecoachai-interview
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/interviews,/interviews/**,/interview-comparisons,/interview-comparisons/**,/interview-scenarios,/interview-scenarios/**,/interview-remediations,/interview-remediations/**,/interview-tts,/interview-tts/**,/interview-streaming-asr,/interview-streaming-asr/**,/admin/interviews,/admin/interviews/**,/admin/interview-definition,/admin/interview-definition/**,/ai/sse/interviews/**
         - id: codecoachai-interview-industry-templates
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/industry-templates,/industry-templates/**
         - id: codecoachai-interview-admin-industry-templates
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/industry-templates,/admin/industry-templates/**
         - id: codecoachai-interview-admin-reports
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/interview-reports,/admin/interview-reports/**
         - id: codecoachai-study
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/study-plans,/study-plans/**,/study-tasks,/study-tasks/**,/study-checkins,/study-checkins/**,/daily-tasks,/daily-tasks/**
         - id: codecoachai-interview-sse
-          uri: lb://codecoachai-interview
+          uri: lb://codecoachai-core
           predicates:
             - Path=/ai/sse/interview-question,/ai/sse/interview-comment,/ai/sse/interview-answer-review,/ai/sse/report,/ai/sse/interview-report,/ai/sse/study-plan
         - id: codecoachai-ai-admin
+          order: 0
           uri: lb://codecoachai-ai
           predicates:
             - Path=/ai/health,/ai/feedback,/ai/feedback/**,/admin/ai/**,/agent/**,/admin/agent/**,/admin/trace-cockpit,/growth/**,/analytics/**,/admin/analytics/**,/admin/vector-store/**,/evidence-assets/candidates,/evidence-assets/candidates/**
         - id: codecoachai-file-admin
-          uri: lb://codecoachai-file
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/files,/admin/files/**
         - id: codecoachai-file-users
-          uri: lb://codecoachai-file
+          uri: lb://codecoachai-core
           predicates:
             - Path=/files,/files/**
         - id: codecoachai-task
-          uri: lb://codecoachai-task
+          uri: lb://codecoachai-core
           predicates:
             - Path=/tasks,/tasks/**,/admin/tasks,/admin/tasks/**,/admin/notifications,/admin/notifications/**,/notifications,/notifications/**
         - id: codecoachai-search
@@ -173,15 +175,15 @@ spring:
                 redis-rate-limiter.burstCapacity: 20
                 redis-rate-limiter.requestedTokens: 1
         - id: codecoachai-system-admin
-          uri: lb://codecoachai-system
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/system,/admin/system/**
         - id: codecoachai-system-admin-dashboard
-          uri: lb://codecoachai-system
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/dashboard,/admin/dashboard/**
         - id: codecoachai-system-configs
-          uri: lb://codecoachai-system
+          uri: lb://codecoachai-core
           predicates:
             - Path=/admin/configs,/admin/configs/**,/admin/config,/admin/config/**,/admin/menus,/admin/menus/**,/admin/login-logs,/admin/login-logs/**,/admin/operation-logs,/admin/operation-logs/**,/admin/logs,/admin/logs/**,/admin/audit,/admin/audit/**,/admin/announcements,/admin/announcements/**,/admin/stats,/admin/stats/**,/announcements,/announcements/**
 
@@ -225,6 +227,17 @@ spring:
 
 codecoachai:
   gateway:
+    internal:
+      max-signed-body-bytes: 1048576
+      # Only these multipart upload endpoints may use STREAMING-UNSIGNED-PAYLOAD.
+      unsigned-body-paths: "/resumes/upload,/files/upload,/admin/questions/import,/agent/knowledge/documents/upload,/career-imports/csv/preview,/career-imports/csv,/career-imports/ics/preview,/career-imports/ics"
+      target-secrets:
+        codecoachai-core: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}
+        codecoachai-ai: ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET}
+        codecoachai-search: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET}
+    routes:
+      legacy-fallbacks:
+        enabled: false
     # Dev profile only. Add production domains explicitly in prod Nacos config.
     cors:
       allowed-origin-patterns: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://nqx.githubpage.com:30080,http://103.236.97.252:30080"

@@ -23,7 +23,7 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 class OpenFeignConfigTest {
 
     private static final String SECRET = "open-feign-signature-secret";
-    private static final String SERVICE_NAME = "codecoachai-question";
+    private static final String SERVICE_NAME = "codecoachai-core";
 
     private final OpenFeignConfig config = new OpenFeignConfig();
 

@@ -1,9 +1,12 @@
 package com.codecoachai.ai.service.impl;
 
 import com.codecoachai.ai.client.ProviderAiCaller;
+import com.codecoachai.ai.client.AiProviderException;
+import com.codecoachai.ai.config.AiProperties;
 import com.codecoachai.ai.config.AiRouterProperties;
 import com.codecoachai.ai.domain.dto.EmbeddingRequestDTO;
 import com.codecoachai.ai.domain.entity.AiCallLog;
+import com.codecoachai.ai.domain.enums.AiFailureType;
 import com.codecoachai.ai.domain.vo.EmbeddingResponseVO;
 import com.codecoachai.ai.mapper.AiCallLogMapper;
 import com.codecoachai.ai.security.AiErrorSanitizer;
@@ -28,12 +31,14 @@ public class EmbeddingServiceImpl implements EmbeddingService {
     private static final int MAX_TEXT_LENGTH = 8000;
 
     private final ProviderAiCaller providerAiCaller;
+    private final AiProperties aiProperties;
     private final AiRouterProperties aiRouterProperties;
     private final AiCallLogMapper aiCallLogMapper;
     private final ObjectMapper objectMapper;
 
     @Override
     public EmbeddingResponseVO embed(EmbeddingRequestDTO dto) {
+        ensureRealEmbeddingAllowed();
         List<String> texts = normalizeTexts(dto == null ? null : dto.getTexts());
         String provider = resolveProvider(dto == null ? null : dto.getProvider());
         String model = dto == null ? null : dto.getModel();
@@ -55,6 +60,19 @@ public class EmbeddingServiceImpl implements EmbeddingService {
             throw ex;
         } finally {
             saveEmbeddingLog(provider, model, texts.size(), result, error, System.currentTimeMillis() - started);
+        }
+    }
+
+    private void ensureRealEmbeddingAllowed() {
+        if (!Boolean.TRUE.equals(aiProperties.getEnabled())) {
+            throw new AiProviderException(
+                    AiFailureType.CONFIG_ERROR,
+                    "AI real-provider embedding is disabled by codecoachai.ai.enabled");
+        }
+        if (Boolean.TRUE.equals(aiProperties.getMockEnabled())) {
+            throw new AiProviderException(
+                    AiFailureType.CONFIG_ERROR,
+                    "AI real-provider embedding is blocked while mock mode is enabled");
         }
     }
 

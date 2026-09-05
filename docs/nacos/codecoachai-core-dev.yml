@@ -1,0 +1,180 @@
+server:
+  port: 9200
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${MYSQL_HOST:mysql}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:codecoachai_v1}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD}
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 4
+      connection-timeout: 30000
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  cloud:
+    openfeign:
+      client:
+        config:
+          default:
+            connectTimeout: 3000
+            readTimeout: 5000
+          interviewAiFeignClient:
+            connectTimeout: 3000
+            readTimeout: 40000
+          interviewAgentBusinessActionFeignClient:
+            connectTimeout: 3000
+            readTimeout: 40000
+
+sa-token:
+  token-name: Authorization
+  timeout: 86400
+  is-read-cookie: false
+  token-prefix: Bearer
+  is-print: false
+
+codecoachai:
+  internal:
+    auth:
+      legacy-shared-secret: ""
+      legacy-shared-secret-enabled: false
+      legacy-shared-secret-callers: []
+      caller-key-rings:
+        codecoachai-gateway:
+          secrets:
+            - ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET}
+          permissions:
+            - GET /inner/auth/token-info
+          forward-user-context: true
+        codecoachai-ai:
+          secrets:
+            - ${CODECOACHAI_CALLER_AI_SIGNING_SECRET}
+          permissions:
+            - GET /inner/career-campaigns/users/{userId}/campaigns/{campaignId}/review-evidence
+            - GET /inner/interviews/reports/users/{userId}/{reportId}/agent-evidence
+            - GET /inner/interviews/users/{userId}/weakness-summary
+            - GET /inner/applications/users/{userId}/events/{eventId}/agent-evidence
+            - GET /inner/evidence-usages/users/{userId}/facts
+            - GET /inner/applications/users/{userId}/weekly-evidence
+            - GET /inner/resumes/users/{userId}/optimize-records/{recordId}/agent-evidence
+            - GET /inner/practice-records/users/{userId}/{recordId}/agent-evidence
+            - GET /inner/applications/users/{userId}/career-insight-summary
+            - GET /inner/job-targets/users/{userId}/current
+            - GET /inner/job-targets/users/{userId}/{id}
+            - GET /inner/job-targets/users/{userId}/{id}/analysis
+            - GET /inner/applications/users/{userId}/agent-context
+            - GET /inner/project-evidence/users/{userId}/agent-context
+            - GET /inner/job-requirements/users/{userId}/targets/{targetJobId}/agent-context
+            - GET /inner/job-experiments/users/{userId}/agent-context
+            - GET /inner/skill-profiles/users/{userId}/agent-context
+            - GET /inner/interviews/users/{userId}/weekly-evidence
+          forward-user-context: true
+        codecoachai-search:
+          secrets:
+            - ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET}
+          permissions:
+            - GET /inner/resumes/{id}/search-doc
+            - GET /inner/questions/{id}/search-doc
+            - GET /inner/interviews/{id}/search-doc
+          forward-user-context: false
+  auth:
+    token-expire-seconds: 86400
+    password-reset:
+      delivery-provider: ${PASSWORD_RESET_DELIVERY_PROVIDER:mock}
+      allow-mock: ${PASSWORD_RESET_ALLOW_MOCK:true}
+      reset-url-template: ${PASSWORD_RESET_URL_TEMPLATE:http://localhost:5173/reset-password#token={token}}
+      from: ${PASSWORD_RESET_MAIL_FROM:}
+      subject: CodeCoachAI password reset
+  file:
+    storage:
+      provider: ALIYUN_OSS
+      root-path: ${CODECOACHAI_FILE_STORAGE_ROOT:./data/uploads}
+      max-size-mb: 50
+      allowed-extensions:
+        - pdf
+        - doc
+        - docx
+        - md
+        - txt
+        - png
+        - jpg
+        - jpeg
+        - webm
+        - wav
+        - mp3
+        - m4a
+        - ogg
+  oss:
+    enabled: true
+    endpoint: ${OSS_ENDPOINT:oss-cn-hangzhou.aliyuncs.com}
+    bucket: ${OSS_BUCKET:}
+    access-key-id: ${OSS_AK:}
+    access-key-secret: ${OSS_SK:}
+    domain: ${OSS_DOMAIN:}
+    sign-url-expire-seconds: 900
+    key-prefix: ${OSS_KEY_PREFIX:dev}
+    sts:
+      endpoint: ${OSS_STS_ENDPOINT:sts.cn-hangzhou.aliyuncs.com}
+      region-id: ${OSS_STS_REGION_ID:cn-hangzhou}
+      role-arn: ${OSS_STS_ROLE_ARN:}
+      role-session-name: codecoachai
+      duration-seconds: 3600
+  system:
+    overview:
+      enabled: true
+  question:
+    inner-select-limit: 10
+  interview:
+    max-question-count: 5
+    max-follow-up-count: 2
+    questions-per-stage: 2
+    report-timeout-seconds: 30
+    voice:
+      tts:
+        provider: ""
+      streaming-asr:
+        provider: ""
+        cleanup-fixed-delay-ms: 30000
+  task:
+    consumers:
+      # Do not join the legacy Task consumer groups until all legacy Task
+      # instances are stopped. Enabling this requires a Core restart.
+      enabled: ${CODECOACHAI_TASK_CONSUMERS_ENABLED:false}
+  resume:
+    export:
+      # Upload admission concurrency and wait settings apply at Core startup; restart is required after changes.
+      max-concurrent-uploads: ${RESUME_EXPORT_MAX_CONCURRENT_UPLOADS:2}
+      upload-acquire-timeout-millis: ${RESUME_EXPORT_UPLOAD_ACQUIRE_TIMEOUT_MILLIS:250}
+    campaign-archive:
+      max-entry-bytes: ${CAMPAIGN_ARCHIVE_MAX_ENTRY_BYTES:2097152}
+      max-total-uncompressed-bytes: ${CAMPAIGN_ARCHIVE_MAX_TOTAL_UNCOMPRESSED_BYTES:8388608}
+      max-archive-bytes: ${CAMPAIGN_ARCHIVE_MAX_BYTES:10485760}
+      max-entries: ${CAMPAIGN_ARCHIVE_MAX_ENTRIES:15}
+      max-rows-per-section: ${CAMPAIGN_ARCHIVE_MAX_ROWS_PER_SECTION:5000}
+  features:
+    v7:
+      campaign-workspace: true
+      real-interview: true
+      offer: true
+      contact-activity: true
+      research: true
+    v8:
+      campaign-cockpit: true
+      campaign-pulse: true
+      campaign-plan: true
+      campaign-portfolio: true
+      campaign-export: true
+    v9:
+      evidence-usage: true
+      evidence-feedback: true
+      evidence-assets-view: true
+    v12:
+      evidence-profile-feedback: true
+      experiment-sample-thresholds:
+        min-applications: 15
+        min-interviews: 3
+    v13:
+      positive-ability-reinforcement: true

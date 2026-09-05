@@ -1,0 +1,142 @@
+# Release runtime override.
+#
+# Use with docker-compose.yml after scripts/release/release_transport.py has
+# activated <CODECOACHAI_REMOTE_ROOT>/current. The base image contains only the
+# JRE, health probe, and entrypoint; every application JAR is read from the
+# immutable release directory through the current pointer.
+
+services:
+  nacos-config-init:
+    image: ${CODECOACHAI_NACOS_GUARD_IMAGE:?CODECOACHAI_NACOS_GUARD_IMAGE is required for release}
+    pull_policy: never
+    environment:
+      # Shared environments are audit-only. Configuration creation is a
+      # separate reviewed operation because the Nacos API has no atomic
+      # create-if-absent contract.
+      # This release is locked to the only complete reviewed six-file Nacos set.
+      SPRING_PROFILES_ACTIVE: "dev"
+      NACOS_CONFIG_BOOTSTRAP_ENABLED: "false"
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:?NACOS_SERVER_ADDR is required for release}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:?NACOS_NAMESPACE is required for release}
+      NACOS_USERNAME: ${NACOS_USERNAME:?NACOS_USERNAME is required for release}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required for release}
+
+  flyway-migrate:
+    image: ${CODECOACHAI_FLYWAY_TOOL_IMAGE:?CODECOACHAI_FLYWAY_TOOL_IMAGE is required for release}
+    pull_policy: never
+
+  codecoachai-gateway:
+    image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
+    pull_policy: never
+    build:
+      target: runtime-base
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:?REDIS_HOST is required for release}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:?REDIS_PORT is required for release}"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for release}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:?NACOS_SERVER_ADDR is required for release}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:?NACOS_NAMESPACE is required for release}
+      NACOS_USERNAME: ${NACOS_USERNAME:?NACOS_USERNAME is required for release}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required for release}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET is required for release}
+    volumes:
+      - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-gateway.jar:/app/app.jar:ro
+
+  codecoachai-core:
+    image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
+    pull_policy: never
+    build:
+      target: runtime-base
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      MYSQL_HOST: ${MYSQL_HOST:?MYSQL_HOST is required for release}
+      MYSQL_PORT: "${MYSQL_PORT:?MYSQL_PORT is required for release}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required for release}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:?MYSQL_USERNAME is required for release}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for release}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:?REDIS_HOST is required for release}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:?REDIS_PORT is required for release}"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for release}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:?NACOS_SERVER_ADDR is required for release}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:?NACOS_NAMESPACE is required for release}
+      NACOS_USERNAME: ${NACOS_USERNAME:?NACOS_USERNAME is required for release}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required for release}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:?ROCKETMQ_NAME_SERVER is required for release}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:?QDRANT_BASE_URL is required for release}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY is required for release}
+      OSS_BUCKET: ${OSS_BUCKET:?OSS_BUCKET is required for release}
+      OSS_AK: ${OSS_AK:?OSS_AK is required for release}
+      OSS_SK: ${OSS_SK:?OSS_SK is required for release}
+      # Runtime image installs font-noto-cjk and exposes this stable symlink.
+      RESUME_EXPORT_PDF_FONT_PATH: /opt/codecoachai/fonts/NotoSansCJK-Regular.ttc
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_CORE_SIGNING_SECRET is required for release}
+      CODECOACHAI_CALLER_AI_SIGNING_SECRET: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for release}
+      CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for release}
+    volumes:
+      - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-core.jar:/app/app.jar:ro
+
+  codecoachai-ai:
+    image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
+    pull_policy: never
+    build:
+      target: runtime-base
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      MYSQL_HOST: ${MYSQL_HOST:?MYSQL_HOST is required for release}
+      MYSQL_PORT: "${MYSQL_PORT:?MYSQL_PORT is required for release}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required for release}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:?MYSQL_USERNAME is required for release}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for release}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:?REDIS_HOST is required for release}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:?REDIS_PORT is required for release}"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for release}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:?NACOS_SERVER_ADDR is required for release}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:?NACOS_NAMESPACE is required for release}
+      NACOS_USERNAME: ${NACOS_USERNAME:?NACOS_USERNAME is required for release}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required for release}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:?ROCKETMQ_NAME_SERVER is required for release}
+      QDRANT_BASE_URL: ${QDRANT_BASE_URL:?QDRANT_BASE_URL is required for release}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:?QDRANT_API_KEY is required for release}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:?DEEPSEEK_API_KEY is required for release}
+      CODECOACHAI_AI_CRYPTO_SECRET_KEY: ${CODECOACHAI_AI_CRYPTO_SECRET_KEY:?CODECOACHAI_AI_CRYPTO_SECRET_KEY is required for release}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_AI_SIGNING_SECRET:?CODECOACHAI_CALLER_AI_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_AI_SIGNING_SECRET is required for release}
+      CODECOACHAI_CALLER_CORE_SIGNING_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for release}
+    volumes:
+      - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-ai.jar:/app/app.jar:ro
+
+  codecoachai-search:
+    image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
+    pull_policy: never
+    build:
+      target: runtime-base
+    environment:
+      SPRING_PROFILES_ACTIVE: "dev"
+      MYSQL_HOST: ${MYSQL_HOST:?MYSQL_HOST is required for release}
+      MYSQL_PORT: "${MYSQL_PORT:?MYSQL_PORT is required for release}"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required for release}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:?MYSQL_USERNAME is required for release}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required for release}
+      SPRING_DATA_REDIS_HOST: ${REDIS_HOST:?REDIS_HOST is required for release}
+      SPRING_DATA_REDIS_PORT: "${REDIS_PORT:?REDIS_PORT is required for release}"
+      SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required for release}
+      NACOS_SERVER_ADDR: ${NACOS_SERVER_ADDR:?NACOS_SERVER_ADDR is required for release}
+      NACOS_NAMESPACE: ${NACOS_NAMESPACE:?NACOS_NAMESPACE is required for release}
+      NACOS_USERNAME: ${NACOS_USERNAME:?NACOS_USERNAME is required for release}
+      NACOS_PASSWORD: ${NACOS_PASSWORD:?NACOS_PASSWORD is required for release}
+      ROCKETMQ_NAME_SERVER: ${ROCKETMQ_NAME_SERVER:?ROCKETMQ_NAME_SERVER is required for release}
+      ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:?ELASTICSEARCH_URIS is required for release}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}
+      SPRING_ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:?ELASTICSEARCH_URIS is required for release}
+      SPRING_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}
+      CODECOACHAI_ELASTICSEARCH_URIS: ${ELASTICSEARCH_URIS:?ELASTICSEARCH_URIS is required for release}
+      CODECOACHAI_ELASTICSEARCH_PASSWORD: ${ELASTIC_PASSWORD:?ELASTIC_PASSWORD is required for release}
+      CODECOACHAI_INTERNAL_OUTBOUND_SECRET: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for release}
+      CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET is required for release}
+    volumes:
+      - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-search.jar:/app/app.jar:ro
