@@ -39,4 +39,14 @@ public interface QuestionRecommendationService {
     List<QuestionRecommendationItemVO> recommendByJobTarget(Long targetJobId, Integer limit);
 
     List<QuestionRecommendationItemVO> recommendBySkill(Long skillProfileId, String skillCode, String skillName, Integer limit);
+
+    /**
+     * 按 JD 关键词做规则版冷启动推荐：不依赖能力画像、匹配报告、学习计划或历史批次，
+     * 直接用 JD 文本命中 question_knowledge_keyword 后从正式题库取题。
+     *
+     * @param targetJobId 目标岗位（当前仅用于透传来源，可为空）
+     * @param jdText      JD 原文或岗位关键词文本（可为空，为空时退化为按权重取高频题）
+     * @param limit       返回题量
+     */
+    List<QuestionRecommendationItemVO> recommendByJd(Long targetJobId, String jdText, Integer limit);
 }

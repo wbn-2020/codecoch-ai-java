@@ -7,7 +7,8 @@ public enum QuestionRecommendationSourceType {
 
     JD_GAP("JD_GAP", "Skill profile gap"),
     RESUME_JOB_MATCH("RESUME_JOB_MATCH", "Resume job match report"),
-    STUDY_PLAN("STUDY_PLAN", "Gap-driven study plan");
+    STUDY_PLAN("STUDY_PLAN", "Gap-driven study plan"),
+    JD_KEYWORD("JD_KEYWORD", "JD keyword rule-based cold start");
 
     private final String code;
     private final String description;

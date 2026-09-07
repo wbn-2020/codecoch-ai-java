@@ -5,6 +5,7 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromGapDTO;
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromMatchReportDTO;
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromStudyPlanDTO;
+import com.codecoachai.question.domain.dto.QuestionRecommendationJdDTO;
 import com.codecoachai.question.domain.dto.QuestionRecommendationQueryDTO;
 import com.codecoachai.question.domain.vo.QuestionRecommendationBatchDetailVO;
 import com.codecoachai.question.domain.vo.QuestionRecommendationBatchListVO;
@@ -112,5 +113,12 @@ public class QuestionRecommendationController {
                                                               @RequestParam(required = false) String skillName,
                                                               @RequestParam(required = false) Integer limit) {
         return Result.success(questionRecommendationService.recommendBySkill(skillProfileId, skillCode, skillName, limit));
+    }
+
+    @PostMapping("/by-jd")
+    public Result<List<QuestionRecommendationItemVO>> byJd(@Valid @RequestBody(required = false) QuestionRecommendationJdDTO dto) {
+        QuestionRecommendationJdDTO payload = dto == null ? new QuestionRecommendationJdDTO() : dto;
+        return Result.success(questionRecommendationService.recommendByJd(
+                payload.getTargetJobId(), payload.getJdText(), payload.getLimit()));
     }
 }

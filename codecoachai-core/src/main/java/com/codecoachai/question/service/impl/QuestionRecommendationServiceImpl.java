@@ -14,6 +14,7 @@ import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromMat
 import com.codecoachai.question.domain.dto.QuestionRecommendationGenerateFromStudyPlanDTO;
 import com.codecoachai.question.domain.dto.QuestionRecommendationQueryDTO;
 import com.codecoachai.question.domain.entity.Question;
+import com.codecoachai.question.domain.entity.QuestionKnowledgeKeyword;
 import com.codecoachai.question.domain.entity.QuestionRecommendationBatch;
 import com.codecoachai.question.domain.entity.QuestionRecommendationItem;
 import com.codecoachai.question.domain.enums.QuestionRecommendationBatchStatus;
@@ -37,6 +38,7 @@ import com.codecoachai.question.feign.vo.InnerStudyPlanVO;
 import com.codecoachai.question.feign.vo.InnerStudyTaskVO;
 import com.codecoachai.question.feign.vo.QuestionRecommendationDraftItemVO;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.mapper.QuestionKnowledgeKeywordMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.codecoachai.question.mq.QuestionMqDispatcher;
@@ -105,6 +107,7 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
     private final QuestionRecommendationBatchMapper batchMapper;
     private final QuestionRecommendationItemMapper itemMapper;
     private final QuestionMapper questionMapper;
+    private final QuestionKnowledgeKeywordMapper knowledgeKeywordMapper;
     private final ResumeProfileFeignClient resumeProfileFeignClient;
     private final StudyPlanFeignClient studyPlanFeignClient;
     private final AiQuestionRecommendationFeignClient aiRecommendationFeignClient;
@@ -371,6 +374,127 @@ public class QuestionRecommendationServiceImpl implements QuestionRecommendation
             return List.of();
         }
         return listBatchItems(batch, normalizeRecommendationLimit(limit));
+    }
+
+    @Override
+    public List<QuestionRecommendationItemVO> recommendByJd(Long targetJobId, String jdText, Integer limit) {
+        int itemLimit = normalizeRecommendationLimit(limit);
+        List<QuestionKnowledgeKeyword> keywords = knowledgeKeywordMapper.selectList(
+                new LambdaQueryWrapper<QuestionKnowledgeKeyword>()
+                        .eq(QuestionKnowledgeKeyword::getStatus, CommonConstants.YES)
+                        .orderByDesc(QuestionKnowledgeKeyword::getWeight));
+        if (keywords.isEmpty()) {
+            return List.of();
+        }
+
+        String normalizedJd = StringUtils.hasText(jdText) ? jdText.toLowerCase(Locale.ROOT) : "";
+        List<QuestionKnowledgeKeyword> matched = new ArrayList<>();
+        if (StringUtils.hasText(normalizedJd)) {
+            for (QuestionKnowledgeKeyword keyword : keywords) {
+                String token = keyword.getKeyword();
+                if (StringUtils.hasText(token) && normalizedJd.contains(token.toLowerCase(Locale.ROOT))) {
+                    matched.add(keyword);
+                }
+            }
+        }
+        boolean coldStartFallback = matched.isEmpty();
+        List<QuestionKnowledgeKeyword> scope = coldStartFallback ? keywords : matched;
+
+        List<Long> categoryIds = scope.stream()
+                .map(QuestionKnowledgeKeyword::getCategoryId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        List<Long> groupIds = scope.stream()
+                .map(QuestionKnowledgeKeyword::getGroupId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (categoryIds.isEmpty() && groupIds.isEmpty()) {
+            return List.of();
+        }
+
+        LambdaQueryWrapper<Question> wrapper = new LambdaQueryWrapper<Question>()
+                .eq(Question::getStatus, CommonConstants.YES)
+                .and(condition -> {
+                    boolean hasCategory = !categoryIds.isEmpty();
+                    boolean hasGroup = !groupIds.isEmpty();
+                    if (hasCategory) {
+                        condition.in(Question::getCategoryId, categoryIds);
+                    }
+                    if (hasGroup) {
+                        if (hasCategory) {
+                            condition.or();
+                        }
+                        condition.in(Question::getGroupId, groupIds);
+                    }
+                })
+                .orderByDesc(Question::getIsHighFrequency)
+                .orderByDesc(Question::getUpdatedAt)
+                .last("limit " + itemLimit);
+        List<Question> questions = questionMapper.selectList(wrapper);
+        if (questions.isEmpty()) {
+            return List.of();
+        }
+
+        Map<Long, String> knowledgeByGroup = new LinkedHashMap<>();
+        Map<Long, String> knowledgeByCategory = new LinkedHashMap<>();
+        for (QuestionKnowledgeKeyword keyword : scope) {
+            String point = keyword.getKnowledgePoint();
+            if (!StringUtils.hasText(point)) {
+                continue;
+            }
+            if (keyword.getGroupId() != null) {
+                knowledgeByGroup.putIfAbsent(keyword.getGroupId(), point);
+            }
+            if (keyword.getCategoryId() != null) {
+                knowledgeByCategory.putIfAbsent(keyword.getCategoryId(), point);
+            }
+        }
+
+        List<QuestionRecommendationItemVO> result = new ArrayList<>();
+        int order = 1;
+        for (Question question : questions) {
+            String knowledgePoint = knowledgeByGroup.get(question.getGroupId());
+            if (!StringUtils.hasText(knowledgePoint)) {
+                knowledgePoint = knowledgeByCategory.get(question.getCategoryId());
+            }
+            QuestionRecommendationItemVO vo = new QuestionRecommendationItemVO();
+            vo.setId((long) order);
+            vo.setBatchId(0L);
+            vo.setQuestionId(question.getId());
+            vo.setQuestionTitle(question.getTitle());
+            vo.setQuestionContent(question.getContent());
+            vo.setQuestionType(firstText(question.getQuestionType(), "SHORT_ANSWER"));
+            vo.setDifficulty(firstText(question.getDifficulty(), DEFAULT_DIFFICULTY));
+            vo.setSkillName(knowledgePoint);
+            vo.setRecommendReason(buildJdRecommendReason(knowledgePoint, coldStartFallback));
+            vo.setSortOrder(order++);
+            vo.setMatchStatus(QuestionRecommendationMatchStatus.MATCHED.getCode());
+            vo.setPracticeStatus(QuestionRecommendationPracticeStatus.UNPRACTICED.getCode());
+            vo.setCanPractice(Boolean.TRUE);
+            vo.setPracticeQuestionId(question.getId());
+            vo.setPracticeKind("QUESTION_BANK");
+            vo.setSourceType(QuestionRecommendationSourceType.JD_KEYWORD.getCode());
+            vo.setSourceId(targetJobId);
+            vo.setTrustStatus(coldStartFallback ? TRUST_FALLBACK : TRUST_PARTIAL);
+            vo.setFallback(coldStartFallback);
+            vo.setEvidenceSummary(coldStartFallback
+                    ? "暂未从岗位描述中识别出明确知识点，先按高频知识点安排一组通用训练。"
+                    : "根据岗位描述命中的知识点，直接匹配正式题库中的对应题目。");
+            result.add(vo);
+        }
+        return result;
+    }
+
+    private String buildJdRecommendReason(String knowledgePoint, boolean fallback) {
+        if (fallback) {
+            return "暂未从岗位描述中识别出明确知识点，先安排高频题保持训练节奏。";
+        }
+        if (StringUtils.hasText(knowledgePoint)) {
+            return "岗位描述命中知识点「" + knowledgePoint + "」，从正式题库匹配该知识点的题目。";
+        }
+        return "岗位描述命中相关技术方向，从正式题库匹配对应题目。";
     }
 
     @Override
