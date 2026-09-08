@@ -121,6 +121,11 @@ public final class QuestionConvert {
         vo.setTitle(question == null ? null : question.getTitle());
         vo.setMasteryStatus(record.getMasteryStatus());
         vo.setLastAnswerAt(record.getLastAnswerAt());
+        vo.setReviewIntervalDays(record.getReviewIntervalDays());
+        vo.setNextReviewAt(record.getNextReviewAt());
+        vo.setReviewDue(record.getWrong() != null && record.getWrong() == 1
+                && record.getNextReviewAt() != null
+                && !record.getNextReviewAt().isAfter(java.time.LocalDateTime.now()));
         return vo;
     }
 }

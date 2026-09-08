@@ -252,6 +252,7 @@ public class PracticeServiceImpl implements PracticeService {
             userRecord.setWrong(MasteryStatusEnum.NOT_MASTERED.name().equals(userRecord.getMasteryStatus())
                     ? CommonConstants.YES : CommonConstants.NO);
             userRecord.setLastAnswerAt(record.getCreatedAt() != null ? record.getCreatedAt() : java.time.LocalDateTime.now());
+            applyIntervalReviewSchedule(userRecord);
             if (userRecord.getId() == null) {
                 userQuestionRecordMapper.insert(userRecord);
             } else {
@@ -261,6 +262,36 @@ public class PracticeServiceImpl implements PracticeService {
             log.warn("Failed to sync user question record after practice review, recordId={}, questionId={}, exceptionType={}",
                     record.getId(), record.getQuestionId(), ex.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * 间隔复习调度（1/3/7/15 天）：按本次掌握结果推进或重置档位。
+     * 掌握（MASTERED）→ 推进下一档并按新档位排下次复习；
+     * 未掌握 → 回到第一档（1 天后重练）；wrong 随掌握状态翻转，
+     * 掌握后最后一次复习到期且再次掌握时自然移出错题本（wrong=0）。
+     */
+    private void applyIntervalReviewSchedule(UserQuestionRecord userRecord) {
+        int[] intervals = {1, 3, 7, 15};
+        boolean mastered = MasteryStatusEnum.MASTERED.name().equals(userRecord.getMasteryStatus());
+        int stage = userRecord.getReviewStage() == null ? 0 : userRecord.getReviewStage();
+        if (mastered) {
+            stage = Math.min(stage + 1, intervals.length);
+        } else {
+            stage = 0;
+        }
+        userRecord.setReviewStage(stage);
+        if (stage >= intervals.length) {
+            // 走完 15 天档且再次掌握：退出错题本，不再调度
+            userRecord.setWrong(CommonConstants.NO);
+            userRecord.setNextReviewAt(null);
+            userRecord.setReviewIntervalDays(intervals[intervals.length - 1]);
+            return;
+        }
+        int days = stage == 0 ? intervals[0] : intervals[Math.min(stage, intervals.length - 1)];
+        userRecord.setReviewIntervalDays(days);
+        java.time.LocalDateTime base = userRecord.getLastAnswerAt() != null
+                ? userRecord.getLastAnswerAt() : java.time.LocalDateTime.now();
+        userRecord.setNextReviewAt(base.plusDays(days));
     }
 
     private String masteryFromReview(PracticeRecord record) {

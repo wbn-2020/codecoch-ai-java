@@ -14,6 +14,8 @@ public class QuestionQueryDTO {
     private Integer isHighFrequency;
     private Integer status;
     private String keyword;
+    /** 错题列表专用：仅返回已到间隔复习期的错题 */
+    private Boolean dueOnly;
     private Long pageNo = 1L;
     private Long pageSize = 10L;
 }

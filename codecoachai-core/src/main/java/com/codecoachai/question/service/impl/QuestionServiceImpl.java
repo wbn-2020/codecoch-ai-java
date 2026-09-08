@@ -180,10 +180,15 @@ public class QuestionServiceImpl implements QuestionService {
     public PageResult<WrongQuestionVO> pageWrongRecords(QuestionQueryDTO query) {
         Long userId = requireCurrentUserId();
         QuestionQueryDTO safeQuery = query == null ? new QuestionQueryDTO() : query;
+        LambdaQueryWrapper<UserQuestionRecord> wrapper = new LambdaQueryWrapper<UserQuestionRecord>()
+                .eq(UserQuestionRecord::getUserId, userId)
+                .eq(UserQuestionRecord::getWrong, CommonConstants.YES);
+        if (Boolean.TRUE.equals(safeQuery.getDueOnly())) {
+            wrapper.eq(UserQuestionRecord::getNextReviewAt, java.time.LocalDateTime.now())
+                    .apply("DATE(next_review_at) <= CURDATE()");
+        }
         Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
-                new LambdaQueryWrapper<UserQuestionRecord>()
-                        .eq(UserQuestionRecord::getUserId, userId)
-                        .eq(UserQuestionRecord::getWrong, CommonConstants.YES)
+                wrapper.orderByAsc(UserQuestionRecord::getNextReviewAt)
                         .orderByDesc(UserQuestionRecord::getLastAnswerAt));
         Map<Long, Question> questions = loadAvailableQuestionsById(page.getRecords().stream()
                 .map(UserQuestionRecord::getQuestionId)
@@ -205,6 +210,13 @@ public class QuestionServiceImpl implements QuestionService {
         record.setMasteryStatus(dto.getMasteryStatus());
         if (MasteryStatusEnum.MASTERED.name().equals(dto.getMasteryStatus())) {
             record.setWrong(CommonConstants.NO);
+            // 手动标记掌握：退出错题本并清空间隔复习调度
+            record.setNextReviewAt(null);
+        } else if (record.getNextReviewAt() == null && CommonConstants.YES.equals(record.getWrong())) {
+            // 重新进入错题本且无调度：从第一档开始
+            record.setReviewStage(0);
+            record.setReviewIntervalDays(1);
+            record.setNextReviewAt(java.time.LocalDateTime.now().plusDays(1));
         }
         saveRecord(record);
     }
