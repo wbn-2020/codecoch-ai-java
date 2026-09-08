@@ -47,6 +47,8 @@ public class ResumeJobMatchReportDetailVO {
     private String asyncBizId;
     private String asyncSendStatus;
     private List<ResumeJobMatchDetailItemVO> details;
+    /** 同岗位历史成功报告分数序列（升序，含当前报告；单报告时为空） */
+    private List<ResumeJobMatchScorePointVO> scoreHistory;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

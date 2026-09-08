@@ -29,6 +29,7 @@ import com.codecoachai.resume.domain.enums.ResumeParseStatus;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchDetailItemVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchReportAgentEvidenceVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchReportDetailVO;
+import com.codecoachai.resume.domain.vo.ResumeJobMatchScorePointVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchReportListVO;
 import com.codecoachai.resume.domain.vo.ResumeJobMatchSubmitVO;
 import com.codecoachai.resume.feign.AiFeignClient;
@@ -170,7 +171,42 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
     @Override
     public ResumeJobMatchReportDetailVO getReport(Long id) {
         Long userId = requireCurrentUserId();
-        return toDetailVO(getOwnedReport(id, userId));
+        ResumeJobMatchReport report = getOwnedReport(id, userId);
+        ResumeJobMatchReportDetailVO vo = toDetailVO(report);
+        vo.setScoreHistory(loadScoreHistory(report, userId));
+        return vo;
+    }
+
+    /**
+     * 同岗位历史成功分数序列（升序，含当前报告）：支撑详情页“与上次/首次比”变化展示。
+     * 只统计 status=SUCCESS 且总分非空的报告；仅一份时返回空列表（无可比变化）。
+     */
+    private List<ResumeJobMatchScorePointVO> loadScoreHistory(ResumeJobMatchReport report, Long userId) {
+        if (report.getTargetJobId() == null) {
+            return List.of();
+        }
+        List<ResumeJobMatchReport> reports = reportMapper.selectList(new LambdaQueryWrapper<ResumeJobMatchReport>()
+                .eq(ResumeJobMatchReport::getUserId, userId)
+                .eq(ResumeJobMatchReport::getTargetJobId, report.getTargetJobId())
+                .eq(ResumeJobMatchReport::getStatus, "SUCCESS")
+                .eq(ResumeJobMatchReport::getDeleted, CommonConstants.NO)
+                .isNotNull(ResumeJobMatchReport::getOverallScore)
+                .orderByAsc(ResumeJobMatchReport::getCreatedAt)
+                .last("limit 20"));
+        if (reports.size() < 2) {
+            return List.of();
+        }
+        return reports.stream().map(item -> {
+            ResumeJobMatchScorePointVO point = new ResumeJobMatchScorePointVO();
+            point.setReportId(item.getId());
+            point.setOverallScore(item.getOverallScore());
+            point.setTechStackScore(item.getTechStackScore());
+            point.setProjectExperienceScore(item.getProjectExperienceScore());
+            point.setBusinessFitScore(item.getBusinessFitScore());
+            point.setCommunicationScore(item.getCommunicationScore());
+            point.setCreatedAt(item.getCreatedAt() == null ? null : item.getCreatedAt().toString());
+            return point;
+        }).toList();
     }
 
     @Override
