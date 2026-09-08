@@ -578,9 +578,24 @@ public class JobRequirementServiceImpl implements JobRequirementService {
                 "/job-targets/" + targetJobId + "/resume-match"));
         actions.add(nextAction("ADD_PROJECT_EVIDENCE", "补充项目证据",
                 "/job-targets/" + targetJobId + "/project-evidence"));
+        // 三向联动：缺口维度定向训练（带技能关键词走 JD 冷启动）与定向追问面试
+        String keyword = item.getRequirementKey() == null || item.getRequirementKey().isBlank()
+                ? item.getRequirementName() : item.getRequirementKey();
+        actions.add(nextAction("PRACTICE_GAP_DIMENSION", "定向练习该维度",
+                "/questions/recommendations?targetJobId=" + targetJobId
+                        + "&jdText=" + urlEncode(keyword)
+                        + "&skillName=" + urlEncode(keyword)));
         actions.add(nextAction("PRACTICE_INTERVIEW", "进行针对性模拟面试",
-                "/job-targets/" + targetJobId + "/interviews"));
+                "/interviews/create?source=job-target&targetJobId=" + targetJobId
+                        + "&targetSkill=" + urlEncode(keyword)));
         return actions;
+    }
+
+    private String urlEncode(String value) {
+        if (value == null || value.isBlank()) {
+            return "";
+        }
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     private JobRequirementMatrixVO.NextAction nextAction(String code, String title, String path) {
