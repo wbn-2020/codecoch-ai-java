@@ -22,6 +22,7 @@ import com.codecoachai.question.feign.vo.InnerSkillGapItemVO;
 import com.codecoachai.question.feign.vo.InnerSkillProfileVO;
 import com.codecoachai.question.feign.vo.QuestionRecommendationDraftItemVO;
 import com.codecoachai.question.mapper.QuestionMapper;
+import com.codecoachai.question.mapper.QuestionKnowledgeKeywordMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +48,8 @@ class QuestionRecommendationServiceImplTest {
     @Mock
     private QuestionMapper questionMapper;
     @Mock
+    private QuestionKnowledgeKeywordMapper knowledgeKeywordMapper;
+    @Mock
     private ResumeProfileFeignClient resumeProfileFeignClient;
     @Mock
     private StudyPlanFeignClient studyPlanFeignClient;
@@ -62,6 +65,7 @@ class QuestionRecommendationServiceImplTest {
                 batchMapper,
                 itemMapper,
                 questionMapper,
+                knowledgeKeywordMapper,
                 resumeProfileFeignClient,
                 studyPlanFeignClient,
                 aiRecommendationFeignClient,
