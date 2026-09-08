@@ -11,25 +11,25 @@ FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_category WHERE id = 12);
 
 -- ===== 1. 标签（1001–1010） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 1001, 'TCP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1001)
+SELECT 1001, 'TCP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1001 OR tag_name = 'TCP')
 UNION ALL
-SELECT 1002, 'HTTP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1002)
+SELECT 1002, 'HTTP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1002 OR tag_name = 'HTTP')
 UNION ALL
-SELECT 1003, 'HTTPS & TLS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1003)
+SELECT 1003, 'HTTPS & TLS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1003 OR tag_name = 'HTTPS & TLS')
 UNION ALL
-SELECT 1004, 'Process & Thread', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1004)
+SELECT 1004, 'Process & Thread', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1004 OR tag_name = 'Process & Thread')
 UNION ALL
-SELECT 1005, 'Virtual Memory', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1005)
+SELECT 1005, 'Virtual Memory', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1005 OR tag_name = 'Virtual Memory')
 UNION ALL
-SELECT 1006, 'Paging', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1006)
+SELECT 1006, 'Paging', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1006 OR tag_name = 'Paging')
 UNION ALL
-SELECT 1007, 'IO Multiplexing', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1007)
+SELECT 1007, 'IO Multiplexing', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1007 OR tag_name = 'IO Multiplexing')
 UNION ALL
-SELECT 1008, 'epoll', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1008)
+SELECT 1008, 'epoll', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1008 OR tag_name = 'epoll')
 UNION ALL
-SELECT 1009, 'Linux Command', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1009)
+SELECT 1009, 'Linux Command', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1009 OR tag_name = 'Linux Command')
 UNION ALL
-SELECT 1010, 'Scheduling', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1010);
+SELECT 1010, 'Scheduling', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 1010 OR tag_name = 'Scheduling');
 
 -- ===== 2. 知识点组（6 个，category_id=12） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

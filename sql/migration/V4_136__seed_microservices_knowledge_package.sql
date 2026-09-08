@@ -6,25 +6,25 @@
 
 -- ===== 1. 标签（10 个，id 701–710，避免与既有标签冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 701, '服务拆分', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 701)
+SELECT 701, '服务拆分', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 701 OR tag_name = '服务拆分')
 UNION ALL
-SELECT 702, '注册中心', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 702)
+SELECT 702, '注册中心', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 702 OR tag_name = '注册中心')
 UNION ALL
-SELECT 703, '分布式事务', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 703)
+SELECT 703, '分布式事务', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 703 OR tag_name = '分布式事务')
 UNION ALL
-SELECT 704, 'Seata', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 704)
+SELECT 704, 'Seata', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 704 OR tag_name = 'Seata')
 UNION ALL
-SELECT 705, 'API网关', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 705)
+SELECT 705, 'API网关', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 705 OR tag_name = 'API网关')
 UNION ALL
-SELECT 706, '熔断限流', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 706)
+SELECT 706, '熔断限流', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 706 OR tag_name = '熔断限流')
 UNION ALL
-SELECT 707, 'Sentinel', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 707)
+SELECT 707, 'Sentinel', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 707 OR tag_name = 'Sentinel')
 UNION ALL
-SELECT 708, '链路追踪', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 708)
+SELECT 708, '链路追踪', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 708 OR tag_name = '链路追踪')
 UNION ALL
-SELECT 709, '配置中心', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 709)
+SELECT 709, '配置中心', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 709 OR tag_name = '配置中心')
 UNION ALL
-SELECT 710, '服务容错', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 710);
+SELECT 710, '服务容错', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 710 OR tag_name = '服务容错');
 
 -- ===== 2. 知识点组（6 个，category_id=8 微服务） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

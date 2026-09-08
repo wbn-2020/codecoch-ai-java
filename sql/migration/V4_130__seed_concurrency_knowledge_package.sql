@@ -6,25 +6,25 @@
 
 -- ===== 1. 标签（跨包复用，高 id 避免与 init.sql 1–6 及 V4_129 的 101–106 冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 201, '线程池', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 201)
+SELECT 201, '线程池', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 201 OR tag_name = '线程池')
 UNION ALL
-SELECT 202, 'synchronized', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 202)
+SELECT 202, 'synchronized', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 202 OR tag_name = 'synchronized')
 UNION ALL
-SELECT 203, 'ReentrantLock', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 203)
+SELECT 203, 'ReentrantLock', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 203 OR tag_name = 'ReentrantLock')
 UNION ALL
-SELECT 204, 'volatile', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 204)
+SELECT 204, 'volatile', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 204 OR tag_name = 'volatile')
 UNION ALL
-SELECT 205, 'CAS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 205)
+SELECT 205, 'CAS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 205 OR tag_name = 'CAS')
 UNION ALL
-SELECT 206, 'JUC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 206)
+SELECT 206, 'JUC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 206 OR tag_name = 'JUC')
 UNION ALL
-SELECT 207, 'ThreadLocal', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 207)
+SELECT 207, 'ThreadLocal', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 207 OR tag_name = 'ThreadLocal')
 UNION ALL
-SELECT 208, '并发容器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 208)
+SELECT 208, '并发容器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 208 OR tag_name = '并发容器')
 UNION ALL
-SELECT 209, '死锁', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 209)
+SELECT 209, '死锁', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 209 OR tag_name = '死锁')
 UNION ALL
-SELECT 210, 'AQS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 210);
+SELECT 210, 'AQS', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 210 OR tag_name = 'AQS');
 
 -- ===== 2. 知识点组（7 个主知识点，category_id=3 并发） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

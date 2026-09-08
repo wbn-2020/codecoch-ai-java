@@ -7,25 +7,25 @@
 
 -- ===== 1. 标签（10 个，高 id 避免冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 601, 'IoC and DI', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 601)
+SELECT 601, 'IoC and DI', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 601 OR tag_name = 'IoC and DI')
 UNION ALL
-SELECT 602, 'Bean Lifecycle', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 602)
+SELECT 602, 'Bean Lifecycle', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 602 OR tag_name = 'Bean Lifecycle')
 UNION ALL
-SELECT 603, 'Auto-configuration', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 603)
+SELECT 603, 'Auto-configuration', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 603 OR tag_name = 'Auto-configuration')
 UNION ALL
-SELECT 604, 'Transaction', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 604)
+SELECT 604, 'Transaction', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 604 OR tag_name = 'Transaction')
 UNION ALL
-SELECT 605, 'AOP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 605)
+SELECT 605, 'AOP', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 605 OR tag_name = 'AOP')
 UNION ALL
-SELECT 606, 'Annotations', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 606)
+SELECT 606, 'Annotations', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 606 OR tag_name = 'Annotations')
 UNION ALL
-SELECT 607, 'Spring MVC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 607)
+SELECT 607, 'Spring MVC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 607 OR tag_name = 'Spring MVC')
 UNION ALL
-SELECT 608, 'Interceptor', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 608)
+SELECT 608, 'Interceptor', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 608 OR tag_name = 'Interceptor')
 UNION ALL
-SELECT 609, 'Bean Scope', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 609)
+SELECT 609, 'Bean Scope', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 609 OR tag_name = 'Bean Scope')
 UNION ALL
-SELECT 610, 'Starter', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 610);
+SELECT 610, 'Starter', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 610 OR tag_name = 'Starter');
 
 -- ===== 2. 知识点组（6 个主知识点，category_id=5 Spring Boot） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

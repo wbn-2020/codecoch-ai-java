@@ -6,17 +6,17 @@
 
 -- ===== 1. 标签（跨包复用，高 id 避免与 init.sql 1–6 冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 101, 'HashMap', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 101)
+SELECT 101, 'HashMap', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 101 OR tag_name = 'HashMap')
 UNION ALL
-SELECT 102, 'ConcurrentHashMap', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 102)
+SELECT 102, 'ConcurrentHashMap', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 102 OR tag_name = 'ConcurrentHashMap')
 UNION ALL
-SELECT 103, 'ArrayList', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 103)
+SELECT 103, 'ArrayList', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 103 OR tag_name = 'ArrayList')
 UNION ALL
-SELECT 104, 'LinkedList', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 104)
+SELECT 104, 'LinkedList', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 104 OR tag_name = 'LinkedList')
 UNION ALL
-SELECT 105, '迭代器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 105)
+SELECT 105, '迭代器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 105 OR tag_name = '迭代器')
 UNION ALL
-SELECT 106, '阻塞队列', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 106);
+SELECT 106, '阻塞队列', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 106 OR tag_name = '阻塞队列');
 
 -- ===== 2. 知识点组（6 个主知识点，category_id=2 集合） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

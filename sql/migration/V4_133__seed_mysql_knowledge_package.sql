@@ -6,25 +6,25 @@
 
 -- ===== 1. 标签（10 个 MySQL 子主题，tag id 401–410） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 401, '索引结构', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 401)
+SELECT 401, '索引结构', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 401 OR tag_name = '索引结构')
 UNION ALL
-SELECT 402, '索引失效', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 402)
+SELECT 402, '索引失效', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 402 OR tag_name = '索引失效')
 UNION ALL
-SELECT 403, '事务隔离', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 403)
+SELECT 403, '事务隔离', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 403 OR tag_name = '事务隔离')
 UNION ALL
-SELECT 404, '锁机制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 404)
+SELECT 404, '锁机制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 404 OR tag_name = '锁机制')
 UNION ALL
-SELECT 405, '慢SQL优化', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 405)
+SELECT 405, '慢SQL优化', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 405 OR tag_name = '慢SQL优化')
 UNION ALL
-SELECT 406, 'MVCC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 406)
+SELECT 406, 'MVCC', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 406 OR tag_name = 'MVCC')
 UNION ALL
-SELECT 407, '主从复制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 407)
+SELECT 407, '主从复制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 407 OR tag_name = '主从复制')
 UNION ALL
-SELECT 408, '备份恢复', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 408)
+SELECT 408, '备份恢复', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 408 OR tag_name = '备份恢复')
 UNION ALL
-SELECT 409, '执行计划EXPLAIN', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 409)
+SELECT 409, '执行计划EXPLAIN', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 409 OR tag_name = '执行计划EXPLAIN')
 UNION ALL
-SELECT 410, '分库分表架构', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 410);
+SELECT 410, '分库分表架构', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 410 OR tag_name = '分库分表架构');
 
 -- ===== 2. 知识点组（7 个主知识点，category_id=6 MySQL） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)
@@ -88,7 +88,8 @@ VALUES
    'Run EXPLAIN before the SELECT. type shows access path (const > ref > range > index > ALL; avoid ALL full scan). key shows the index actually used; rows is the estimated rows examined; Extra reveals Using index (covering), Using where, Using filesort, or Using temporary (bad signs). A good plan has a selective key and few rows with no filesort/temporary.',
    'Focus on type, key, rows, and Extra; flag filesort/temporary as problems.', 6, 4002, 'HARD', 'CASE_ANALYSIS', 'SENIOR', 0, 1),
   (4007, 'Why does implicit type conversion cause an index to fail?', 'Give a concrete example and the mechanism.',
-   'If a column is VARCHAR but the query compares it to a number (WHERE phone = 13800138000), MySQL applies a function to convert the column to a number for each row, which is a calculation on the indexed column and forces a full scan. The fix is to quote the value: WHERE phone = '13800138000'. The same happens with date/string mismatches.',
+   'If a column is VARCHAR but the query compares it to a number (for example WHERE phone = 13800138000 with a numeric literal), MySQL converts the column value row by row, which is a calculation on the indexed column and forces a full scan. The fix is to compare using a quoted string value instead of a bare number. The same happens with date and string mismatches.',
+
    'Explain the hidden CAST on the column and quote the literal as the fix.', 6, 4002, 'EASY', 'SHORT_ANSWER', 'JUNIOR', 0, 1),
   (4008, 'Why can a range query invalidate subsequent composite index columns?', 'Explain the boundary effect after a range condition.',
    'In a composite index (a,b,c), once a column is used with a range (a=1 AND b>10 AND c=2), the index can only be used for a and b up to the range; column c cannot further narrow the scan because within the b range the c values are not ordered. So c is filtered by a separate WHERE pass rather than via the index. Equality-first ordering of composite indexes helps here.',
@@ -102,7 +103,7 @@ VALUES
    'A non-repeatable read is when the same row returns different values on re-read within a transaction (another transaction updated/committed that row). A phantom read is when a range query returns a different set of rows (another transaction inserted/deleted rows in that range). InnoDB REPEATABLE READ prevents both: snapshot reads handle row changes, gap/next-key locks block inserts in the range.',
    'Non-repeatable = same row changed; phantom = row set of a range changed.', 6, 4003, 'MEDIUM', 'SHORT_ANSWER', 'MID', 1, 1),
   (4011, 'How does MySQL REPEATABLE READ prevent phantom reads?', 'Combine MVCC and locking in your explanation.',
-   'Snapshot reads use the transaction's read view and undo log so a range query always sees the same committed snapshot, avoiding phantom reads on read. For current reads (SELECT ... FOR UPDATE, UPDATE, DELETE on a range), InnoDB takes next-key locks (record + gap) so no other transaction can insert a row into the locked range, physically preventing phantoms.',
+   'Snapshot reads use the transaction''s read view and undo log so a range query always sees the same committed snapshot, avoiding phantom reads on read. For current reads (SELECT ... FOR UPDATE, UPDATE, DELETE on a range), InnoDB takes next-key locks (record + gap) so no other transaction can insert a row into the locked range, physically preventing phantoms.',
    'Snapshot read via MVCC plus next-key locking on current reads prevents phantoms.', 6, 4003, 'HARD', 'CASE_ANALYSIS', 'SENIOR', 0, 1),
   (4012, 'When does a transaction deadlock occur in MySQL and how do you avoid it?', 'Explain the mechanism and prevention.',
    'A deadlock happens when two transactions hold locks the other needs in opposite order (e.g. T1 locks row A then wants B, T2 locks B then wants A). InnoDB detects it, rolls back the smaller transaction, and returns error 1213. Avoid by accessing tables/rows in a consistent order, keeping transactions short, using lower isolation or fewer locks, and retrying on deadlock.',

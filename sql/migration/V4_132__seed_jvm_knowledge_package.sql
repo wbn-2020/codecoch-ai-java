@@ -6,29 +6,29 @@
 
 -- ===== 1. 标签（12 个 JVM 子主题，tag id 301–312） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 301, '运行时数据区', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 301)
+SELECT 301, '运行时数据区', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 301 OR tag_name = '运行时数据区')
 UNION ALL
-SELECT 302, '垃圾回收算法', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 302)
+SELECT 302, '垃圾回收算法', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 302 OR tag_name = '垃圾回收算法')
 UNION ALL
-SELECT 303, '垃圾收集器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 303)
+SELECT 303, '垃圾收集器', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 303 OR tag_name = '垃圾收集器')
 UNION ALL
-SELECT 304, '类加载机制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 304)
+SELECT 304, '类加载机制', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 304 OR tag_name = '类加载机制')
 UNION ALL
-SELECT 305, 'JVM调优参数', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 305)
+SELECT 305, 'JVM调优参数', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 305 OR tag_name = 'JVM调优参数')
 UNION ALL
-SELECT 306, '内存溢出OOM', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 306)
+SELECT 306, '内存溢出OOM', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 306 OR tag_name = '内存溢出OOM')
 UNION ALL
-SELECT 307, 'GC日志分析', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 307)
+SELECT 307, 'GC日志分析', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 307 OR tag_name = 'GC日志分析')
 UNION ALL
-SELECT 308, '对象内存布局', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 308)
+SELECT 308, '对象内存布局', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 308 OR tag_name = '对象内存布局')
 UNION ALL
-SELECT 309, '引用类型', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 309)
+SELECT 309, '引用类型', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 309 OR tag_name = '引用类型')
 UNION ALL
-SELECT 310, '逃逸分析', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 310)
+SELECT 310, '逃逸分析', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 310 OR tag_name = '逃逸分析')
 UNION ALL
-SELECT 311, '元空间', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 311)
+SELECT 311, '元空间', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 311 OR tag_name = '元空间')
 UNION ALL
-SELECT 312, '线上排查', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 312);
+SELECT 312, '线上排查', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 312 OR tag_name = '线上排查');
 
 -- ===== 2. 知识点组（8 个主知识点，category_id=4 JVM） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)
@@ -153,7 +153,7 @@ VALUES
    'Capture a dump with -XX:+HeapDumpOnOutOfMemoryError or jmap -dump. Open it in MAT / VisualVM, look at the Dominator Tree and Histogram to find the class holding the most retained bytes, inspect GC Roots paths (Path to GC Roots) to see who keeps it alive, and identify leaks such as unbounded caches or static collections. Then fix by bounding the cache or releasing references.',
    'Steps: capture dump, find top retained class, trace GC roots, locate the leak holder.', 4, 3006, 'HARD', 'CASE_ANALYSIS', 'SENIOR', 0, 1),
   (3023, 'How do StackOverflowError and thread-stack OOM differ?', 'Explain the two failure modes related to stacks.',
-   'StackOverflowError is thrown when a single thread's stack exceeds -Xss because of deep recursion or an unbounded chain (the thread itself runs out of its own stack). OutOfMemoryError: Unable to create new native thread is thrown when the JVM as a whole cannot allocate another thread, usually because of too many threads, too large an -Xss, or hitting OS/user process limits.',
+   'StackOverflowError is thrown when a single thread''s stack exceeds -Xss because of deep recursion or an unbounded chain (the thread itself runs out of its own stack). OutOfMemoryError: Unable to create new native thread is thrown when the JVM as a whole cannot allocate another thread, usually because of too many threads, too large an -Xss, or hitting OS/user process limits.',
    'Distinguish one-thread deep recursion from whole-process thread exhaustion.', 4, 3006, 'EASY', 'SHORT_ANSWER', 'JUNIOR', 0, 1),
   (3024, 'What causes Metaspace OOM and how do you fix it?', 'Explain why class metadata can overflow and the remedies.',
    'Metaspace OOM happens when classes are loaded faster than they are unloaded: typical causes are class-loader leaks in app servers / frameworks, dynamic proxy or bytecode generation (CGLIB, reflection) without cleanup, and redeploys that keep old loaders alive. Fix by raising -XX:MaxMetaspaceSize, finding and releasing the leaking class loader, or limiting proxy generation.',

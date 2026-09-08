@@ -7,25 +7,25 @@
 
 -- ===== 1. 标签（10 个，高 id 避免冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 501, 'Redis Data Types', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 501)
+SELECT 501, 'Redis Data Types', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 501 OR tag_name = 'Redis Data Types')
 UNION ALL
-SELECT 502, 'Persistence', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 502)
+SELECT 502, 'Persistence', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 502 OR tag_name = 'Persistence')
 UNION ALL
-SELECT 503, 'Cache Penetration', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 503)
+SELECT 503, 'Cache Penetration', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 503 OR tag_name = 'Cache Penetration')
 UNION ALL
-SELECT 504, 'Cache Consistency', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 504)
+SELECT 504, 'Cache Consistency', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 504 OR tag_name = 'Cache Consistency')
 UNION ALL
-SELECT 505, 'Distributed Lock', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 505)
+SELECT 505, 'Distributed Lock', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 505 OR tag_name = 'Distributed Lock')
 UNION ALL
-SELECT 506, 'Cluster', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 506)
+SELECT 506, 'Cluster', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 506 OR tag_name = 'Cluster')
 UNION ALL
-SELECT 507, 'Expiration and Eviction', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 507)
+SELECT 507, 'Expiration and Eviction', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 507 OR tag_name = 'Expiration and Eviction')
 UNION ALL
-SELECT 508, 'High Availability', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 508)
+SELECT 508, 'High Availability', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 508 OR tag_name = 'High Availability')
 UNION ALL
-SELECT 509, 'Memory Management', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 509)
+SELECT 509, 'Memory Management', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 509 OR tag_name = 'Memory Management')
 UNION ALL
-SELECT 510, 'Performance Tuning', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 510);
+SELECT 510, 'Performance Tuning', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 510 OR tag_name = 'Performance Tuning');
 
 -- ===== 2. 知识点组（6 个主知识点，category_id=7 Redis） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

@@ -6,25 +6,25 @@
 
 -- ===== 1. 标签（10 个，id 801–810，避免与既有标签冲突） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 801, '创建型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 801)
+SELECT 801, '创建型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 801 OR tag_name = '创建型模式')
 UNION ALL
-SELECT 802, '单例模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 802)
+SELECT 802, '单例模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 802 OR tag_name = '单例模式')
 UNION ALL
-SELECT 803, '工厂模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 803)
+SELECT 803, '工厂模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 803 OR tag_name = '工厂模式')
 UNION ALL
-SELECT 804, '结构型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 804)
+SELECT 804, '结构型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 804 OR tag_name = '结构型模式')
 UNION ALL
-SELECT 805, '代理模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 805)
+SELECT 805, '代理模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 805 OR tag_name = '代理模式')
 UNION ALL
-SELECT 806, '装饰器模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 806)
+SELECT 806, '装饰器模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 806 OR tag_name = '装饰器模式')
 UNION ALL
-SELECT 807, '行为型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 807)
+SELECT 807, '行为型模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 807 OR tag_name = '行为型模式')
 UNION ALL
-SELECT 808, '策略模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 808)
+SELECT 808, '策略模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 808 OR tag_name = '策略模式')
 UNION ALL
-SELECT 809, '观察者模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 809)
+SELECT 809, '观察者模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 809 OR tag_name = '观察者模式')
 UNION ALL
-SELECT 810, 'Spring模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 810);
+SELECT 810, 'Spring模式', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 810 OR tag_name = 'Spring模式');
 
 -- ===== 2. 知识点组（6 个，category_id=9 设计模式） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)

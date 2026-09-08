@@ -11,25 +11,25 @@ FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_category WHERE id = 11);
 
 -- ===== 1. 标签（901–910） =====
 INSERT INTO question_tag (id, tag_name, status)
-SELECT 901, 'Two Pointers', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 901)
+SELECT 901, 'Two Pointers', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 901 OR tag_name = 'Two Pointers')
 UNION ALL
-SELECT 902, 'Linked List', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 902)
+SELECT 902, 'Linked List', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 902 OR tag_name = 'Linked List')
 UNION ALL
-SELECT 903, 'Tree & BST', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 903)
+SELECT 903, 'Tree & BST', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 903 OR tag_name = 'Tree & BST')
 UNION ALL
-SELECT 904, 'Sorting', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 904)
+SELECT 904, 'Sorting', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 904 OR tag_name = 'Sorting')
 UNION ALL
-SELECT 905, 'Binary Search', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 905)
+SELECT 905, 'Binary Search', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 905 OR tag_name = 'Binary Search')
 UNION ALL
-SELECT 906, 'Dynamic Programming', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 906)
+SELECT 906, 'Dynamic Programming', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 906 OR tag_name = 'Dynamic Programming')
 UNION ALL
-SELECT 907, 'Backtracking', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 907)
+SELECT 907, 'Backtracking', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 907 OR tag_name = 'Backtracking')
 UNION ALL
-SELECT 908, 'Hash Table', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 908)
+SELECT 908, 'Hash Table', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 908 OR tag_name = 'Hash Table')
 UNION ALL
-SELECT 909, 'Heap & Priority Queue', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 909)
+SELECT 909, 'Heap & Priority Queue', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 909 OR tag_name = 'Heap & Priority Queue')
 UNION ALL
-SELECT 910, 'Recursion', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 910);
+SELECT 910, 'Recursion', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM question_tag WHERE id = 910 OR tag_name = 'Recursion');
 
 -- ===== 2. 知识点组（6 个，category_id=11） =====
 INSERT INTO question_group (id, group_name, canonical_title, canonical_answer, main_knowledge_point, difficulty, description, category_id, status)
