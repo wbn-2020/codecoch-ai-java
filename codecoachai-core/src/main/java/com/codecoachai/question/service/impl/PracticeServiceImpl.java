@@ -14,6 +14,8 @@ import com.codecoachai.question.domain.entity.PracticeRecord;
 import com.codecoachai.question.domain.entity.Question;
 import com.codecoachai.question.domain.entity.QuestionRecommendationBatch;
 import com.codecoachai.question.domain.entity.QuestionRecommendationItem;
+import com.codecoachai.question.domain.entity.UserQuestionRecord;
+import com.codecoachai.question.domain.enums.MasteryStatusEnum;
 import com.codecoachai.question.domain.enums.PracticeReviewStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationMatchStatus;
 import com.codecoachai.question.domain.enums.QuestionRecommendationPracticeStatus;
@@ -27,6 +29,7 @@ import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
+import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import com.codecoachai.question.service.PracticeService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +56,7 @@ public class PracticeServiceImpl implements PracticeService {
     private final QuestionRecommendationBatchMapper recommendationBatchMapper;
     private final AiPracticeFeignClient aiPracticeFeignClient;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
+    private final UserQuestionRecordMapper userQuestionRecordMapper;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -165,6 +169,9 @@ public class PracticeServiceImpl implements PracticeService {
             completedAgentTask = agentBusinessActionNotifier.completeQuestionPractice(
                     userId, resolveTargetJobId(record, dto), record.getId());
         }
+        if (record.getQuestionId() != null) {
+            syncUserQuestionRecord(userId, record);
+        }
         PracticeRecordVO vo = toVO(record, question);
         applyAgentTaskFeedback(vo, completedAgentTask);
         return vo;
@@ -220,6 +227,56 @@ public class PracticeServiceImpl implements PracticeService {
         dto.setAnswerDurationSeconds(record.getAnswerDurationSeconds());
         dto.setExperienceLevel(question.getExperienceLevel());
         return dto;
+    }
+
+    /**
+     * AI 点评成功后同步 user_question_record：练习路径此前不写该表，
+     * 导致错题本/掌握状态永不更新（自测路径 submitAnswer 才写）。按点评等级映射掌握状态，
+     * WEAK 即进入错题本（wrong=YES）；点评失败不写，保持记录语义只属于成功反馈。
+     */
+    private void syncUserQuestionRecord(Long userId, PracticeRecord record) {
+        try {
+            UserQuestionRecord userRecord = userQuestionRecordMapper.selectOne(
+                    new LambdaQueryWrapper<UserQuestionRecord>()
+                            .eq(UserQuestionRecord::getUserId, userId)
+                            .eq(UserQuestionRecord::getQuestionId, record.getQuestionId())
+                            .last("limit 1"));
+            if (userRecord == null) {
+                userRecord = new UserQuestionRecord();
+                userRecord.setUserId(userId);
+                userRecord.setQuestionId(record.getQuestionId());
+                userRecord.setFavorite(CommonConstants.NO);
+            }
+            userRecord.setAnswerContent(record.getAnswerContent());
+            userRecord.setMasteryStatus(masteryFromReview(record));
+            userRecord.setWrong(MasteryStatusEnum.NOT_MASTERED.name().equals(userRecord.getMasteryStatus())
+                    ? CommonConstants.YES : CommonConstants.NO);
+            userRecord.setLastAnswerAt(record.getCreatedAt() != null ? record.getCreatedAt() : java.time.LocalDateTime.now());
+            if (userRecord.getId() == null) {
+                userQuestionRecordMapper.insert(userRecord);
+            } else {
+                userQuestionRecordMapper.updateById(userRecord);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("Failed to sync user question record after practice review, recordId={}, questionId={}, exceptionType={}",
+                    record.getId(), record.getQuestionId(), ex.getClass().getSimpleName());
+        }
+    }
+
+    private String masteryFromReview(PracticeRecord record) {
+        Integer score = record.getScore();
+        String level = record.getLevel();
+        if (score != null && score >= 80) {
+            return MasteryStatusEnum.MASTERED.name();
+        }
+        if ("GOOD".equalsIgnoreCase(StringUtils.hasText(level) ? level : "")
+                || "EXCELLENT".equalsIgnoreCase(StringUtils.hasText(level) ? level : "")) {
+            return MasteryStatusEnum.MASTERED.name();
+        }
+        if (score != null) {
+            return MasteryStatusEnum.NOT_MASTERED.name();
+        }
+        return MasteryStatusEnum.UNKNOWN.name();
     }
 
     private void applyReview(PracticeRecord record, PracticeReviewVO review) {
