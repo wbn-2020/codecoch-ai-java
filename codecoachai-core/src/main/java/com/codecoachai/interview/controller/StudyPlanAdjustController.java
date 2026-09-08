@@ -6,6 +6,9 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
+import com.codecoachai.question.domain.entity.UserQuestionRecord;
+import com.codecoachai.question.mapper.UserQuestionRecordMapper;
+import java.time.LocalDateTime;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.time.LocalDate;
@@ -37,6 +40,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class StudyPlanAdjustController {
 
     private final StudyTaskMapper studyTaskMapper;
+    private final UserQuestionRecordMapper userQuestionRecordMapper;
 
     @Operation(summary = "触发计划动态调整（将过期未完成任务延期到今天之后）")
     @PostMapping("/{planId}/adjust")
@@ -53,10 +57,13 @@ public class StudyPlanAdjustController {
                         .lt(StudyTask::getPlannedDate, today));
 
         if (overdueTasks.isEmpty()) {
+            int reviewAdded = addDueWrongQuestionReviews(planId, userId, today);
             AdjustResultVO vo = new AdjustResultVO();
             vo.setRescheduledCount(0);
-            vo.setAddedReviewCount(0);
-            vo.setMessage("无需调整，所有任务按时完成");
+            vo.setAddedReviewCount(reviewAdded);
+            vo.setMessage(reviewAdded > 0
+                    ? "任务均按时完成；已把 " + reviewAdded + " 个到期错题加入复习"
+                    : "无需调整，所有任务按时完成");
             return Result.success(vo);
         }
 
@@ -89,11 +96,70 @@ public class StudyPlanAdjustController {
             rescheduled++;
         }
 
+        int reviewAdded = addDueWrongQuestionReviews(planId, userId, today);
+
         AdjustResultVO vo = new AdjustResultVO();
         vo.setRescheduledCount(rescheduled);
-        vo.setAddedReviewCount(0);
-        vo.setMessage("已将 " + rescheduled + " 个过期任务重新安排");
+        vo.setAddedReviewCount(reviewAdded);
+        vo.setMessage("已将 " + rescheduled + " 个过期任务重新安排"
+                + (reviewAdded > 0 ? "，并把 " + reviewAdded + " 个到期错题加入复习" : ""));
         return Result.success(vo);
+    }
+
+    /**
+     * 与 V4_140 错题间隔复习联动：把今天已到期的错题（next_review_at <= 现在）
+     * 生成"错题复习"任务排入计划（每天最多 3 个，避免挤占正常任务）。
+     * 幂等：同一天同题已存在复习任务则跳过（按任务标题识别）。
+     */
+    private int addDueWrongQuestionReviews(Long planId, Long userId, LocalDate today) {
+        List<UserQuestionRecord> dueRecords = userQuestionRecordMapper.selectList(
+                new LambdaQueryWrapper<UserQuestionRecord>()
+                        .eq(UserQuestionRecord::getUserId, userId)
+                        .eq(UserQuestionRecord::getWrong, 1)
+                        .isNotNull(UserQuestionRecord::getNextReviewAt)
+                        .le(UserQuestionRecord::getNextReviewAt, LocalDateTime.now())
+                        .orderByAsc(UserQuestionRecord::getNextReviewAt)
+                        .last("limit 3"));
+        if (dueRecords.isEmpty()) {
+            return 0;
+        }
+        List<StudyTask> todayReviewTasks = studyTaskMapper.selectList(
+                new LambdaQueryWrapper<StudyTask>()
+                        .eq(StudyTask::getPlanId, planId)
+                        .eq(StudyTask::getUserId, userId)
+                        .eq(StudyTask::getPlannedDate, today)
+                        .like(StudyTask::getTaskTitle, "错题复习"));
+        java.util.Set<String> existing = todayReviewTasks.stream()
+                .map(StudyTask::getTaskTitle)
+                .collect(Collectors.toSet());
+        int added = 0;
+        int order = todayReviewTasks.size();
+        for (UserQuestionRecord record : dueRecords) {
+            String title = "错题复习 #" + record.getQuestionId();
+            if (existing.contains(title)) {
+                continue;
+            }
+            StudyTask task = new StudyTask();
+            task.setPlanId(planId);
+            task.setUserId(userId);
+            task.setPlannedDate(today);
+            task.setStageNo(99);
+            task.setStageTitle("错题复习");
+            task.setTaskOrder(order + added + 1);
+            task.setKnowledgePoint("错题复习");
+            task.setTaskTitle(title);
+            task.setTaskDescription("到期间隔复习：重答该题并对照 AI 点评补齐薄弱点（"
+                    + (record.getReviewIntervalDays() == null ? 1 : record.getReviewIntervalDays()) + " 天档）");
+            task.setTaskType("REVIEW");
+            task.setPriority("HIGH");
+            task.setEstimatedMinutes(10);
+            task.setAcceptanceCriteria("重答正确，或能完整说出错因与正确思路");
+            task.setTaskStatus("TODO");
+            task.setRelatedQuestionIdsJson(String.valueOf(record.getQuestionId()));
+            studyTaskMapper.insert(task);
+            added++;
+        }
+        return added;
     }
 
     @Operation(summary = "查看计划执行统计（用于判断是否需要调整）")
