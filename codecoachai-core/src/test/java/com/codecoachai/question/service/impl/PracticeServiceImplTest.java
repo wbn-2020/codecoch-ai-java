@@ -26,6 +26,7 @@ import com.codecoachai.question.feign.vo.PracticeReviewVO;
 import com.codecoachai.question.mapper.PracticeRecordMapper;
 import com.codecoachai.question.mapper.QuestionMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationBatchMapper;
+import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import com.codecoachai.question.mapper.QuestionRecommendationItemMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
@@ -54,6 +55,8 @@ class PracticeServiceImplTest {
     private AiPracticeFeignClient aiPracticeFeignClient;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock
+    private UserQuestionRecordMapper userQuestionRecordMapper;
 
     private PracticeServiceImpl service;
 
@@ -67,6 +70,7 @@ class PracticeServiceImplTest {
                 recommendationBatchMapper,
                 aiPracticeFeignClient,
                 agentBusinessActionNotifier,
+                userQuestionRecordMapper,
                 new ObjectMapper());
     }
 
