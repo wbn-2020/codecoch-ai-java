@@ -215,8 +215,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         String name = requirementName(requirement);
         return task("requirement-resume-" + requirement.getRequirementId(),
                 AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
-                "Update resume for " + name,
-                "Add verifiable resume evidence that directly addresses this job requirement.",
+                "补齐「" + name + "」的简历表达",
+                "补充能够回应这项岗位要求的项目经历与成果。",
                 requirementReason(requirement),
                 "MUST".equalsIgnoreCase(requirement.getPriority()) ? "HIGH" : "MEDIUM",
                 25,
@@ -240,8 +240,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
                     + "&requirementId=" + requirement.getRequirementId();
         return task("requirement-project-" + requirement.getRequirementId(),
                 AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
-                "Add project evidence for " + name,
-                "Capture responsibility, decisions, tradeoffs, and measured outcomes for this requirement.",
+                "补充「" + name + "」的项目资料",
+                "整理这项要求对应的职责、技术决策、取舍和可说明的结果。",
                 requirementReason(requirement),
                 "HIGH",
                 30,
@@ -257,8 +257,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         String encoded = URLEncoder.encode(name, StandardCharsets.UTF_8);
         return task("requirement-question-" + requirement.getRequirementId(),
                 AgentTaskTypeEnum.QUESTION_PRACTICE.name(),
-                "Practice questions for " + name,
-                "Complete a focused question set and record the concepts that still need review.",
+                "练习「" + name + "」的专项题目",
+                "完成一组专项题目，记录仍需复盘的概念和场景。",
                 requirementReason(requirement),
                 "HIGH",
                 30,
@@ -276,8 +276,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
         String name = requirementName(requirement);
         return task("requirement-interview-" + requirement.getRequirementId(),
                 AgentTaskTypeEnum.INTERVIEW.name(),
-                "Re-practice interview for " + name,
-                "Run a targeted mock interview and revisit the weak requirement after the report.",
+                "围绕「" + name + "」复练面试",
+                "完成一次定向模拟面试，根据报告复盘尚未掌握的要求。",
                 requirementReason(requirement),
                 "MEDIUM",
                 40,
@@ -321,8 +321,8 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     }
 
     private String requirementReason(MissingRequirementSnapshot requirement) {
-        return "Requirement coverage is " + firstText(requirement.getCoverageLevel(), "MISSING")
-                + " in the latest trusted readiness snapshot.";
+        return "最新岗位准备度记录中，这项要求的覆盖状态为 "
+                + firstText(requirement.getCoverageLevel(), "MISSING") + "，需要进一步补强。";
     }
 
     private List<CandidateTask> jobExperimentTasks(JobCoachAgentContext context) {
@@ -367,18 +367,18 @@ public class CandidateTaskBuilderImpl implements CandidateTaskBuilder {
     }
 
     private CandidateTask projectEvidenceTask(ProjectEvidenceSnapshot project) {
-        String title = firstText(project.getTitle(), "project evidence");
+        String title = firstText(project.getTitle(), "我的项目");
         String skillName = project.getTopSkillNames() == null || project.getTopSkillNames().isEmpty()
                 ? firstText(project.getTechStack(), "project expression")
                 : project.getTopSkillNames().get(0);
         String missing = project.getMissingFields() == null || project.getMissingFields().isEmpty()
-                ? "interview-ready evidence"
+                ? "可用于面试讲述的项目资料"
                 : String.join(", ", project.getMissingFields());
         return task("project-evidence-" + project.getProjectEvidenceId(),
                 AgentTaskTypeEnum.RESUME_OPTIMIZE.name(),
-                "Improve project evidence: " + title,
-                "Add missing project facts and interview material for " + title + ".",
-                "This project evidence is not interview-ready yet; missing: " + missing + ".",
+                "补充「" + title + "」的项目资料",
+                "补齐该项目的关键经历与面试讲述素材。",
+                "该项目仍有待补充的资料：" + missing + "。",
                 project.getCompletenessScore() == null || project.getCompletenessScore() < 50 ? "HIGH" : "MEDIUM",
                 25,
                 toSkillCode(skillName),

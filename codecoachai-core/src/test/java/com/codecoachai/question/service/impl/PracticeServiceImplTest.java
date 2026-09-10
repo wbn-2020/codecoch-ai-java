@@ -60,6 +60,36 @@ class PracticeServiceImplTest {
 
     private PracticeServiceImpl service;
 
+    @Test
+    void failedBankReviewMustNotChangeLearningState() {
+        Question question = new Question();
+        question.setId(101L);
+        question.setStatus(CommonConstants.YES);
+        when(questionMapper.selectById(101L)).thenReturn(question);
+        when(aiPracticeFeignClient.review(any())).thenReturn(Result.fail(500, "unavailable"));
+        PracticeSubmitDTO dto = new PracticeSubmitDTO();
+        dto.setAnswerContent("An answer");
+
+        assertEquals("FAILED", service.submit(101L, dto).getReviewStatus());
+
+        org.mockito.Mockito.verifyNoInteractions(userQuestionRecordMapper);
+    }
+
+    @Test
+    void thrownBankReviewMustNotChangeLearningState() {
+        Question question = new Question();
+        question.setId(101L);
+        question.setStatus(CommonConstants.YES);
+        when(questionMapper.selectById(101L)).thenReturn(question);
+        when(aiPracticeFeignClient.review(any())).thenThrow(new IllegalStateException("unavailable"));
+        PracticeSubmitDTO dto = new PracticeSubmitDTO();
+        dto.setAnswerContent("An answer");
+
+        assertEquals("FAILED", service.submit(101L, dto).getReviewStatus());
+
+        org.mockito.Mockito.verifyNoInteractions(userQuestionRecordMapper);
+    }
+
     @BeforeEach
     void setUp() {
         LoginUserContext.setLoginUser(LoginUser.builder().userId(USER_ID).username("tester").build());

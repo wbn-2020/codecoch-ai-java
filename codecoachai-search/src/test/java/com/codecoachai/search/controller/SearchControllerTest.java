@@ -44,5 +44,8 @@ class SearchControllerTest {
         SearchRequest request = requestCaptor.getValue();
         assertTrue(request.from() <= 1900);
         assertNull(request.query().bool().must().get(0).multiMatch().fuzziness());
+        assertTrue(request.query().bool().filter().stream()
+                .anyMatch(filter -> filter.isTerm() && "status".equals(filter.term().field())
+                        && filter.term().value().longValue() == 1));
     }
 }

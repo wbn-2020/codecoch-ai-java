@@ -21,6 +21,7 @@ public class UserQuestionRecord extends BaseEntity {
     /** 间隔复习档位（天）：1/3/7/15 */
     private Integer reviewIntervalDays;
     /** 下次复习到期时间；wrong=1 时调度 */
+    @com.baomidou.mybatisplus.annotation.TableField(updateStrategy = com.baomidou.mybatisplus.annotation.FieldStrategy.ALWAYS)
     private LocalDateTime nextReviewAt;
     /** 已完成复习次数（决定档位下标） */
     private Integer reviewStage;

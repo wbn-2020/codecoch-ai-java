@@ -1242,7 +1242,70 @@ class JobCoachAgentServiceImplTest {
     }
 
     @Test
-    void executeDailyPlanDegradesValidatedOutputFailureIntoOneCandidateBoundTask() {
+    void saveTasksDoesNotFallBackToModelMetadataWhenCandidateFieldsAreNull() throws Exception {
+        CandidateTask candidate = AgentOutputValidatorImplTest.candidate("c1");
+        candidate.setActionUrl(null);
+        PlanTask task = AgentOutputValidatorImplTest.task("c1");
+        task.setRelatedBizType("ADMIN_USER");
+        task.setRelatedBizId(999L);
+        task.setActionUrl("/admin/users");
+        Method save = JobCoachAgentServiceImpl.class.getDeclaredMethod(
+                "saveTasks", Long.class, AgentRun.class, DailyPlanResult.class, List.class);
+        save.setAccessible(true);
+        save.invoke(service, USER_ID, run(77L, USER_ID),
+                AgentOutputValidatorImplTest.plan(task), List.of(candidate));
+        ArgumentCaptor<AgentTask> captor = ArgumentCaptor.forClass(AgentTask.class);
+        verify(agentTaskMapper).insert(captor.capture());
+        assertNull(captor.getValue().getRelatedBizType());
+        assertNull(captor.getValue().getRelatedBizId());
+        assertNull(captor.getValue().getActionUrl());
+    }
+
+    @Test
+    void rulePlanPreservesCandidatesAndHonorsBudgetAndPriority() throws Exception {
+        CandidateTask low = AgentOutputValidatorImplTest.candidate("low");
+        low.setPriority("LOW");
+        CandidateTask high = AgentOutputValidatorImplTest.candidate("high");
+        CandidateTask medium = AgentOutputValidatorImplTest.candidate("medium");
+        medium.setPriority("MEDIUM");
+        DailyPlanResult result = rulePlan(List.of(low, high, medium), 3, 65);
+        assertEquals(List.of("high", "medium", "low"),
+                result.getTasks().stream().map(PlanTask::getCandidateId).toList());
+        assertEquals(65, result.getTasks().stream().mapToInt(PlanTask::getEstimatedMinutes).sum());
+        assertEquals(high.getTitle(), result.getTasks().get(0).getTitle());
+        assertEquals(high.getActionUrl(), result.getTasks().get(0).getActionUrl());
+        new AgentOutputValidatorImpl().validateDailyPlan(result, List.of(low, high, medium), 3, 65);
+        assertEquals(1, rulePlan(List.of(high, medium), 1, 120).getTasks().size());
+        assertEquals(1, rulePlan(List.of(high, high), 3, 120).getTasks().size());
+    }
+
+    @Test
+    void rulePlanWithoutCandidatesProvidesRecordCollectionTask() throws Exception {
+        DailyPlanResult result = rulePlan(List.of(), 3, 15);
+        assertEquals(1, result.getTasks().size());
+        assertEquals("补充一条真实求职准备记录", result.getTasks().get(0).getTitle());
+        assertEquals(15, result.getTasks().get(0).getEstimatedMinutes());
+    }
+
+    private DailyPlanResult rulePlan(List<CandidateTask> candidates, int count, int budget) throws Exception {
+        Method build = JobCoachAgentServiceImpl.class.getDeclaredMethod(
+                "buildDegradedDailyPlan", List.class, int.class, int.class);
+        build.setAccessible(true);
+        Object resolved = build.invoke(service, candidates, count, budget);
+        Method accessor = resolved.getClass().getDeclaredMethod("planResult");
+        accessor.setAccessible(true);
+        DailyPlanResult result = (DailyPlanResult) accessor.invoke(resolved);
+        Method candidateAccessor = resolved.getClass().getDeclaredMethod("candidates");
+        candidateAccessor.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        List<CandidateTask> effectiveCandidates = (List<CandidateTask>) candidateAccessor.invoke(resolved);
+        new AgentOutputValidatorImpl().validateDailyPlan(result, effectiveCandidates, count, budget);
+        return result;
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void executeDailyPlanDegradesContractFailureAndPreservesOriginalFailure(boolean parseFailure) {
         AgentRun run = run(77L, USER_ID);
         run.setStatus(AgentRunStatusEnum.RUNNING.name());
         run.setTargetJobId(501L);
@@ -1274,7 +1337,12 @@ class JobCoachAgentServiceImplTest {
         DailyPlanResult invalidResult = new DailyPlanResult();
         invalidResult.setSummary("模型返回的空计划");
         invalidResult.setTasks(List.of());
-        when(agentOutputParser.parseDailyPlan(any())).thenReturn(invalidResult);
+        if (parseFailure) {
+            when(agentOutputParser.parseDailyPlan(any())).thenThrow(new BusinessException(
+                    com.codecoachai.common.core.enums.ErrorCode.SYSTEM_ERROR, AgentErrorCode.OUTPUT_PARSE_FAILED));
+        } else {
+            when(agentOutputParser.parseDailyPlan(any())).thenReturn(invalidResult);
+        }
         AgentOutputValidator actualValidator = new AgentOutputValidatorImpl();
         Mockito.doAnswer(invocation -> {
             @SuppressWarnings("unchecked")
@@ -1315,9 +1383,14 @@ class JobCoachAgentServiceImplTest {
         assertEquals("TARGET_JOB", saved.getRelatedBizType());
         assertEquals(501L, saved.getRelatedBizId());
         assertEquals("/questions/practice?mode=category", saved.getActionUrl());
-        assertEquals("完成一项今日可执行任务", saved.getTitle());
+        assertEquals("完成一组专项题目练习", saved.getTitle());
+        assertEquals("INVALID", run.getValidationStatus());
+        String expectedCode = parseFailure ? AgentErrorCode.OUTPUT_PARSE_FAILED : AgentErrorCode.OUTPUT_VALIDATE_FAILED;
+        assertEquals(expectedCode, run.getFallbackReasonCode());
+        verify(aiCallLogService).markDeliveryOutcome(eq(901L), any(), eq("DEGRADED"),
+                eq(expectedCode), eq("agent-daily-plan-v1"), eq("INVALID"));
         assertTrue(run.getOutputJson().contains("模型输出未通过计划结构校验"));
-        verify(agentOutputValidator, Mockito.times(2))
+        verify(agentOutputValidator, Mockito.times(parseFailure ? 2 : 3))
                 .validateDailyPlan(any(), any(), any(Integer.class), any(Integer.class));
 
         DailyPlanVO repeated = service.executeDailyPlan(USER_ID, 77L, dto);

@@ -52,6 +52,8 @@ class InnerInterviewReportControllerTest {
     private InterviewMqDispatcher interviewMqDispatcher;
     @Mock
     private AgentBusinessActionNotifier agentBusinessActionNotifier;
+    @Mock(answer = org.mockito.Answers.CALLS_REAL_METHODS)
+    private com.codecoachai.interview.service.impl.InterviewReportAsyncService reportContextBuilder;
 
     private InnerInterviewReportController controller;
 
@@ -70,7 +72,7 @@ class InnerInterviewReportControllerTest {
                 reportMapper,
                 interviewMqDispatcher,
                 agentBusinessActionNotifier,
-                new ObjectMapper());
+                new ObjectMapper(), reportContextBuilder);
     }
 
     @Test
@@ -196,13 +198,34 @@ class InnerInterviewReportControllerTest {
 
         List<String> messages = result.getData().getMessages();
         assertEquals(6, messages.size());
-        assertTrue(messages.get(1).contains("Role:USER"));
-        assertTrue(messages.get(1).contains("Type:ANSWER"));
-        assertTrue(messages.get(1).contains("CandidateAnswer:回答一"));
-        assertTrue(messages.get(2).contains("Role:AI"));
-        assertTrue(messages.get(2).contains("Type:EVALUATION"));
-        assertTrue(messages.get(2).contains("Score:85"));
-        assertTrue(messages.get(2).contains("AiComment:点评一"));
+        assertTrue(messages.get(1).contains("Role：USER"));
+        assertTrue(messages.get(1).contains("Type：ANSWER"));
+        assertTrue(messages.get(1).contains("CandidateAnswer：回答一"));
+        assertTrue(messages.get(2).contains("Role：AI"));
+        assertTrue(messages.get(2).contains("Type：EVALUATION"));
+        assertTrue(messages.get(2).contains("Score：85"));
+        assertTrue(messages.get(2).contains("AiComment：点评一"));
+    }
+
+    @Test
+    void reportContextPreservesAllSharedTrainingFields() {
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        when(messageMapper.selectList(any())).thenReturn(List.of());
+        var dto = new com.codecoachai.interview.feign.dto.GenerateReportDTO();
+        dto.setResumeContent("Resume evidence");
+        dto.setProjectContent("Project evidence");
+        dto.setTargetJobId(300L);
+        dto.setTrainingScene("PROJECT");
+        dto.setTargetSkillCodes(List.of("JAVA"));
+        dto.setProjectEvidenceIds(List.of(81L));
+        org.mockito.Mockito.doReturn(dto).when(reportContextBuilder).buildReportDTO(any(), any());
+        var result = controller.getReportContext(1L).getData();
+        assertEquals("Resume evidence", result.getResumeContent());
+        assertEquals("Project evidence", result.getProjectContent());
+        assertEquals(300L, result.getTargetJobId());
+        assertEquals("PROJECT", result.getTrainingScene());
+        assertEquals(List.of("JAVA"), result.getTargetSkillCodes());
+        assertEquals(List.of(81L), result.getProjectEvidenceIds());
     }
 
     @Test

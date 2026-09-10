@@ -92,6 +92,7 @@ public class InterviewReportConsumer implements RocketMQListener<MqMessage<Inter
             InterviewReportContextVO ctx = ctxResp.getData();
 
             GenerateReportDTO aiDto = new GenerateReportDTO();
+            org.springframework.beans.BeanUtils.copyProperties(ctx, aiDto);
             aiDto.setInterviewId(ctx.getSessionId());
             aiDto.setUserId(ctx.getUserId());
             aiDto.setMode(ctx.getMode());

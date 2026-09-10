@@ -194,6 +194,7 @@ public class SearchController {
 
     private List<Query> buildQuestionFilters(String difficulty, String categoryId) {
         List<Query> filters = new ArrayList<>();
+        filters.add(Query.of(q -> q.term(t -> t.field("status").value(1))));
         if (StringUtils.hasText(difficulty)) {
             filters.add(Query.of(q -> q.term(t -> t.field("difficulty").value(difficulty))));
         }

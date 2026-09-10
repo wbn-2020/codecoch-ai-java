@@ -73,9 +73,8 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             }
 
             idempotentKey = RedisKeyConstants.searchConsumedKey(envelope.getMessageId());
-            // RocketMQ 至少一次投递，先用 messageId 做幂等占位；可重试异常会释放占位，允许后续重投。
-            Boolean ok = redisTemplate.opsForValue().setIfAbsent(idempotentKey, "1", CONSUMED_TTL);
-            if (!Boolean.TRUE.equals(ok)) {
+            // ES writes use a stable document ID; retries are safe. Only completed writes may be skipped.
+            if ("DONE".equals(redisTemplate.opsForValue().get(idempotentKey))) {
                 log.debug("Duplicate search sync message skipped messageId={}", envelope.getMessageId());
                 return;
             }
@@ -91,14 +90,14 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
             } else {
                 handleUpsert(payload);
             }
+            redisTemplate.opsForValue().set(idempotentKey, "DONE", CONSUMED_TTL);
         } catch (NonRetryableMqException ex) {
             // 参数错误、未知索引等确定性失败不重试，避免消息反复消费占用队列。
             recordFailure(envelope, ex);
             log.warn("Search sync skipped non-retryable messageId={} reason={}",
                     envelope == null ? null : envelope.getMessageId(), ex.getMessage());
         } catch (Exception ex) {
-            // Feign/ES 临时异常交给 RocketMQ 重试，释放幂等键保证下一次投递可重新执行。
-            releaseIdempotentKey(idempotentKey);
+            // No in-flight marker is written; do not erase another delivery's success marker.
             recordFailure(envelope, ex);
             log.error("Search sync failed messageId={}", envelope == null ? null : envelope.getMessageId(), ex);
             throw new RetryableMqException("search sync retryable failure", ex);
@@ -173,18 +172,6 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
                 .id(payload.getDocId())
         ));
         log.info("ES DELETE index={} docId={}", payload.getIndexName(), payload.getDocId());
-    }
-
-    private void releaseIdempotentKey(String idempotentKey) {
-        if (!StringUtils.hasText(idempotentKey)) {
-            return;
-        }
-        try {
-            redisTemplate.delete(idempotentKey);
-        } catch (Exception ex) {
-            log.warn("Release search sync idempotent key failed keyLength={} keyHash={}",
-                    idempotentKey.length(), shortHash(idempotentKey), ex);
-        }
     }
 
     private void recordFailure(MqMessage<SearchSyncPayload> envelope, Exception ex) {

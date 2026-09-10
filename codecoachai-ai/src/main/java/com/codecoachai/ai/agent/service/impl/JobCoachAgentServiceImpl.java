@@ -207,10 +207,9 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private static final int DEGRADED_PLAN_MINUTES = 15;
     private static final String DEGRADED_PLAN_CANDIDATE_ID = "degraded-minimal-action";
     private static final String DEGRADED_PLAN_SUMMARY =
-            "模型输出未通过计划结构校验，已生成一项降级的最小可执行计划。";
+            "模型输出未通过计划结构校验，已按候选任务优先级生成规则计划，并非模型个性化编排。";
     private static final String DEGRADED_PLAN_NO_EVIDENCE_SUMMARY =
             "模型输出未通过计划结构校验，当前没有可引用的候选证据，已生成一项补充真实记录的最小计划。";
-    private static final String DEGRADED_PLAN_TASK_TITLE = "完成一项今日可执行任务";
     private static final String DEGRADED_PLAN_TASK_DESCRIPTION =
             "打开任务入口，完成当前准备动作，并记录可验证的真实结果。";
     private static final String DEGRADED_PLAN_TASK_REASON =
@@ -421,13 +420,13 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                     delivery.deliveryQuality(),
                     fallbackReason(routeResult, delivery),
                     "agent-daily-plan-v1",
-                    "VALID");
+                    resolvedPlan.validationStatus());
             return transactionTemplate.execute(status -> {
                 if (!isRunStillRunning(userId, run.getId(), run.getExecutionToken())) {
                     return currentDailyPlan(userId, run.getId());
                 }
                 if (!markSuccess(run, resolvedPlan.planResult(), routeResult, resolvedPlan.resultSource(),
-                        System.currentTimeMillis() - start)) {
+                        resolvedPlan.validationStatus(), System.currentTimeMillis() - start)) {
                     return currentDailyPlan(userId, run.getId());
                 }
                 clearRunTasks(run);
@@ -973,12 +972,15 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             if (!isOutputContractFailure(errorCode)) {
                 throw ex;
             }
-            ResolvedDailyPlan degradedPlan = buildDegradedDailyPlan(candidates, maxTotalMinutes);
+            // Preserve the actual parse/validation failure; the replacement passing is not model success.
+            routeResult.setFallbackReasonCode(errorCode);
+            ResolvedDailyPlan degradedPlan = buildDegradedDailyPlan(candidates, taskCount, maxTotalMinutes);
             agentOutputValidator.validateDailyPlan(degradedPlan.planResult(), degradedPlan.candidates(),
                     taskCount, maxTotalMinutes);
-            log.warn("Agent daily plan output contract failed, persisted degraded plan runId={} userId={} errorCode={}",
-                    run.getId(), userId, errorCode);
-            return degradedPlan;
+            log.warn("Agent daily plan output contract failed, using rule plan runId={} userId={} errorCode={} rules={}",
+                    run.getId(), userId, errorCode, ex.getFieldErrors());
+            return new ResolvedDailyPlan(degradedPlan.planResult(), degradedPlan.candidates(),
+                    degradedPlan.resultSource(), "INVALID");
         }
     }
 
@@ -987,28 +989,63 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 || AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(errorCode);
     }
 
-    private ResolvedDailyPlan buildDegradedDailyPlan(List<CandidateTask> candidates, int maxTotalMinutes) {
+    private ResolvedDailyPlan buildDegradedDailyPlan(List<CandidateTask> candidates, int taskCount, int maxTotalMinutes) {
         List<CandidateTask> effectiveCandidates = new ArrayList<>();
+        java.util.Set<String> candidateIds = new java.util.HashSet<>();
         if (candidates != null) {
             for (CandidateTask candidate : candidates) {
-                if (candidate != null) {
+                if (isUsableDegradedCandidate(candidate) && candidateIds.add(candidate.getCandidateId())) {
                     effectiveCandidates.add(candidate);
                 }
             }
         }
-        CandidateTask candidate = effectiveCandidates.stream()
+        List<PlanTask> tasks = new ArrayList<>();
+        java.util.Set<String> selectedIds = new java.util.HashSet<>();
+        java.util.Set<String> selectedTitles = new java.util.HashSet<>();
+        int remainingMinutes = maxTotalMinutes;
+        List<CandidateTask> ranked = effectiveCandidates.stream()
                 .filter(this::isUsableDegradedCandidate)
-                .findFirst()
-                .orElse(null);
-        boolean candidateBacked = candidate != null;
+                .sorted(java.util.Comparator.comparingInt(candidate ->
+                        AgentTaskPriorityEnum.valueOf(degradedTaskPriority(candidate.getPriority())).ordinal()))
+                .toList();
+        for (CandidateTask candidate : ranked) {
+            if (tasks.size() >= Math.min(taskCount, 5) || remainingMinutes < 5) {
+                break;
+            }
+            if (!selectedIds.add(candidate.getCandidateId())) {
+                continue;
+            }
+            PlanTask task = degradedPlanTask(candidate, remainingMinutes, true);
+            // Validate rule copy as well: context-derived titles/reasons are not automatically trustworthy.
+            DailyPlanResult probe = new DailyPlanResult();
+            probe.setSummary(DEGRADED_PLAN_SUMMARY);
+            probe.setTasks(List.of(task));
+            try {
+                agentOutputValidator.validateDailyPlan(probe, List.of(candidate), 1, remainingMinutes);
+            } catch (BusinessException ex) {
+                if (!AgentErrorCode.OUTPUT_VALIDATE_FAILED.equals(ex.getMessage())) {
+                    throw ex;
+                }
+                task.setTitle(degradedTaskTitle(candidate.getType()));
+                task.setDescription(DEGRADED_PLAN_TASK_DESCRIPTION);
+                task.setReason(DEGRADED_PLAN_TASK_REASON);
+            }
+            if (!selectedTitles.add(task.getType() + "::" + task.getTitle().trim())) {
+                continue;
+            }
+            tasks.add(task);
+            remainingMinutes -= task.getEstimatedMinutes();
+        }
+        boolean candidateBacked = !tasks.isEmpty();
         if (!candidateBacked) {
-            candidate = degradedPlanCandidate(maxTotalMinutes);
+            CandidateTask candidate = degradedPlanCandidate(maxTotalMinutes);
             effectiveCandidates.add(candidate);
+            tasks.add(degradedPlanTask(candidate, maxTotalMinutes, false));
         }
 
         DailyPlanResult result = new DailyPlanResult();
         result.setSummary(candidateBacked ? DEGRADED_PLAN_SUMMARY : DEGRADED_PLAN_NO_EVIDENCE_SUMMARY);
-        result.setTasks(List.of(degradedPlanTask(candidate, maxTotalMinutes, candidateBacked)));
+        result.setTasks(tasks);
         return new ResolvedDailyPlan(result, effectiveCandidates, AiResultSourceEnum.DEGRADED.name());
     }
 
@@ -1018,7 +1055,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             return false;
         }
         try {
-            AgentTaskTypeEnum.valueOf(normalizeCode(candidate.getType()));
+            AgentTaskTypeEnum.valueOf(candidate.getType());
             return true;
         } catch (IllegalArgumentException ex) {
             return false;
@@ -1042,9 +1079,11 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         PlanTask task = new PlanTask();
         task.setCandidateId(candidate.getCandidateId());
         task.setType(degradedTaskType(candidate.getType()));
-        task.setTitle(candidateBacked ? DEGRADED_PLAN_TASK_TITLE : DEGRADED_PLAN_NO_EVIDENCE_TASK_TITLE);
-        task.setDescription(DEGRADED_PLAN_TASK_DESCRIPTION);
-        task.setReason(candidateBacked ? DEGRADED_PLAN_TASK_REASON : DEGRADED_PLAN_NO_EVIDENCE_TASK_REASON);
+        task.setTitle(candidateBacked ? firstText(candidate.getTitle(), degradedTaskTitle(candidate.getType()))
+                : DEGRADED_PLAN_NO_EVIDENCE_TASK_TITLE);
+        task.setDescription(firstText(candidate.getDescription(), DEGRADED_PLAN_TASK_DESCRIPTION));
+        task.setReason(candidateBacked ? firstText(candidate.getReason(), DEGRADED_PLAN_TASK_REASON)
+                : DEGRADED_PLAN_NO_EVIDENCE_TASK_REASON);
         task.setPriority(degradedTaskPriority(candidate.getPriority()));
         task.setEstimatedMinutes(degradedPlanMinutes(candidate.getEstimatedMinutes(), maxTotalMinutes));
         task.setRelatedSkillCode(candidate.getRelatedSkillCode());
@@ -1053,6 +1092,20 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         task.setRelatedBizId(candidate.getRelatedBizId());
         task.setActionUrl(firstText(candidate.getActionUrl(), "/tools"));
         return task;
+    }
+
+    private String degradedTaskTitle(String type) {
+        return switch (AgentTaskTypeEnum.valueOf(degradedTaskType(type))) {
+            case QUESTION_PRACTICE -> "完成一组专项题目练习";
+            case WRONG_QUESTION_REVIEW -> "复盘错题与回答要点";
+            case INTERVIEW -> "完成一次定向模拟面试";
+            case RESUME_OPTIMIZE -> "补充项目资料与简历表达";
+            case APPLICATION_FOLLOW_UP -> "跟进当前投递进展";
+            case SKILL_REVIEW -> "复盘当前技能短板";
+            case KNOWLEDGE_REVIEW -> "整理面试回答素材";
+            case REPORT_REVIEW -> "复盘面试报告";
+            case STUDY_TASK -> "完成当前学习任务";
+        };
     }
 
     private String degradedTaskType(String type) {
@@ -1113,14 +1166,14 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
             task.setReason(item.getReason());
             task.setPriority(item.getPriority());
             task.setEstimatedMinutes(item.getEstimatedMinutes());
-            task.setRelatedSkillCode(firstText(candidate == null ? null : candidate.getRelatedSkillCode(), item.getRelatedSkillCode()));
-            task.setRelatedSkillName(firstText(candidate == null ? null : candidate.getRelatedSkillName(), item.getRelatedSkillName()));
-            task.setRelatedBizType(firstText(candidate == null ? null : candidate.getRelatedBizType(), item.getRelatedBizType()));
-            task.setRelatedBizId(candidate == null ? item.getRelatedBizId() : candidate.getRelatedBizId());
+            task.setRelatedSkillCode(candidate == null ? null : candidate.getRelatedSkillCode());
+            task.setRelatedSkillName(candidate == null ? null : candidate.getRelatedSkillName());
+            task.setRelatedBizType(candidate == null ? null : candidate.getRelatedBizType());
+            task.setRelatedBizId(candidate == null ? null : candidate.getRelatedBizId());
             task.setPlanOriginType("AGENT_GENERATED");
             task.setPlanOriginId(run.getId());
             task.setUserConfirmed(false);
-            task.setActionUrl(firstText(candidate == null ? null : candidate.getActionUrl(), item.getActionUrl()));
+            task.setActionUrl(candidate == null ? null : candidate.getActionUrl());
             task.setStatus(AgentTaskStatusEnum.TODO.name());
             task.setDueDate(run.getPlanDate());
             task.setSortOrder(++order);
@@ -1254,7 +1307,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     }
 
     private boolean markSuccess(AgentRun run, DailyPlanResult planResult, RouteResult routeResult, String resultSource,
-                                long durationMs) {
+                                String validationStatus, long durationMs) {
         if (run == null || !isConsumablePlan(planResult)) {
             return false;
         }
@@ -1276,7 +1329,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
         run.setDeliveryQuality(deliveryQuality);
         run.setFallbackReasonCode(fallbackReason(routeResult, delivery));
         run.setSchemaVersion("agent-daily-plan-v1");
-        run.setValidationStatus("VALID");
+        run.setValidationStatus(validationStatus);
         run.setTerminalReasonCode(deliveryQuality.equals("DEGRADED")
                 ? "SUCCEEDED_DEGRADED"
                 : "SUCCEEDED");
@@ -1302,7 +1355,7 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
                 .set(AgentRun::getDeliveryQuality, deliveryQuality)
                 .set(AgentRun::getFallbackReasonCode, run.getFallbackReasonCode())
                 .set(AgentRun::getSchemaVersion, "agent-daily-plan-v1")
-                .set(AgentRun::getValidationStatus, "VALID")
+                .set(AgentRun::getValidationStatus, validationStatus)
                 .set(AgentRun::getTerminalReasonCode, run.getTerminalReasonCode())
                 .set(AgentRun::getTokenInput, routeResult.getPromptTokens())
                 .set(AgentRun::getTokenOutput, routeResult.getCompletionTokens())
@@ -2837,7 +2890,11 @@ public class JobCoachAgentServiceImpl implements JobCoachAgentService {
     private record AiReviewResult(String summary, List<String> nextActions) {
     }
 
-    private record ResolvedDailyPlan(DailyPlanResult planResult, List<CandidateTask> candidates, String resultSource) {
+    private record ResolvedDailyPlan(DailyPlanResult planResult, List<CandidateTask> candidates, String resultSource,
+                                     String validationStatus) {
+        private ResolvedDailyPlan(DailyPlanResult planResult, List<CandidateTask> candidates, String resultSource) {
+            this(planResult, candidates, resultSource, "VALID");
+        }
     }
 
     private CandidateTask matchCandidate(String candidateId, List<CandidateTask> candidates) {

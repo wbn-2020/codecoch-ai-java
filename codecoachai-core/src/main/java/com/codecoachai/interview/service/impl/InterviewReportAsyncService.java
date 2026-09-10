@@ -237,7 +237,7 @@ public class InterviewReportAsyncService {
         }
     }
 
-    private GenerateReportDTO buildReportDTO(InterviewSession session, List<InterviewMessage> messages) {
+    public GenerateReportDTO buildReportDTO(InterviewSession session, List<InterviewMessage> messages) {
         InnerResumeDetailVO resume = loadResume(session);
         GenerateReportDTO dto = new GenerateReportDTO();
         dto.setInterviewId(session.getId());
@@ -250,6 +250,7 @@ public class InterviewReportAsyncService {
         dto.setTargetPosition(session.getTargetPosition());
         dto.setExperienceLevel(session.getExperienceLevel());
         dto.setIndustryDirection(session.getIndustryDirection());
+        dto.setIndustryContext(session.getIndustryContext());
         dto.setDifficulty(session.getDifficulty());
         dto.setResumeContent(resume == null ? null : resume.getSummary());
         dto.setProjectContent(buildProjectContent(resume));
@@ -278,7 +279,8 @@ public class InterviewReportAsyncService {
         appendLine(builder, "Question", firstText(message.getQuestionContent(), questionContentByParent(message, messagesById)));
         appendLine(builder, "CandidateAnswer", message.getUserAnswer());
         appendLine(builder, "AiComment", firstText(message.getAiComment(), message.getComment()));
-        appendLine(builder, "Score", message.getScore() == null ? null : message.getScore().toString());
+        Integer score = message.getAiScore() != null ? message.getAiScore() : message.getScore();
+        appendLine(builder, "Score", score == null ? null : score.toString());
         appendLine(builder, "Content", message.getContent());
         return builder.toString().trim();
     }

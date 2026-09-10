@@ -66,6 +66,7 @@ public class QuestionStudyController {
         List<UserQuestionRecord> records = userQuestionRecordMapper.selectList(
                 new LambdaQueryWrapper<UserQuestionRecord>()
                         .eq(UserQuestionRecord::getUserId, userId)
+                        .isNotNull(UserQuestionRecord::getLastAnswerAt)
                         .select(UserQuestionRecord::getQuestionId));
         List<Long> doneIds = records.stream()
                 .map(UserQuestionRecord::getQuestionId)
@@ -112,7 +113,9 @@ public class QuestionStudyController {
         // 查询用户所有答题记录
         List<UserQuestionRecord> records = userQuestionRecordMapper.selectList(
                 new LambdaQueryWrapper<UserQuestionRecord>()
-                        .eq(UserQuestionRecord::getUserId, userId));
+                        .eq(UserQuestionRecord::getUserId, userId)
+                        .isNotNull(UserQuestionRecord::getLastAnswerAt)
+                        .in(UserQuestionRecord::getMasteryStatus, List.of("MASTERED", "NOT_MASTERED")));
 
         if (records.isEmpty()) {
             WeaknessAnalysisVO vo = new WeaknessAnalysisVO();
@@ -135,17 +138,18 @@ public class QuestionStudyController {
                 .collect(Collectors.toSet());
         Map<Long, String> categoryNameMap = loadCategoryNameMap(categoryIds);
 
-        int totalAnswered = records.size();
+        int totalAnswered = 0;
         int totalCorrect = 0;
 
         for (UserQuestionRecord r : records) {
             Question q = questionMap.get(r.getQuestionId());
             if (q == null) continue;
+            totalAnswered++;
             Long catId = q.getCategoryId();
             if (catId == null) catId = 0L;
             categoryStats.computeIfAbsent(catId, k -> new int[]{0, 0});
             categoryStats.get(catId)[0]++;
-            if (Integer.valueOf(1).equals(r.getWrong())) {
+            if ("NOT_MASTERED".equals(r.getMasteryStatus())) {
                 categoryStats.get(catId)[1]++;
             } else {
                 totalCorrect++;

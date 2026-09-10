@@ -67,6 +67,7 @@ public class InnerInterviewReportController {
     private final InterviewMqDispatcher interviewMqDispatcher;
     private final AgentBusinessActionNotifier agentBusinessActionNotifier;
     private final ObjectMapper objectMapper;
+    private final com.codecoachai.interview.service.impl.InterviewReportAsyncService reportContextBuilder;
 
     @GetMapping("/{sessionId}/report-context")
     public Result<ReportContextVO> getReportContext(@PathVariable Long sessionId) {
@@ -84,27 +85,9 @@ public class InnerInterviewReportController {
             messages = List.of();
         }
 
-        Map<Long, InterviewMessage> messagesById = new LinkedHashMap<>();
-        for (InterviewMessage message : messages) {
-            if (message != null && message.getId() != null) {
-                messagesById.put(message.getId(), message);
-            }
-        }
-        List<String> msgTexts = messages.stream()
-                .map(message -> reportMessageText(message, messagesById))
-                .filter(StringUtils::hasText)
-                .toList();
-
-        ReportContextVO vo = new ReportContextVO();
+        ReportContextVO vo = objectMapper.convertValue(
+                reportContextBuilder.buildReportDTO(session, messages), ReportContextVO.class);
         vo.setSessionId(session.getId());
-        vo.setUserId(session.getUserId());
-        vo.setMode(session.getMode());
-        vo.setTargetPosition(session.getTargetPosition());
-        vo.setExperienceLevel(session.getExperienceLevel());
-        vo.setIndustryDirection(session.getIndustryDirection());
-        vo.setIndustryContext(session.getIndustryContext());
-        vo.setDifficulty(session.getDifficulty());
-        vo.setMessages(msgTexts);
         return Result.success(vo);
     }
 
@@ -447,18 +430,9 @@ public class InnerInterviewReportController {
     }
 
     @Data
-    public static class ReportContextVO {
+    @lombok.EqualsAndHashCode(callSuper = true)
+    public static class ReportContextVO extends com.codecoachai.interview.feign.dto.GenerateReportDTO {
         private Long sessionId;
-        private Long userId;
-        private String mode;
-        private String targetPosition;
-        private String experienceLevel;
-        private String industryDirection;
-        private String industryContext;
-        private String difficulty;
-        private String resumeContent;
-        private String projectContent;
-        private List<String> messages;
     }
 
     @Data

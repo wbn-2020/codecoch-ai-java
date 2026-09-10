@@ -89,6 +89,7 @@ class QuestionServiceImplTest {
     @BeforeEach
     void setUp() {
         initTableInfo(Question.class);
+        initTableInfo(UserQuestionRecord.class);
         initTableInfo(QuestionTagRelation.class);
         questionService = new QuestionServiceImpl(
                 questionMapper,
@@ -113,6 +114,36 @@ class QuestionServiceImplTest {
     @AfterEach
     void tearDown() {
         LoginUserContext.clear();
+    }
+
+    @Test
+    void markingNotMasteredRestartsReviewAfterManualExit() {
+        when(questionMapper.selectById(1L)).thenReturn(question(1L, 1));
+        UserQuestionRecord existing = record(1L);
+        existing.setId(88L);
+        existing.setWrong(0);
+        existing.setReviewStage(4);
+        when(recordMapper.selectOne(any())).thenReturn(existing);
+        var dto = new com.codecoachai.question.domain.dto.UpdateMasteryDTO();
+        dto.setMasteryStatus("NOT_MASTERED");
+        questionService.updateMastery(1L, dto);
+        assertEquals(1, existing.getWrong());
+        assertEquals(0, existing.getReviewStage());
+        org.junit.jupiter.api.Assertions.assertNotNull(existing.getNextReviewAt());
+        verify(recordMapper).updateById(existing);
+    }
+
+    @Test
+    void dueOnlyUsesRangeInsteadOfInstantEquality() {
+        QuestionQueryDTO query = new QuestionQueryDTO();
+        query.setDueOnly(true);
+        when(recordMapper.selectPage(any(), any())).thenReturn(Page.of(1, 10));
+        questionService.pageWrongRecords(query);
+        ArgumentCaptor<LambdaQueryWrapper<UserQuestionRecord>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        verify(recordMapper).selectPage(any(), captor.capture());
+        assertTrue(captor.getValue().getSqlSegment().contains("next_review_at <="));
+        assertFalse(captor.getValue().getSqlSegment().contains("CURDATE"));
     }
 
     @Test

@@ -6,6 +6,11 @@ import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.security.util.SecurityAssert;
 import com.codecoachai.interview.domain.entity.StudyTask;
 import com.codecoachai.interview.mapper.StudyTaskMapper;
+import com.codecoachai.interview.mapper.StudyPlanMapper;
+import com.codecoachai.interview.domain.entity.StudyPlan;
+import com.codecoachai.common.core.enums.ErrorCode;
+import com.codecoachai.common.core.exception.BusinessException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.codecoachai.question.domain.entity.UserQuestionRecord;
 import com.codecoachai.question.mapper.UserQuestionRecordMapper;
 import java.time.LocalDateTime;
@@ -24,6 +29,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 学习计划动态调整 Controller。
@@ -41,11 +47,15 @@ public class StudyPlanAdjustController {
 
     private final StudyTaskMapper studyTaskMapper;
     private final UserQuestionRecordMapper userQuestionRecordMapper;
+    private final StudyPlanMapper studyPlanMapper;
+    private final ObjectMapper objectMapper;
 
     @Operation(summary = "触发计划动态调整（将过期未完成任务延期到今天之后）")
     @PostMapping("/{planId}/adjust")
+    @Transactional(rollbackFor = Exception.class)
     public Result<AdjustResultVO> adjust(@PathVariable Long planId) {
         Long userId = SecurityAssert.requireLoginUserId();
+        requireOwnedPlan(planId, userId, true);
         LocalDate today = LocalDate.now();
 
         // 查询该计划下所有过期未完成的任务
@@ -54,7 +64,9 @@ public class StudyPlanAdjustController {
                         .eq(StudyTask::getPlanId, planId)
                         .eq(StudyTask::getUserId, userId)
                         .in(StudyTask::getTaskStatus, List.of("TODO", "PENDING"))
-                        .lt(StudyTask::getPlannedDate, today));
+                        .lt(StudyTask::getPlannedDate, today)
+                        .orderByAsc(StudyTask::getPlannedDate)
+                        .orderByAsc(StudyTask::getId));
 
         if (overdueTasks.isEmpty()) {
             int reviewAdded = addDueWrongQuestionReviews(planId, userId, today);
@@ -70,27 +82,18 @@ public class StudyPlanAdjustController {
         // 将过期任务重新安排到今天及之后
         int rescheduled = 0;
         LocalDate nextDate = today;
-        // 查询今天及之后已有多少任务
-        Long todayTaskCount = studyTaskMapper.selectCount(
-                new LambdaQueryWrapper<StudyTask>()
-                        .eq(StudyTask::getPlanId, planId)
-                        .eq(StudyTask::getUserId, userId)
-                        .eq(StudyTask::getPlannedDate, today)
-                        .ne(StudyTask::getTaskStatus, "SKIPPED"));
-
-        // 每天最多安排 5 个任务
-        int dailyLimit = 5;
-        int todaySlots = (int) (dailyLimit - todayTaskCount);
-        if (todaySlots < 0) todaySlots = 0;
+        int todaySlots = availableSlots(planId, userId, nextDate);
 
         for (StudyTask task : overdueTasks) {
-            if (todaySlots <= 0) {
+            while (todaySlots <= 0) {
                 nextDate = nextDate.plusDays(1);
-                todaySlots = dailyLimit;
+                todaySlots = availableSlots(planId, userId, nextDate);
             }
             studyTaskMapper.update(null,
                     new LambdaUpdateWrapper<StudyTask>()
                             .eq(StudyTask::getId, task.getId())
+                            .eq(StudyTask::getUserId, userId)
+                            .eq(StudyTask::getPlanId, planId)
                             .set(StudyTask::getPlannedDate, nextDate));
             todaySlots--;
             rescheduled++;
@@ -112,6 +115,10 @@ public class StudyPlanAdjustController {
      * 幂等：同一天同题已存在复习任务则跳过（按任务标题识别）。
      */
     private int addDueWrongQuestionReviews(Long planId, Long userId, LocalDate today) {
+        int slots = availableSlots(planId, userId, today);
+        if (slots == 0) {
+            return 0;
+        }
         List<UserQuestionRecord> dueRecords = userQuestionRecordMapper.selectList(
                 new LambdaQueryWrapper<UserQuestionRecord>()
                         .eq(UserQuestionRecord::getUserId, userId)
@@ -135,6 +142,12 @@ public class StudyPlanAdjustController {
         int added = 0;
         int order = todayReviewTasks.size();
         for (UserQuestionRecord record : dueRecords) {
+            if (added >= Math.min(slots, Math.max(0, 3 - todayReviewTasks.size()))) {
+                break;
+            }
+            if (record.getQuestionId() == null) {
+                continue;
+            }
             String title = "错题复习 #" + record.getQuestionId();
             if (existing.contains(title)) {
                 continue;
@@ -155,17 +168,44 @@ public class StudyPlanAdjustController {
             task.setEstimatedMinutes(10);
             task.setAcceptanceCriteria("重答正确，或能完整说出错因与正确思路");
             task.setTaskStatus("TODO");
-            task.setRelatedQuestionIdsJson(String.valueOf(record.getQuestionId()));
+            try {
+                task.setRelatedQuestionIdsJson(objectMapper.writeValueAsString(List.of(record.getQuestionId())));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR, "复习任务生成失败");
+            }
             studyTaskMapper.insert(task);
+            existing.add(title);
             added++;
         }
         return added;
+    }
+
+    private int availableSlots(Long planId, Long userId, LocalDate date) {
+        long occupied = studyTaskMapper.selectCount(new LambdaQueryWrapper<StudyTask>()
+                .eq(StudyTask::getPlanId, planId)
+                .eq(StudyTask::getUserId, userId)
+                .eq(StudyTask::getPlannedDate, date)
+                .ne(StudyTask::getTaskStatus, "SKIPPED"));
+        return (int) Math.max(0L, 5L - occupied);
+    }
+
+    private void requireOwnedPlan(Long planId, Long userId, boolean lock) {
+        // Serialize adjustments of the same plan before checking capacity or deduplication.
+        StudyPlan plan = studyPlanMapper.selectOne(new LambdaQueryWrapper<StudyPlan>()
+                .eq(StudyPlan::getId, planId)
+                .eq(StudyPlan::getUserId, userId)
+                .eq(StudyPlan::getDeleted, 0)
+                .last(lock ? "limit 1 for update" : "limit 1"));
+        if (plan == null) {
+            throw new BusinessException(ErrorCode.PARAM_ERROR, "学习计划不存在或已不可用");
+        }
     }
 
     @Operation(summary = "查看计划执行统计（用于判断是否需要调整）")
     @GetMapping("/{planId}/adjust/stats")
     public Result<PlanStatsVO> adjustStats(@PathVariable Long planId) {
         Long userId = SecurityAssert.requireLoginUserId();
+        requireOwnedPlan(planId, userId, false);
         LocalDate today = LocalDate.now();
 
         List<StudyTask> allTasks = studyTaskMapper.selectList(
@@ -201,7 +241,8 @@ public class StudyPlanAdjustController {
         List<KnowledgeStatVO> knowledgeStats = new ArrayList<>();
         for (Map.Entry<String, List<StudyTask>> entry : byKnowledge.entrySet()) {
             List<StudyTask> tasks = entry.getValue();
-            long done = tasks.stream().filter(t -> "COMPLETED".equals(t.getTaskStatus())).count();
+            long done = tasks.stream().filter(t -> "COMPLETED".equals(t.getTaskStatus())
+                    || "DONE".equals(t.getTaskStatus())).count();
             KnowledgeStatVO ks = new KnowledgeStatVO();
             ks.setKnowledgePoint(entry.getKey());
             ks.setTotalTasks(tasks.size());

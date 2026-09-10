@@ -118,10 +118,11 @@ public class QuestionServiceImpl implements QuestionService {
         String mastery = StringUtils.hasText(dto.getMasteryStatus())
                 ? dto.getMasteryStatus()
                 : inferMastery(dto.getAnswerContent());
+        boolean wasInReview = CommonConstants.YES.equals(record.getWrong());
         record.setAnswerContent(dto.getAnswerContent());
         record.setMasteryStatus(mastery);
-        record.setWrong(MasteryStatusEnum.NOT_MASTERED.name().equals(mastery) ? CommonConstants.YES : CommonConstants.NO);
         record.setLastAnswerAt(LocalDateTime.now());
+        com.codecoachai.question.util.QuestionReviewSchedule.apply(record, wasInReview);
         saveRecord(record);
         PracticeRecord practiceRecord = createAgentPracticeEvidence(userId, question, record, dto);
         AgentTaskVO completedAgentTask = practiceRecord == null ? null
@@ -184,8 +185,7 @@ public class QuestionServiceImpl implements QuestionService {
                 .eq(UserQuestionRecord::getUserId, userId)
                 .eq(UserQuestionRecord::getWrong, CommonConstants.YES);
         if (Boolean.TRUE.equals(safeQuery.getDueOnly())) {
-            wrapper.eq(UserQuestionRecord::getNextReviewAt, java.time.LocalDateTime.now())
-                    .apply("DATE(next_review_at) <= CURDATE()");
+            wrapper.le(UserQuestionRecord::getNextReviewAt, LocalDateTime.now());
         }
         Page<UserQuestionRecord> page = recordMapper.selectPage(Page.of(defaultPage(safeQuery.getPageNo()), defaultSize(safeQuery.getPageSize())),
                 wrapper.orderByAsc(UserQuestionRecord::getNextReviewAt)
@@ -212,9 +212,10 @@ public class QuestionServiceImpl implements QuestionService {
             record.setWrong(CommonConstants.NO);
             // 手动标记掌握：退出错题本并清空间隔复习调度
             record.setNextReviewAt(null);
-        } else if (record.getNextReviewAt() == null && CommonConstants.YES.equals(record.getWrong())) {
+        } else if (MasteryStatusEnum.NOT_MASTERED.name().equals(dto.getMasteryStatus())) {
             // 重新进入错题本且无调度：从第一档开始
             record.setReviewStage(0);
+            record.setWrong(CommonConstants.YES);
             record.setReviewIntervalDays(1);
             record.setNextReviewAt(java.time.LocalDateTime.now().plusDays(1));
         }

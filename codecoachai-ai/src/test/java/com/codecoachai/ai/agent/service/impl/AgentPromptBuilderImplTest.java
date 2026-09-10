@@ -63,6 +63,21 @@ class AgentPromptBuilderImplTest {
         assertEquals(88L, result.getPromptTemplateVersionId());
         assertFalse(result.getFallbackUsed());
         assertTrue(result.getRenderedPrompt().contains("managed prompt"));
+        assertTrue(result.getRenderedPrompt().contains("tasks 数量为 1 至 1"));
+        assertTrue(result.getRenderedPrompt().contains("总 estimatedMinutes 不超过 30"));
+        assertEquals(java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest(result.getRenderedPrompt().getBytes(java.nio.charset.StandardCharsets.UTF_8))),
+                result.getPromptHash());
+    }
+
+    @Test
+    void builtInPromptDoesNotDemandExactlyThreeOrAllowFive() {
+        String prompt = builder.buildDailyPlanPrompt(context(), List.of(followUpCandidate()), 3, 60)
+                .getRenderedPrompt();
+        assertTrue(prompt.contains("返回 1 至 3 个任务"));
+        assertTrue(prompt.contains("单项为 5 至 180 分钟"));
+        assertFalse(prompt.contains("必须返回 3 个任务"));
+        assertFalse(prompt.contains("最多 5 个"));
     }
 
     private AgentPromptBuilderImpl newBuilderWithPromptRenderService(PromptRenderService renderService) throws Exception {

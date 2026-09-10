@@ -109,7 +109,7 @@ public class InnerQuestionController {
     @GetMapping("/{id}/search-doc")
     public Result<Map<String, Object>> getSearchDoc(@PathVariable Long id) {
         Question q = questionMapper.selectById(id);
-        if (q == null) {
+        if (q == null || !Integer.valueOf(1).equals(q.getStatus())) {
             return Result.success(null);
         }
         Map<String, Object> doc = new HashMap<>();

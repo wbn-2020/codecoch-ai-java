@@ -22,6 +22,28 @@ class CandidateTaskBuilderImplTest {
     private final CandidateTaskBuilderImpl builder = new CandidateTaskBuilderImpl();
 
     @Test
+    void requirementAndProjectCandidatesPassTheSameUserTextContractAsModelTasks() {
+        JobCoachAgentContext context = context(List.of());
+        context.setRequirementReadiness(requirementReadiness(false, "HIGH", true, true));
+        JobCoachAgentContext.ProjectEvidenceSnapshot project = new JobCoachAgentContext.ProjectEvidenceSnapshot();
+        project.setProjectEvidenceId(991L);
+        project.setTitle("REST API project");
+        project.setCompletenessScore(20);
+        context.setProjectEvidences(List.of(project));
+        for (CandidateTask candidate : builder.build(context, 10)) {
+            var task = AgentOutputValidatorImplTest.task(candidate.getCandidateId());
+            task.setType(candidate.getType());
+            task.setTitle(candidate.getTitle());
+            task.setDescription(candidate.getDescription());
+            task.setReason(candidate.getReason());
+            task.setPriority(candidate.getPriority());
+            task.setEstimatedMinutes(candidate.getEstimatedMinutes());
+            new AgentOutputValidatorImpl().validateDailyPlan(
+                    AgentOutputValidatorImplTest.plan(task), List.of(candidate), 1, 180);
+        }
+    }
+
+    @Test
     void buildPlacesDueApplicationFollowUpBeforeGenericTraining() {
         ApplicationSnapshot dueToday = application(12L, "INTERVIEWING", false, true,
                 LocalDateTime.of(2026, 6, 16, 9, 0));

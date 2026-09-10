@@ -40,6 +40,16 @@ class InnerQuestionControllerTest {
     }
 
     @Test
+    void disabledQuestionIsNotAnIndexSource() {
+        var question = new com.codecoachai.question.domain.entity.Question();
+        question.setStatus(0);
+        org.mockito.Mockito.when(questionMapper.selectById(1L)).thenReturn(question);
+        org.junit.jupiter.api.Assertions.assertNull(controller.getSearchDoc(1L).getData());
+        question.setStatus(1);
+        org.junit.jupiter.api.Assertions.assertNotNull(controller.getSearchDoc(1L).getData());
+    }
+
+    @Test
     void saveDraftsPersistsMinimizedRawReviewMetadataInsteadOfFullAiPayload() {
         AtomicLong idSequence = new AtomicLong(8000L);
         doAnswer(invocation -> {
