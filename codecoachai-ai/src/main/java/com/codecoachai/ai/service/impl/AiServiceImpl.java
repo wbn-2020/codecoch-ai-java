@@ -3071,6 +3071,7 @@ public class AiServiceImpl implements AiService {
         vo.setAbilityProfileUpdates(jsonOrDefault(firstNode(json, "abilityProfileUpdates", "abilityUpdates", "profileUpdateCandidates"), null));
         vo.setReportContent(firstText(jsonText(json, "reportContent", "content", "report", "markdown"),
                 vo.getSummary()));
+        applyTotalScoreFallbackFromRubric(vo, firstNode(json, "rubricScores", "dimensions", "rubric", "dimensionScores"));
         return vo;
     }
 
@@ -3092,6 +3093,48 @@ public class AiServiceImpl implements AiService {
             }
         }
         return null;
+    }
+
+    /**
+     * 2026-09-10 全链路验收问题④：模型（Deepseek-v4-flash）在该场景下会稳定漏掉顶层 totalScore，
+     * 但逐题评分和 rubricScores 都正常返回。缺失时按评分合同同款公式（rubric 均分 × 20）确定性推导，
+     * 避免整份有真实逐题评分的报告被 UNSCORABLE。模型显式给了 totalScore（含 0/null 之外的值）时不动。
+     */
+    private void applyTotalScoreFallbackFromRubric(GenerateReportVO vo, JsonNode rubricScoresNode) {
+        if (vo.getTotalScore() != null
+                || rubricScoresNode == null
+                || !rubricScoresNode.isArray()
+                || rubricScoresNode.isEmpty()) {
+            return;
+        }
+        java.math.BigDecimal total = java.math.BigDecimal.ZERO;
+        int count = 0;
+        for (JsonNode item : rubricScoresNode) {
+            if (!item.isObject()) {
+                return;
+            }
+            JsonNode scoreNode = firstNode(item, "score", "dimensionScore", "value");
+            if (scoreNode == null || !scoreNode.isNumber()) {
+                return;
+            }
+            java.math.BigDecimal score = scoreNode.decimalValue();
+            if (score.compareTo(java.math.BigDecimal.ZERO) < 0 || score.compareTo(java.math.BigDecimal.valueOf(5)) > 0) {
+                return;
+            }
+            total = total.add(score);
+            count++;
+        }
+        if (count == 0) {
+            return;
+        }
+        int derived = total
+                .divide(java.math.BigDecimal.valueOf(count), 8, java.math.RoundingMode.HALF_UP)
+                .multiply(java.math.BigDecimal.valueOf(20))
+                .setScale(0, java.math.RoundingMode.HALF_UP)
+                .intValue();
+        if (derived >= 1 && derived <= 100) {
+            vo.setTotalScore(derived);
+        }
     }
 
     private boolean isPresentNode(JsonNode node) {

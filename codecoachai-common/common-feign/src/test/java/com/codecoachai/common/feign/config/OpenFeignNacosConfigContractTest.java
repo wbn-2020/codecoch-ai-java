@@ -37,7 +37,8 @@ class OpenFeignNacosConfigContractTest {
         FeignClientProperties.FeignClientConfiguration interview =
                 properties.getConfig().get("interviewAiFeignClient");
         assertEquals(3000, interview.getConnectTimeout());
-        assertEquals(40000, interview.getReadTimeout());
+        // 2026-09-10 验收问题②：面试报告生成在 ai 侧同步等模型完成，读超时提到 220s
+        assertEquals(220000, interview.getReadTimeout());
         FeignClientProperties.FeignClientConfiguration businessAction =
                 properties.getConfig().get("interviewAgentBusinessActionFeignClient");
         assertEquals(3000, businessAction.getConnectTimeout());

@@ -24,7 +24,9 @@ spring:
             readTimeout: 5000
           interviewAiFeignClient:
             connectTimeout: 3000
-            readTimeout: 40000
+            # 面试报告生成在 ai 侧要同步等 DeepSeek 完成（单次可达 60s+，最多 3 次重试），
+            # 40s 读超时导致 core 必然 FAILED（2026-09-10 全链路验收问题②）。
+            readTimeout: 220000
           interviewAgentBusinessActionFeignClient:
             connectTimeout: 3000
             readTimeout: 40000
