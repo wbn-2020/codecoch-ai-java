@@ -584,7 +584,10 @@ public class ResumeJobMatchServiceImpl implements ResumeJobMatchService {
         report.setStatus(ResumeJobMatchStatus.SUCCESS.getCode());
         report.setErrorMessage(null);
         report.setAiCallLogId(aiCallLogId);
-        if (!resumeJobMatchTrustPolicy.assess(report).trustedSuccess()) {
+        // 2026-09-10 全链路验收问题①：TRUST_PARTIAL（schemaWarning/证据边界整理等软告警）不应一票否决成 FAILED——
+        // 模型总结天然会引申，全部否决会让用户几乎拿不到报告（重新生成也大概率再次触发）。
+        // PARTIAL 保持 SUCCESS 落库（前端已有"需复核"口径展示）；只有真实 fallback 才走 FAILED。
+        if (resumeJobMatchTrustPolicy.assess(report).fallback()) {
             return markUntrustedResultFailed(report, normalizedResult, dimensionScores, aiCallLogId);
         }
         int affectedRows = reportMapper.update(report, new LambdaUpdateWrapper<ResumeJobMatchReport>()

@@ -2,6 +2,7 @@ package com.codecoachai.resume.service.impl;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -136,7 +137,9 @@ class ResumeJobMatchPersistenceRegressionTest {
     }
 
     @Test
-    void executeReportFailsWhenNormalizedResultRetainsTrustWarnings() throws Exception {
+    void executeReportKeepsPartialTrustResultAsUsableSuccess() throws Exception {
+        // 2026-09-10 验收问题①修复：PARTIAL（schemaWarning/证据边界整理）不再一票否决成 FAILED，
+        // 保持 SUCCESS + TRUST_PARTIAL 落库并写入明细，前端按"需复核"口径展示。
         String dimension = "D".repeat(100);
         String skillName = "S".repeat(300);
         String evidence = "E".repeat(70_000);
@@ -151,19 +154,18 @@ class ResumeJobMatchPersistenceRegressionTest {
         warning.put("message", "unsupported evidence removed");
         partialResult.set("schemaWarnings", JSON.createArrayNode().add(warning));
         String resultJson = partialResult.toString();
-        ResumeJobMatchReport failed = report(ResumeJobMatchStatus.FAILED);
-        failed.setRawResultJson(resultJson);
-        failed.setErrorMessage("匹配报告未通过可信校验，请检查简历与岗位内容后重新生成。");
-        stubUntrustedReportLifecycle(failed);
+        ResumeJobMatchReport persisted = report(ResumeJobMatchStatus.SUCCESS);
+        persisted.setRawResultJson(resultJson);
+        stubUntrustedReportLifecycle(persisted);
         stubAiResult(resultJson);
 
         ResumeJobMatchSubmitVO result = service.executeReport(REPORT_ID);
 
-        assertEquals(ResumeJobMatchStatus.FAILED.getCode(), result.getStatus());
-        assertEquals("FALLBACK", result.getTrustStatus());
-        assertTrue(result.getFallback());
-        assertTrue(result.getErrorMessage().contains("可信校验"));
-        verify(detailMapper, never()).insert(any(ResumeJobMatchDetail.class));
+        assertEquals(ResumeJobMatchStatus.SUCCESS.getCode(), result.getStatus());
+        assertEquals("PARTIAL", result.getTrustStatus());
+        assertFalse(result.getFallback());
+        assertNull(result.getErrorMessage());
+        verify(detailMapper, times(1)).insert(any(ResumeJobMatchDetail.class));
     }
 
     @Test

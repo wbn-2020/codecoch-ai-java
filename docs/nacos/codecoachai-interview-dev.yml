@@ -9,6 +9,11 @@ spring:
           default:
             connectTimeout: 3000
             readTimeout: 40000
+          # 面试报告生成走 core -> ai 的同步 Feign；ai 侧模型调用单次可达 60s 且最多重试 3 次，
+          # 默认 40s 读超时会让 core 在模型完成前断开并判 FAILED（2026-09-10 全链路验收问题②）。
+          codecoachai-ai:
+            connectTimeout: 3000
+            readTimeout: 220000
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://127.0.0.1:3306/codecoachai_v1?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
