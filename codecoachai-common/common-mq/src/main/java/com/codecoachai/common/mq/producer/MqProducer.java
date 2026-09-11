@@ -9,10 +9,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.SendResult;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.slf4j.MDC;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.support.MessageBuilder;
-import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 /**
@@ -22,10 +20,13 @@ import org.springframework.util.StringUtils;
  *   <li>自动注入 KEYS Header（messageId）便于 RocketMQ 控制台查询</li>
  *   <li>同步发送（核心业务）/ 异步发送（次要业务）两种接口</li>
  * </ul>
+ *
+ * 2026-09-11 修复：不再标注 @Component + @ConditionalOnBean——组件扫描阶段
+ * RocketMQTemplate（由自动配置创建）尚未注册，@ConditionalOnBean 恒不满足，
+ * 导致该 bean 被跳过、所有 MQ 同步投递静默降级。注册统一收敛到
+ * MqAutoConfiguration（自动配置阶段条件评估时序正确）。
  */
 @Slf4j
-@Component
-@ConditionalOnBean(RocketMQTemplate.class)
 @RequiredArgsConstructor
 public class MqProducer {
 
