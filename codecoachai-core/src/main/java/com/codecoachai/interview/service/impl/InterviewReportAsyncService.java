@@ -68,6 +68,7 @@ public class InterviewReportAsyncService {
     private static final String DEFAULT_REPORT_WEAKNESSES = "部分回答停留在结论层，对源码细节、执行计划字段、缓存一致性边界和线上排查步骤展开不足。";
     private static final String DEFAULT_REPORT_SUGGESTIONS = "[\"复盘集合、并发、事务、索引和缓存高频题\",\"准备 2-3 个带指标的项目优化案例\"]";
     private static final String REPORT_SAMPLE_INSUFFICIENT_MESSAGE = "答题样本不足，无法生成评分报告。请至少提交 1 条有效回答后再结束面试。";
+    private static final String TRIAL_REPORT_SUMMARY_PREFIX = "【体验版报告 · 有效回答样本有限，评分仅供参考：】";
     private static final String REPORT_SAMPLE_INSUFFICIENT_SUGGESTIONS = "[\"至少提交 1 条有效回答后再结束面试\",\"如果只是想退出，可稍后重新开始面试训练\"]";
     private static final String REPORT_GENERATION_FAILED_MESSAGE =
             "面试报告生成失败，答题记录已保留，请稍后重新生成或联系管理员查看诊断。";
@@ -167,16 +168,25 @@ public class InterviewReportAsyncService {
         }
         report.setStatus(ReportStatusEnum.GENERATED.name());
         applyReportContent(report, aiReport, messages);
-        InterviewReportConsumabilityContract.Validation consumability =
-                InterviewReportConsumabilityContract.validate(
-                        objectMapper,
-                        report,
-                        countScorableAnswers(messages),
+        int scorableAnswerCount = countScorableAnswers(messages);
+        // 2026-09-11 分层决策（问题#2）：3-5 条有效回答为「体验版报告」——放宽样本量门槛但不放宽
+        // 内容/评分合同；报告 summary 前缀标注样本边界，前端按体验版口径展示。
+        boolean trialReport = scorableAnswerCount < InterviewReportConsumabilityContract.MINIMUM_SCORABLE_ANSWER_COUNT
+                && scorableAnswerCount >= InterviewReportConsumabilityContract.MINIMUM_TRIAL_ANSWER_COUNT;
+        InterviewReportConsumabilityContract.Validation consumability = trialReport
+                ? InterviewReportConsumabilityContract.validateTrial(
+                        objectMapper, report, scorableAnswerCount,
+                        reportRubricDimensions(report.getSessionId()))
+                : InterviewReportConsumabilityContract.validate(
+                        objectMapper, report, scorableAnswerCount,
                         reportRubricDimensions(report.getSessionId()));
         if (!consumability.valid()) {
             markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + consumability.reasonCode() + "]");
+        } else if (trialReport) {
+            report.setSummary(TRIAL_REPORT_SUMMARY_PREFIX + firstText(report.getSummary(), ""));
+            report.setReportContent(firstText(report.getReportContent(), report.getSummary()));
         }
         boolean businessSuccess = ReportStatusEnum.GENERATED.name().equals(report.getStatus());
         if (businessSuccess && InterviewReportTrustPolicy.isTrustedForFormalAction(report)) {

@@ -13,6 +13,27 @@ public final class InterviewReportConsumabilityContract {
 
     public static final String SCHEMA_VERSION = "interview-report-v1";
     public static final int MINIMUM_SCORABLE_ANSWER_COUNT = 6;
+    /** 体验版报告门槛（2026-09-11 分层决策）：3-5 条有效回答可出体验版报告，仍需满足其余合同。 */
+    public static final int MINIMUM_TRIAL_ANSWER_COUNT = 3;
+
+    /**
+     * 体验版（3-5 条有效回答）可用性校验：与正式报告相同的合同，仅把样本量门槛放宽到
+     * MINIMUM_TRIAL_ANSWER_COUNT，其余内容、评分与逐题明细校验一律不放宽。
+     */
+    public static Validation validateTrial(ObjectMapper objectMapper,
+                                           InterviewReport report,
+                                           int expectedAnswerCount,
+                                           String expectedDimensionsJson) {
+        if (expectedAnswerCount < MINIMUM_TRIAL_ANSWER_COUNT) {
+            return invalid(
+                    "ANSWER_EVIDENCE_INSUFFICIENT",
+                    "Interview trial report requires at least "
+                            + MINIMUM_TRIAL_ANSWER_COUNT
+                            + " valid answers but found "
+                            + Math.max(expectedAnswerCount, 0));
+        }
+        return validate(objectMapper, report, expectedAnswerCount, expectedDimensionsJson);
+    }
 
     private InterviewReportConsumabilityContract() {
     }
