@@ -3071,7 +3071,8 @@ public class AiServiceImpl implements AiService {
         vo.setAbilityProfileUpdates(jsonOrDefault(firstNode(json, "abilityProfileUpdates", "abilityUpdates", "profileUpdateCandidates"), null));
         vo.setReportContent(firstText(jsonText(json, "reportContent", "content", "report", "markdown"),
                 vo.getSummary()));
-        applyTotalScoreFallbackFromRubric(vo, firstNode(json, "rubricScores", "dimensions", "rubric", "dimensionScores"));
+        applyTotalScoreFallbackFromRubric(vo, firstNode(json, "rubricScores", "dimensions", "rubric", "dimensionScores"),
+                firstNode(json, "qaReview", "questionReviews", "answerReviews", "qaReviews"));
         return vo;
     }
 
@@ -3097,44 +3098,90 @@ public class AiServiceImpl implements AiService {
 
     /**
      * 2026-09-10 全链路验收问题④：模型（Deepseek-v4-flash）在该场景下会稳定漏掉顶层 totalScore，
-     * 但逐题评分和 rubricScores 都正常返回。缺失时按评分合同同款公式（rubric 均分 × 20）确定性推导，
-     * 避免整份有真实逐题评分的报告被 UNSCORABLE。模型显式给了 totalScore（含 0/null 之外的值）时不动。
+     * 且常把 rubricScores 返回为空数组，导致整份有真实逐题评分的报告被 UNSCORABLE。
+     * 兜底策略（全部来自真实逐题评分，不虚构）：
+     * 1. rubricScores 非空 → 按评分合同同款公式（均分 × 20）推导 totalScore；
+     * 2. rubricScores 为空但 qaReview 有逐题分（aiScore/score，0-100）→ 均分即 totalScore，
+     *    并构造 ANSWER_QUALITY 单维度 rubric（score = 均分/20，落在合同 1-5 区间）。
+     * 模型显式给了 totalScore 时不动；数据形态异常时不兜底。
      */
-    private void applyTotalScoreFallbackFromRubric(GenerateReportVO vo, JsonNode rubricScoresNode) {
-        if (vo.getTotalScore() != null
-                || rubricScoresNode == null
-                || !rubricScoresNode.isArray()
-                || rubricScoresNode.isEmpty()) {
+    private void applyTotalScoreFallbackFromRubric(GenerateReportVO vo, JsonNode rubricScoresNode, JsonNode qaReviewNode) {
+        if (vo.getTotalScore() != null) {
             return;
         }
-        java.math.BigDecimal total = java.math.BigDecimal.ZERO;
-        int count = 0;
-        for (JsonNode item : rubricScoresNode) {
-            if (!item.isObject()) {
+        // 优先从 rubricScores 推导
+        if (rubricScoresNode != null && rubricScoresNode.isArray() && !rubricScoresNode.isEmpty()) {
+            java.math.BigDecimal total = java.math.BigDecimal.ZERO;
+            int count = 0;
+            for (JsonNode item : rubricScoresNode) {
+                if (!item.isObject()) {
+                    return;
+                }
+                JsonNode scoreNode = firstNode(item, "score", "dimensionScore", "value");
+                if (scoreNode == null || !scoreNode.isNumber()) {
+                    return;
+                }
+                java.math.BigDecimal score = scoreNode.decimalValue();
+                if (score.compareTo(java.math.BigDecimal.ZERO) < 0 || score.compareTo(java.math.BigDecimal.valueOf(5)) > 0) {
+                    return;
+                }
+                total = total.add(score);
+                count++;
+            }
+            if (count > 0) {
+                int derived = total
+                        .divide(java.math.BigDecimal.valueOf(count), 8, java.math.RoundingMode.HALF_UP)
+                        .multiply(java.math.BigDecimal.valueOf(20))
+                        .setScale(0, java.math.RoundingMode.HALF_UP)
+                        .intValue();
+                if (derived >= 1 && derived <= 100) {
+                    vo.setTotalScore(derived);
+                }
                 return;
             }
-            JsonNode scoreNode = firstNode(item, "score", "dimensionScore", "value");
-            if (scoreNode == null || !scoreNode.isNumber()) {
-                return;
-            }
-            java.math.BigDecimal score = scoreNode.decimalValue();
-            if (score.compareTo(java.math.BigDecimal.ZERO) < 0 || score.compareTo(java.math.BigDecimal.valueOf(5)) > 0) {
-                return;
-            }
-            total = total.add(score);
-            count++;
         }
-        if (count == 0) {
+        // rubricScores 缺失/为空：从 qaReview 逐题分推导 totalScore，并构造单维度 rubric
+        java.math.BigDecimal answerTotal = java.math.BigDecimal.ZERO;
+        int answerCount = 0;
+        if (qaReviewNode != null && qaReviewNode.isArray()) {
+            for (JsonNode item : qaReviewNode) {
+                if (!item.isObject()) {
+                    continue;
+                }
+                JsonNode scoreNode = firstNode(item, "aiScore", "score");
+                if (scoreNode == null || !scoreNode.isNumber()) {
+                    continue;
+                }
+                java.math.BigDecimal score = scoreNode.decimalValue();
+                if (score.compareTo(java.math.BigDecimal.ZERO) <= 0 || score.compareTo(java.math.BigDecimal.valueOf(100)) > 0) {
+                    continue;
+                }
+                answerTotal = total(answerTotal, score);
+                answerCount++;
+            }
+        }
+        if (answerCount == 0) {
             return;
         }
-        int derived = total
-                .divide(java.math.BigDecimal.valueOf(count), 8, java.math.RoundingMode.HALF_UP)
-                .multiply(java.math.BigDecimal.valueOf(20))
-                .setScale(0, java.math.RoundingMode.HALF_UP)
-                .intValue();
-        if (derived >= 1 && derived <= 100) {
-            vo.setTotalScore(derived);
+        java.math.BigDecimal average = answerTotal
+                .divide(java.math.BigDecimal.valueOf(answerCount), 8, java.math.RoundingMode.HALF_UP);
+        int derived = average.setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        if (derived < 1 || derived > 100) {
+            return;
         }
+        vo.setTotalScore(derived);
+        if (vo.getRubricScores() == null || vo.getRubricScores().isBlank()
+                || "[]".equals(vo.getRubricScores().trim())) {
+            java.math.BigDecimal rubricScore = average
+                    .divide(java.math.BigDecimal.valueOf(20), 2, java.math.RoundingMode.HALF_UP)
+                    .max(java.math.BigDecimal.ONE)
+                    .min(java.math.BigDecimal.valueOf(5));
+            vo.setRubricScores("[{\"dimension\":\"ANSWER_QUALITY\",\"score\":" + rubricScore.toPlainString() + "}]");
+        }
+    }
+
+    private java.math.BigDecimal total(java.math.BigDecimal a, java.math.BigDecimal b) {
+        return a.add(b);
     }
 
     private boolean isPresentNode(JsonNode node) {
