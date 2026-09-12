@@ -186,6 +186,9 @@ public class InterviewReportAsyncService {
                     + " [" + consumability.reasonCode() + "]");
         } else if (trialReport) {
             report.setSummary(TRIAL_REPORT_SUMMARY_PREFIX + firstText(report.getSummary(), ""));
+            if (!StringUtils.hasText(report.getStrengths()) || "[]".equals(report.getStrengths().trim())) {
+                report.setStrengths(DEFAULT_REPORT_STRENGTHS);
+            }
             report.setReportContent(firstText(report.getReportContent(), report.getSummary()));
         }
         boolean businessSuccess = ReportStatusEnum.GENERATED.name().equals(report.getStatus());

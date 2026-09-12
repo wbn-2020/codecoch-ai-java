@@ -32,7 +32,37 @@ public final class InterviewReportConsumabilityContract {
                             + " valid answers but found "
                             + Math.max(expectedAnswerCount, 0));
         }
-        return validate(objectMapper, report, expectedAnswerCount, expectedDimensionsJson);
+        // 体验版与正式报告的差异只有两处：样本量门槛（3 vs 6）和允许 strengths 为空
+        // （表现差的回答模型会诚实返回空 strengths，此时仍应给出可读的体验版复盘）。
+        // 评分合同、weaknesses/mainProblems/reviewSuggestions/qaReview 等一律不放宽。
+        String rubricVersion = StringUtils.hasText(report.getRubricVersion())
+                ? report.getRubricVersion()
+                : "INTERVIEW_RUBRIC_TRIAL_V1";
+        InterviewReportScoringContract.Validation scoring = InterviewReportScoringContract.validate(
+                objectMapper,
+                report.getTotalScore(),
+                rubricVersion,
+                report.getRubricScores(),
+                expectedDimensionsJson);
+        if (!scoring.valid()) {
+            return invalid(scoring.reasonCode(), scoring.message());
+        }
+        if (!hasConsumableContent(objectMapper, report.getWeaknesses())) {
+            return invalid("WEAKNESSES_MISSING", "Report weaknesses are missing");
+        }
+        if (!hasConsumableContent(objectMapper, report.getMainProblems())) {
+            return invalid("MAIN_PROBLEMS_MISSING", "Report main problems are missing");
+        }
+        if (!hasConsumableContent(objectMapper, report.getReviewSuggestions())) {
+            return invalid("REVIEW_SUGGESTIONS_MISSING", "Report review suggestions are missing");
+        }
+        if (!StringUtils.hasText(report.getReportContent())) {
+            return invalid("REPORT_CONTENT_MISSING", "Report content is missing");
+        }
+        if (report.getGeneratedAt() == null) {
+            return invalid("GENERATED_AT_MISSING", "Report generatedAt is missing");
+        }
+        return validateQaReview(objectMapper, report.getQaReview(), expectedAnswerCount);
     }
 
     private InterviewReportConsumabilityContract() {

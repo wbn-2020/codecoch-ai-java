@@ -136,12 +136,20 @@ public class InnerInterviewReportController {
         if (success) {
             applySuccessfulReportPayload(report, dto, now);
             StoredEvidenceRecovery recovery = recoverReportFromStoredEvidence(sessionId, report);
+            // 2026-09-11 分层口径（问题#2）：3-5 条有效回答为体验版报告，用 validateTrial；
+            // 此前这里固定用 6 题正式 validate，把体验版报告打回 UNSCORABLE 并清空 totalScore。
             InterviewReportConsumabilityContract.Validation consumability =
-                    InterviewReportConsumabilityContract.validate(
-                            objectMapper,
-                            report,
-                            recovery.answerCount(),
-                            null);
+                    recovery.answerCount() >= InterviewReportConsumabilityContract.MINIMUM_SCORABLE_ANSWER_COUNT
+                            ? InterviewReportConsumabilityContract.validate(
+                                    objectMapper,
+                                    report,
+                                    recovery.answerCount(),
+                                    null)
+                            : InterviewReportConsumabilityContract.validateTrial(
+                                    objectMapper,
+                                    report,
+                                    recovery.answerCount(),
+                                    null);
             if (!consumability.valid()) {
                 completionFailureReason = recovery.hasAnswers()
                         ? "本轮问答已保留，但报告最小可消费结构不完整，暂时无法生成可信复盘。"
@@ -563,7 +571,8 @@ public class InnerInterviewReportController {
             rubric.put("evidenceCount", answers.size());
             rubric.put("evidenceSource", "STORED_INTERVIEW_EVALUATION");
             report.setRubricScores(writeJson(List.of(rubric), "[]"));
-            report.setRubricVersion(null);
+            // 体验版报告给固定版本标识，避免 RUBRIC_VERSION_MISSING 拦截（2026-09-11 问题#2 分层）
+            report.setRubricVersion("INTERVIEW_RUBRIC_TRIAL_V1");
         }
         String evidenceSummary = totalScore == null
                 ? "本场面试包含 " + answers.size() + " 条有效回答，问答明细已保留，但缺少可信的逐题评分证据。"
