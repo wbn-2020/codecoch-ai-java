@@ -45,6 +45,11 @@ services:
       CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET is required for release}
     volumes:
       - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-gateway.jar:/app/app.jar:ro
+    tmpfs:
+      # The runtime image has no /home/codecoachai and runs as uid 10001, so the
+      # Nacos client cannot write local config snapshots or ~/logs/nacos.
+      # A writable HOME removes those startup errors and keeps offline snapshots.
+      - /home/codecoachai:rw,uid=10001,gid=10001,mode=0700
 
   codecoachai-core:
     image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
@@ -79,6 +84,9 @@ services:
       CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET: ${CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET:?CODECOACHAI_CALLER_SEARCH_SIGNING_SECRET is required for release}
     volumes:
       - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-core.jar:/app/app.jar:ro
+    tmpfs:
+      # See codecoachai-gateway: writable HOME so the Nacos client can persist snapshots and logs.
+      - /home/codecoachai:rw,uid=10001,gid=10001,mode=0700
 
   codecoachai-ai:
     image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
@@ -109,6 +117,9 @@ services:
       CODECOACHAI_CALLER_CORE_SIGNING_SECRET: ${CODECOACHAI_CALLER_CORE_SIGNING_SECRET:?CODECOACHAI_CALLER_CORE_SIGNING_SECRET is required for release}
     volumes:
       - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-ai.jar:/app/app.jar:ro
+    tmpfs:
+      # See codecoachai-gateway: writable HOME so the Nacos client can persist snapshots and logs.
+      - /home/codecoachai:rw,uid=10001,gid=10001,mode=0700
 
   codecoachai-search:
     image: codecoachai/runtime-base:${CODECOACHAI_RUNTIME_IMAGE_TAG:?CODECOACHAI_RUNTIME_IMAGE_TAG is required for release}
@@ -140,3 +151,6 @@ services:
       CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET: ${CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET:?CODECOACHAI_GATEWAY_TO_SEARCH_SIGNING_SECRET is required for release}
     volumes:
       - ${CODECOACHAI_REMOTE_ROOT:?CODECOACHAI_REMOTE_ROOT is required}/current/backend/codecoachai-search.jar:/app/app.jar:ro
+    tmpfs:
+      # See codecoachai-gateway: writable HOME so the Nacos client can persist snapshots and logs.
+      - /home/codecoachai:rw,uid=10001,gid=10001,mode=0700
