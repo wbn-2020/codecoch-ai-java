@@ -5,7 +5,6 @@ import co.elastic.clients.elasticsearch.core.DeleteRequest;
 import co.elastic.clients.elasticsearch.core.IndexRequest;
 import com.codecoachai.common.core.domain.Result;
 import com.codecoachai.common.core.enums.ErrorCode;
-import com.codecoachai.common.core.util.TextFingerprintUtils;
 import com.codecoachai.common.mq.consumer.NonRetryableMqException;
 import com.codecoachai.common.mq.consumer.RetryableMqException;
 import com.codecoachai.common.mq.constant.MqTopics;
@@ -200,10 +199,5 @@ public class SearchSyncConsumer implements RocketMQListener<MqMessage<SearchSync
         } catch (Exception recordEx) {
             log.warn("Record search sync failure failed messageId={}", envelope.getMessageId(), recordEx);
         }
-    }
-
-    private String shortHash(String value) {
-        String hash = TextFingerprintUtils.sha256Hex(value);
-        return hash == null ? null : hash.substring(0, Math.min(hash.length(), 12));
     }
 }

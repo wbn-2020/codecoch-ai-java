@@ -11,6 +11,7 @@ import com.codecoachai.task.feign.vo.ResumeOptimizeSubmitVO;
 import java.time.LocalDate;
 import java.util.List;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -59,5 +60,7 @@ public interface ResumeFeignClient {
 
     @GetMapping("/inner/applications/users/{userId}/reminder-candidates")
     Result<List<ReminderCandidateVO>> listApplicationReminderCandidates(@PathVariable("userId") Long userId,
-                                                                        @RequestParam("date") LocalDate date);
+                                                                        @RequestParam("date")
+                                                                        @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
+                                                                        LocalDate date);
 }

@@ -18,6 +18,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -45,7 +46,7 @@ public class InnerJobApplicationController {
     @GetMapping("/users/{userId}/reminder-candidates")
     public Result<List<ApplicationReminderCandidateVO>> listApplicationReminderCandidates(
             @PathVariable Long userId,
-            @RequestParam(required = false) LocalDate date) {
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
         return Result.success(v4ResumeCareerService.listApplicationReminderCandidates(
                 userId, date, LocalDateTime.now()));
     }

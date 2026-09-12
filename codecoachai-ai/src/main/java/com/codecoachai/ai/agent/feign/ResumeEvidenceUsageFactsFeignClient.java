@@ -3,6 +3,7 @@ package com.codecoachai.ai.agent.feign;
 import com.codecoachai.common.core.domain.Result;
 import java.time.LocalDateTime;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -16,5 +17,6 @@ public interface ResumeEvidenceUsageFactsFeignClient {
             @RequestParam(value = "campaignId", required = false) Long campaignId,
             @RequestParam(value = "applicationId", required = false) Long applicationId,
             @RequestParam(value = "usageId", required = false) Long usageId,
-            @RequestParam(value = "dataCutoffAt", required = false) LocalDateTime dataCutoffAt);
+            @RequestParam(value = "dataCutoffAt", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime dataCutoffAt);
 }

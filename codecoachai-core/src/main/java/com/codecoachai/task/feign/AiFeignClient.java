@@ -14,6 +14,7 @@ import com.codecoachai.task.feign.vo.ParseResumeVO;
 import java.time.LocalDate;
 import java.util.List;
 import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,5 +49,6 @@ public interface AiFeignClient {
     @GetMapping("/inner/agent/reminders/candidates")
     Result<List<ReminderCandidateVO>> listReminderCandidates(@RequestParam("userId") Long userId,
                                                              @RequestParam(value = "planDate", required = false)
+                                                             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE)
                                                              LocalDate planDate);
 }
