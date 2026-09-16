@@ -50,6 +50,7 @@ import com.codecoachai.question.mq.QuestionMqDispatcher;
 import com.codecoachai.question.service.QuestionDuplicateService;
 import com.codecoachai.question.service.QuestionEmbeddingIndexService;
 import com.codecoachai.question.service.QuestionService;
+import com.codecoachai.question.support.ReviewScheduler;
 import com.codecoachai.question.util.QuestionTextNormalizeUtils;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -213,10 +214,19 @@ public class QuestionServiceImpl implements QuestionService {
             // 手动标记掌握：退出错题本并清空间隔复习调度
             record.setNextReviewAt(null);
         } else if (MasteryStatusEnum.NOT_MASTERED.name().equals(dto.getMasteryStatus())) {
-            // 重新进入错题本且无调度：从第一档开始
+            // 重新进入错题本且无调度：稳定性打回冷启动（1 天后到期）；已初始化模型时保留难度与计数。
             record.setReviewStage(0);
             record.setWrong(CommonConstants.YES);
             record.setReviewIntervalDays(1);
+            ReviewScheduler.MemoryState requeued =
+                    ReviewScheduler.onManualRequeue(new ReviewScheduler.MemoryState(
+                            record.getMemoryStability(), record.getMemoryDifficulty(),
+                            record.getReviewReps() == null ? 0 : record.getReviewReps(),
+                            record.getReviewLapses() == null ? 0 : record.getReviewLapses()));
+            record.setMemoryStability(requeued.stability());
+            record.setMemoryDifficulty(requeued.difficulty());
+            record.setReviewReps(requeued.reps());
+            record.setReviewLapses(requeued.lapses());
             record.setNextReviewAt(java.time.LocalDateTime.now().plusDays(1));
         }
         saveRecord(record);

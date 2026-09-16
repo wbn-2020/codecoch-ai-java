@@ -25,4 +25,12 @@ public class UserQuestionRecord extends BaseEntity {
     private LocalDateTime nextReviewAt;
     /** 已完成复习次数（决定档位下标） */
     private Integer reviewStage;
+    /** 记忆稳定性(天)，FSRS-lite；NULL=未初始化，调度走旧档位 fallback */
+    private Double memoryStability;
+    /** 记忆难度 1-10，FSRS-lite；NULL=未初始化 */
+    private Double memoryDifficulty;
+    /** 复习成功次数（FSRS-lite，可大于 4，不受旧档位上限约束） */
+    private Integer reviewReps;
+    /** 复习遗忘（答错）次数 */
+    private Integer reviewLapses;
 }

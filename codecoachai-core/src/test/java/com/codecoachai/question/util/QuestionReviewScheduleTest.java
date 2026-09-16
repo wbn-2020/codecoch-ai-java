@@ -19,23 +19,49 @@ class QuestionReviewScheduleTest {
     }
 
     @Test
-    void keepsReviewQueueUntilAllIntervalsComplete() {
+    void preservesOneLegacyTransitionThenInitializesFsrsForStoredRecords() {
+        UserQuestionRecord record = new UserQuestionRecord();
+        record.setLastAnswerAt(LocalDateTime.of(2026, 9, 10, 10, 0));
+        record.setReviewStage(0);
+        record.setReviewIntervalDays(1);
+        record.setMasteryStatus("MASTERED");
+
+        QuestionReviewSchedule.apply(record, true);
+
+        assertEquals(1, record.getWrong());
+        assertEquals(3, record.getReviewIntervalDays());
+        assertEquals(record.getLastAnswerAt().plusDays(3), record.getNextReviewAt());
+        assertEquals(3.0, record.getMemoryStability());
+        assertEquals(5.0, record.getMemoryDifficulty());
+        assertEquals(1, record.getReviewReps());
+        assertEquals(0, record.getReviewLapses());
+
+        QuestionReviewSchedule.apply(record, true);
+        assertTrue(record.getMemoryStability() > 3.0);
+        assertEquals(2, record.getReviewReps());
+    }
+
+    @Test
+    void newWrongRecordStartsFsrsAndKeepsReviewQueueUntilMemoryIsStable() {
         UserQuestionRecord record = new UserQuestionRecord();
         record.setLastAnswerAt(LocalDateTime.of(2026, 9, 10, 10, 0));
         record.setMasteryStatus("NOT_MASTERED");
+
         QuestionReviewSchedule.apply(record, false);
+
         assertEquals(1, record.getWrong());
         assertEquals(1, record.getReviewIntervalDays());
+        assertEquals(1.0, record.getMemoryStability());
+        assertEquals(5.0, record.getMemoryDifficulty());
+        assertEquals(1, record.getReviewLapses());
+
         record.setMasteryStatus("MASTERED");
-        for (int days : new int[]{3, 7, 15}) {
+        for (int i = 0; i < 12 && record.getWrong() == 1; i++) {
             QuestionReviewSchedule.apply(record, true);
-            assertEquals(1, record.getWrong());
-            assertEquals(days, record.getReviewIntervalDays());
-            assertEquals(record.getLastAnswerAt().plusDays(days), record.getNextReviewAt());
         }
-        QuestionReviewSchedule.apply(record, true);
         assertEquals(0, record.getWrong());
         assertNull(record.getNextReviewAt());
+        assertTrue(record.getReviewReps() >= 4);
     }
 
     @Test
