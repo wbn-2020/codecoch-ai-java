@@ -12,5 +12,6 @@ public class InnerUserBasicVO {
     private String avatarUrl;
     private String email;
     private Integer status;
+    private Integer mustChangePassword;
     private List<String> roles;
 }

@@ -26,6 +26,7 @@ public final class UserConvert {
         vo.setPhone(user.getPhone());
         vo.setStatus(user.getStatus());
         vo.setRoles(roles);
+        vo.setMustChangePassword(Boolean.TRUE.equals(flagOn(user.getMustChangePassword())));
         vo.setCreatedAt(user.getCreatedAt());
         return vo;
     }
@@ -54,6 +55,7 @@ public final class UserConvert {
         vo.setAvatarUrl(user.getAvatarUrl());
         vo.setEmail(user.getEmail());
         vo.setStatus(user.getStatus());
+        vo.setMustChangePassword(user.getMustChangePassword());
         vo.setRoles(roles);
         return vo;
     }
@@ -66,6 +68,7 @@ public final class UserConvert {
         vo.setAvatarUrl(user.getAvatarUrl());
         vo.setEmail(user.getEmail());
         vo.setStatus(user.getStatus());
+        vo.setMustChangePassword(user.getMustChangePassword());
         vo.setRoles(roles);
         return vo;
     }
@@ -85,6 +88,10 @@ public final class UserConvert {
         vo.setRoleName(role.getRoleName());
         vo.setStatus(role.getStatus());
         return vo;
+    }
+
+    private static boolean flagOn(Integer value) {
+        return value != null && value == 1;
     }
 
     private static String maskEmail(String email) {

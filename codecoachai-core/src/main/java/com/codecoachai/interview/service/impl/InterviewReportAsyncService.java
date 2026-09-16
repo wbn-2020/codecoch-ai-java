@@ -233,21 +233,47 @@ public class InterviewReportAsyncService {
                     session.getId(), reportId);
             return;
         }
+        List<InterviewMessage> messages = messageEntities(session.getId());
+        int answerCount = applyFailedReportEvidence(report, messages);
         report.setStatus(ReportStatusEnum.FAILED.name());
         report.setTotalScore(null);
-        report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
+        report.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE + " [REPORT_GENERATION_FAILED]");
         if (!updateCurrentReportAttempt(report, generationToken)) {
             log.info("Skip stale async report failure CAS, sessionId={}, reportId={}",
                     session.getId(), reportId);
             return;
         }
-        session.setStatus(InterviewStatusEnum.FAILED.name());
+        session.setStatus(answerCount > 0
+                ? InterviewStatusEnum.COMPLETED.name()
+                : InterviewStatusEnum.FAILED.name());
         session.setReportStatus(ReportStatusEnum.FAILED.name());
         session.setTotalScore(null);
-        session.setFailureReason(REPORT_GENERATION_FAILED_MESSAGE);
+        session.setFailureReason(report.getFailureReason());
         if (sessionMapper.updateById(session) != 1) {
             throw new IllegalStateException("Persist interview session failure failed");
         }
+    }
+
+    private int applyFailedReportEvidence(InterviewReport report, List<InterviewMessage> messages) {
+        int answerCount = countScorableAnswers(messages);
+        if (answerCount <= 0) {
+            return 0;
+        }
+        if (!StringUtils.hasText(report.getQaReview())) {
+            report.setQaReview(buildFallbackQaReview(messages));
+        }
+        String evidenceSummary = "本场面试包含 " + answerCount
+                + " 条有效回答。AI 报告生成失败，未生成综合得分或优缺点结论；问答明细已保留，可复盘后重新生成。";
+        if (!StringUtils.hasText(report.getSummary())) {
+            report.setSummary(evidenceSummary);
+        }
+        if (!StringUtils.hasText(report.getReportContent())) {
+            report.setReportContent(evidenceSummary);
+        }
+        report.setStrengths(null);
+        report.setWeaknesses(null);
+        report.setMainProblems(null);
+        return answerCount;
     }
 
     public GenerateReportDTO buildReportDTO(InterviewSession session, List<InterviewMessage> messages) {

@@ -9,6 +9,7 @@ public class ProjectStoryGenerationVO {
     private Long id;
     private Long userId;
     private Long projectEvidenceId;
+    private String projectTitle;
     private String generationType;
     private Long targetJobId;
     private String promptVersion;

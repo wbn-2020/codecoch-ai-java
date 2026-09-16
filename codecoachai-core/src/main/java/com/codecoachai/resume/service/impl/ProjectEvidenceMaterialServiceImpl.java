@@ -115,6 +115,27 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
     }
 
     @Override
+    public List<ProjectStoryGenerationVO> listAcceptedStories() {
+        Long userId = SecurityAssert.requireLoginUserId();
+        List<ProjectStoryGeneration> generations = storyGenerationMapper.selectList(
+                new LambdaQueryWrapper<ProjectStoryGeneration>()
+                        .eq(ProjectStoryGeneration::getUserId, userId)
+                        .eq(ProjectStoryGeneration::getGenerationType, TYPE_STAR_STORY)
+                        .eq(ProjectStoryGeneration::getAccepted, CommonConstants.YES)
+                        .eq(ProjectStoryGeneration::getDeleted, CommonConstants.NO)
+                        .orderByDesc(ProjectStoryGeneration::getUpdatedAt)
+                        .orderByDesc(ProjectStoryGeneration::getId)
+                        .last("limit 100"));
+        if (generations == null || generations.isEmpty()) {
+            return List.of();
+        }
+        Map<Long, String> projectTitles = projectTitles(userId, generations);
+        return generations.stream()
+                .map(generation -> toVO(generation, projectTitles.get(generation.getProjectEvidenceId())))
+                .toList();
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public ProjectStoryGenerationVO accept(Long projectEvidenceId, Long generationId) {
         Long userId = SecurityAssert.requireLoginUserId();
@@ -449,11 +470,38 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
         return suggestions;
     }
 
+    private Map<Long, String> projectTitles(Long userId, List<ProjectStoryGeneration> generations) {
+        List<Long> projectIds = generations.stream()
+                .map(ProjectStoryGeneration::getProjectEvidenceId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        List<ProjectEvidence> projects = projectEvidenceMapper.selectList(new LambdaQueryWrapper<ProjectEvidence>()
+                .eq(ProjectEvidence::getUserId, userId)
+                .in(ProjectEvidence::getId, projectIds)
+                .eq(ProjectEvidence::getDeleted, CommonConstants.NO));
+        Map<Long, String> titles = new LinkedHashMap<>();
+        for (ProjectEvidence project : projects == null ? List.<ProjectEvidence>of() : projects) {
+            if (project != null && project.getId() != null) {
+                titles.put(project.getId(), firstText(project.getTitle(), "未命名项目"));
+            }
+        }
+        return titles;
+    }
+
     private ProjectStoryGenerationVO toVO(ProjectStoryGeneration generation) {
+        return toVO(generation, null);
+    }
+
+    private ProjectStoryGenerationVO toVO(ProjectStoryGeneration generation, String projectTitle) {
         ProjectStoryGenerationVO vo = new ProjectStoryGenerationVO();
         vo.setId(generation.getId());
         vo.setUserId(generation.getUserId());
         vo.setProjectEvidenceId(generation.getProjectEvidenceId());
+        vo.setProjectTitle(projectTitle);
         vo.setGenerationType(generation.getGenerationType());
         vo.setTargetJobId(generation.getTargetJobId());
         vo.setPromptVersion(generation.getPromptVersion());

@@ -13,6 +13,8 @@ public interface ProjectEvidenceMaterialService {
 
     List<ProjectStoryGenerationVO> listGenerations(Long projectEvidenceId, ProjectStoryGenerationQueryDTO query);
 
+    List<ProjectStoryGenerationVO> listAcceptedStories();
+
     ProjectStoryGenerationVO accept(Long projectEvidenceId, Long generationId);
 
     ProjectJdCoverageVO analyzeJdCoverage(Long projectEvidenceId, ProjectJdCoverageRequestDTO dto);

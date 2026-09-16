@@ -3,6 +3,7 @@ package com.codecoachai.resume.service.impl;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -77,8 +78,8 @@ class ProjectEvidenceMaterialServiceImplTest {
         LoginUser user = new LoginUser();
         user.setUserId(1001L);
         LoginUserContext.setLoginUser(user);
-        when(projectEvidenceMapper.selectOne(any())).thenReturn(project());
-        when(skillEvidenceMapper.selectList(any())).thenReturn(List.of(skill()));
+        lenient().when(projectEvidenceMapper.selectOne(any())).thenReturn(project());
+        lenient().when(skillEvidenceMapper.selectList(any())).thenReturn(List.of(skill()));
     }
 
     @AfterEach
@@ -103,6 +104,28 @@ class ProjectEvidenceMaterialServiceImplTest {
         assertTrue(result.getCoveredSkills().isEmpty());
         assertEquals(List.of("Redis"), result.getMissingSkills());
         assertEquals("JOB_REQUIREMENT_MATRIX", result.getSourceType());
+    }
+
+    @Test
+    void listAcceptedStoriesReturnsOwnedStarEntriesWithProjectTitle() {
+        ProjectStoryGeneration generation = new ProjectStoryGeneration();
+        generation.setId(71L);
+        generation.setUserId(1001L);
+        generation.setProjectEvidenceId(31L);
+        generation.setGenerationType("STAR_STORY");
+        generation.setResultText("Situation: Redis cache miss.\nTask: cut p99.");
+        generation.setAccepted(CommonConstants.YES);
+        when(storyGenerationMapper.selectList(any())).thenReturn(List.of(generation));
+        when(projectEvidenceMapper.selectList(any())).thenReturn(List.of(project()));
+
+        var result = service.listAcceptedStories();
+
+        assertEquals(1, result.size());
+        assertEquals(31L, result.get(0).getProjectEvidenceId());
+        assertEquals("Redis project", result.get(0).getProjectTitle());
+        assertEquals("STAR_STORY", result.get(0).getGenerationType());
+        assertTrue(result.get(0).getAccepted());
+        assertTrue(result.get(0).getResultText().contains("Redis cache miss"));
     }
 
     @Test

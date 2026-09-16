@@ -27,6 +27,7 @@ import com.codecoachai.auth.service.PasswordResetTokenStore;
 import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.core.util.PasswordStrength;
 import com.codecoachai.common.feign.util.FeignResultUtils;
 import com.codecoachai.common.redis.constant.RedisKeyConstants;
 import com.codecoachai.common.redis.lock.DistributedLockHelper;
@@ -124,6 +125,17 @@ public class AuthServiceImpl implements AuthService {
         redisCacheHelper.delete(RedisKeyConstants.loginFailCountKey(username));
         redisCacheHelper.delete(lockKey);
 
+        boolean mustChangePassword = Integer.valueOf(1).equals(user.getMustChangePassword())
+                || PasswordStrength.isWeak(dto.getPassword(), user.getUsername());
+        if (mustChangePassword && !Integer.valueOf(1).equals(user.getMustChangePassword())) {
+            try {
+                FeignResultUtils.unwrap(userFeignClient.markMustChangePassword(user.getId()));
+                user.setMustChangePassword(1);
+            } catch (RuntimeException ex) {
+                log.warn("Failed to persist must-change-password flag userId={}", user.getId(), ex);
+            }
+        }
+
         StpUtil.login(user.getId());
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
         List<String> permissions = resolvePermissions(roles);
@@ -131,12 +143,13 @@ public class AuthServiceImpl implements AuthService {
         StpUtil.getSession().set("nickname", StringUtils.hasText(user.getNickname()) ? user.getNickname() : user.getUsername());
         StpUtil.getSession().set("roles", roles);
         StpUtil.getSession().set("permissions", permissions);
+        StpUtil.getSession().set("mustChangePassword", mustChangePassword);
         String token = StpUtil.getTokenValue();
 
         loginLogRecorder.recordSuccess(user.getId(), user.getUsername(), "PASSWORD");
 
         CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), roles, permissions);
+                user.getAvatarUrl(), user.getEmail(), roles, permissions, mustChangePassword);
         return buildLoginVO(token, currentUser, roles, permissions);
     }
 
@@ -282,7 +295,7 @@ public class AuthServiceImpl implements AuthService {
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
         List<String> permissions = resolvePermissions(roles);
         return toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                user.getAvatarUrl(), user.getEmail(), roles, permissions);
+                user.getAvatarUrl(), user.getEmail(), roles, permissions, flagOn(user.getMustChangePassword()));
     }
 
     @Override
@@ -301,7 +314,7 @@ public class AuthServiceImpl implements AuthService {
             StpUtil.getSession().set("roles", roles);
             StpUtil.getSession().set("permissions", permissions);
             CurrentUserVO currentUser = toCurrentUser(user.getId(), user.getUsername(), user.getNickname(),
-                    user.getAvatarUrl(), user.getEmail(), roles, permissions);
+                    user.getAvatarUrl(), user.getEmail(), roles, permissions, flagOn(user.getMustChangePassword()));
             return buildLoginVO(StpUtil.getTokenValue(), currentUser, roles, permissions);
         }
         throw new BusinessException(ErrorCode.TOKEN_INVALID);
@@ -324,11 +337,13 @@ public class AuthServiceImpl implements AuthService {
         List<String> roles = user.getRoles() == null ? List.of() : user.getRoles();
         vo.setRoles(roles);
         vo.setPermissions(resolvePermissions(roles));
+        vo.setMustChangePassword(flagOn(user.getMustChangePassword()));
         return vo;
     }
 
     private CurrentUserVO toCurrentUser(Long id, String username, String nickname, String avatarUrl,
-                                        String email, List<String> roles, List<String> permissions) {
+                                        String email, List<String> roles, List<String> permissions,
+                                        boolean mustChangePassword) {
         CurrentUserVO vo = new CurrentUserVO();
         vo.setId(id);
         vo.setUsername(username);
@@ -337,7 +352,12 @@ public class AuthServiceImpl implements AuthService {
         vo.setEmail(email);
         vo.setRoles(roles == null ? List.of() : roles);
         vo.setPermissions(permissions == null ? List.of() : permissions);
+        vo.setMustChangePassword(mustChangePassword);
         return vo;
+    }
+
+    private boolean flagOn(Integer value) {
+        return value != null && value == 1;
     }
 
     private LoginVO buildLoginVO(String token, CurrentUserVO currentUser, List<String> roles, List<String> permissions) {

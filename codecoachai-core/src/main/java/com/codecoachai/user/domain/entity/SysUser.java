@@ -26,4 +26,6 @@ public class SysUser extends BaseEntity {
     private String phone;
 
     private Integer status;
+
+    private Integer mustChangePassword;
 }

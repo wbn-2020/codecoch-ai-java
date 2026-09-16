@@ -10,4 +10,5 @@ public class TokenInfo {
     private String username;
     private String nickname;
     private List<String> roles;
+    private Boolean mustChangePassword;
 }

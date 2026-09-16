@@ -258,7 +258,7 @@ class InnerInterviewReportControllerTest {
         assertEquals(null, persisted.getTotalScore());
         assertTrue(persisted.getRubricScores().contains("ANSWER_QUALITY"));
         assertTrue(persisted.getRubricScores().contains("STORED_INTERVIEW_EVALUATION"));
-        assertEquals(null, persisted.getRubricVersion());
+        assertEquals("INTERVIEW_RUBRIC_TRIAL_V1", persisted.getRubricVersion());
         assertTrue(persisted.getQaReview().contains("回答一"));
         assertTrue(persisted.getQaReview().contains("点评二"));
         assertTrue(persisted.getSummary().contains("2 条有效回答"));
@@ -308,6 +308,46 @@ class InnerInterviewReportControllerTest {
 
         verify(sessionMapper, never()).update(any(), any());
         verify(reportMapper, never()).updateById(any(InterviewReport.class));
+        verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
+        verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
+    }
+
+    @Test
+    void completeReportFailedPersistsStoredQaReviewWithoutScores() {
+        stubSessionCompletion();
+        when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
+        InterviewReport current = generatedReport();
+        current.setStatus(ReportStatusEnum.GENERATING.name());
+        current.setGenerationToken("token-current");
+        current.setTotalScore(null);
+        current.setSummary(null);
+        current.setQaReview(null);
+        current.setReportContent(null);
+        current.setStrengths("[\"clear communication\"]");
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(reportMapper.update(any(InterviewReport.class), any(Wrapper.class))).thenReturn(1);
+        when(messageMapper.selectList(any())).thenReturn(answerOnlyMessages());
+        InnerInterviewReportController.CompleteReportDTO dto =
+                new InnerInterviewReportController.CompleteReportDTO();
+        dto.setReportId(88L);
+        dto.setGenerationToken("token-current");
+        dto.setReportStatus("FAILED");
+        dto.setErrorMessage("AI timeout");
+
+        Result<Void> result = controller.completeReport(1L, dto);
+
+        assertEquals(0, result.getCode());
+        ArgumentCaptor<InterviewReport> reportCaptor = ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(reportCaptor.capture(), any(Wrapper.class));
+        InterviewReport persisted = reportCaptor.getValue();
+        assertEquals(ReportStatusEnum.FAILED.name(), persisted.getStatus());
+        assertEquals(null, persisted.getTotalScore());
+        assertTrue(persisted.getQaReview().contains("回答一"));
+        assertTrue(persisted.getQaReview().contains("STORED_INTERVIEW_MESSAGE"));
+        assertTrue(persisted.getSummary().contains("未生成综合得分或优缺点结论"));
+        assertTrue(persisted.getReportContent().contains("可复盘后重新生成"));
+        assertTrue(persisted.getFailureReason().contains("[REPORT_GENERATION_FAILED]"));
+        assertEquals(null, persisted.getStrengths());
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }

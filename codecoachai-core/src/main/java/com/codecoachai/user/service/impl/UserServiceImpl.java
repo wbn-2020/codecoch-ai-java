@@ -7,6 +7,7 @@ import com.codecoachai.common.core.constant.SecurityConstants;
 import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
+import com.codecoachai.common.core.util.PasswordStrength;
 import com.codecoachai.common.mybatis.statistics.StudyProgressSnapshot;
 import com.codecoachai.common.mybatis.statistics.StudyProgressStatisticsService;
 import com.codecoachai.common.security.admin.AdminPermissionCache;
@@ -114,7 +115,11 @@ public class UserServiceImpl implements UserService {
         if (!passwordEncoder.matches(dto.getOldPassword(), user.getPasswordHash())) {
             throw new BusinessException(ErrorCode.OLD_PASSWORD_ERROR);
         }
+        if (PasswordStrength.isWeak(dto.getNewPassword(), user.getUsername())) {
+            throw new BusinessException(ErrorCode.VALIDATION_ERROR, "新密码至少 8 位，且需同时包含字母和数字，不能与用户名相同。");
+        }
         user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
+        user.setMustChangePassword(CommonConstants.NO);
         sysUserMapper.updateById(user);
     }
 
@@ -233,6 +238,7 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(id);
         String newPassword = generateTemporaryPassword();
         user.setPasswordHash(passwordEncoder.encode(newPassword));
+        user.setMustChangePassword(CommonConstants.YES);
         sysUserMapper.updateById(user);
         return newPassword;
     }
@@ -305,6 +311,17 @@ public class UserServiceImpl implements UserService {
         }
         SysUser user = getUserOrThrow(id);
         user.setPasswordHash(dto.getPasswordHash());
+        user.setMustChangePassword(CommonConstants.NO);
+        sysUserMapper.updateById(user);
+    }
+
+    @Override
+    public void markMustChangePassword(Long id) {
+        SysUser user = getUserOrThrow(id);
+        if (CommonConstants.YES.equals(user.getMustChangePassword())) {
+            return;
+        }
+        user.setMustChangePassword(CommonConstants.YES);
         sysUserMapper.updateById(user);
     }
 

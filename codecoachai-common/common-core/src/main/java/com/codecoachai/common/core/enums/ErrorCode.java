@@ -16,6 +16,7 @@ public enum ErrorCode {
     UNAUTHORIZED(41000, "未登录", 401),
     TOKEN_INVALID(41001, "Token 无效或已过期", 401),
     FORBIDDEN(41003, "无访问权限", 403),
+    PASSWORD_CHANGE_REQUIRED(41004, "请先修改密码后再继续使用", 403),
     USER_ERROR(42000, "用户模块错误"),
     USERNAME_EXISTS(42001, "用户名已存在"),
     USER_NOT_FOUND(42002, "用户不存在"),

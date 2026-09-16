@@ -81,4 +81,13 @@ public class LocalUserFeignClient implements UserFeignClient {
             return Result.success();
         });
     }
+
+    @Override
+    public Result<Void> markMustChangePassword(Long id) {
+        return resultMapper.invoke(() -> {
+            resultMapper.requireParameter(id, "id");
+            userService.markMustChangePassword(id);
+            return Result.success();
+        });
+    }
 }

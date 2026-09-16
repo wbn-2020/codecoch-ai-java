@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
 
 import com.codecoachai.common.core.constant.HeaderConstants;
@@ -267,6 +268,60 @@ class AuthGatewayFilterTest {
     }
 
     @Test
+    void mustChangePasswordBlocksOrdinaryRoutesWithForbiddenBusinessCode() {
+        TokenInfo tokenInfo = tokenInfo();
+        tokenInfo.setMustChangePassword(true);
+        when(authTokenClient.tokenInfo("Bearer valid-token"))
+                .thenReturn(Mono.just(Result.success(tokenInfo)));
+        MockServerHttpRequest request = MockServerHttpRequest
+                .get("/questions")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer valid-token")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        AtomicBoolean forwarded = new AtomicBoolean(false);
+
+        filter.filter(exchange, ignored -> {
+            forwarded.set(true);
+            return Mono.empty();
+        }).block();
+
+        assertFalse(forwarded.get());
+        assertEquals(HttpStatus.FORBIDDEN, exchange.getResponse().getStatusCode());
+        assertTrue(readResponseBody(exchange).contains("41004"));
+    }
+
+    @Test
+    void mustChangePasswordAllowsPasswordChangeAndCurrentUser() {
+        TokenInfo tokenInfo = tokenInfo();
+        tokenInfo.setMustChangePassword(true);
+        when(authTokenClient.tokenInfo("Bearer valid-token"))
+                .thenReturn(Mono.just(Result.success(tokenInfo)));
+
+        AtomicReference<ServerWebExchange> passwordForwarded = new AtomicReference<>();
+        MockServerWebExchange passwordExchange = MockServerWebExchange.from(MockServerHttpRequest
+                .put("/users/password")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer valid-token")
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("{\"oldPassword\":\"admin123\",\"newPassword\":\"Alpha1234\",\"confirmPassword\":\"Alpha1234\"}"));
+        filter.filter(passwordExchange, captured -> {
+            passwordForwarded.set(captured);
+            return Mono.empty();
+        }).block();
+        assertNotNull(passwordForwarded.get());
+
+        AtomicReference<ServerWebExchange> currentUserForwarded = new AtomicReference<>();
+        MockServerWebExchange currentUserExchange = MockServerWebExchange.from(MockServerHttpRequest
+                .get("/auth/current-user")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer valid-token")
+                .build());
+        filter.filter(currentUserExchange, captured -> {
+            currentUserForwarded.set(captured);
+            return Mono.empty();
+        }).block();
+        assertNotNull(currentUserForwarded.get());
+    }
+
+    @Test
     void authenticatedAdminRouteForwardsNonAdminForDownstreamPermissionCheck() {
         TokenInfo tokenInfo = tokenInfo();
         tokenInfo.setRoles(List.of("USER"));
@@ -336,6 +391,10 @@ class AuthGatewayFilterTest {
         assertEquals(
                 InternalSignatureUtils.hmacSha256Hex(expectedSecret, payload),
                 headers.getFirst(HeaderConstants.USER_CONTEXT_SIGNATURE_V2));
+    }
+
+    private String readResponseBody(MockServerWebExchange exchange) {
+        return exchange.getResponse().getBodyAsString().block();
     }
 
     private String readBody(ServerWebExchange exchange) {

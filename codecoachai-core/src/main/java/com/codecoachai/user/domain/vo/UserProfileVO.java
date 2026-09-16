@@ -16,6 +16,7 @@ public class UserProfileVO {
     private String phone;
     private Integer status;
     private List<String> roles;
+    private Boolean mustChangePassword;
 
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss")
     private LocalDateTime createdAt;

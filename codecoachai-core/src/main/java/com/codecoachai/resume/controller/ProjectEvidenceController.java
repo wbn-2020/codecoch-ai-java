@@ -55,6 +55,11 @@ public class ProjectEvidenceController {
         return Result.success(projectEvidenceService.importFromResumeProject(dto));
     }
 
+    @GetMapping("/stories")
+    public Result<List<ProjectStoryGenerationVO>> listAcceptedStories() {
+        return Result.success(projectEvidenceMaterialService.listAcceptedStories());
+    }
+
     @GetMapping("/{id}")
     public Result<ProjectEvidenceDetailVO> detail(@PathVariable Long id) {
         return Result.success(projectEvidenceService.detail(id));

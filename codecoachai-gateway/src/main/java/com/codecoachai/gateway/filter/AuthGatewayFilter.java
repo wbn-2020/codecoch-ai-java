@@ -52,6 +52,7 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
             "/auth/reset-password",
             "/auth/refresh-token");
 
+
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final AuthTokenClient authTokenClient;
 
@@ -127,6 +128,9 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
                     if (result.getData() == null) {
                         return writeError(exchange, ErrorCode.TOKEN_INVALID);
                     }
+                    if (requiresPasswordChange(result.getData(), path, request.getMethod())) {
+                        return writeError(exchange, ErrorCode.PASSWORD_CHANGE_REQUIRED);
+                    }
                     return forwardAuthenticated(
                             exchange,
                             chain,
@@ -142,6 +146,25 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
 
     private boolean isWhitePath(String path) {
         return WHITE_PATHS.stream().anyMatch(path::equals);
+    }
+
+    private boolean requiresPasswordChange(TokenInfo tokenInfo, String path, HttpMethod method) {
+        if (tokenInfo == null || !Boolean.TRUE.equals(tokenInfo.getMustChangePassword())) {
+            return false;
+        }
+        if ("/users/password".equals(path) && HttpMethod.PUT.equals(method)) {
+            return false;
+        }
+        if ("/auth/current-user".equals(path) && HttpMethod.GET.equals(method)) {
+            return false;
+        }
+        if ("/auth/logout".equals(path) && HttpMethod.POST.equals(method)) {
+            return false;
+        }
+        if ("/auth/refresh-token".equals(path) && HttpMethod.POST.equals(method)) {
+            return false;
+        }
+        return true;
     }
 
     private Mono<Void> forwardAuthenticated(
@@ -408,7 +431,8 @@ public class AuthGatewayFilter implements GlobalFilter, Ordered {
         if (ErrorCode.UNAUTHORIZED.getCode() == code || ErrorCode.TOKEN_INVALID.getCode() == code) {
             return HttpStatus.UNAUTHORIZED;
         }
-        if (ErrorCode.FORBIDDEN.getCode() == code) {
+        if (ErrorCode.FORBIDDEN.getCode() == code
+                || ErrorCode.PASSWORD_CHANGE_REQUIRED.getCode() == code) {
             return HttpStatus.FORBIDDEN;
         }
         return HttpStatus.INTERNAL_SERVER_ERROR;

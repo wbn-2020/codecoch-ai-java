@@ -120,6 +120,10 @@ public class InnerInterviewReportController {
             if (success && ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
                 return Result.success();
             }
+            if (!success && (ReportStatusEnum.FAILED.name().equals(report.getStatus())
+                    || ReportStatusEnum.UNSCORABLE.name().equals(report.getStatus()))) {
+                return Result.success();
+            }
             return Result.fail(ErrorCode.PARAM_ERROR.getCode(), "Interview report attempt is already terminal");
         }
         if (report == null) {
@@ -165,9 +169,21 @@ public class InnerInterviewReportController {
                 completed = true;
             }
         }
+        StoredEvidenceRecovery failedRecovery = StoredEvidenceRecovery.empty();
         if (!success) {
             report.setTotalScore(null);
+            boolean generationFailed = ReportStatusEnum.FAILED.name().equals(report.getStatus());
+            if (generationFailed) {
+                failedRecovery = recoverFailedReportFromStoredEvidence(sessionId, report);
+            }
+            completionFailureReason = firstText(completionFailureReason, "面试报告生成失败，答题记录已保留。");
+            if (!completionFailureReason.contains("[")) {
+                completionFailureReason = completionFailureReason + " [REPORT_GENERATION_FAILED]";
+            }
             report.setFailureReason(completionFailureReason);
+            if (failedRecovery.hasAnswers()) {
+                completed = true;
+            }
         }
         if (report.getId() == null) {
             if (reportMapper.insert(report) != 1) {
@@ -217,8 +233,7 @@ public class InnerInterviewReportController {
             completeAgentInterviewTask(session, report);
             return Result.success();
         }
-        return Result.fail(ErrorCode.PARAM_ERROR.getCode(),
-                firstText(completionFailureReason, "Interview report is not consumable"));
+        return Result.success();
     }
 
     @GetMapping("/reports/users/{userId}/{reportId}/agent-evidence")
@@ -592,6 +607,48 @@ public class InnerInterviewReportController {
         }
         report.setFailureReason(null);
         return new StoredEvidenceRecovery(answers.size(), evidenceScore);
+    }
+
+    private StoredEvidenceRecovery recoverFailedReportFromStoredEvidence(Long sessionId, InterviewReport report) {
+        List<InterviewMessage> messages = messageMapper.selectList(
+                new LambdaQueryWrapper<InterviewMessage>()
+                        .eq(InterviewMessage::getSessionId, sessionId)
+                        .orderByAsc(InterviewMessage::getCreatedAt)
+                        .orderByAsc(InterviewMessage::getId));
+        if (messages == null) {
+            messages = List.of();
+        }
+        List<InterviewMessage> answers = messages.stream()
+                .filter(this::isUserAnswer)
+                .toList();
+        if (answers.isEmpty()) {
+            return StoredEvidenceRecovery.empty();
+        }
+
+        Map<Long, InterviewMessage> messagesById = new LinkedHashMap<>();
+        for (InterviewMessage message : messages) {
+            if (message != null && message.getId() != null) {
+                messagesById.put(message.getId(), message);
+            }
+        }
+        if (!StringUtils.hasText(report.getQaReview())) {
+            report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
+        }
+        String evidenceSummary = "本场面试包含 " + answers.size()
+                + " 条有效回答。AI 报告生成失败，未生成综合得分或优缺点结论；问答明细已保留，可复盘后重新生成。";
+        if (!StringUtils.hasText(report.getSummary())) {
+            report.setSummary(evidenceSummary);
+        }
+        if (!StringUtils.hasText(report.getReportContent())) {
+            report.setReportContent(evidenceSummary);
+        }
+        report.setTotalScore(null);
+        report.setStatus(ReportStatusEnum.FAILED.name());
+        report.setStrengths(null);
+        report.setWeaknesses(null);
+        report.setMainProblems(null);
+        report.setWeakPoints(null);
+        return new StoredEvidenceRecovery(answers.size(), null);
     }
 
     private String buildStoredQaReview(
