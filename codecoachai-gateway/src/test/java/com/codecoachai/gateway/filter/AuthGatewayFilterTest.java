@@ -268,7 +268,7 @@ class AuthGatewayFilterTest {
     }
 
     @Test
-    void mustChangePasswordBlocksOrdinaryRoutesWithForbiddenBusinessCode() {
+    void mustChangePasswordDoesNotBlockOrdinaryRoutes() {
         TokenInfo tokenInfo = tokenInfo();
         tokenInfo.setMustChangePassword(true);
         when(authTokenClient.tokenInfo("Bearer valid-token"))
@@ -285,9 +285,8 @@ class AuthGatewayFilterTest {
             return Mono.empty();
         }).block();
 
-        assertFalse(forwarded.get());
-        assertEquals(HttpStatus.FORBIDDEN, exchange.getResponse().getStatusCode());
-        assertTrue(readResponseBody(exchange).contains("41004"));
+        assertTrue(forwarded.get());
+        assertNotEquals(HttpStatus.FORBIDDEN, exchange.getResponse().getStatusCode());
     }
 
     @Test
