@@ -151,7 +151,8 @@ class InnerInterviewReportControllerTest {
         InterviewReport persisted = reportCaptor.getValue();
         assertEquals(ReportStatusEnum.FAILED.name(), persisted.getStatus());
         assertEquals(null, persisted.getTotalScore());
-        assertTrue(persisted.getFailureReason().contains("缺少有效回答证据"));
+        assertTrue(persisted.getFailureReason().endsWith("[ANSWER_EVIDENCE_INSUFFICIENT]"));
+        assertTrue(!persisted.getFailureReason().contains("REPORT_GENERATION_FAILED"));
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
@@ -183,7 +184,11 @@ class InnerInterviewReportControllerTest {
         assertEquals(null, persisted.getTotalScore());
         assertTrue(persisted.getQaReview().contains("回答一"));
         assertTrue(persisted.getQaReview().contains("STORED_INTERVIEW_MESSAGE"));
-        assertTrue(persisted.getFailureReason().contains("最小可消费结构不完整"));
+        assertTrue(persisted.getFailureReason().endsWith("[RUBRIC_DATA_MISSING]"));
+        var sessionUpdate = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+        verify(sessionMapper).update(any(), sessionUpdate.capture());
+        assertTrue(sessionUpdate.getValue().getParamNameValuePairs().containsValue(persisted.getFailureReason()));
+        assertTrue(!persisted.getFailureReason().contains("REPORT_GENERATION_FAILED"));
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
@@ -312,16 +317,18 @@ class InnerInterviewReportControllerTest {
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);
     }
 
-    @Test
-    void completeReportFailedPersistsStoredQaReviewWithoutScores() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"[]", "  ", "invalid-json", "{}", "[null,{},123]"})
+    void completeReportFailedPersistsStoredQaReviewWithoutScores(String qaReview) {
         stubSessionCompletion();
         when(sessionMapper.selectById(1L)).thenReturn(targetJobSession());
         InterviewReport current = generatedReport();
         current.setStatus(ReportStatusEnum.GENERATING.name());
         current.setGenerationToken("token-current");
-        current.setTotalScore(null);
+        current.setTotalScore(99);
         current.setSummary(null);
-        current.setQaReview(null);
+        current.setQaReview(qaReview);
         current.setReportContent(null);
         current.setStrengths("[\"clear communication\"]");
         when(reportMapper.selectOne(any())).thenReturn(current);
@@ -346,7 +353,15 @@ class InnerInterviewReportControllerTest {
         assertTrue(persisted.getQaReview().contains("STORED_INTERVIEW_MESSAGE"));
         assertTrue(persisted.getSummary().contains("未生成综合得分或优缺点结论"));
         assertTrue(persisted.getReportContent().contains("可复盘后重新生成"));
-        assertTrue(persisted.getFailureReason().contains("[REPORT_GENERATION_FAILED]"));
+        assertEquals("AI timeout [REPORT_GENERATION_FAILED]", persisted.getFailureReason());
+        var updateCaptor = ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+        verify(reportMapper).update(any(InterviewReport.class), updateCaptor.capture());
+        var update = updateCaptor.getValue();
+        String assignment = java.util.Arrays.stream(update.getSqlSet().split(","))
+                .filter(value -> value.startsWith("total_score=")).findFirst().orElseThrow();
+        String parameter = assignment.substring(assignment.indexOf("MPGENVAL"), assignment.indexOf("}"));
+        assertTrue(update.getParamNameValuePairs().containsKey(parameter));
+        assertEquals(null, update.getParamNameValuePairs().get(parameter));
         assertEquals(null, persisted.getStrengths());
         verify(interviewMqDispatcher, never()).dispatchInterviewSearchUpsert(1L, 10L);
         verify(agentBusinessActionNotifier, never()).completeInterviewReport(10L, 300L, 88L);

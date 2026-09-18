@@ -1,6 +1,8 @@
 package com.codecoachai.resume.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
 import com.codecoachai.common.core.exception.BusinessException;
@@ -115,24 +117,28 @@ public class ProjectEvidenceMaterialServiceImpl implements ProjectEvidenceMateri
     }
 
     @Override
-    public List<ProjectStoryGenerationVO> listAcceptedStories() {
+    public PageResult<ProjectStoryGenerationVO> listAcceptedStories(ProjectStoryGenerationQueryDTO query) {
         Long userId = SecurityAssert.requireLoginUserId();
-        List<ProjectStoryGeneration> generations = storyGenerationMapper.selectList(
-                new LambdaQueryWrapper<ProjectStoryGeneration>()
-                        .eq(ProjectStoryGeneration::getUserId, userId)
-                        .eq(ProjectStoryGeneration::getGenerationType, TYPE_STAR_STORY)
-                        .eq(ProjectStoryGeneration::getAccepted, CommonConstants.YES)
-                        .eq(ProjectStoryGeneration::getDeleted, CommonConstants.NO)
-                        .orderByDesc(ProjectStoryGeneration::getUpdatedAt)
-                        .orderByDesc(ProjectStoryGeneration::getId)
-                        .last("limit 100"));
-        if (generations == null || generations.isEmpty()) {
-            return List.of();
-        }
-        Map<Long, String> projectTitles = projectTitles(userId, generations);
-        return generations.stream()
+        ProjectStoryGenerationQueryDTO request = query == null ? new ProjectStoryGenerationQueryDTO() : query;
+        long pageNo = request.getPageNo() == null || request.getPageNo() < 1 ? 1L : request.getPageNo();
+        long pageSize = request.getPageSize() == null || request.getPageSize() < 1
+                ? 10L : Math.min(request.getPageSize(), 100L);
+        LambdaQueryWrapper<ProjectStoryGeneration> wrapper = new LambdaQueryWrapper<ProjectStoryGeneration>()
+                .eq(ProjectStoryGeneration::getUserId, userId)
+                .eq(ProjectStoryGeneration::getGenerationType, TYPE_STAR_STORY)
+                .eq(ProjectStoryGeneration::getAccepted, CommonConstants.YES)
+                .eq(ProjectStoryGeneration::getDeleted, CommonConstants.NO)
+                .apply("exists (select 1 from project_evidence p where p.id = project_story_generation.project_evidence_id"
+                        + " and p.user_id = {0} and p.deleted = {1})", userId, CommonConstants.NO)
+                .orderByDesc(ProjectStoryGeneration::getUpdatedAt)
+                .orderByDesc(ProjectStoryGeneration::getId);
+        Page<ProjectStoryGeneration> page = storyGenerationMapper.selectPage(new Page<>(pageNo, pageSize), wrapper);
+        List<ProjectStoryGeneration> generations = page.getRecords();
+        Map<Long, String> projectTitles = generations.isEmpty() ? Map.of() : projectTitles(userId, generations);
+        List<ProjectStoryGenerationVO> records = generations.stream()
                 .map(generation -> toVO(generation, projectTitles.get(generation.getProjectEvidenceId())))
                 .toList();
+        return PageResult.of(records, page.getTotal(), pageNo, pageSize);
     }
 
     @Override

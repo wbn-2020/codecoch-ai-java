@@ -37,6 +37,8 @@ CONTROL_FILES = (
     "scripts/docker/nacos-config-init.sh",
     "scripts/nacos/nacos_config_guard.py",
     "scripts/release/check_health.py",
+    "scripts/release/audit_flyway_history.py",
+    "scripts/verify-migration-schema.sql",
     "scripts/release/flyway-pom.xml",
     "scripts/release/release.env.example",
     "docs/nacos/codecoachai-common-dev.yml",

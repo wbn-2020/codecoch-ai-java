@@ -180,11 +180,11 @@ public class InterviewReportAsyncService {
                 : InterviewReportConsumabilityContract.validate(
                         objectMapper, report, scorableAnswerCount,
                         reportRubricDimensions(report.getSessionId()));
-        if (!consumability.valid()) {
+        if (!consumability.valid() && ReportStatusEnum.GENERATED.name().equals(report.getStatus())) {
             markReportAiIncomplete(report, messages);
             report.setFailureReason(REPORT_AI_INCOMPLETE_MESSAGE
                     + " [" + consumability.reasonCode() + "]");
-        } else if (trialReport) {
+        } else if (consumability.valid() && trialReport) {
             report.setSummary(TRIAL_REPORT_SUMMARY_PREFIX + firstText(report.getSummary(), ""));
             if (!StringUtils.hasText(report.getStrengths()) || "[]".equals(report.getStrengths().trim())) {
                 report.setStrengths(DEFAULT_REPORT_STRENGTHS);
@@ -214,7 +214,7 @@ public class InterviewReportAsyncService {
             session.setFailureReason(report.getFailureReason());
         }
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
-        if (sessionMapper.updateById(session) != 1) {
+        if (updateReportSession(session) != 1) {
             throw new IllegalStateException("Persist interview session completion failed");
         }
         if (businessSuccess) {
@@ -249,7 +249,7 @@ public class InterviewReportAsyncService {
         session.setReportStatus(ReportStatusEnum.FAILED.name());
         session.setTotalScore(null);
         session.setFailureReason(report.getFailureReason());
-        if (sessionMapper.updateById(session) != 1) {
+        if (updateReportSession(session) != 1) {
             throw new IllegalStateException("Persist interview session failure failed");
         }
     }
@@ -259,7 +259,7 @@ public class InterviewReportAsyncService {
         if (answerCount <= 0) {
             return 0;
         }
-        if (!StringUtils.hasText(report.getQaReview())) {
+        if (!InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper, report.getQaReview())) {
             report.setQaReview(buildFallbackQaReview(messages));
         }
         String evidenceSummary = "本场面试包含 " + answerCount
@@ -1098,7 +1098,9 @@ public class InterviewReportAsyncService {
         report.setProjectProblems("[]");
         report.setReviewSuggestions(REPORT_AI_INCOMPLETE_SUGGESTIONS);
         report.setRecommendedQuestions("[]");
-        report.setQaReview(firstText(report.getQaReview(), buildFallbackQaReview(messages), "[]"));
+        if (!InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper, report.getQaReview())) {
+            report.setQaReview(buildFallbackQaReview(messages));
+        }
         report.setRubricScores("[]");
         report.setRubricVersion(null);
         report.setFollowUpTree("[]");
@@ -1143,7 +1145,7 @@ public class InterviewReportAsyncService {
         session.setTotalScore(null);
         session.setEndTime(session.getEndTime() == null ? LocalDateTime.now() : session.getEndTime());
         session.setFailureReason(REPORT_SAMPLE_INSUFFICIENT_MESSAGE);
-        if (sessionMapper.updateById(session) != 1) {
+        if (updateReportSession(session) != 1) {
             throw new IllegalStateException("Persist interview session completion failed");
         }
     }
@@ -1166,6 +1168,13 @@ public class InterviewReportAsyncService {
         }
     }
 
+    private int updateReportSession(InterviewSession session) {
+        return sessionMapper.update(session, new LambdaUpdateWrapper<InterviewSession>()
+                .eq(InterviewSession::getId, session.getId())
+                .set(session.getTotalScore() == null, InterviewSession::getTotalScore, null)
+                .set(session.getFailureReason() == null, InterviewSession::getFailureReason, null));
+    }
+
     private boolean updateCurrentReportAttempt(InterviewReport report, String generationToken) {
         if (report == null || report.getId() == null || report.getSessionId() == null) {
             return false;
@@ -1180,6 +1189,12 @@ public class InterviewReportAsyncService {
         } else {
             wrapper.isNull(InterviewReport::getGenerationToken);
         }
+        wrapper.set(report.getTotalScore() == null, InterviewReport::getTotalScore, null)
+                .set(report.getStrengths() == null, InterviewReport::getStrengths, null)
+                .set(report.getWeaknesses() == null, InterviewReport::getWeaknesses, null)
+                .set(report.getMainProblems() == null, InterviewReport::getMainProblems, null)
+                .set(report.getRubricVersion() == null, InterviewReport::getRubricVersion, null)
+                .set(report.getFailureReason() == null, InterviewReport::getFailureReason, null);
         return reportMapper.update(report, wrapper) == 1;
     }
 

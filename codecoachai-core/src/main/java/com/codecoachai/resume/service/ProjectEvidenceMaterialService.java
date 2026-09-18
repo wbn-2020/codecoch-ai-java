@@ -1,5 +1,6 @@
 package com.codecoachai.resume.service;
 
+import com.codecoachai.common.core.domain.PageResult;
 import com.codecoachai.resume.domain.dto.ProjectJdCoverageRequestDTO;
 import com.codecoachai.resume.domain.dto.ProjectStoryGenerateDTO;
 import com.codecoachai.resume.domain.dto.ProjectStoryGenerationQueryDTO;
@@ -13,7 +14,7 @@ public interface ProjectEvidenceMaterialService {
 
     List<ProjectStoryGenerationVO> listGenerations(Long projectEvidenceId, ProjectStoryGenerationQueryDTO query);
 
-    List<ProjectStoryGenerationVO> listAcceptedStories();
+    PageResult<ProjectStoryGenerationVO> listAcceptedStories(ProjectStoryGenerationQueryDTO query);
 
     ProjectStoryGenerationVO accept(Long projectEvidenceId, Long generationId);
 

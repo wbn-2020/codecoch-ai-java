@@ -113,6 +113,29 @@ public final class InterviewReportConsumabilityContract {
         return validateQaReview(objectMapper, report.getQaReview(), expectedAnswerCount);
     }
 
+    /** Basic replay evidence does not require an AI score or comment. */
+    public static boolean hasDisplayableQaReview(ObjectMapper objectMapper, String qaReview) {
+        if (!StringUtils.hasText(qaReview)) {
+            return false;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(qaReview);
+            if (root == null || !root.isArray()) {
+                return false;
+            }
+            for (JsonNode item : root) {
+                if (item.isObject()
+                        && hasTextField(item, "question", "questionContent")
+                        && hasTextField(item, "answer", "userAnswer")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // Malformed payloads must not prevent recovery from stored messages.
+        }
+        return false;
+    }
+
     private static Validation validateQaReview(ObjectMapper objectMapper,
                                                String qaReview,
                                                int expectedAnswerCount) {

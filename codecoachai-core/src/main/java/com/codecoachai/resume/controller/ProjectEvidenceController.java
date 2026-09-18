@@ -56,8 +56,9 @@ public class ProjectEvidenceController {
     }
 
     @GetMapping("/stories")
-    public Result<List<ProjectStoryGenerationVO>> listAcceptedStories() {
-        return Result.success(projectEvidenceMaterialService.listAcceptedStories());
+    public Result<PageResult<ProjectStoryGenerationVO>> listAcceptedStories(
+            @ModelAttribute ProjectStoryGenerationQueryDTO query) {
+        return Result.success(projectEvidenceMaterialService.listAcceptedStories(query));
     }
 
     @GetMapping("/{id}")

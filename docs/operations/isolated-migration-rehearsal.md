@@ -2,6 +2,19 @@
 
 ## 用途
 
+**2026-09-18 状态：线上状态未修复，待授权运维。** 前次部署报告为直接通过
+MySQL 执行 V4_142–144 后手填 `flyway_schema_history`，SQL checksum 为 NULL。
+本次仅做代码修复和静态审查，没有访问服务器、执行迁移或 repair。
+空库演练成功不能证明该现有数据库的结构、数据和历史一致。正式恢复流程见
+[发布手册的 Candidate Flyway Gate](release-engineering-runbook.md#candidate-flyway-gate)。
+禁止手填/修改/删除迁移历史、自动盲 repair，或用 baseline 掩盖异常。
+
+发布目录现携带只读离线审计工具 `scripts/release/audit_flyway_history.py`，可检查
+另行授权采集的完整历史 TSV。它拒绝 SQL checksum=NULL 等异常，允许预期的
+BASELINE 2.999 空 checksum；仍需固定版本 Flyway validate 和结构/数据核验。
+现有 `scripts/verify-migration-schema.sql` 的 V4_058–071 检查不覆盖 V4_142–144。
+发布专用 POM 已关闭自动 baseline；本演练使用根 POM 的隔离基线流程不受此变更影响。
+
 `scripts/rehearse-migrations.sh` 在独立 Docker network、MySQL 8 容器和命名卷中，从 `sql/init.sql` 基线执行仓库根目录的 Flyway migration。脚本不映射主机端口、不加入现有 Compose 网络，也不访问现有 CodeCoachAI 数据库。
 
 `sql/init.sql` 必须包含完整 V2 基线，包括 `file_info`、`resume_analysis_record` 和最终的 `study_task.planned_date`；Flyway 再以 `2.999` 为 baseline 执行全部 V3/V4 migration。readiness 同时验证这些对象，避免基线不完整时启动 Flyway。

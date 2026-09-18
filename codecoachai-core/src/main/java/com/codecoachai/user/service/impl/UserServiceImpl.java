@@ -1,5 +1,6 @@
 package com.codecoachai.user.service.impl;
 
+import com.codecoachai.auth.service.AuthSessionRevocationService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
@@ -82,6 +83,7 @@ public class UserServiceImpl implements UserService {
     private final SysUserRoleMapper sysUserRoleMapper;
     private final RoleService roleService;
     private final PasswordEncoder passwordEncoder;
+    private final AuthSessionRevocationService authSessionRevocationService;
     private final JdbcTemplate jdbcTemplate;
     private final AdminPermissionCache adminPermissionCache;
     private final StudyProgressStatisticsService progressStatisticsService;
@@ -117,6 +119,7 @@ public class UserServiceImpl implements UserService {
         user.setPasswordHash(passwordEncoder.encode(dto.getNewPassword()));
         user.setMustChangePassword(CommonConstants.NO);
         sysUserMapper.updateById(user);
+        authSessionRevocationService.revokeAll(userId);
     }
 
     @Override
@@ -236,6 +239,7 @@ public class UserServiceImpl implements UserService {
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         user.setMustChangePassword(CommonConstants.NO);
         sysUserMapper.updateById(user);
+        authSessionRevocationService.revokeAll(id);
         return newPassword;
     }
 
@@ -308,16 +312,6 @@ public class UserServiceImpl implements UserService {
         SysUser user = getUserOrThrow(id);
         user.setPasswordHash(dto.getPasswordHash());
         user.setMustChangePassword(CommonConstants.NO);
-        sysUserMapper.updateById(user);
-    }
-
-    @Override
-    public void markMustChangePassword(Long id) {
-        SysUser user = getUserOrThrow(id);
-        if (CommonConstants.YES.equals(user.getMustChangePassword())) {
-            return;
-        }
-        user.setMustChangePassword(CommonConstants.YES);
         sysUserMapper.updateById(user);
     }
 

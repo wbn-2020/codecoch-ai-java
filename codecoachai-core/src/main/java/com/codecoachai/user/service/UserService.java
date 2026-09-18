@@ -49,6 +49,4 @@ public interface UserService {
     InnerUserBasicVO getInnerUser(Long id);
 
     void resetInnerPassword(Long id, InnerResetPasswordDTO dto);
-
-    void markMustChangePassword(Long id);
 }

@@ -6,6 +6,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.codecoachai.resume.domain.dto.ProjectStoryGenerationQueryDTO;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.codecoachai.common.core.constant.CommonConstants;
@@ -115,17 +118,72 @@ class ProjectEvidenceMaterialServiceImplTest {
         generation.setGenerationType("STAR_STORY");
         generation.setResultText("Situation: Redis cache miss.\nTask: cut p99.");
         generation.setAccepted(CommonConstants.YES);
-        when(storyGenerationMapper.selectList(any())).thenReturn(List.of(generation));
+        when(storyGenerationMapper.selectPage(any(Page.class), any())).thenAnswer(invocation -> {
+            Page<ProjectStoryGeneration> page = invocation.getArgument(0);
+            LambdaQueryWrapper<ProjectStoryGeneration> wrapper = invocation.getArgument(1);
+            String sql = wrapper.getSqlSegment();
+            assertTrue(sql.contains("exists (select 1 from project_evidence p"));
+            assertTrue(sql.contains("p.id = project_story_generation.project_evidence_id"));
+            assertTrue(sql.contains("p.user_id = #{"));
+            assertTrue(sql.contains("p.deleted = #{"));
+            assertTrue(sql.contains("generation_type = #{"));
+            assertTrue(sql.contains("accepted = #{"));
+            assertTrue(sql.contains("ORDER BY updated_at DESC,id DESC"));
+            assertTrue(!sql.toLowerCase().contains("limit"));
+            assertEquals(3L, wrapper.getParamNameValuePairs().values().stream()
+                    .filter(CommonConstants.NO::equals).count() + wrapper.getParamNameValuePairs().values().stream()
+                    .filter(CommonConstants.YES::equals).count());
+            assertEquals(2L, wrapper.getParamNameValuePairs().values().stream().filter(Long.valueOf(1001L)::equals).count());
+            assertTrue(wrapper.getParamNameValuePairs().containsValue("STAR_STORY"));
+            assertEquals(11L, page.getCurrent());
+            assertEquals(10L, page.getSize());
+            page.setRecords(List.of(generation));
+            page.setTotal(101L);
+            return page;
+        });
         when(projectEvidenceMapper.selectList(any())).thenReturn(List.of(project()));
+        ProjectStoryGenerationQueryDTO query = new ProjectStoryGenerationQueryDTO();
+        query.setPageNo(11L);
 
-        var result = service.listAcceptedStories();
+        var result = service.listAcceptedStories(query);
 
-        assertEquals(1, result.size());
-        assertEquals(31L, result.get(0).getProjectEvidenceId());
-        assertEquals("Redis project", result.get(0).getProjectTitle());
-        assertEquals("STAR_STORY", result.get(0).getGenerationType());
-        assertTrue(result.get(0).getAccepted());
-        assertTrue(result.get(0).getResultText().contains("Redis cache miss"));
+        assertEquals(101L, result.getTotal());
+        assertEquals(11L, result.getPageNo());
+        assertEquals(10L, result.getPageSize());
+        assertEquals(11L, result.getPages());
+        assertEquals(1, result.getRecords().size());
+        assertEquals(31L, result.getRecords().get(0).getProjectEvidenceId());
+        assertEquals("Redis project", result.getRecords().get(0).getProjectTitle());
+        assertEquals("STAR_STORY", result.getRecords().get(0).getGenerationType());
+        assertTrue(result.getRecords().get(0).getAccepted());
+        assertTrue(result.getRecords().get(0).getResultText().contains("Redis cache miss"));
+    }
+
+    @Test
+    void acceptedStoriesEmptyPagePreservesTotalAndSanitizesPagination() {
+        when(storyGenerationMapper.selectPage(any(Page.class), any())).thenAnswer(invocation -> {
+            Page<ProjectStoryGeneration> page = invocation.getArgument(0);
+            page.setTotal(125L);
+            return page;
+        });
+        ProjectStoryGenerationQueryDTO query = new ProjectStoryGenerationQueryDTO();
+        query.setPageNo(99L);
+        query.setPageSize(1000L);
+        var result = service.listAcceptedStories(query);
+        assertTrue(result.getRecords().isEmpty());
+        assertEquals(125L, result.getTotal());
+        assertEquals(99L, result.getPageNo());
+        assertEquals(100L, result.getPageSize());
+        assertEquals(2L, result.getPages());
+
+        query.setPageNo(0L);
+        query.setPageSize(-1L);
+        var sanitized = service.listAcceptedStories(query);
+        assertEquals(1L, sanitized.getPageNo());
+        assertEquals(10L, sanitized.getPageSize());
+        var defaults = service.listAcceptedStories(null);
+        assertEquals(1L, defaults.getPageNo());
+        assertEquals(10L, defaults.getPageSize());
     }
 
     @Test

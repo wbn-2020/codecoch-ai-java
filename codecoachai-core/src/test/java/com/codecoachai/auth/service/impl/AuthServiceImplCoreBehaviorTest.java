@@ -141,7 +141,7 @@ class AuthServiceImplCoreBehaviorTest {
         LoginDTO dto = loginDto();
         InnerUserAuthVO user = enabledAuthUser();
         user.setNickname(" ");
-        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey(USERNAME))).thenReturn(null);
+        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey("user:" + USER_ID))).thenReturn(null);
         when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.success(user));
         when(passwordEncoder.matches(RAW_PASSWORD, "stored-hash")).thenReturn(true);
         when(authPermissionResolver.resolvePermissions(ROLES)).thenReturn(PERMISSIONS);
@@ -150,10 +150,15 @@ class AuthServiceImplCoreBehaviorTest {
         try (MockedStatic<StpUtil> stpUtil = mockStatic(StpUtil.class)) {
             stpUtil.when(StpUtil::getSession).thenReturn(session);
             stpUtil.when(StpUtil::getTokenValue).thenReturn(TOKEN);
+            stpUtil.when(StpUtil::getTokenTimeout).thenReturn(90L);
 
             LoginVO result = authService.login(dto);
 
             assertThat(result.getToken()).isEqualTo(TOKEN);
+            assertThat(java.time.LocalDateTime.parse(result.getExpireTime(),
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                    .isBetween(java.time.LocalDateTime.now().plusSeconds(85),
+                            java.time.LocalDateTime.now().plusSeconds(95));
             assertThat(result.getTokenName()).isEqualTo("Authorization");
             assertThat(result.getExpireTime()).matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}");
             assertThat(result.getRoles()).containsExactlyElementsOf(ROLES);
@@ -162,8 +167,8 @@ class AuthServiceImplCoreBehaviorTest {
             stpUtil.verify(() -> StpUtil.login(USER_ID));
         }
 
-        verify(redisCacheHelper).delete(RedisKeyConstants.loginFailCountKey(USERNAME));
-        verify(redisCacheHelper).delete(RedisKeyConstants.loginLockKey(USERNAME));
+        verify(redisCacheHelper).delete(RedisKeyConstants.loginFailCountKey("user:" + USER_ID));
+        verify(redisCacheHelper).delete(RedisKeyConstants.loginLockKey("user:" + USER_ID));
         verify(session).set("username", USERNAME);
         verify(session).set("nickname", USERNAME);
         verify(session).set("roles", ROLES);
@@ -172,8 +177,9 @@ class AuthServiceImplCoreBehaviorTest {
     }
 
     @Test
-    void loginRejectsAlreadyLockedAccountBeforeUserLookup() {
-        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey(USERNAME))).thenReturn("1");
+    void loginRejectsAlreadyLockedAccountBeforePasswordVerification() {
+        when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.success(enabledAuthUser()));
+        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey("user:" + USER_ID))).thenReturn("1");
 
         assertThatThrownBy(() -> authService.login(loginDto()))
                 .isInstanceOf(BusinessException.class)
@@ -181,13 +187,13 @@ class AuthServiceImplCoreBehaviorTest {
                 .isEqualTo(ErrorCode.ACCOUNT_LOCKED.getCode());
 
         verify(loginLogRecorder).recordFailed(eq(USERNAME), eq("PASSWORD"), anyString());
-        verifyNoInteractions(userFeignClient, passwordEncoder, authPermissionResolver);
+        verifyNoInteractions(passwordEncoder, authPermissionResolver);
     }
 
     @Test
     void loginUserLookupFailureIsCountedLoggedAndPropagated() {
-        String failKey = RedisKeyConstants.loginFailCountKey(USERNAME);
-        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey(USERNAME))).thenReturn(null);
+        String failKey = RedisKeyConstants.loginFailCountKey("missing:" + USERNAME);
+        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey("missing:" + USERNAME))).thenReturn(null);
         when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.fail(ErrorCode.USER_NOT_FOUND));
         when(redisCacheHelper.incrementAndExpire(failKey, Duration.ofMinutes(5))).thenReturn(1L);
 
@@ -204,8 +210,8 @@ class AuthServiceImplCoreBehaviorTest {
     @Test
     void fifthWrongPasswordLocksAccountAndKeepsGenericPasswordError() {
         InnerUserAuthVO user = enabledAuthUser();
-        String failKey = RedisKeyConstants.loginFailCountKey(USERNAME);
-        String lockKey = RedisKeyConstants.loginLockKey(USERNAME);
+        String failKey = RedisKeyConstants.loginFailCountKey("user:" + USER_ID);
+        String lockKey = RedisKeyConstants.loginLockKey("user:" + USER_ID);
         when(redisCacheHelper.get(lockKey)).thenReturn(null);
         when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.success(user));
         when(passwordEncoder.matches(RAW_PASSWORD, "stored-hash")).thenReturn(false);
@@ -226,7 +232,7 @@ class AuthServiceImplCoreBehaviorTest {
     void disabledAccountIsRejectedWithoutIncreasingPasswordFailureCount() {
         InnerUserAuthVO user = enabledAuthUser();
         user.setStatus(SecurityConstants.USER_STATUS_DISABLED);
-        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey(USERNAME))).thenReturn(null);
+        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey("user:" + USER_ID))).thenReturn(null);
         when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.success(user));
         when(passwordEncoder.matches(RAW_PASSWORD, "stored-hash")).thenReturn(true);
 
@@ -332,10 +338,15 @@ class AuthServiceImplCoreBehaviorTest {
             stpUtil.when(StpUtil::getLoginIdAsString).thenReturn(USER_ID.toString());
             stpUtil.when(StpUtil::getSession).thenReturn(session);
             stpUtil.when(StpUtil::getTokenValue).thenReturn(TOKEN);
+            stpUtil.when(StpUtil::getTokenTimeout).thenReturn(90L);
 
             LoginVO result = authService.refreshToken();
 
             assertThat(result.getToken()).isEqualTo(TOKEN);
+            assertThat(java.time.LocalDateTime.parse(result.getExpireTime(),
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                    .isBetween(java.time.LocalDateTime.now().plusSeconds(85),
+                            java.time.LocalDateTime.now().plusSeconds(95));
             assertThat(result.getRoles()).containsExactlyElementsOf(ROLES);
             assertThat(result.getPermissions()).containsExactlyElementsOf(PERMISSIONS);
             assertCurrentUser(result.getUserInfo(), USERNAME);
@@ -378,6 +389,66 @@ class AuthServiceImplCoreBehaviorTest {
                     .isEqualTo(ErrorCode.TOKEN_INVALID.getCode());
         }
         verifyNoInteractions(userFeignClient, authPermissionResolver);
+    }
+
+    @Test
+    void usernameCaseVariantsShareStableUserLock() {
+        LoginDTO dto = loginDto();
+        dto.setUsername("ALICE");
+        when(userFeignClient.getByUsername("ALICE")).thenReturn(Result.success(enabledAuthUser()));
+        when(redisCacheHelper.get(RedisKeyConstants.loginLockKey("user:42"))).thenReturn("1");
+
+        assertThatThrownBy(() -> authService.login(dto))
+                .isInstanceOf(BusinessException.class).extracting("code")
+                .isEqualTo(ErrorCode.ACCOUNT_LOCKED.getCode());
+        verifyNoInteractions(passwordEncoder);
+    }
+
+    @Test
+    void missingUserCaseVariantsShareNormalizedFailureCount() {
+        LoginDTO dto = loginDto();
+        dto.setUsername("ALICE");
+        when(userFeignClient.getByUsername("ALICE")).thenReturn(Result.fail(ErrorCode.USER_NOT_FOUND));
+
+        assertThatThrownBy(() -> authService.login(dto))
+                .isInstanceOf(BusinessException.class).extracting("code")
+                .isEqualTo(ErrorCode.USER_NOT_FOUND.getCode());
+        verify(redisCacheHelper).incrementAndExpire(
+                RedisKeyConstants.loginFailCountKey("missing:alice"), Duration.ofMinutes(5));
+    }
+
+    @Test
+    void lookupInfrastructureFailureDoesNotCountAsWrongCredentials() {
+        when(userFeignClient.getByUsername(USERNAME)).thenReturn(Result.fail(ErrorCode.SYSTEM_ERROR));
+        assertThatThrownBy(() -> authService.login(loginDto()))
+                .isInstanceOf(BusinessException.class).extracting("code")
+                .isEqualTo(ErrorCode.SYSTEM_ERROR.getCode());
+        verifyNoInteractions(redisCacheHelper, passwordEncoder);
+    }
+
+    @Test
+    void passwordDtosAcceptSimpleSixToSixteenCharactersOnly() {
+        try (jakarta.validation.ValidatorFactory factory = jakarta.validation.Validation.buildDefaultValidatorFactory()) {
+            jakarta.validation.Validator validator = factory.getValidator();
+            for (int length : new int[]{5, 6, 16, 17}) {
+                String password = "1".repeat(length);
+                RegisterDTO register = registerDto();
+                register.setPassword(password);
+                register.setConfirmPassword(password);
+                com.codecoachai.auth.domain.dto.ResetPasswordDTO reset = new com.codecoachai.auth.domain.dto.ResetPasswordDTO();
+                reset.setToken("reset-token");
+                reset.setNewPassword(password);
+                reset.setConfirmPassword(password);
+                com.codecoachai.user.domain.dto.UpdatePasswordDTO update = new com.codecoachai.user.domain.dto.UpdatePasswordDTO();
+                update.setOldPassword("legacy");
+                update.setNewPassword(password);
+                update.setConfirmPassword(password);
+                boolean valid = length >= 6 && length <= 16;
+                assertThat(validator.validate(register).isEmpty()).isEqualTo(valid);
+                assertThat(validator.validate(reset).isEmpty()).isEqualTo(valid);
+                assertThat(validator.validate(update).isEmpty()).isEqualTo(valid);
+            }
+        }
     }
 
     private RegisterDTO registerDto() {

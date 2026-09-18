@@ -522,9 +522,120 @@ another publisher races between the guard read and publish request.
 
 ### Candidate Flyway Gate
 
-Only after the Nacos gate succeeds, run Flyway from the same candidate control
-directory. Its dedicated POM and `sql/migration` directory are part of the
-candidate manifest. Never run migrations from a mutable checkout or rely on an
+**Incident status (2026-09-18): unresolved online; authorized operations pending.**
+The reported previous deployment executed V4_142–V4_144 directly through MySQL
+and manually inserted `flyway_schema_history` rows with `checksum=NULL`.
+This code/static-review change has not accessed or repaired that database.
+Neither successful application startup nor `success=1` proves migration integrity.
+Do not proceed with the migration/activation commands below on that environment
+until the recovery procedure in this section is approved and completed.
+
+Never INSERT, UPDATE or DELETE history rows manually, calculate and paste a
+checksum, replay migration SQL with the MySQL client, or automatically run
+`repair`. Do not edit an applied migration to make validation pass. The release
+POM now explicitly enables validation, disables automatic baseline and clean,
+and disallows out-of-order migration. Existing databases without history stop
+instead of silently adopting baseline 2.999; initial baseline adoption needs a
+separately reviewed schema/data equivalence procedure. The isolated rehearsal
+uses the root POM and its own disposable baseline workflow.
+
+#### Offline history audit
+
+Release verification already checks SHA-256, the exact artifact set, runtime
+image identity and required control files. It does not inspect database history.
+The bundled `audit_flyway_history.py` reads only an existing local TSV and SQL
+filenames. It never connects to a server or runs Flyway. It blocks empty or
+malformed exports, failed entries, SQL NULL/invalid signed-32-bit checksums,
+duplicate normalized versions/ranks, unknown or mismatched scripts, unexpected
+history types and invalid baseline placement. A single leading BASELINE 2.999
+with NULL checksum is allowed; this exception does not apply to SQL rows.
+
+After separate authorization, an operator using a SELECT-only database account
+must export the **entire** history with headers, in installed-rank order, using
+MySQL batch output (not `--skip-column-names`). Retain the database identity,
+server version, collection time, candidate ID, export SHA-256 and client exit
+code outside the immutable release directory. Export failure, missing history,
+or stale/filtered evidence blocks release. The query is read-only:
+
+```sql
+SELECT installed_rank, version, type, script, checksum, success
+FROM flyway_schema_history ORDER BY installed_rank;
+```
+
+Audit an already collected export offline from the candidate control directory:
+
+```text
+python scripts/release/audit_flyway_history.py --history /evidence/history.tsv --migrations sql/migration --require-version 4.142 --require-version 4.143 --require-version 4.144
+```
+
+The three required versions are mandatory for this incident's post-recovery
+acceptance. For a normal pre-migration audit, require only versions expected to
+be already applied; pending candidate versions are legitimate. Run the audit
+again after migration with all versions required by the release acceptance plan.
+A zero exit code checks history shape only: it cannot authenticate the export,
+prove execution, check CRC equality, or detect every missing historical row.
+Use pinned Flyway 10.10.0 `validate` against the exact immutable migration files,
+plus schema/data checks. Release SHA-256 is not Flyway's migration checksum.
+
+The transport does not enforce database evidence and the Compose migration
+command does not invoke this offline auditor. These remain mandatory operator
+gates; do not claim that upload, pointer activation or Flyway validate alone
+protects against manually fabricated history.
+
+#### Authorized recovery procedure for V4_142–V4_144
+
+1. Obtain explicit authorization for target access, read-only collection,
+   backup/restore rehearsal, and any later write operation separately. Record
+   target identity, owners, maintenance window and stop conditions. Preserve
+   original deployment SQL, release SHA-256/source revision, MySQL/Flyway logs,
+   and full history before changing anything. The present task authorizes none
+   of those server operations.
+2. Back up the current database including data, schema and history, and locate a
+   verified pre-incident backup/PITR point. Record checksums, binlog coordinates,
+   retention and post-backup writes. Demonstrate restore into an isolated clone;
+   a backup file's existence alone is insufficient. Freeze or reconcile writes
+   under the approved cutover plan. MySQL DDL may commit independently; assume
+   partial execution until proven otherwise.
+3. Compare the exact SQL executed previously with the immutable release files;
+   recover original artifacts if they differ. Run SELECT-only verification on
+   the clone. `scripts/verify-migration-schema.sql` covers V4_058–071 and uses
+   schema `codecoachai_v1`; verify that target explicitly and do not treat its
+   success as V4_142–144 acceptance. For V4_142 review normalization counts and
+   row-level before/after differences for `question.question_type` and
+   `experience_level`, including unknown values and preserved CASE_ANALYSIS.
+   For V4_143 compare `user_question_record.memory_stability` and
+   `memory_difficulty` (nullable DOUBLE), `review_reps` and `review_lapses`
+   (INT NOT NULL DEFAULT 0). For V4_144 compare
+   `sys_user.must_change_password` (TINYINT NOT NULL DEFAULT 0). Capture
+   information_schema/SHOW CREATE TABLE evidence, defaults, nullability,
+   comments and affected data; column existence alone is insufficient.
+4. Preferred recovery: restore a trusted pre-incident database/history into a
+   clone, use the original migration chain through pinned Flyway, validate it,
+   and repeat structural/data verification. Reconcile later legitimate writes
+   without restoring fabricated history. Review data loss, application
+   compatibility, timing and rollback before authorizing production restoration
+   or cutover. Never restore only the history table over an unverified schema.
+5. If restore/cutover is not viable, stop for a DBA-reviewed in-place recovery
+   proposal. Only after full execution and structural/data equivalence is
+   proven may a **separately authorized** Flyway `repair` be evaluated on a
+   disposable clone using the exact version, locations and configuration.
+   Inspect all history rows before/after: repair can affect unrelated checksums,
+   descriptions, types, failed or missing entries. It does not execute missing
+   DDL/DML or prove the manually applied SQL ran. Reject unexplained changes.
+   Partial execution needs a separately reviewed forward correction; no blind
+   repair, manual history DML, clean, or baseline workaround is permitted.
+6. Apply only the specifically approved, rehearsed recovery on the authorized
+   target. Retain full before/after history and Flyway logs, rerun the offline
+   audit requiring 4.142–4.144, Flyway validate, and all schema/data checks.
+   Any failure keeps deployment blocked. Record operator sign-off and rollback
+   evidence before activation. Until this evidence exists, status remains
+   **线上状态未修复，待授权运维**.
+
+Only after recovery (where applicable), backup verification, history audit,
+pinned Flyway validate, schema/data review and the Nacos gate succeed, run
+Flyway from the same candidate control directory under deployment authorization.
+Its dedicated POM and `sql/migration` directory are part of the candidate
+manifest. Never run migrations from a mutable checkout or rely on an
 application recreation to start Flyway:
 
 ```text

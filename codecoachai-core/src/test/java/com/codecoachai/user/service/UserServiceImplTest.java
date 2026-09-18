@@ -15,6 +15,8 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.codecoachai.auth.service.AuthSessionRevocationService;
+import com.codecoachai.user.domain.dto.UpdatePasswordDTO;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.codecoachai.common.core.constant.CommonConstants;
 import com.codecoachai.common.core.enums.ErrorCode;
@@ -67,6 +69,9 @@ class UserServiceImplTest {
     @Mock
     private StudyProgressStatisticsService progressStatisticsService;
 
+    @Mock
+    private AuthSessionRevocationService authSessionRevocationService;
+
     private UserServiceImpl userService;
 
     @BeforeEach
@@ -76,6 +81,7 @@ class UserServiceImplTest {
                 sysUserRoleMapper,
                 roleService,
                 passwordEncoder,
+                authSessionRevocationService,
                 jdbcTemplate,
                 adminPermissionCache,
                 progressStatisticsService);
@@ -98,7 +104,7 @@ class UserServiceImplTest {
         String temporaryPassword = userService.resetPassword(9L);
 
         assertNotNull(temporaryPassword);
-        assertTrue(temporaryPassword.length() >= 16);
+        assertEquals(16, temporaryPassword.length());
         assertTrue(temporaryPassword.chars().anyMatch(Character::isUpperCase));
         assertTrue(temporaryPassword.chars().anyMatch(Character::isLowerCase));
         assertTrue(temporaryPassword.chars().anyMatch(Character::isDigit));
@@ -110,6 +116,46 @@ class UserServiceImplTest {
         ArgumentCaptor<SysUser> userCaptor = ArgumentCaptor.forClass(SysUser.class);
         verify(sysUserMapper).updateById(userCaptor.capture());
         assertTrue("encoded-password".equals(userCaptor.getValue().getPasswordHash()));
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(sysUserMapper, authSessionRevocationService);
+        order.verify(sysUserMapper).updateById(user);
+        order.verify(authSessionRevocationService).revokeAll(9L);
+    }
+
+    @Test
+    void changePasswordRevokesAllSessionsOnlyAfterPasswordWrite() {
+        SysUser user = new SysUser();
+        user.setId(1001L);
+        user.setPasswordHash("old-hash");
+        when(sysUserMapper.selectById(1001L)).thenReturn(user);
+        when(passwordEncoder.matches("legacy", "old-hash")).thenReturn(true);
+        when(passwordEncoder.encode("123456")).thenReturn("new-hash");
+        UpdatePasswordDTO dto = new UpdatePasswordDTO();
+        dto.setOldPassword("legacy");
+        dto.setNewPassword("123456");
+        dto.setConfirmPassword("123456");
+
+        userService.updateCurrentUserPassword(dto);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(sysUserMapper, authSessionRevocationService);
+        order.verify(sysUserMapper).updateById(user);
+        order.verify(authSessionRevocationService).revokeAll(1001L);
+        assertEquals("new-hash", user.getPasswordHash());
+    }
+
+    @Test
+    void wrongOldPasswordDoesNotWriteOrRevokeSessions() {
+        SysUser user = new SysUser();
+        user.setPasswordHash("old-hash");
+        when(sysUserMapper.selectById(1001L)).thenReturn(user);
+        UpdatePasswordDTO dto = new UpdatePasswordDTO();
+        dto.setOldPassword("wrong");
+        dto.setNewPassword("123456");
+        dto.setConfirmPassword("123456");
+
+        assertThrows(BusinessException.class, () -> userService.updateCurrentUserPassword(dto));
+
+        verify(sysUserMapper, never()).updateById(any(SysUser.class));
+        org.mockito.Mockito.verifyNoInteractions(authSessionRevocationService);
     }
 
     @Test

@@ -27,7 +27,11 @@
                     <locations>
                         <location>filesystem:/workspace/sql/migration</location>
                     </locations>
-                    <baselineOnMigrate>true</baselineOnMigrate>
+                    <!-- Existing environments must never be silently baselined. -->
+                    <baselineOnMigrate>false</baselineOnMigrate>
+                    <validateOnMigrate>true</validateOnMigrate>
+                    <cleanDisabled>true</cleanDisabled>
+                    <outOfOrder>false</outOfOrder>
                     <baselineVersion>2.999</baselineVersion>
                     <table>flyway_schema_history</table>
                     <encoding>UTF-8</encoding>

@@ -103,10 +103,14 @@ class InterviewReportAsyncServiceCompletionTest {
         incomplete.setTotalScore(82);
         incomplete.setRubricScores("[]");
         when(aiFeignClient.report(any())).thenReturn(Result.success(incomplete));
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
+        when(sessionMapper.update(any(InterviewSession.class), any(Wrapper.class))).thenReturn(1);
 
         service.generateReportAsync(1L, 88L, "token-current", MESSAGE_ID);
 
+        var saved = org.mockito.ArgumentCaptor.forClass(InterviewReport.class);
+        verify(reportMapper).update(saved.capture(), any(Wrapper.class));
+        org.junit.jupiter.api.Assertions.assertTrue(saved.getValue().getFailureReason().endsWith("[RUBRIC_DATA_MISSING]"));
+        org.junit.jupiter.api.Assertions.assertTrue(saved.getValue().getQaReview().contains("A1"));
         verify(asyncTaskService).markTerminalFailed(eq(MESSAGE_ID), any());
         verify(asyncTaskService, never()).markSuccess(eq(MESSAGE_ID), any());
     }
@@ -114,7 +118,7 @@ class InterviewReportAsyncServiceCompletionTest {
     @Test
     void marksAsyncTaskSuccessOnlyAfterCompleteReportIsPersisted() {
         when(aiFeignClient.report(any())).thenReturn(Result.success(completeReport()));
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(1);
+        when(sessionMapper.update(any(InterviewSession.class), any(Wrapper.class))).thenReturn(1);
 
         service.generateReportAsync(1L, 88L, "token-current", MESSAGE_ID);
 
@@ -125,7 +129,7 @@ class InterviewReportAsyncServiceCompletionTest {
     @Test
     void failureWriteBackPersistenceErrorRemainsRetryable() {
         when(aiFeignClient.report(any())).thenThrow(new IllegalStateException("AI unavailable"));
-        when(sessionMapper.updateById(any(InterviewSession.class))).thenReturn(0);
+        when(sessionMapper.update(any(InterviewSession.class), any(Wrapper.class))).thenReturn(0);
 
         IllegalStateException exception = assertThrows(IllegalStateException.class,
                 () -> service.generateReportAsync(1L, 88L, "token-current", MESSAGE_ID));
@@ -135,6 +139,54 @@ class InterviewReportAsyncServiceCompletionTest {
         verify(asyncTaskService).markFailed(MESSAGE_ID, "Persist interview session failure failed");
         verify(asyncTaskService, never()).markTerminalFailed(eq(MESSAGE_ID), any());
         verify(asyncTaskService, never()).markSuccess(eq(MESSAGE_ID), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"[]", "  ", "invalid-json", "{}", "[null,{},123]", "[{\"question\":\" \",\"answer\":\" \"}]"})
+    void restoresFailedReportEvidenceAndExplicitlyClearsOldScores(String qaReview) throws Exception {
+        InterviewReport current = generatingReport();
+        current.setQaReview(qaReview);
+        current.setTotalScore(99);
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(aiFeignClient.report(any())).thenThrow(new IllegalStateException("AI timeout"));
+        when(sessionMapper.update(any(InterviewSession.class), any(Wrapper.class))).thenReturn(1);
+
+        service.generateReportAsync(1L, 88L, "token-current", MESSAGE_ID);
+
+        org.junit.jupiter.api.Assertions.assertEquals("FAILED", current.getStatus());
+        org.junit.jupiter.api.Assertions.assertNull(current.getTotalScore());
+        var reviews = new ObjectMapper().readTree(current.getQaReview());
+        org.junit.jupiter.api.Assertions.assertEquals(6, reviews.size());
+        org.junit.jupiter.api.Assertions.assertEquals("Q1", reviews.get(0).get("questionContent").asText());
+        org.junit.jupiter.api.Assertions.assertEquals("A1", reviews.get(0).get("userAnswer").asText());
+        var reportUpdate = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+        verify(reportMapper).update(any(InterviewReport.class), reportUpdate.capture());
+        assertExplicitNullScore(reportUpdate.getValue());
+        var sessionUpdate = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper.class);
+        verify(sessionMapper).update(any(InterviewSession.class), sessionUpdate.capture());
+        assertExplicitNullScore(sessionUpdate.getValue());
+        verify(asyncTaskService, never()).markSuccess(eq(MESSAGE_ID), any());
+    }
+
+    @Test
+    void preservesExistingDisplayableReviewOnGenerationFailure() {
+        InterviewReport current = generatingReport();
+        String existing = "[{\"question\":\"Existing question\",\"answer\":\"Existing answer\"}]";
+        current.setQaReview(existing);
+        when(reportMapper.selectOne(any())).thenReturn(current);
+        when(aiFeignClient.report(any())).thenThrow(new IllegalStateException("AI timeout"));
+        when(sessionMapper.update(any(InterviewSession.class), any(Wrapper.class))).thenReturn(1);
+        service.generateReportAsync(1L, 88L, "token-current", MESSAGE_ID);
+        org.junit.jupiter.api.Assertions.assertEquals(existing, current.getQaReview());
+    }
+
+    private void assertExplicitNullScore(com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<?> update) {
+        String assignment = java.util.Arrays.stream(update.getSqlSet().split(","))
+                .filter(value -> value.startsWith("total_score=")).findFirst().orElseThrow();
+        String parameter = assignment.substring(assignment.indexOf("MPGENVAL"), assignment.indexOf("}"));
+        org.junit.jupiter.api.Assertions.assertTrue(update.getParamNameValuePairs().containsKey(parameter));
+        org.junit.jupiter.api.Assertions.assertNull(update.getParamNameValuePairs().get(parameter));
     }
 
     private InterviewSession session() {

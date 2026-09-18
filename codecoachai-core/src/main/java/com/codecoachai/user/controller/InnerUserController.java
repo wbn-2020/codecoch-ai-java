@@ -55,10 +55,4 @@ public class InnerUserController {
         userService.resetInnerPassword(id, dto);
         return Result.success();
     }
-
-    @PostMapping("/{id}/must-change-password")
-    public Result<Void> markMustChangePassword(@PathVariable Long id) {
-        userService.markMustChangePassword(id);
-        return Result.success();
-    }
 }

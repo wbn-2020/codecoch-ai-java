@@ -11,9 +11,10 @@ public class ResetPasswordDTO {
     private String token;
 
     @NotBlank(message = "新密码不能为空")
-    @Size(min = 8, max = 32, message = "长度必须在8到32之间")
+    @Size(min = 6, max = 16, message = "长度必须在6到16之间")
     private String newPassword;
 
     @NotBlank(message = "确认密码不能为空")
+    @Size(min = 6, max = 16, message = "长度必须在6到16之间")
     private String confirmPassword;
 }

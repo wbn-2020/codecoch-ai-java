@@ -290,6 +290,8 @@ def verify_release(root: pathlib.Path) -> list[ManifestEntry]:
         "control/scripts/docker/HealthProbe.java",
         "control/scripts/nacos/nacos_config_guard.py",
         "control/scripts/release/check_health.py",
+        "control/scripts/release/audit_flyway_history.py",
+        "control/scripts/verify-migration-schema.sql",
         "control/scripts/release/flyway-pom.xml",
         "control/scripts/release/release.env.example",
         "control/docs/nacos/codecoachai-common-dev.yml",

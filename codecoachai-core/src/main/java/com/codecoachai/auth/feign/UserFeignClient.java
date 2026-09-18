@@ -35,7 +35,4 @@ public interface UserFeignClient {
 
     @PostMapping("/inner/users/{id}/reset-password")
     Result<Void> resetPassword(@PathVariable("id") Long id, @RequestBody InnerResetPasswordDTO dto);
-
-    @PostMapping("/inner/users/{id}/must-change-password")
-    Result<Void> markMustChangePassword(@PathVariable("id") Long id);
 }

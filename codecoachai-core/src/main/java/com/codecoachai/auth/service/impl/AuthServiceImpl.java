@@ -38,6 +38,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -94,23 +95,24 @@ public class AuthServiceImpl implements AuthService {
     @Override
     public LoginVO login(LoginDTO dto) {
         String username = dto.getUsername();
-        // 暴力破解防护：检查账号是否被临时锁定
-        String lockKey = RedisKeyConstants.loginLockKey(username);
-        if (StringUtils.hasText(redisCacheHelper.get(lockKey))) {
-            loginLogRecorder.recordFailed(username, "PASSWORD", "账号已被临时锁定");
-            throw new BusinessException(ErrorCode.ACCOUNT_LOCKED);
-        }
-
         InnerUserAuthVO user;
         try {
             user = FeignResultUtils.unwrap(userFeignClient.getByUsername(username));
         } catch (BusinessException ex) {
-            recordLoginFailure(username);
+            if (Integer.valueOf(ErrorCode.USER_NOT_FOUND.getCode()).equals(ex.getCode())) {
+                String missingIdentity = "missing:" + username.trim().toLowerCase(Locale.ROOT);
+                checkLoginLock(missingIdentity, username);
+                recordLoginFailure(missingIdentity);
+            }
             loginLogRecorder.recordFailed(username, "PASSWORD", ex.getMessage());
             throw ex;
         }
+        // 数据库可能忽略用户名大小写；已存在账号始终按稳定 ID 共享锁定状态。
+        String identity = "user:" + user.getId();
+        checkLoginLock(identity, username);
+        String lockKey = RedisKeyConstants.loginLockKey(identity);
         if (!passwordEncoder.matches(dto.getPassword(), user.getPasswordHash())) {
-            recordLoginFailure(username);
+            recordLoginFailure(identity);
             loginLogRecorder.recordFailed(username, "PASSWORD", "密码错误");
             throw new BusinessException(ErrorCode.PASSWORD_ERROR);
         }
@@ -121,7 +123,7 @@ public class AuthServiceImpl implements AuthService {
         }
 
         // 登录成功：清除失败计数和锁定标记
-        redisCacheHelper.delete(RedisKeyConstants.loginFailCountKey(username));
+        redisCacheHelper.delete(RedisKeyConstants.loginFailCountKey(identity));
         redisCacheHelper.delete(lockKey);
 
         StpUtil.login(user.getId());
@@ -348,7 +350,13 @@ public class AuthServiceImpl implements AuthService {
         LoginVO vo = new LoginVO();
         vo.setToken(token);
         vo.setTokenName("Authorization");
-        vo.setExpireTime(LocalDateTime.now().plusDays(1).format(DATE_TIME_FORMATTER));
+        long remainingSeconds = StpUtil.getTokenTimeout();
+        // refresh 只刷新身份快照，返回当前凭据的真实期限；-1 表示永不过期。
+        if (remainingSeconds < -1) {
+            throw new BusinessException(ErrorCode.TOKEN_INVALID);
+        }
+        vo.setExpireTime(remainingSeconds == -1 ? null
+                : LocalDateTime.now().plusSeconds(remainingSeconds).format(DATE_TIME_FORMATTER));
         vo.setUserInfo(currentUser);
         vo.setRoles(roles == null ? List.of() : roles);
         vo.setPermissions(permissions == null ? List.of() : permissions);
@@ -388,9 +396,14 @@ public class AuthServiceImpl implements AuthService {
         return email.charAt(0) + "***" + email.substring(at);
     }
 
-    /**
-     * 记录登录失败次数，在短窗口内超过阈值时锁定账号。
-     */
+    private void checkLoginLock(String identity, String username) {
+        if (StringUtils.hasText(redisCacheHelper.get(RedisKeyConstants.loginLockKey(identity)))) {
+            loginLogRecorder.recordFailed(username, "PASSWORD", "账号已被临时锁定");
+            throw new BusinessException(ErrorCode.ACCOUNT_LOCKED);
+        }
+    }
+
+    /** 记录登录失败次数，在短窗口内超过阈值时锁定账号。 */
     private void recordLoginFailure(String username) {
         String failKey = RedisKeyConstants.loginFailCountKey(username);
         Long count = redisCacheHelper.incrementAndExpire(failKey, LOGIN_FAIL_WINDOW);

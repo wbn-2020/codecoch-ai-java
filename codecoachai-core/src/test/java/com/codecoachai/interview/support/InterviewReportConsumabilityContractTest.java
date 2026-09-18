@@ -52,6 +52,21 @@ class InterviewReportConsumabilityContractTest {
         assertEquals("QA_REVIEW_COUNT_MISMATCH", result.reasonCode());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"[]", " ", "invalid-json", "{}", "[null,{},123]"})
+    void rejectsNonDisplayableReplayEvidence(String value) {
+        assertEquals(false, InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper, value));
+    }
+
+    @Test
+    void acceptsQuestionAndAnswerWithoutInventingScoreOrComment() {
+        assertTrue(InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper,
+                "[{\"questionContent\":\"Q\",\"userAnswer\":\"A\"}]"));
+        assertTrue(InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper,
+                "[null,{}, {\"question\":\"Q\",\"answer\":\"A\"}]"));
+    }
+
     private InterviewReport completeReport() {
         InterviewReport report = new InterviewReport();
         report.setTotalScore(82);

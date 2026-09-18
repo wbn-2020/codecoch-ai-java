@@ -101,6 +101,7 @@ public class InnerInterviewReportController {
 
         String status = StringUtils.hasText(dto.getReportStatus()) ? dto.getReportStatus() : "SUCCESS";
         boolean success = "SUCCESS".equalsIgnoreCase(status);
+        boolean generationFailed = !success;
         String completionFailureReason = dto.getErrorMessage();
         LocalDateTime now = LocalDateTime.now();
         InterviewReport report = currentReport(sessionId);
@@ -162,7 +163,8 @@ public class InnerInterviewReportController {
                         ? ReportStatusEnum.UNSCORABLE.name()
                         : ReportStatusEnum.FAILED.name());
                 report.setTotalScore(null);
-                report.setFailureReason(completionFailureReason + " [" + consumability.reasonCode() + "]");
+                completionFailureReason += " [" + consumability.reasonCode() + "]";
+                report.setFailureReason(completionFailureReason);
                 success = false;
                 completed = recovery.hasAnswers();
             } else {
@@ -172,12 +174,11 @@ public class InnerInterviewReportController {
         StoredEvidenceRecovery failedRecovery = StoredEvidenceRecovery.empty();
         if (!success) {
             report.setTotalScore(null);
-            boolean generationFailed = ReportStatusEnum.FAILED.name().equals(report.getStatus());
             if (generationFailed) {
                 failedRecovery = recoverFailedReportFromStoredEvidence(sessionId, report);
             }
             completionFailureReason = firstText(completionFailureReason, "面试报告生成失败，答题记录已保留。");
-            if (!completionFailureReason.contains("[")) {
+            if (generationFailed && !completionFailureReason.contains("[")) {
                 completionFailureReason = completionFailureReason + " [REPORT_GENERATION_FAILED]";
             }
             report.setFailureReason(completionFailureReason);
@@ -200,6 +201,12 @@ public class InnerInterviewReportController {
             } else {
                 reportUpdate.isNull(InterviewReport::getGenerationToken);
             }
+            reportUpdate.set(report.getTotalScore() == null, InterviewReport::getTotalScore, null)
+                    .set(report.getStrengths() == null, InterviewReport::getStrengths, null)
+                    .set(report.getWeaknesses() == null, InterviewReport::getWeaknesses, null)
+                    .set(report.getMainProblems() == null, InterviewReport::getMainProblems, null)
+                    .set(report.getWeakPoints() == null, InterviewReport::getWeakPoints, null)
+                    .set(report.getFailureReason() == null, InterviewReport::getFailureReason, null);
             if (reportMapper.update(report, reportUpdate) != 1) {
                 log.info("Ignore stale interview report callback CAS, sessionId={}, reportId={}",
                         sessionId, report.getId());
@@ -569,7 +576,7 @@ public class InnerInterviewReportController {
                 messagesById.put(message.getId(), message);
             }
         }
-        if (!StringUtils.hasText(report.getQaReview())) {
+        if (!InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper, report.getQaReview())) {
             report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
         }
 
@@ -631,7 +638,7 @@ public class InnerInterviewReportController {
                 messagesById.put(message.getId(), message);
             }
         }
-        if (!StringUtils.hasText(report.getQaReview())) {
+        if (!InterviewReportConsumabilityContract.hasDisplayableQaReview(objectMapper, report.getQaReview())) {
             report.setQaReview(buildStoredQaReview(answers, messages, messagesById));
         }
         String evidenceSummary = "本场面试包含 " + answers.size()
